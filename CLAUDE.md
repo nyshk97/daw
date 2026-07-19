@@ -27,9 +27,14 @@
 
 ## ビルド・実行コマンド
 
-雛形ができるまで未定。確定したらここに記載する（想定: `cmake -B build` → `cmake --build build` → `open build/.../daw.app`）。
+```sh
+cmake -B build -DCMAKE_BUILD_TYPE=Debug   # 初回はFetchContentでJUCE 8.0.9を取得（数分かかる）
+cmake --build build
+open build/daw_artefacts/Debug/daw.app
+```
 
-- **JUCEのバージョンをFetchContentで確定させたら、GOTCHAS.mdのコード例（特に`createWriterFor`の`AudioFormatWriterOptions`版 = JUCE 8.0.9以降のAPI）が実バージョンと一致するか照合すること**
+- JUCEは`CMakeLists.txt`で **8.0.9 に pin** 済み。GOTCHAS.mdの`createWriterFor`（`AudioFormatWriterOptions`版）が実在することは`build/_deps/juce-src/modules/juce_audio_formats/format/juce_AudioFormat.h`で照合済み。**バージョンを上げるときは再照合すること**
+- 録音ファイルの出力先: `~/Documents/daw_tier0_recording.wav`（モノラル・16bit WAV）
 
 ## ディレクトリ構成方針
 
