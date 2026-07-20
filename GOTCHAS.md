@@ -6,6 +6,15 @@
 
 `juce::String(const char*)` はUTF-8を解釈しない。日本語に限らず em-dash（—）や ● などの記号も対象で、生リテラルのまま `String` と連結すると文字化けする（`"daw — "` が「daw â」になった実例あり）。UI文言・タイトル・ダイアログの全てで `fromUTF8` を徹底する。
 
+### 警告ゼロ基準で引っかかりやすいコンパイラ警告
+
+- **浮動小数の `==` / `!=` は `-Wfloat-equal` で弾かれる**: 等値判定は `juce::approximatelyEqual (a, b)` を使う
+- **ネスト内部クラス（RulerContent等）のローカル変数が外側クラスのフィールドと同名だと `-Wshadow`**: 内部クラスからは外側クラスのメンバが名前探索で見えるため、`pxPerBar` のような外側のフィールド名をローカル変数に使わない
+
+### Shift併用ショートカットは getTextCharacter がシフト後の文字を返す
+
+`Shift+,` は `KeyPress::getTextCharacter()` が `<` になる（レイアウト依存）。`switch (getTextCharacter())` で拾う場合は、素の文字＋`isShiftDown()` と、シフト後文字（`<` `>` 等）の両方のcaseを用意する。
+
 ## オーディオコールバック内の禁止事項
 
 ### 前提: なぜ厳しいのか
