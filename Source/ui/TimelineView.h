@@ -21,7 +21,8 @@ public:
         void clear() { track = clip = -1; }
     };
 
-    static constexpr int pxPerBar = 80;   // 1小節の表示幅（固定）
+    static constexpr double minPxPerBar = 20.0;   // これ以下は小節線のみの俯瞰表示
+    static constexpr double maxPxPerBar = 640.0;  // 1/16音符グリッドが40px間隔になる上限
     static constexpr int trackHeight = 64;
     static constexpr int rulerHeight = 26;
 
@@ -41,6 +42,7 @@ public:
     std::function<void (int)> onVerticalScroll;      // ヘッダ同期用（viewYを渡す）
 
     void scrollVertically (float wheelDeltaY);       // ヘッダ上のホイールを転送してもらう
+    void zoomBy (double factor);                     // 横ズーム（アンカー: 再生ヘッド or ビュー中央）
 
     // 小節⇔サンプル⇔ピクセルの換算（4/4固定）。MainComponentの表示・録音位置計算からも使う
     double effectiveSampleRate() const;
@@ -58,6 +60,8 @@ private:
     class LaneViewport;
 
     void timerCallback() override;
+    int gridDivisionsPerBar() const;
+    void zoomAroundContentX (double factor, int contentX);
     void updateContentSize();
     void syncScroll();
     void handleLaneMouseDown (const juce::MouseEvent& e);
@@ -65,6 +69,7 @@ private:
 
     TransportState& transport;
     Project* project = nullptr;
+    double pxPerBar = 80.0;   // 1小節の表示幅（ズームで可変）
     ClipSelection selection;
     int selectedTrack = 0;
 

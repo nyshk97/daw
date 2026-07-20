@@ -27,19 +27,48 @@ public:
     {
         g.fillAll (juce::Colour (0xff2a2a2e));
         const auto clip = g.getClipBounds();
+        const double barWidth = owner.pxPerBar;
 
-        const int firstBar = juce::jmax (0, clip.getX() / pxPerBar - 1);
-        const int lastBar = clip.getRight() / pxPerBar + 1;
+        const int firstBar = juce::jmax (0, (int) std::floor (clip.getX() / barWidth) - 1);
+        const int lastBar = (int) std::floor (clip.getRight() / barWidth) + 1;
+        const int div = owner.gridDivisionsPerBar();
+
+        // ラベルが重ならないよう、ズームアウト時は2の冪の間隔で間引く
+        int labelStep = 1;
+        while (labelStep * barWidth < 48.0)
+            labelStep *= 2;
 
         for (int bar = firstBar; bar <= lastBar; ++bar)
         {
-            const int x = bar * pxPerBar;
-            g.setColour (juce::Colour (0xff55555a));
-            g.drawVerticalLine (x, 8.0f, (float) getHeight());
-            g.setColour (juce::Colours::lightgrey);
-            g.setFont (11.0f);
-            g.drawText (juce::String (bar + 1), x + 4, 0, pxPerBar - 6, getHeight(),
-                        juce::Justification::centredLeft);
+            for (int i = 0; i < div; ++i)
+            {
+                const int x = (int) std::llround ((bar + i / (double) div) * barWidth);
+                if (i == 0)
+                {
+                    g.setColour (juce::Colour (0xff55555a));
+                    g.drawVerticalLine (x, 8.0f, (float) getHeight());
+                }
+                else if ((i * 4) % div == 0)   // 拍（1/2表示時はその線も同格に）
+                {
+                    g.setColour (juce::Colour (0xff4a4a4f));
+                    g.drawVerticalLine (x, 14.0f, (float) getHeight());
+                }
+                else
+                {
+                    g.setColour (juce::Colour (0xff3c3c41));
+                    g.drawVerticalLine (x, 19.0f, (float) getHeight());
+                }
+            }
+
+            if (bar % labelStep == 0)
+            {
+                g.setColour (juce::Colours::lightgrey);
+                g.setFont (11.0f);
+                g.drawText (juce::String (bar + 1),
+                            (int) std::llround (bar * barWidth) + 4, 0,
+                            (int) (labelStep * barWidth) - 6, getHeight(),
+                            juce::Justification::centredLeft);
+            }
         }
 
         const int playheadX = owner.sampleToX (owner.transport.playheadSamplePos.load());
@@ -50,6 +79,11 @@ public:
     void mouseDown (const juce::MouseEvent& e) override
     {
         owner.seekFromX (e.x);
+    }
+
+    void mouseMagnify (const juce::MouseEvent& e, float scaleFactor) override
+    {
+        owner.zoomAroundContentX ((double) scaleFactor, e.x);
     }
 
 private:
@@ -86,12 +120,22 @@ public:
             g.drawHorizontalLine (y + trackHeight - 1, (float) clip.getX(), (float) clip.getRight());
         }
 
-        // 小節グリッド
-        const int firstBar = juce::jmax (0, clip.getX() / pxPerBar);
-        const int lastBar = clip.getRight() / pxPerBar + 1;
-        g.setColour (juce::Colour (0xff2c2c31));
+        // 小節・拍グリッド（ズームに応じて最大1/16音符まで細分化）
+        const double barWidth = owner.pxPerBar;
+        const int firstBar = juce::jmax (0, (int) std::floor (clip.getX() / barWidth));
+        const int lastBar = (int) std::floor (clip.getRight() / barWidth) + 1;
+        const int div = owner.gridDivisionsPerBar();
         for (int bar = firstBar; bar <= lastBar; ++bar)
-            g.drawVerticalLine (bar * pxPerBar, (float) clip.getY(), (float) clip.getBottom());
+        {
+            for (int i = 0; i < div; ++i)
+            {
+                const int x = (int) std::llround ((bar + i / (double) div) * barWidth);
+                g.setColour (i == 0             ? juce::Colour (0xff2c2c31)
+                             : (i * 4) % div == 0 ? juce::Colour (0xff28282c)
+                                                  : juce::Colour (0xff242428));
+                g.drawVerticalLine (x, (float) clip.getY(), (float) clip.getBottom());
+            }
+        }
 
         // クリップ
         for (int t = 0; t < numTracks; ++t)
@@ -135,6 +179,11 @@ public:
     void mouseDown (const juce::MouseEvent& e) override
     {
         owner.handleLaneMouseDown (e);
+    }
+
+    void mouseMagnify (const juce::MouseEvent& e, float scaleFactor) override
+    {
+        owner.zoomAroundContentX ((double) scaleFactor, e.x);
     }
 
 private:
@@ -248,7 +297,45 @@ double TimelineView::barLengthSamples() const
 
 double TimelineView::samplesPerPixel() const
 {
-    return barLengthSamples() / (double) pxPerBar;
+    return barLengthSamples() / pxPerBar;
+}
+
+int TimelineView::gridDivisionsPerBar() const
+{
+    // 線の間隔が12px以上確保できる最も細かい分割を選ぶ。上限は1/16音符
+    // （Tier 1ではグリッドは表示とシークの目安のみなので、これ以上細かくしない）
+    int div = 1;
+    for (int candidate : { 2, 4, 8, 16 })
+        if (pxPerBar / candidate >= 12.0)
+            div = candidate;
+    return div;
+}
+
+void TimelineView::zoomBy (double factor)
+{
+    const auto view = viewport->getViewArea();
+    const int playheadX = sampleToX (transport.playheadSamplePos.load());
+    const int anchorX = (playheadX >= view.getX() && playheadX <= view.getRight())
+                            ? playheadX
+                            : view.getCentreX();
+    zoomAroundContentX (factor, anchorX);
+}
+
+void TimelineView::zoomAroundContentX (double factor, int contentX)
+{
+    const double newPxPerBar = juce::jlimit (minPxPerBar, maxPxPerBar, pxPerBar * factor);
+    if (juce::approximatelyEqual (newPxPerBar, pxPerBar))
+        return;
+
+    // アンカー位置のサンプルが画面上の同じ場所に留まるようスクロールを補正する
+    const auto anchorSample = xToSample (contentX);
+    const int anchorOffset = contentX - viewport->getViewPositionX();
+    pxPerBar = newPxPerBar;
+    updateContentSize();
+    viewport->setViewPosition (juce::jmax (0, sampleToX (anchorSample) - anchorOffset),
+                               viewport->getViewPositionY());
+    lanes->repaint();
+    ruler->repaint();
 }
 
 int TimelineView::sampleToX (juce::int64 samplePos) const
@@ -310,7 +397,7 @@ void TimelineView::updateContentSize()
                                 transport.punchInSample.load() + transport.recordedSamples.load());
 
     const int numBars = juce::jmax (64, (int) std::ceil ((double) maxSample / barLen) + 8);
-    const int contentWidth = numBars * pxPerBar;
+    const int contentWidth = (int) std::ceil (numBars * pxPerBar);
     const int numTracks = project != nullptr ? (int) project->tracks.size() : 0;
     const int contentHeight = juce::jmax (numTracks * trackHeight,
                                           viewport->getMaximumVisibleHeight());

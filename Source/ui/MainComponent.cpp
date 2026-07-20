@@ -425,6 +425,17 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         addTrack();
         return true;
     }
+    // Logic準拠: ⌘←/→ = 横ズームアウト/イン
+    if (key == juce::KeyPress (juce::KeyPress::leftKey, juce::ModifierKeys::commandModifier, 0))
+    {
+        timeline.zoomBy (1.0 / juce::MathConstants<double>::sqrt2);
+        return true;
+    }
+    if (key == juce::KeyPress (juce::KeyPress::rightKey, juce::ModifierKeys::commandModifier, 0))
+    {
+        timeline.zoomBy (juce::MathConstants<double>::sqrt2);
+        return true;
+    }
 
     // 修飾キーなしの1文字ショートカット（Logic準拠: ,/.でシーク、mでミュート、rで録音）
     if (! key.getModifiers().testFlags (juce::ModifierKeys::commandModifier
