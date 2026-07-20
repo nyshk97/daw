@@ -38,7 +38,7 @@ public:
 
     std::function<void()> onSelectionChanged;
     std::function<void (int)> onTrackSelected;       // レーンクリックでトラック選択
-    std::function<void (juce::int64)> onSeek;        // 小節スナップ済みサンプル位置
+    std::function<void (juce::int64)> onSeek;        // 表示グリッドにスナップ済みのサンプル位置
     std::function<void (int)> onVerticalScroll;      // ヘッダ同期用（viewYを渡す）
 
     void scrollVertically (float wheelDeltaY);       // ヘッダ上のホイールを転送してもらう

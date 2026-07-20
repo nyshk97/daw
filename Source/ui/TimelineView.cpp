@@ -451,7 +451,7 @@ void TimelineView::handleLaneMouseDown (const juce::MouseEvent& e)
         }
     }
 
-    // 空白クリック → 選択解除＋シーク（小節スナップ）
+    // 空白クリック → 選択解除＋シーク（表示グリッドにスナップ）
     if (selection.isValid())
     {
         selection.clear();
@@ -465,9 +465,10 @@ void TimelineView::handleLaneMouseDown (const juce::MouseEvent& e)
 
 void TimelineView::seekFromX (int x)
 {
-    const double barLen = barLengthSamples();
+    // 表示中の最小グリッド単位にスナップ（ズームが深いほど細かく移動できる）
+    const double gridLen = barLengthSamples() / gridDivisionsPerBar();
     const auto samplePos = juce::jmax ((juce::int64) 0, xToSample (x));
-    const auto bar = (juce::int64) std::floor ((double) samplePos / barLen);
+    const auto gridIndex = (juce::int64) std::floor ((double) samplePos / gridLen);
     if (onSeek)
-        onSeek ((juce::int64) std::llround ((double) bar * barLen));
+        onSeek ((juce::int64) std::llround ((double) gridIndex * gridLen));
 }

@@ -437,15 +437,18 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    // 修飾キーなしの1文字ショートカット（Logic準拠: ,/.でシーク、mでミュート、rで録音）
+    // Cmd/Ctrl/Optなしの1文字ショートカット（,/.=1拍シーク、Shift+,/.=1小節、mでミュート、rで録音）
     if (! key.getModifiers().testFlags (juce::ModifierKeys::commandModifier
                                         | juce::ModifierKeys::ctrlModifier
                                         | juce::ModifierKeys::altModifier))
     {
+        const bool shift = key.getModifiers().isShiftDown();
         switch (key.getTextCharacter())
         {
-            case ',': seekByBar (-1); return true;
-            case '.': seekByBar (1); return true;
+            case ',': seekByStep (-1, shift); return true;
+            case '.': seekByStep (1, shift); return true;
+            case '<': seekByStep (-1, true); return true;   // Shift+,/. はレイアウトにより <> になる
+            case '>': seekByStep (1, true); return true;
             case 'm': toggleMuteSelectedTrack(); return true;
             case 'r': toggleRecord(); return true;
             default: break;
@@ -454,29 +457,29 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     return false;
 }
 
-void MainComponent::seekByBar (int direction)
+void MainComponent::seekByStep (int direction, bool wholeBar)
 {
     if (engine.isRecording())
         return;
 
-    const double barLen = timeline.barLengthSamples();
+    const double stepLen = timeline.barLengthSamples() / (wholeBar ? 1.0 : 4.0);
     const auto pos = juce::jmax ((juce::int64) 0, transport.playheadSamplePos.load());
-    auto bar = (juce::int64) std::floor ((double) pos / barLen);
+    auto step = (juce::int64) std::floor ((double) pos / stepLen);
 
     if (direction > 0)
     {
-        ++bar;
+        ++step;
     }
     else
     {
-        // 小節の途中なら小節頭へ、すでに小節頭なら前の小節へ
-        const auto barStart = (juce::int64) std::llround ((double) bar * barLen);
-        if ((double) (pos - barStart) < barLen * 0.01)
-            --bar;
-        bar = juce::jmax ((juce::int64) 0, bar);
+        // 区切りの途中なら区切り頭へ、すでに頭なら前の区切りへ
+        const auto stepStart = (juce::int64) std::llround ((double) step * stepLen);
+        if ((double) (pos - stepStart) < stepLen * 0.01)
+            --step;
+        step = juce::jmax ((juce::int64) 0, step);
     }
 
-    transport.seekRequest.store ((juce::int64) std::llround ((double) bar * barLen));
+    transport.seekRequest.store ((juce::int64) std::llround ((double) step * stepLen));
 }
 
 void MainComponent::toggleMuteSelectedTrack()
