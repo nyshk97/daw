@@ -7,7 +7,7 @@
 
 #include "../shared/Project.h"
 
-// トラック1本分のヘッダ（名前・削除・M/S・音量）。
+// トラック1本分のヘッダ（名前・削除・M/S・音量。MIDIトラックは楽器ドロップダウンも）。
 // 音量・ミュート・ソロは TrackParams の atomic に直接書く（スナップショット再構築は不要）。
 class TrackHeaderComponent : public juce::Component
 {
@@ -18,7 +18,9 @@ public:
 
     std::function<void()> onSelect;
     std::function<void()> onDeleteClicked;
-    std::function<void()> onChanged; // リネーム・M/S・音量の変更（dirtyマーク用）
+    std::function<void()> onChanged;             // M/S・音量の変更（dirtyマーク用）
+    std::function<void()> onWillChangeStructure; // リネーム・楽器変更の直前（undoスナップショット用）
+    std::function<void()> onInstrumentChanged;   // 楽器変更の確定後（pushSnapshotで音源差し替え）
 
     void paint (juce::Graphics& g) override;
     void resized() override;
@@ -33,6 +35,7 @@ private:
     juce::TextButton muteButton { "M" };
     juce::TextButton soloButton { "S" };
     juce::Slider volumeSlider;
+    juce::ComboBox instrumentBox; // MIDIトラックのみ表示
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TrackHeaderComponent)
 };
@@ -55,6 +58,8 @@ public:
     std::function<void (int)> onSelect;
     std::function<void (int)> onDeleteRequested;
     std::function<void()> onChanged;
+    std::function<void()> onWillChangeStructure; // リネーム・楽器変更の直前（undo用）
+    std::function<void()> onInstrumentChanged;   // 楽器変更の確定後
     std::function<void (float)> onWheel;
 
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;

@@ -24,7 +24,9 @@ struct TransportState
 
     // ---- オーディオ→UI ----
     std::atomic<double> sampleRate { 0.0 };           // prepareToPlay で確定した実サンプルレート
+    std::atomic<int> blockSizeExpected { 0 };         // prepareToPlay で通知されたブロックサイズ（SynthBankの確保基準）
     std::atomic<float> inputPeakLevel { 0.0f };       // 入力のピークレベル（メーター用）
+    std::atomic<bool> midiOverflow { false };         // MIDIイベント上限超過（ノートオンを間引いた）の通知。UIが読んで下ろす
 
     // lock-free でない型が紛れ込むとミューテックスにフォールバックして禁止事項違反になる
     static_assert (std::atomic<bool>::is_always_lock_free);

@@ -5,6 +5,8 @@
 #include "Recorder.h"
 #include "../shared/TransportState.h"
 #include "../shared/PlaybackSnapshot.h"
+#include "../shared/Ppq.h"
+#include "../shared/PreviewFifo.h"
 
 // サンプル位置ベースの自前ミックスエンジン。process() はオーディオスレッドで走る。
 // クリップ/トラック構成は SnapshotExchange 経由で受け取り、単一値は TransportState の atomic を読む。
@@ -12,7 +14,8 @@
 class PlaybackEngine
 {
 public:
-    PlaybackEngine (TransportState& transportState, SnapshotExchange& snapshotExchange);
+    PlaybackEngine (TransportState& transportState, SnapshotExchange& snapshotExchange,
+                    PreviewFifo& previewFifoToUse);
 
     // ---- AudioAppComponent から転送される（processのみオーディオスレッド）----
     void prepareToPlay (int samplesPerBlockExpected, double sampleRate);
@@ -31,13 +34,48 @@ public:
     bool isRecording() const;
 
 private:
+    // ノートオンの1ブロック・1トラックあたり上限。超過分は「新規ノートオンを対応オフごと捨てる」
+    // （送信済みノートオンのオフは soundingCount 経由で必ず送るので鳴りっぱなしは起きない）
+    static constexpr int maxNoteOnsPerBlock = 1024;
+
+    // AUに渡すスクラッチバッファの最大チャンネル数（DLSは2バス計4ch。余裕を持って確保）
+    static constexpr int maxSynthChannels = 8;
+
+    // MIDIトラックのAUレンダリングとイベント生成。オーディオスレッド専用。
+    // silenceFirst: 発音中ノートを全て止めてから始める（シーク・再生開始・停止エッジ）
+    // resound: 再生位置を跨いでいるノートを offset 0 で再発音（シーク・再生開始時）
+    void renderMidiTracks (PlaybackSnapshot& snapshot, juce::AudioBuffer<float>& buffer,
+                           int startSample, int numSamples, juce::int64 pos,
+                           bool playing, bool silenceFirst, bool resound,
+                           double sr, double bpm, bool anySolo);
+
     TransportState& transport;
     SnapshotExchange& snapshots;
+    PreviewFifo& previewFifo;
     Recorder recorder;
 
     double currentSampleRate = 0.0;
 
+    // MIDIレンダリング用の事前確保バッファ（prepareToPlayで確保。コールバック内では確保しない）
+    juce::AudioBuffer<float> synthScratch;
+    juce::MidiBuffer midiScratch;
+
     // ---- 以下はオーディオスレッド専用の状態 ----
+
+    // プレビュー発音（停止中のみ）。オンはFIFOコマンド、オフは固定発音長のサンプルカウントで自動送出
+    static constexpr int maxPreviewNotes = 64;
+    static constexpr int maxPreviewCommandsPerBlock = 64;
+    struct PreviewNote
+    {
+        juce::uint64 trackId = 0;
+        int pitch = 0;
+        juce::int64 samplesLeft = 0;
+    };
+    PreviewNote previewNotes[maxPreviewNotes];
+    int numPreviewNotes = 0;
+    PreviewFifo::Command previewCommands[maxPreviewCommandsPerBlock];
+    int numPreviewCommands = 0;
+
     bool prevPlaying = false;
     juce::int64 lastBeatIndex = 0;
     double clickPhase = 0.0;

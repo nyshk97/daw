@@ -57,14 +57,52 @@ screencapture -x -R<x,y,w,h> /tmp/daw-check.png
    `python3 -m json.tool ~/Music/daw/cli-test/project.json` で bpm/sampleRate/tracks/clips を確認
 5. **復元**: 再起動 → 「開く」→ スクショでBPM・トラック名・音量スライダー位置・クリップ位置が一致すること
 
+## 自動テスト（CTest）
+
+```sh
+cmake --build build --target daw_tests && ctest --test-dir build --output-on-failure
+```
+
+- モデル（保存/読込・ID・PPQ境界・undo・WAV GC保護）、GM音源（DLSMusicDevice）、
+  再生エンジン（MIDI再生・シーク再発音・停止消音・ミュート時のイベント継続・プレビュー経路）をGUIなしで検証する
+- テストは一時ディレクトリのみ使用（`~/Music/daw` には触れない）
+
+## MIDI機能の半自動確認
+
+```sh
+# MIDIトラック入りテストプロジェクトを用意
+mkdir -p ~/Music/daw/cli-midi-test
+cat > ~/Music/daw/cli-midi-test/project.json <<'EOF'
+{"version": 2, "nextId": 10, "bpm": 120.0, "sampleRate": 0.0, "tracks": [
+ {"id": 1, "type": "audio", "name": "ボーカル", "mute": false, "solo": false, "volume": 0.8, "clips": []},
+ {"id": 2, "type": "midi", "name": "Piano", "mute": false, "solo": false, "volume": 0.8, "gmProgram": 0, "drums": false,
+  "regions": [{"id": 3, "startPpq": 0, "lengthPpq": 3840,
+    "notes": [{"id": 4, "pitch": 60, "startPpq": 0, "lengthPpq": 960, "velocity": 100},
+              {"id": 5, "pitch": 64, "startPpq": 960, "lengthPpq": 960, "velocity": 100},
+              {"id": 6, "pitch": 67, "startPpq": 1920, "lengthPpq": 1920, "velocity": 100}]}]}
+]}
+EOF
+```
+
+- 開いてスクショ: MIDIトラックのヘッダに楽器ドロップダウン（3行レイアウト）、タイムラインに緑のリージョン＋ノートミニチュアが出ること
+- `click button "再生"` → 位置表示が進むこと（音の確認は要ユーザー）。MIDIトラック選択中は録音ボタンがグレーアウトすること
+- **リージョン操作の検証はCGEvent合成マウス＋保存後のproject.json裏取り**が確実:
+  - AppleScriptのAXクリックはJUCEのPopupMenu項目・ComboBox項目には効かない。CGEventの座標クリック（sandbox無効実行が必要）なら効く
+  - スクショの目視だけで判定しない。閉じる→「保存して終了」→ `python3 -m json.tool project.json` で startPpq/lengthPpq/drums 等の値を確認する
+  - 合成クリックを短時間に連続して撃つとOSのクリック集約で意図しないダブルクリックになる。操作間に時間を空ける
+- 座標の目安（ウィンドウ位置 X,Y・デフォルトズーム pxPerBar=80）: タイムライン左端 = X+200、
+  レーン先頭 = Y+28(タイトルバー)+44(トランスポート)+26(ルーラー)、トラック行高 = 84
+
 ## キー操作の確認（要ユーザー操作）
 
 JUCEアプリには合成キーストロークが届かないため、ショートカットは実操作で確認する:
 
-1. Space = 再生/停止、`r` = 録音、`m` = 選択トラックのミュート
+1. Space = 再生/停止、`r` = 録音（MIDIトラック選択中は無効）、`m` = 選択トラックのミュート
 2. `,`/`.` = 1拍シーク（拍の途中なら拍頭へ）、`Shift+,`/`.` = 1小節シーク
 3. `⌘←`/`⌘→` = 横ズームアウト/イン（ピンチも可）。ズームインでグリッドが 拍 → 1/8 → 1/16 と細かくなり、クリックシークがその単位になる
-4. `⌘S` = 保存、`⌘⌥A` = トラック追加、Delete = 選択クリップ削除
+4. `⌘S` = 保存、`⌘⌥A` = オーディオトラック追加、`⌘⌥S` = ソフトウェア音源トラック追加、Delete = 選択クリップ/リージョン/ノート削除
+5. `⌘Z`/`⇧⌘Z` = undo/redo（構造編集のみ。音量・ミュート・ソロは対象外）
+6. ピアノロール（リージョンをダブルクリックで開閉）: `↑`/`↓` = 選択ノートを半音移動、`⌥↑`/`⌥↓` = オクターブ移動、`⌘C`/`⌘V` = ノートコピー/再生ヘッド位置に貼り付け
 
 ## 音が絡む確認（要ユーザー操作）
 

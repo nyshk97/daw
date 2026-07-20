@@ -26,7 +26,9 @@ target_sources(daw PRIVATE
     Source/audio/PlaybackEngine.cpp
     Source/audio/Recorder.cpp
     Source/shared/Project.cpp
+    Source/shared/SynthBank.cpp
     Source/ui/MainComponent.cpp
+    Source/ui/PianoRollView.cpp
     Source/ui/ProjectChooserComponent.cpp
     Source/ui/TimelineView.cpp
     Source/ui/TrackHeadersView.cpp
@@ -37,12 +39,46 @@ target_include_directories(daw PRIVATE Source)
 target_compile_definitions(daw PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
+    JUCE_PLUGINHOST_AU=1
 )
 
 target_link_libraries(daw
     PRIVATE
         juce::juce_audio_utils
+        juce::juce_audio_processors
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
 )
+
+# ---- テスト（CTest から実行するコンソールアプリ。GUI不要のモデル・音源検証）----
+enable_testing()
+
+juce_add_console_app(daw_tests PRODUCT_NAME "daw_tests")
+
+target_sources(daw_tests PRIVATE
+    Tests/TestsMain.cpp
+    Source/audio/PlaybackEngine.cpp
+    Source/audio/Recorder.cpp
+    Source/shared/Project.cpp
+    Source/shared/SynthBank.cpp
+)
+
+target_include_directories(daw_tests PRIVATE Source)
+
+target_compile_definitions(daw_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_PLUGINHOST_AU=1
+)
+
+target_link_libraries(daw_tests
+    PRIVATE
+        juce::juce_audio_utils
+        juce::juce_audio_processors
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+add_test(NAME daw_tests COMMAND daw_tests)

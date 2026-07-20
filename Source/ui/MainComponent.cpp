@@ -21,6 +21,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
 
     addAndMakeVisible (timeline);
     addAndMakeVisible (headers);
+    addChildComponent (pianoRoll); // リージョンを開いたときだけ表示
     addAndMakeVisible (playButton);
     addAndMakeVisible (recordButton);
     addAndMakeVisible (addTrackButton);
@@ -33,6 +34,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
 
     timeline.setProject (project.get());
     headers.setProject (project.get());
+    pianoRoll.setProject (project.get());
 
     // ---- タイムライン・ヘッダの連携 ----
     timeline.onSeek = [this] (juce::int64 samplePos)
@@ -42,9 +44,42 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     };
     timeline.onTrackSelected = [this] (int index) { selectTrack (index); };
     timeline.onVerticalScroll = [this] (int y) { headers.setViewY (y); };
+    timeline.onWillEditModel = [this] { undoStack.begin (*project); };
+    timeline.onModelEdited = [this]
+    {
+        pushSnapshot();
+        setDirty (true);
+        timeline.refresh();
+    };
+    timeline.onOpenRegion = [this] (int trackIndex, int regionIndex) { openPianoRoll (trackIndex, regionIndex); };
+    pianoRoll.onWillEditModel = [this] { undoStack.begin (*project); };
+    pianoRoll.onModelEdited = [this]
+    {
+        pushSnapshot();
+        setDirty (true);
+        timeline.refresh(); // リージョンのノートミニチュアを更新
+    };
+    pianoRoll.onPreviewNote = [this] (juce::uint64 trackId, int pitch, int velocity)
+    {
+        if (transport.isPlaying.load() || engine.isRecording())
+            return;
+        // 固定ピッチ打楽器（Kick等）はプレビューもその打楽器の音で鳴らす
+        for (auto& track : project->tracks)
+            if (track.id == trackId && track.type == TrackType::midi
+                && track.drums && track.drumPitch >= 0)
+                pitch = track.drumPitch;
+        previewFifo.push ({ PreviewFifo::Command::Type::noteOn, trackId, pitch, velocity });
+    };
+    pianoRoll.onCloseRequested = [this] { closePianoRoll(); };
     headers.onSelect = [this] (int index) { selectTrack (index); };
     headers.onDeleteRequested = [this] (int index) { requestDeleteTrack (index); };
     headers.onChanged = [this] { setDirty (true); };
+    headers.onWillChangeStructure = [this] { undoStack.begin (*project); };
+    headers.onInstrumentChanged = [this]
+    {
+        pushSnapshot(); // SynthBank が楽器変更を検知して音源を差し替える
+        setDirty (true);
+    };
     headers.onWheel = [this] (float deltaY) { timeline.scrollVertically (deltaY); };
 
     // ---- トランスポートバー ----
@@ -55,7 +90,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     recordButton.onClick = [this] { toggleRecord(); };
 
     addTrackButton.setButtonText (jp (u8"＋トラック"));
-    addTrackButton.onClick = [this] { addTrack(); };
+    addTrackButton.onClick = [this] { showAddTrackMenu(); };
 
     settingsButton.setButtonText (jp (u8"デバイス設定"));
     settingsButton.onClick = [this] { showDeviceSettings(); };
@@ -127,7 +162,11 @@ void MainComponent::timerCallback()
         focusGrabbed = true;
     }
 
-    snapshots.deleteRetired(); // 旧スナップショットの解放は必ずメッセージスレッドで
+    snapshots.deleteRetired(); // 旧スナップショット（＋退役したGM音源）の解放は必ずメッセージスレッドで
+
+    // デバイスのサンプルレート確定・変更に追従してGM音源を作り直す（変更があったときだけ再push）
+    if (synthBank.sync (*project, transport.sampleRate.load(), transport.blockSizeExpected.load()))
+        pushSnapshot();
 
     meterLevel = transport.inputPeakLevel.load();
     updatePositionLabel();
@@ -164,6 +203,9 @@ void MainComponent::startRecordingFlow()
         showAlert (jp (u8"録音できません"), jp (u8"録音先のトラックがありません。トラックを追加してください。"));
         return;
     }
+
+    if (selectedTrackIsMidi())
+        return; // MIDIトラックには録音できない（録音ボタンも無効化済み）
 
     const double deviceRate = transport.sampleRate.load();
     if (deviceRate <= 0.0)
@@ -228,6 +270,7 @@ void MainComponent::finishRecording()
             && pendingRecordTrack >= 0 && pendingRecordTrack < (int) project->tracks.size())
         {
             clip.buildPeakCache();
+            undoStack.begin (*project); // 録音＝クリップ追加もundo対象
             project->tracks[(size_t) pendingRecordTrack].clips.push_back (std::move (clip));
             pushSnapshot();
             setDirty (true);
@@ -269,6 +312,7 @@ void MainComponent::requestDeleteSelectedClip()
             if (sel.clip >= (int) clips.size())
                 return;
 
+            undoStack.begin (*project);
             clips.erase (clips.begin() + sel.clip);
             timeline.clearSelection();
             pushSnapshot();
@@ -295,6 +339,7 @@ void MainComponent::requestDeleteTrack (int index)
             if (result != 0 || index >= (int) project->tracks.size())
                 return;
 
+            undoStack.begin (*project);
             project->tracks.erase (project->tracks.begin() + index);
             timeline.clearSelection();
             headers.rebuild();
@@ -305,13 +350,36 @@ void MainComponent::requestDeleteTrack (int index)
         });
 }
 
-void MainComponent::addTrack()
+void MainComponent::showAddTrackMenu()
 {
     if (engine.isRecording())
         return;
 
+    juce::PopupMenu menu;
+    menu.addItem (1, jp (u8"オーディオトラック"));
+    menu.addItem (2, jp (u8"ソフトウェア音源トラック"));
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (addTrackButton),
+                        [this] (int result)
+                        {
+                            if (result == 1)
+                                addTrack (TrackType::audio);
+                            else if (result == 2)
+                                addTrack (TrackType::midi);
+                        });
+}
+
+void MainComponent::addTrack (TrackType type)
+{
+    if (engine.isRecording())
+        return;
+
+    undoStack.begin (*project);
+
     Track track;
-    track.name = jp (u8"トラック ") + juce::String ((int) project->tracks.size() + 1);
+    track.id = project->allocateId();
+    track.type = type;
+    track.name = (type == TrackType::midi ? jp (u8"MIDI ") : jp (u8"トラック "))
+                     + juce::String ((int) project->tracks.size() + 1);
     project->tracks.push_back (std::move (track));
 
     headers.rebuild();
@@ -319,6 +387,88 @@ void MainComponent::addTrack()
     pushSnapshot();
     setDirty (true);
     timeline.refresh();
+}
+
+bool MainComponent::selectedTrackIsMidi() const
+{
+    return selectedTrack >= 0 && selectedTrack < (int) project->tracks.size()
+           && project->tracks[(size_t) selectedTrack].type == TrackType::midi;
+}
+
+void MainComponent::deleteSelectedRegion()
+{
+    const auto sel = timeline.getRegionSelection();
+    if (! sel.isValid() || engine.isRecording())
+        return;
+    if (sel.track >= (int) project->tracks.size())
+        return;
+    auto& regions = project->tracks[(size_t) sel.track].midiRegions;
+    if (sel.region >= (int) regions.size())
+        return;
+
+    undoStack.begin (*project);
+    regions.erase (regions.begin() + sel.region);
+    timeline.clearSelection();
+    pushSnapshot();
+    setDirty (true);
+    timeline.refresh();
+}
+
+void MainComponent::performUndo()
+{
+    if (engine.isRecording())
+        return;
+    if (undoStack.undo (*project))
+        afterHistoryRestore();
+}
+
+void MainComponent::performRedo()
+{
+    if (engine.isRecording())
+        return;
+    if (undoStack.redo (*project))
+        afterHistoryRestore();
+}
+
+void MainComponent::afterHistoryRestore()
+{
+    timeline.clearSelection();
+    headers.rebuild();
+    selectTrack (selectedTrack); // 範囲内にクランプし直す
+    pushSnapshot();              // SynthBank も復元後のトラック構成に同期される
+    setDirty (true);
+    timeline.refresh();
+}
+
+void MainComponent::openPianoRoll (int trackIndex, int regionIndex)
+{
+    if (trackIndex < 0 || trackIndex >= (int) project->tracks.size())
+        return;
+    auto& track = project->tracks[(size_t) trackIndex];
+    if (regionIndex < 0 || regionIndex >= (int) track.midiRegions.size())
+        return;
+    auto& region = track.midiRegions[(size_t) regionIndex];
+
+    // 同じリージョンを再ダブルクリック → 閉じる（トグル）
+    if (pianoRoll.isShowingRegion (track.id, region.id))
+    {
+        closePianoRoll();
+        return;
+    }
+    pianoRoll.openRegion (track.id, region.id);
+    resized();
+}
+
+void MainComponent::closePianoRoll()
+{
+    if (! pianoRoll.isOpen())
+        return;
+    const auto trackId = pianoRoll.currentTrackId();
+    pianoRoll.close();
+    // プレビュー発音の残りを打ち消す（停止中のみ有効なコマンド）
+    if (! transport.isPlaying.load())
+        previewFifo.push ({ PreviewFifo::Command::Type::allNotesOff, trackId, 0, 0 });
+    resized();
 }
 
 void MainComponent::selectTrack (int index)
@@ -372,7 +522,8 @@ bool MainComponent::trySave()
 
     project->bpm = transport.bpm.load();
     juce::String error;
-    if (! project->save (error))
+    // undo/redo履歴が参照するWAVはGCから保護する（redoでの復元に備える）
+    if (! project->save (error, undoStack.referencedWavs()))
     {
         showAlert (jp (u8"保存に失敗しました"), error);
         return false;
@@ -397,7 +548,19 @@ void MainComponent::setDirty (bool nowDirty)
 
 void MainComponent::pushSnapshot()
 {
-    snapshots.push (project->buildSnapshot());
+    // MIDIトラックの音源を先に用意してから、スナップショットに参照を埋めて渡す。
+    // sampleRate 未確定の間は synth が null のまま（timerCallback の sync が確定後に再pushする）
+    synthBank.sync (*project, transport.sampleRate.load(), transport.blockSizeExpected.load());
+
+    auto snapshot = project->buildSnapshot();
+    for (size_t i = 0; i < project->tracks.size() && i < snapshot->tracks.size(); ++i)
+        if (project->tracks[i].type == TrackType::midi)
+            snapshot->tracks[i].synth = synthBank.get (project->tracks[i].id);
+
+    snapshots.push (std::move (snapshot));
+
+    // モデルが変わった可能性があるのでピアノロールも同期（対象リージョンが消えていれば閉じる）
+    pianoRoll.refreshFromModel();
 }
 
 // ---- キーボード ----
@@ -412,7 +575,39 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (key.getKeyCode() == juce::KeyPress::deleteKey
         || key.getKeyCode() == juce::KeyPress::backspaceKey)
     {
-        requestDeleteSelectedClip();
+        if (pianoRoll.isOpen() && pianoRoll.deleteSelectedNotes())
+            return true;
+        if (timeline.getRegionSelection().isValid())
+            deleteSelectedRegion();
+        else
+            requestDeleteSelectedClip();
+        return true;
+    }
+    // ピアノロールの選択ノートへのキー操作（Logic準拠: ↑↓=半音・⌥↑↓=オクターブ、⌘C/⌘V）
+    if (pianoRoll.isOpen() && ! engine.isRecording())
+    {
+        if (key == juce::KeyPress (juce::KeyPress::upKey, juce::ModifierKeys::altModifier, 0))
+            return pianoRoll.transposeSelection (12);
+        if (key == juce::KeyPress (juce::KeyPress::downKey, juce::ModifierKeys::altModifier, 0))
+            return pianoRoll.transposeSelection (-12);
+        if (key == juce::KeyPress (juce::KeyPress::upKey))
+            return pianoRoll.transposeSelection (1);
+        if (key == juce::KeyPress (juce::KeyPress::downKey))
+            return pianoRoll.transposeSelection (-1);
+        if (key == juce::KeyPress ('c', juce::ModifierKeys::commandModifier, 0))
+            return pianoRoll.copySelection();
+        if (key == juce::KeyPress ('v', juce::ModifierKeys::commandModifier, 0))
+            return pianoRoll.pasteAtPlayhead();
+    }
+    // Undo/Redo（構造編集のみ対象。⇧⌘Zを先に判定する）
+    if (key == juce::KeyPress ('z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0))
+    {
+        performRedo();
+        return true;
+    }
+    if (key == juce::KeyPress ('z', juce::ModifierKeys::commandModifier, 0))
+    {
+        performUndo();
         return true;
     }
     if (key == juce::KeyPress ('s', juce::ModifierKeys::commandModifier, 0))
@@ -422,7 +617,13 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     }
     if (key == juce::KeyPress ('a', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0))
     {
-        addTrack();
+        addTrack (TrackType::audio);
+        return true;
+    }
+    // Logic準拠: ⌘⌥S = ソフトウェア音源トラックを追加
+    if (key == juce::KeyPress ('s', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0))
+    {
+        addTrack (TrackType::midi);
         return true;
     }
     // Logic準拠: ⌘←/→ = 横ズームアウト/イン
@@ -503,6 +704,8 @@ void MainComponent::updateTransportButtons()
     recordButton.setColour (juce::TextButton::buttonColourId,
                             recording ? juce::Colours::darkred
                                       : getLookAndFeel().findColour (juce::TextButton::buttonColourId));
+    // MIDIトラック選択中は録音ボタン無効（録音停止としては常に押せる）
+    recordButton.setEnabled (recording || ! selectedTrackIsMidi());
 }
 
 void MainComponent::updatePositionLabel()
@@ -574,6 +777,9 @@ void MainComponent::resized()
 
     auto bottomRow = area.removeFromBottom (36).reduced (8, 4);
     addTrackButton.setBounds (bottomRow.removeFromLeft (TrackHeadersView::preferredWidth - 8));
+
+    if (pianoRoll.isOpen())
+        pianoRoll.setBounds (area.removeFromBottom (PianoRollView::preferredHeight));
 
     auto headerColumn = area.removeFromLeft (TrackHeadersView::preferredWidth);
     headerColumn.removeFromTop (TimelineView::rulerHeight); // ルーラー分の高さを合わせる

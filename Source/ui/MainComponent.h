@@ -3,12 +3,16 @@
 #include <memory>
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include "PianoRollView.h"
 #include "TimelineView.h"
 #include "TrackHeadersView.h"
 #include "../audio/PlaybackEngine.h"
+#include "../shared/PreviewFifo.h"
 #include "../shared/PlaybackSnapshot.h"
 #include "../shared/Project.h"
+#include "../shared/SynthBank.h"
 #include "../shared/TransportState.h"
+#include "../shared/UndoStack.h"
 
 // 1プロジェクト分のメイン画面。AudioAppComponent のオーディオコールバックは
 // PlaybackEngine（audio/）への転送だけを行い、ここに処理を書かない。
@@ -42,9 +46,17 @@ private:
     void seekByStep (int direction, bool wholeBar);  // ,/.キー: 1拍（Shiftで1小節）単位で再生ヘッドを移動
     void toggleMuteSelectedTrack();      // mキー
     void requestDeleteSelectedClip();
+    void deleteSelectedRegion();         // MIDIリージョンは確認なしで削除（undo可能なので）
     void requestDeleteTrack (int index);
-    void addTrack();
+    void showAddTrackMenu();
+    void addTrack (TrackType type);
     void selectTrack (int index);
+    bool selectedTrackIsMidi() const;
+    void performUndo();
+    void performRedo();
+    void afterHistoryRestore();          // undo/redo後のUI・スナップショット同期
+    void openPianoRoll (int trackIndex, int regionIndex);
+    void closePianoRoll();
     void showDeviceSettings();
     void applyBpmText();
     void pushSnapshot();
@@ -57,10 +69,14 @@ private:
     TransportState transport;
     SnapshotExchange snapshots;
     std::unique_ptr<Project> project;
-    PlaybackEngine engine { transport, snapshots };
+    SynthBank synthBank; // メッセージスレッド専用。MIDIトラックのGM音源を管理
+    UndoStack undoStack; // 構造編集のundo/redo（メッセージスレッド専用）
+    PreviewFifo previewFifo;
+    PlaybackEngine engine { transport, snapshots, previewFifo };
 
     TimelineView timeline { transport };
     TrackHeadersView headers;
+    PianoRollView pianoRoll { transport };
 
     juce::TextButton playButton, recordButton, addTrackButton, settingsButton;
     juce::ToggleButton clickButton;

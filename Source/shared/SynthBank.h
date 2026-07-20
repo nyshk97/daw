@@ -1,0 +1,35 @@
+#pragma once
+
+#include <map>
+
+#include "Project.h"
+
+// メッセージスレッド専用。トラックID → GM音源（DLSMusicDevice）インスタンスの対応を管理する。
+//
+// インスタンスの生成・破棄はここ（メッセージスレッド）でのみ行い、オーディオスレッドへは
+// PlaybackSnapshot の shared_ptr<SynthInstance> として渡す。楽器・サンプルレート変更は
+// インスタンスの差し替えで実現する（旧インスタンスは参照する全スナップショットの解放後に
+// deleteRetired() 経由で破棄されるため、レンダリング中の破棄は起きない）。
+class SynthBank
+{
+public:
+    // プロジェクトの現状（MIDIトラックの有無・楽器・サンプルレート）に合わせて
+    // インスタンスを生成・差し替え・破棄する。変更があれば true を返す
+    // （呼び出し側はスナップショットを再pushする）。sampleRate <= 0 の間は何もしない
+    bool sync (const Project& project, double sampleRate, int deviceBlockSize);
+
+    std::shared_ptr<SynthInstance> get (juce::uint64 trackId) const;
+
+private:
+    struct Entry
+    {
+        std::shared_ptr<SynthInstance> synth; // 生成失敗時はnullptrのまま保持（毎フレーム再試行しない）
+        int gmProgram = 0;
+        bool drums = false;
+    };
+
+    std::map<juce::uint64, Entry> entries;
+
+    static std::shared_ptr<SynthInstance> createSynth (int gmProgram, bool drums,
+                                                       double sampleRate, int blockSize);
+};

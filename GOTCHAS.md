@@ -15,6 +15,13 @@
 
 `Shift+,` は `KeyPress::getTextCharacter()` が `<` になる（レイアウト依存）。`switch (getTextCharacter())` で拾う場合は、素の文字＋`isShiftDown()` と、シフト後文字（`<` `>` 等）の両方のcaseを用意する。
 
+### AUホスティング（DLSMusicDevice）の落とし穴
+
+- **同期インスタンス化**: `AudioUnitPluginFormat::findAllTypesForFile (found, "AudioUnit:Synths/aumu,dls ,appl")` → `createInstanceFromDescription`（同期版）で取得できる。AUv2なのでメッセージスレッドから同期生成してよい。コンソール（テスト）から使うときは `ScopedJuceInitialiser_GUI` でMessageManagerを先に初期化する
+- **出力は2バス計4ch**: DLSは `getTotalNumOutputChannels() == 4`（ステレオ×2バス）を報告し、`disableNonMainBuses()` でも減らない。`processBlock` に渡すバッファのチャンネル数が足りないと `getWritePointer` のチャンネル範囲assertを踏む。**全チャンネル分のバッファを渡し、ミックスにはメインバスのch0/1だけを使う**
+- **プログラムチェンジは公開前に適用**: 生成直後（他スレッドから見えるようになる前）ならメッセージスレッドから `processBlock` を直接1回呼んでプログラムチェンジを流せる。楽器変更は既存インスタンスへのイベント送信でなくインスタンス差し替えにすると、発音中ノートの後始末（All Notes Off）そのものが不要になる
+- **AUの寿命はスナップショットの `shared_ptr` 共有で守る**: `ClipPlayback::audio` と同じパターン。オーディオスレッドは snapshot 内の参照を辿るだけ（shared_ptrのコピーはしない）。参照カウントの増減（構築・破棄）は必ずメッセージスレッド側（`buildSnapshot` / `deleteRetired`）で起きる
+
 ## オーディオコールバック内の禁止事項
 
 ### 前提: なぜ厳しいのか

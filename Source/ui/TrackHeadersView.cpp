@@ -1,6 +1,7 @@
 #include "TrackHeadersView.h"
 
 #include "TimelineView.h"
+#include "../shared/GmInstruments.h"
 
 // ---- TrackHeaderComponent -----------------------------------------------
 
@@ -11,12 +12,15 @@ TrackHeaderComponent::TrackHeaderComponent()
     addAndMakeVisible (muteButton);
     addAndMakeVisible (soloButton);
     addAndMakeVisible (volumeSlider);
+    addChildComponent (instrumentBox); // MIDIトラックのみ bind() で表示
 
     nameLabel.setEditable (false, true, false); // ダブルクリックでリネーム
     nameLabel.onTextChange = [this]
     {
-        if (track != nullptr)
+        if (track != nullptr && nameLabel.getText() != track->name)
         {
+            if (onWillChangeStructure)
+                onWillChangeStructure(); // リネームはundo対象（変更前の状態を積む）
             track->name = nameLabel.getText();
             if (onChanged)
                 onChanged();
@@ -63,8 +67,30 @@ TrackHeaderComponent::TrackHeaderComponent()
             onChanged();
     };
 
+    for (int i = 0; i < numGmInstruments; ++i)
+        instrumentBox.addItem (gmInstruments[i].name, i + 1); // idは楽器リストのindex+1
+    instrumentBox.onChange = [this]
+    {
+        const int index = instrumentBox.getSelectedId() - 1;
+        if (track == nullptr || index < 0 || index >= numGmInstruments)
+            return;
+        const auto& inst = gmInstruments[index];
+        if (track->gmProgram == inst.program && track->drums == inst.drums
+            && track->drumPitch == inst.fixedPitch)
+            return; // bind() による表示同期では発火させない
+
+        if (onWillChangeStructure)
+            onWillChangeStructure(); // 楽器変更もundo対象
+        track->gmProgram = inst.program;
+        track->drums = inst.drums;
+        track->drumPitch = inst.fixedPitch;
+        if (onInstrumentChanged)
+            onInstrumentChanged(); // pushSnapshot → SynthBank が音源を差し替える
+    };
+
     // Space（再生/停止）を奪わせない
-    for (auto* c : std::initializer_list<juce::Component*> { &deleteButton, &muteButton, &soloButton, &volumeSlider })
+    for (auto* c : std::initializer_list<juce::Component*> { &deleteButton, &muteButton, &soloButton,
+                                                            &volumeSlider, &instrumentBox })
     {
         c->setWantsKeyboardFocus (false);
         c->setMouseClickGrabsKeyboardFocus (false);
@@ -82,6 +108,17 @@ void TrackHeaderComponent::bind (Track* trackToBind, bool isSelected)
         muteButton.setToggleState (track->params->mute.load(), juce::dontSendNotification);
         soloButton.setToggleState (track->params->solo.load(), juce::dontSendNotification);
         volumeSlider.setValue (track->params->gain.load(), juce::dontSendNotification);
+
+        instrumentBox.setVisible (track->type == TrackType::midi);
+        if (track->type == TrackType::midi)
+        {
+            int matched = 0; // 一致が無ければ先頭（Piano）を表示
+            for (int i = 0; i < numGmInstruments; ++i)
+                if (gmInstruments[i].program == track->gmProgram && gmInstruments[i].drums == track->drums
+                    && gmInstruments[i].fixedPitch == track->drumPitch)
+                    { matched = i; break; }
+            instrumentBox.setSelectedId (matched + 1, juce::dontSendNotification);
+        }
     }
     repaint();
 }
@@ -114,6 +151,9 @@ void TrackHeaderComponent::resized()
     soloButton.setBounds (row2.removeFromLeft (26));
     row2.removeFromLeft (6);
     volumeSlider.setBounds (row2);
+
+    area.removeFromTop (4);
+    instrumentBox.setBounds (area.removeFromTop (22)); // MIDIトラックのみ表示（3行目）
 }
 
 void TrackHeaderComponent::mouseDown (const juce::MouseEvent&)
@@ -147,6 +187,8 @@ void TrackHeadersView::rebuild()
             header->onSelect = [this, i] { if (onSelect) onSelect (i); };
             header->onDeleteClicked = [this, i] { if (onDeleteRequested) onDeleteRequested (i); };
             header->onChanged = [this] { if (onChanged) onChanged(); };
+            header->onWillChangeStructure = [this] { if (onWillChangeStructure) onWillChangeStructure(); };
+            header->onInstrumentChanged = [this] { if (onInstrumentChanged) onInstrumentChanged(); };
             header->setBounds (0, i * TimelineView::trackHeight,
                                preferredWidth, TimelineView::trackHeight);
             container.addAndMakeVisible (*header);

@@ -4,6 +4,7 @@
 #include <memory>
 #include <vector>
 #include <juce_audio_basics/juce_audio_basics.h>
+#include <juce_audio_processors/juce_audio_processors.h>
 
 // トラックの音量・ミュート・ソロ。Trackモデル（メッセージスレッド）と
 // PlaybackSnapshot（オーディオスレッドが参照）が shared_ptr で共有する。
@@ -26,10 +27,39 @@ struct ClipPlayback
     juce::int64 startSample = 0;
 };
 
+// GM音源（DLSMusicDevice）1インスタンス＋オーディオスレッド専用の発音状態。
+// SynthBank（メッセージスレッド）が生成・所有し、スナップショットが shared_ptr で共有する。
+// 破棄は「参照する全スナップショットの解放後」＝ deleteRetired() 経由でメッセージスレッドのみで起きるため、
+// オーディオスレッドがレンダリング中のAUが消えることはない（ClipPlayback::audio と同じ寿命保証）。
+struct SynthInstance
+{
+    std::unique_ptr<juce::AudioPluginInstance> plugin;
+    int midiChannel = 1;            // ドラムキットは10
+    double preparedSampleRate = 0.0; // このレートで prepareToPlay 済み。デバイスと不一致ならレンダリングをスキップ
+    int preparedBlockSize = 0;
+    int totalOutputChannels = 2;    // processBlock に渡すべきチャンネル数（DLSは2バス計4ch）。ミックスはch0/1のみ
+
+    // ---- 以下はオーディオスレッド専用（メッセージスレッドは触らない）----
+    // ピッチごとの発音中ノート数。ノートオフの送出可否と、シーク/停止時の消音に使う
+    juce::uint8 soundingCount[128] = {};
+};
+
+// 再生用にフラット化したノート（リージョン相対→絶対PPQ変換・リージョン境界マスク適用済み）。startPpq昇順
+struct MidiNotePlayback
+{
+    juce::int64 startPpq = 0;
+    juce::int64 endPpq = 0; // マスク適用後の終了位置（絶対PPQ）
+    int pitch = 60;
+    int velocity = 100;
+};
+
 struct TrackPlayback
 {
+    juce::uint64 trackId = 0;                   // プレビューコマンドの宛先解決に使う
     std::shared_ptr<TrackParams> params;
-    std::vector<ClipPlayback> clips;
+    std::vector<ClipPlayback> clips;            // オーディオトラックのみ
+    std::shared_ptr<SynthInstance> synth;       // MIDIトラックのみ（未生成ならnullptr）
+    std::vector<MidiNotePlayback> notes;        // MIDIトラックのみ
 };
 
 struct PlaybackSnapshot
