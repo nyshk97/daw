@@ -420,7 +420,63 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         trySave();
         return true;
     }
+    if (key == juce::KeyPress ('a', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0))
+    {
+        addTrack();
+        return true;
+    }
+
+    // 修飾キーなしの1文字ショートカット（Logic準拠: ,/.でシーク、mでミュート、rで録音）
+    if (! key.getModifiers().testFlags (juce::ModifierKeys::commandModifier
+                                        | juce::ModifierKeys::ctrlModifier
+                                        | juce::ModifierKeys::altModifier))
+    {
+        switch (key.getTextCharacter())
+        {
+            case ',': seekByBar (-1); return true;
+            case '.': seekByBar (1); return true;
+            case 'm': toggleMuteSelectedTrack(); return true;
+            case 'r': toggleRecord(); return true;
+            default: break;
+        }
+    }
     return false;
+}
+
+void MainComponent::seekByBar (int direction)
+{
+    if (engine.isRecording())
+        return;
+
+    const double barLen = timeline.barLengthSamples();
+    const auto pos = juce::jmax ((juce::int64) 0, transport.playheadSamplePos.load());
+    auto bar = (juce::int64) std::floor ((double) pos / barLen);
+
+    if (direction > 0)
+    {
+        ++bar;
+    }
+    else
+    {
+        // 小節の途中なら小節頭へ、すでに小節頭なら前の小節へ
+        const auto barStart = (juce::int64) std::llround ((double) bar * barLen);
+        if ((double) (pos - barStart) < barLen * 0.01)
+            --bar;
+        bar = juce::jmax ((juce::int64) 0, bar);
+    }
+
+    transport.seekRequest.store ((juce::int64) std::llround ((double) bar * barLen));
+}
+
+void MainComponent::toggleMuteSelectedTrack()
+{
+    if (selectedTrack < 0 || selectedTrack >= (int) project->tracks.size())
+        return;
+
+    auto& params = *project->tracks[(size_t) selectedTrack].params;
+    params.mute.store (! params.mute.load());
+    headers.refreshValues();
+    setDirty (true);
 }
 
 // ---- 表示更新 ----

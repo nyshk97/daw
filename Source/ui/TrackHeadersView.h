@@ -48,6 +48,7 @@ public:
 
     void setProject (Project* p);
     void rebuild(); // トラックの追加・削除後に呼ぶ
+    void refreshValues(); // モデル側の値変更（キー操作でのミュート等）を表示に反映する
     void setSelectedTrack (int index);
     void setViewY (int y);
 

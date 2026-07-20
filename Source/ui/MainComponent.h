@@ -39,6 +39,8 @@ private:
     void toggleRecord();
     void startRecordingFlow();
     void finishRecording();
+    void seekByBar (int direction);      // ,/.キー: 小節単位で再生ヘッドを移動
+    void toggleMuteSelectedTrack();      // mキー
     void requestDeleteSelectedClip();
     void requestDeleteTrack (int index);
     void addTrack();

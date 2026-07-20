@@ -159,6 +159,11 @@ void TrackHeadersView::rebuild()
     refreshBindings();
 }
 
+void TrackHeadersView::refreshValues()
+{
+    refreshBindings();
+}
+
 void TrackHeadersView::setSelectedTrack (int index)
 {
     selectedTrack = index;
