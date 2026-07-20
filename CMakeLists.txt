@@ -23,10 +23,13 @@ juce_add_gui_app(daw
 
 target_sources(daw PRIVATE
     Source/Main.cpp
-    Source/audio/AudioEngine.cpp
+    Source/audio/PlaybackEngine.cpp
     Source/audio/Recorder.cpp
+    Source/shared/Project.cpp
     Source/ui/MainComponent.cpp
-    Source/ui/WaveformDisplay.cpp
+    Source/ui/ProjectChooserComponent.cpp
+    Source/ui/TimelineView.cpp
+    Source/ui/TrackHeadersView.cpp
 )
 
 target_include_directories(daw PRIVATE Source)

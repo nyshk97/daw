@@ -26,7 +26,7 @@ void Recorder::startRecording (const juce::File& file, double sampleRate)
         using Opts = juce::AudioFormatWriterOptions; // JUCE 8.0.9で導入されたAPI
 
         if (auto writer = wavFormat.createWriterFor (fileStream,
-                Opts{}.withSampleRate (sampleRate).withNumChannels (1).withBitsPerSample (16)))
+                Opts{}.withSampleRate (sampleRate).withNumChannels (1).withBitsPerSample (24)))
         {
             threadedWriter.reset (new juce::AudioFormatWriter::ThreadedWriter (
                 writer.release(), backgroundThread, 32768)); // 32768 = 内部FIFOのサンプル数
