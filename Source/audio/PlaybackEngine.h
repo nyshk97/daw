@@ -42,11 +42,13 @@ private:
     static constexpr int maxSynthChannels = 8;
 
     // MIDIトラックのAUレンダリングとイベント生成。オーディオスレッド専用。
-    // silenceFirst: 発音中ノートを全て止めてから始める（シーク・再生開始・停止エッジ）
-    // resound: 再生位置を跨いでいるノートを offset 0 で再発音（シーク・再生開始時）
+    // silenceTransport: 送信済みの再生ノートを止めてから始める（トランスポートエッジ＋スナップショット差し替え時）
+    // silenceAll: プレビュー発音も含めて全消音＋CC123（トランスポートエッジのみ。
+    //             スナップショット差し替え時は「ノート作成→プレビュー→push」の流れでプレビューを殺さないよう区別する）
+    // resound: 再生位置を跨いでいるノートを offset 0 で再発音（シーク・再生開始・差し替え時）
     void renderMidiTracks (PlaybackSnapshot& snapshot, juce::AudioBuffer<float>& buffer,
                            int startSample, int numSamples, juce::int64 pos,
-                           bool playing, bool silenceFirst, bool resound,
+                           bool playing, bool silenceTransport, bool silenceAll, bool resound,
                            double sr, double bpm, bool anySolo);
 
     TransportState& transport;
@@ -77,6 +79,11 @@ private:
     int numPreviewCommands = 0;
 
     bool prevPlaying = false;
+
+    // 再生中のノート編集（スナップショット差し替え）検出用。差し替え時は消音→跨ぎノート再発音で
+    // 「削除されたノートのオフが新スナップショットに存在せず鳴りっぱなし」になるのを防ぐ。
+    // 比較にしか使わない（参照はしない。旧スナップショットは解放済みの可能性がある）
+    const PlaybackSnapshot* lastSeenSnapshot = nullptr;
     juce::int64 lastBeatIndex = 0;
     double clickPhase = 0.0;
     double clickFreq = 880.0;

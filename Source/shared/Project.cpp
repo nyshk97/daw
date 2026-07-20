@@ -365,9 +365,10 @@ std::unique_ptr<PlaybackSnapshot> Project::buildSnapshot() const
                                                      note.velocity });
                 }
             }
-            std::sort (trackPlayback.notes.begin(), trackPlayback.notes.end(),
-                       [] (const MidiNotePlayback& a, const MidiNotePlayback& b)
-                       { return a.startPpq < b.startPpq; });
+            // stable_sort: 同時刻ノートの順序をリージョン/ノートの並びで決定的にする（イベント上限時の挙動を再現可能に）
+            std::stable_sort (trackPlayback.notes.begin(), trackPlayback.notes.end(),
+                              [] (const MidiNotePlayback& a, const MidiNotePlayback& b)
+                              { return a.startPpq < b.startPpq; });
         }
         snapshot->tracks.push_back (std::move (trackPlayback));
     }

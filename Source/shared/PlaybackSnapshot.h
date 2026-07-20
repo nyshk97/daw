@@ -40,8 +40,39 @@ struct SynthInstance
     int totalOutputChannels = 2;    // processBlock に渡すべきチャンネル数（DLSは2バス計4ch）。ミックスはch0/1のみ
 
     // ---- 以下はオーディオスレッド専用（メッセージスレッドは触らない）----
-    // ピッチごとの発音中ノート数。ノートオフの送出可否と、シーク/停止時の消音に使う
-    juce::uint8 soundingCount[128] = {};
+    // 「実際にノートオンを送った論理ノート」の追跡。ノートオフはこの配列に載っているものだけ送る。
+    // 上限超過で捨てたノートの終端が来ても誤ってオフを送らない（同ピッチの別ノートを止めない）ためと、
+    // 消音時のオフ送出数を maxActiveNotes に有界化するための仕組み。
+    // endPpq はフラット化済みノートの絶対終了PPQ（識別キー）。プレビュー発音は endPpq = -1
+    static constexpr int maxActiveNotes = 256;
+    struct ActiveNote
+    {
+        juce::int64 endPpq = 0;
+        int pitch = 0;
+    };
+    ActiveNote activeNotes[maxActiveNotes];
+    int numActiveNotes = 0;
+
+    bool addActive (juce::int64 endPpq, int pitch)
+    {
+        if (numActiveNotes >= maxActiveNotes)
+            return false; // 満杯ならノートオンごと諦める（呼び出し側はオンを送らない）
+        activeNotes[numActiveNotes++] = { endPpq, pitch };
+        return true;
+    }
+
+    int findActive (juce::int64 endPpq, int pitch) const
+    {
+        for (int i = 0; i < numActiveNotes; ++i)
+            if (activeNotes[i].pitch == pitch && activeNotes[i].endPpq == endPpq)
+                return i;
+        return -1;
+    }
+
+    void removeActive (int index)
+    {
+        activeNotes[index] = activeNotes[--numActiveNotes]; // swap-with-last（順序は不要）
+    }
 };
 
 // 再生用にフラット化したノート（リージョン相対→絶対PPQ変換・リージョン境界マスク適用済み）。startPpq昇順

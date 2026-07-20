@@ -522,32 +522,195 @@ void testPlaybackEngineMidi()
     // プレビュー発音: 停止中にFIFO経由でノートオン → 音が出る → 固定発音長（0.5秒）後に自動オフ
     auto synth = bank.get (20);
     expect (synth != nullptr, "synth取得");
+    const auto countActive = [&synth] (int pitch)
+    {
+        int count = 0;
+        if (synth != nullptr)
+            for (int i = 0; i < synth->numActiveNotes; ++i)
+                if (synth->activeNotes[i].pitch == pitch)
+                    ++count;
+        return count;
+    };
+
     previewFifo.push ({ PreviewFifo::Command::Type::noteOn, 20, 72, 100 });
     expect (processBlocks (10) > 0.001f, "停止中のプレビュー発音が鳴ること");
-    if (synth != nullptr)
-        expect (synth->soundingCount[72] == 1, "プレビュー中はsoundingCountが立つこと");
+    expect (countActive (72) == 1, "プレビュー中はactiveNotesに載ること");
     processBlocks (60); // 0.5秒（約43ブロック）を超えて回す → 自動ノートオフ
-    if (synth != nullptr)
-        expect (synth->soundingCount[72] == 0, "固定発音長の経過で自動ノートオフされること");
+    expect (countActive (72) == 0, "固定発音長の経過で自動ノートオフされること");
 
     // ペインを閉じたときの打ち消し（allNotesOff）
     previewFifo.push ({ PreviewFifo::Command::Type::noteOn, 20, 60, 100 });
     processBlocks (3);
     previewFifo.push ({ PreviewFifo::Command::Type::allNotesOff, 20, 0, 0 });
     processBlocks (3);
-    if (synth != nullptr)
-        expect (synth->soundingCount[60] == 0, "allNotesOffでプレビューが打ち消されること");
+    expect (countActive (60) == 0, "allNotesOffでプレビューが打ち消されること");
 
     // 再生中はプレビューコマンドを破棄する
     engine.play();
     processBlocks (2);
     previewFifo.push ({ PreviewFifo::Command::Type::noteOn, 20, 84, 100 });
     processBlocks (3);
-    if (synth != nullptr)
-        expect (synth->soundingCount[84] == 0, "再生中のプレビューは破棄されること");
+    expect (countActive (84) == 0, "再生中のプレビューは破棄されること");
     engine.stop();
     processBlocks (10);
 
+    snapshots.deleteRetired();
+}
+
+// ---- 再生中のノート編集: スナップショット差し替え時に消音→跨ぎノート再発音（鳴りっぱなし防止）----
+void testSnapshotSwapDuringPlayback()
+{
+    beginTest ("snapshot swap during playback");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+
+    TransportState transport;
+    SnapshotExchange snapshots;
+    PreviewFifo previewFifo;
+    PlaybackEngine engine (transport, snapshots, previewFifo);
+    engine.prepareToPlay (blockSize, sr);
+
+    Project project;
+    Track track;
+    track.id = 30;
+    track.type = TrackType::midi;
+    track.gmProgram = 48; // Strings（持続音）
+    MidiRegion region;
+    region.id = 31;
+    region.startPpq = 0;
+    region.lengthPpq = Ppq::ticksPerBar * 16;
+    region.notes.push_back ({ 32, 60, 0, Ppq::ticksPerBar * 16, 100 });
+    track.midiRegions.push_back (region);
+    project.tracks.push_back (std::move (track));
+
+    SynthBank bank;
+    bank.sync (project, sr, blockSize);
+    auto synth = bank.get (30);
+    expect (synth != nullptr, "synth取得");
+    const auto countActive = [&synth] (int pitch)
+    {
+        int count = 0;
+        if (synth != nullptr)
+            for (int i = 0; i < synth->numActiveNotes; ++i)
+                if (synth->activeNotes[i].pitch == pitch)
+                    ++count;
+        return count;
+    };
+    auto pushSnapshot = [&]
+    {
+        auto snapshot = project.buildSnapshot();
+        snapshot->tracks[0].synth = bank.get (30);
+        snapshots.push (std::move (snapshot));
+    };
+    pushSnapshot();
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    auto processBlocks = [&] (int count)
+    {
+        float magnitude = 0.0f;
+        for (int i = 0; i < count; ++i)
+        {
+            buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+            engine.process (info);
+            magnitude = juce::jmax (magnitude, buffer.getMagnitude (0, 0, blockSize));
+        }
+        return magnitude;
+    };
+
+    engine.play();
+    expect (processBlocks (20) > 0.001f, "ロングノートが鳴ること");
+    expect (countActive (60) == 1, "発音中はactiveNotesに載ること");
+
+    // 再生中にノートを削除（新スナップショットへ差し替え）→ 鳴りっぱなしにならない
+    project.tracks[0].midiRegions[0].notes.clear();
+    snapshots.deleteRetired();
+    pushSnapshot();
+    processBlocks (5);
+    expect (countActive (60) == 0, "再生中の削除で発音が止まること（鳴りっぱなし防止）");
+    processBlocks (200); // リリース減衰
+    expect (processBlocks (5) < 0.01f, "削除後は減衰して静かになること");
+
+    // 再生中にノートを戻す → 跨ぎノートとして再発音される
+    project.tracks[0].midiRegions[0].notes.push_back ({ 33, 60, 0, Ppq::ticksPerBar * 16, 100 });
+    snapshots.deleteRetired();
+    pushSnapshot();
+    expect (processBlocks (10) > 0.001f, "再生中の追加で跨ぎノートが再発音されること");
+    expect (countActive (60) == 1, "再発音後はactiveNotesに載ること");
+
+    engine.stop();
+    processBlocks (10);
+    snapshots.deleteRetired();
+}
+
+// ---- イベント上限超過: 捨てたノートの終端で同ピッチの別ノートを誤って止めない ----
+void testOverflowDoesNotKillOtherNotes()
+{
+    beginTest ("note-on overflow does not kill other notes");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+
+    TransportState transport;
+    SnapshotExchange snapshots;
+    PreviewFifo previewFifo;
+    PlaybackEngine engine (transport, snapshots, previewFifo);
+    engine.prepareToPlay (blockSize, sr);
+
+    // 1ブロック ≈ 22.3 tick（bpm120/44.1kHz）。全ノートをtick 0に置き、
+    // [A: pitch60ロング] → [フィラー1023個: pitch62・10tickの短ノート] → [C: pitch60・50tick]
+    // の順で上限1024を消費させ、Cのノートオンだけを捨てさせる（stable_sortで並び順は維持される）
+    Project project;
+    Track track;
+    track.id = 40;
+    track.type = TrackType::midi;
+    track.gmProgram = 48;
+    MidiRegion region;
+    region.id = 41;
+    region.startPpq = 0;
+    region.lengthPpq = Ppq::ticksPerBar * 16;
+    juce::uint64 nextNoteId = 100;
+    region.notes.push_back ({ nextNoteId++, 60, 0, Ppq::ticksPerBar * 8, 100 }); // A
+    for (int i = 0; i < 1023; ++i)
+        region.notes.push_back ({ nextNoteId++, 62, 0, 10, 100 });               // フィラー（ブロック内で完結）
+    region.notes.push_back ({ nextNoteId++, 60, 0, 50, 100 });                   // C（捨てられる・終端はブロック3）
+    track.midiRegions.push_back (std::move (region));
+    project.tracks.push_back (std::move (track));
+
+    SynthBank bank;
+    bank.sync (project, sr, blockSize);
+    auto synth = bank.get (40);
+    expect (synth != nullptr, "synth取得");
+    {
+        auto snapshot = project.buildSnapshot();
+        snapshot->tracks[0].synth = bank.get (40);
+        snapshots.push (std::move (snapshot));
+    }
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    auto processBlocks = [&] (int count)
+    {
+        for (int i = 0; i < count; ++i)
+        {
+            buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+            engine.process (info);
+        }
+    };
+
+    engine.play();
+    processBlocks (10); // Cの終端（50tick ≈ ブロック3）を確実に通過させる
+
+    expect (transport.midiOverflow.load(), "上限超過フラグが立つこと");
+    int activeAt60 = 0;
+    for (int i = 0; i < synth->numActiveNotes; ++i)
+        if (synth->activeNotes[i].pitch == 60)
+            ++activeAt60;
+    expect (activeAt60 == 1, "捨てたノートの終端で、送信済みの同ピッチノートが止められないこと");
+
+    engine.stop();
+    processBlocks (5);
     snapshots.deleteRetired();
 }
 
@@ -608,6 +771,8 @@ int main()
     testBuildSnapshotFlattensNotes();
     testSynthBank();
     testPlaybackEngineMidi();
+    testSnapshotSwapDuringPlayback();
+    testOverflowDoesNotKillOtherNotes();
     testDlsMusicDeviceRendersAudio();
 
     if (failureCount > 0)

@@ -19,8 +19,8 @@ void PlaybackEngine::prepareToPlay (int samplesPerBlockExpected, double sampleRa
     const int maxBlock = juce::jmax (4096, samplesPerBlockExpected);
     synthScratch.setSize (maxSynthChannels, maxBlock);
 
-    // ノートオン上限＋オフ（発音中は最大128ピッチ×count上限255だが実用上128個程度）＋All Notes Off。
-    // 1イベントあたりの格納コストは数バイト＋ヘッダなので、余裕を持って1イベント16バイト換算で確保
+    // ノートオン上限（1024）＋オフ（activeNotes追跡により最大 SynthInstance::maxActiveNotes = 256 に有界）
+    // ＋All Notes Off等。1イベントあたりの格納コストは数バイト＋ヘッダなので、1イベント16バイト換算で余裕を持って確保
     midiScratch.ensureSize ((size_t) (maxNoteOnsPerBlock * 2 + 512) * 16);
 }
 
@@ -85,6 +85,11 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
     // 停止中もスナップショットを取得する（MIDIはリリース余韻と停止エッジの消音のため常時レンダリング）
     auto* snapshot = snapshots.acquire();
 
+    // 再生中の編集（ノート削除等）でノートオフが失われて鳴りっぱなしになるのを防ぐため、
+    // スナップショットの差し替えを検出して消音→跨ぎノート再発音を行う（ポインタ比較のみ）
+    const bool snapshotChanged = snapshot != lastSeenSnapshot;
+    lastSeenSnapshot = snapshot;
+
     bool anySolo = false;
     if (snapshot != nullptr)
         for (auto& track : snapshot->tracks)
@@ -145,8 +150,9 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
     if (snapshot != nullptr)
         renderMidiTracks (*snapshot, buffer, startSample, numSamples, pos,
                           playing,
-                          startedOrSeeked || stoppedNow,      // silenceFirst
-                          playing && startedOrSeeked,         // resound
+                          startedOrSeeked || stoppedNow || snapshotChanged,   // silenceTransport
+                          startedOrSeeked || stoppedNow,                      // silenceAll
+                          playing && (startedOrSeeked || snapshotChanged),    // resound
                           sr, bpm, anySolo);
 
     // ---- クリック（カウントイン中は常に・それ以外はトグルON時のみ）----
@@ -195,7 +201,7 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
 // このブロックの処理中は生存が保証されている（生ポインタ参照のみ・コピーはしない）。
 void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, juce::AudioBuffer<float>& buffer,
                                        int startSample, int numSamples, juce::int64 pos,
-                                       bool playing, bool silenceFirst, bool resound,
+                                       bool playing, bool silenceTransport, bool silenceAll, bool resound,
                                        double sr, double bpm, bool anySolo)
 {
     const double tps = Ppq::ticksPerSample (bpm, sr);
@@ -220,18 +226,20 @@ void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, juce::AudioBu
         const int ch = synth->midiChannel;
         int noteOnsAdded = 0;
 
-        if (silenceFirst)
+        if (silenceTransport)
         {
-            // 発音中ノートを明示的に止める（All Notes Offを無視する音源への保険も兼ねて両方送る）
-            for (int pitch = 0; pitch < 128; ++pitch)
+            // 送信済みノートを明示的に止める（オフ数は maxActiveNotes に有界）。
+            // silenceAll でないとき（スナップショット差し替え）はプレビュー発音（endPpq==-1）を温存し、
+            // プレビューまで殺す CC123 も送らない
+            for (int i = synth->numActiveNotes - 1; i >= 0; --i)
             {
-                while (synth->soundingCount[pitch] > 0)
-                {
-                    midiScratch.addEvent (juce::MidiMessage::noteOff (ch, pitch), 0);
-                    --synth->soundingCount[pitch];
-                }
+                if (! silenceAll && synth->activeNotes[i].endPpq < 0)
+                    continue;
+                midiScratch.addEvent (juce::MidiMessage::noteOff (ch, synth->activeNotes[i].pitch), 0);
+                synth->removeActive (i);
             }
-            midiScratch.addEvent (juce::MidiMessage::allNotesOff (ch), 0);
+            if (silenceAll)
+                midiScratch.addEvent (juce::MidiMessage::allNotesOff (ch), 0); // 保険（追跡漏れがあっても止まる）
         }
 
         // ---- プレビュー発音（停止中のみ。オンはコマンド、オフは固定発音長の自動送出）----
@@ -248,25 +256,20 @@ void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, juce::AudioBu
 
                 if (command.type == PreviewFifo::Command::Type::noteOn)
                 {
-                    if (numPreviewNotes < maxPreviewNotes)
+                    const int pitch = juce::jlimit (0, 127, command.pitch);
+                    if (numPreviewNotes < maxPreviewNotes && synth->addActive (-1, pitch))
                     {
-                        midiScratch.addEvent (juce::MidiMessage::noteOn (ch, command.pitch,
+                        midiScratch.addEvent (juce::MidiMessage::noteOn (ch, pitch,
                                                                          (juce::uint8) juce::jlimit (1, 127, command.velocity)), 0);
-                        ++synth->soundingCount[juce::jlimit (0, 127, command.pitch)];
-                        previewNotes[numPreviewNotes++] = { command.trackId,
-                                                            juce::jlimit (0, 127, command.pitch),
-                                                            previewLength };
+                        previewNotes[numPreviewNotes++] = { command.trackId, pitch, previewLength };
                     }
                 }
                 else // allNotesOff（ピアノロールを閉じた等）
                 {
-                    for (int pitch = 0; pitch < 128; ++pitch)
+                    for (int i = synth->numActiveNotes - 1; i >= 0; --i)
                     {
-                        while (synth->soundingCount[pitch] > 0)
-                        {
-                            midiScratch.addEvent (juce::MidiMessage::noteOff (ch, pitch), 0);
-                            --synth->soundingCount[pitch];
-                        }
+                        midiScratch.addEvent (juce::MidiMessage::noteOff (ch, synth->activeNotes[i].pitch), 0);
+                        synth->removeActive (i);
                     }
                     midiScratch.addEvent (juce::MidiMessage::allNotesOff (ch), 0);
                     for (int n = numPreviewNotes - 1; n >= 0; --n)
@@ -284,10 +287,11 @@ void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, juce::AudioBu
                 note.samplesLeft -= numSamples;
                 if (note.samplesLeft <= 0)
                 {
-                    if (synth->soundingCount[note.pitch] > 0)
+                    const int index = synth->findActive (-1, note.pitch);
+                    if (index >= 0)
                     {
                         midiScratch.addEvent (juce::MidiMessage::noteOff (ch, note.pitch), 0);
-                        --synth->soundingCount[note.pitch];
+                        synth->removeActive (index);
                     }
                     previewNotes[n] = previewNotes[--numPreviewNotes];
                 }
@@ -296,16 +300,16 @@ void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, juce::AudioBu
 
         if (resound)
         {
-            // 再生位置を跨いでいるノートを offset 0 で再発音（シーク途中の持続音）
+            // 再生位置を跨いでいるノートを offset 0 で再発音（シーク途中・編集後の持続音）
             for (auto& note : track.notes)
             {
                 const double s = (double) note.startPpq;
                 if (s >= blockStartPpq)
                     break; // startPpq昇順なので以降は跨ぎ得ない
-                if ((double) note.endPpq > blockStartPpq && noteOnsAdded < maxNoteOnsPerBlock)
+                if ((double) note.endPpq > blockStartPpq && noteOnsAdded < maxNoteOnsPerBlock
+                    && synth->addActive (note.endPpq, note.pitch))
                 {
                     midiScratch.addEvent (juce::MidiMessage::noteOn (ch, note.pitch, (juce::uint8) note.velocity), 0);
-                    ++synth->soundingCount[note.pitch];
                     ++noteOnsAdded;
                 }
             }
@@ -320,14 +324,19 @@ void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, juce::AudioBu
                 if (s >= blockEndPpq)
                     break; // startPpq昇順なので以降は全てブロック外
 
-                // 過去に鳴らしたノートのオフ（同一オフセットではオンより先に並ぶよう、先に追加する）
-                if (s < blockStartPpq && e >= blockStartPpq && e < blockEndPpq
-                    && synth->soundingCount[note.pitch] > 0)
+                // 過去に鳴らしたノートのオフ。実際にオンを送ったもの（activeNotesに載っているもの）だけ送る。
+                // 上限超過で捨てたノートの終端で、同ピッチの別ノートを誤って止めないため。
+                // （同一オフセットではオンより先に並ぶよう、オンより先に追加する）
+                if (s < blockStartPpq && e >= blockStartPpq && e < blockEndPpq)
                 {
-                    const int offOffset = juce::jlimit (0, numSamples - 1,
-                                                        (int) ((juce::int64) std::llround (e / tps) - pos));
-                    midiScratch.addEvent (juce::MidiMessage::noteOff (ch, note.pitch), offOffset);
-                    --synth->soundingCount[note.pitch];
+                    const int index = synth->findActive (note.endPpq, note.pitch);
+                    if (index >= 0)
+                    {
+                        const int offOffset = juce::jlimit (0, numSamples - 1,
+                                                            (int) ((juce::int64) std::llround (e / tps) - pos));
+                        midiScratch.addEvent (juce::MidiMessage::noteOff (ch, note.pitch), offOffset);
+                        synth->removeActive (index);
+                    }
                 }
 
                 // このブロックで始まるノートのオン
@@ -335,25 +344,32 @@ void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, juce::AudioBu
                 {
                     if (noteOnsAdded >= maxNoteOnsPerBlock)
                     {
-                        // 上限超過: 新規ノートオンを対応オフごと捨てる（soundingCountを増やさないので
-                        // オフも送られない＝鳴りっぱなしは構造的に起きない）
+                        // 上限超過: 新規ノートオンを対応オフごと捨てる（activeNotesに載らないので
+                        // オフも送られない＝鳴りっぱなしも誤オフも構造的に起きない）
                         transport.midiOverflow.store (true);
                         continue;
                     }
 
                     const int onOffset = juce::jlimit (0, numSamples - 1,
                                                        (int) ((juce::int64) std::llround (s / tps) - pos));
-                    midiScratch.addEvent (juce::MidiMessage::noteOn (ch, note.pitch, (juce::uint8) note.velocity), onOffset);
-                    ++synth->soundingCount[note.pitch];
-                    ++noteOnsAdded;
 
-                    // ブロック内で終わる短いノートはオフも同時に予約
                     if (e < blockEndPpq)
                     {
+                        // ブロック内で終わる短いノートはオンとオフを同時に予約（activeNotes追跡は不要）
+                        midiScratch.addEvent (juce::MidiMessage::noteOn (ch, note.pitch, (juce::uint8) note.velocity), onOffset);
                         const int offOffset = juce::jlimit (onOffset, numSamples - 1,
                                                             (int) ((juce::int64) std::llround (e / tps) - pos));
                         midiScratch.addEvent (juce::MidiMessage::noteOff (ch, note.pitch), offOffset);
-                        --synth->soundingCount[note.pitch];
+                        ++noteOnsAdded;
+                    }
+                    else if (synth->addActive (note.endPpq, note.pitch))
+                    {
+                        midiScratch.addEvent (juce::MidiMessage::noteOn (ch, note.pitch, (juce::uint8) note.velocity), onOffset);
+                        ++noteOnsAdded;
+                    }
+                    else
+                    {
+                        transport.midiOverflow.store (true); // active枠が満杯: オンごと諦める
                     }
                 }
             }
