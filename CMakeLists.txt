@@ -55,12 +55,31 @@ target_link_libraries(daw
 )
 
 # ad-hoc 署名だとリビルドごとに cdhash が変わり、TCC のマイク許可が毎回リセットされる。
-# 安定した証明書で再署名して許可を永続化する（Apple Development: nyshk97@gmail.com）
-# 証明書は約1年で失効する。再発行したら `security find-identity -v -p codesigning` で
-# 新しいハッシュに差し替え、リビルド前後の `codesign -dr -` 一致で許可維持を確認すること
+# 安定した証明書で再署名して許可を永続化する。証明書ハッシュはマシンごと・更新ごとに異なるため
+# ハードコードせず、configure 時に keychain の Apple Development 証明書を自動解決する
+# （複数PCでの開発と年次の証明書更新に追従する。証明書を入れ替えたら configure の再実行で反映され、
+#  リビルド前後の `codesign -dr -` 一致で許可維持を確認できる）。
+# 明示指定したいときは -DDAW_CODESIGN_IDENTITY=<ハッシュ> で上書きする
+if(NOT DEFINED DAW_CODESIGN_IDENTITY)
+    execute_process(
+        COMMAND security find-identity -v -p codesigning
+        OUTPUT_VARIABLE _codesign_identities
+        ERROR_QUIET
+    )
+    string(REGEX MATCH "([0-9A-F]+) \"Apple Development" _codesign_match "${_codesign_identities}")
+    if(CMAKE_MATCH_1)
+        set(DAW_CODESIGN_IDENTITY "${CMAKE_MATCH_1}")
+        message(STATUS "Codesign identity: Apple Development (${DAW_CODESIGN_IDENTITY})")
+    else()
+        # 証明書の無いマシンでもビルドは通す（ad-hoc。TCC のマイク許可はリビルドごとにリセットされる）
+        set(DAW_CODESIGN_IDENTITY "-")
+        message(WARNING "Apple Development 証明書が見つからないため ad-hoc 署名にフォールバックします")
+    endif()
+endif()
+
 add_custom_command(TARGET daw POST_BUILD
     COMMAND codesign --force
-        --sign 7B158CF1876B7D0C89A173E85E33A2DC61196CB7
+        --sign "${DAW_CODESIGN_IDENTITY}"
         "$<TARGET_BUNDLE_DIR:daw>"
     COMMENT "Signing daw.app with stable identity for persistent TCC permissions"
 )
