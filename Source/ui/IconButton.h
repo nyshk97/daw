@@ -7,7 +7,7 @@
 class IconButton : public juce::Button
 {
 public:
-    enum class Icon { play, stop, record, metronome, gear };
+    enum class Icon { play, stop, record, metronome, gear, plus };
 
     IconButton (Icon initialIcon, const juce::String& accessibleName)
         : juce::Button (accessibleName), icon (initialIcon) {}
@@ -131,6 +131,19 @@ public:
                 rounded.addEllipse (juce::Rectangle<float> (rHole * 2.0f, rHole * 2.0f).withCentre (centre));
                 rounded.setUsingNonZeroWinding (false); // 中心の穴を抜くため偶奇塗り（rounded生成後に設定しないと消える）
                 g.fillPath (rounded);
+                break;
+            }
+            case Icon::plus:
+            {
+                const auto pr = r.reduced (side * 0.10f); // ＋は他アイコンより一回り控えめにする
+                const float stroke = juce::jmax (1.5f, side * 0.14f);
+                juce::Path p;
+                p.startNewSubPath (pr.getCentreX(), pr.getY());
+                p.lineTo (pr.getCentreX(), pr.getBottom());
+                p.startNewSubPath (pr.getX(), pr.getCentreY());
+                p.lineTo (pr.getRight(), pr.getCentreY());
+                g.strokePath (p, juce::PathStrokeType (stroke, juce::PathStrokeType::mitered,
+                                                       juce::PathStrokeType::rounded));
                 break;
             }
         }

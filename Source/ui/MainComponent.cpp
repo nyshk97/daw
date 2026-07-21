@@ -104,8 +104,8 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     recordButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff8e2a26));
     recordButton.onClick = [this] { toggleRecord(); };
 
-    addTrackButton.setButtonText (jp (u8"＋トラック"));
     addTrackButton.onClick = [this] { showAddTrackMenu(); };
+    addTrackButton.setTooltip (jp (u8"トラックを追加"));
 
     settingsButton.onClick = [this] { showDeviceSettings(); };
     settingsButton.setTooltip (jp (u8"オーディオ設定"));
@@ -936,14 +936,13 @@ void MainComponent::resized()
     topRow.removeFromRight (10);
     srWarningLabel.setBounds (topRow);
 
-    auto bottomRow = area.removeFromBottom (36).reduced (8, 4);
-    addTrackButton.setBounds (bottomRow.removeFromLeft (TrackHeadersView::preferredWidth - 8));
-
     if (pianoRoll.isOpen())
         pianoRoll.setBounds (area.removeFromBottom (PianoRollView::preferredHeight));
 
+    // ＋ボタンの帯はヘッダー列の中だけに置く（全幅に取るとタイムライン下に死にスペースができる）
     auto headerColumn = area.removeFromLeft (TrackHeadersView::preferredWidth);
     headerColumn.removeFromTop (TimelineView::rulerHeight); // ルーラー分の高さを合わせる
+    addTrackButton.setBounds (headerColumn.removeFromBottom (32).reduced (8, 4));
     headers.setBounds (headerColumn);
     timeline.setBounds (area);
 }

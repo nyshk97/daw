@@ -85,7 +85,7 @@ private:
     IconButton recordButton { IconButton::Icon::record, juce::String::fromUTF8 (u8"録音") };
     IconButton clickButton { IconButton::Icon::metronome, juce::String::fromUTF8 (u8"クリック") };
     IconButton settingsButton { IconButton::Icon::gear, juce::String::fromUTF8 (u8"オーディオ設定") };
-    juce::TextButton addTrackButton;
+    IconButton addTrackButton { IconButton::Icon::plus, juce::String::fromUTF8 (u8"トラックを追加") };
     juce::Label bpmCaption, bpmValue, positionLabel, srWarningLabel;
     juce::TooltipWindow tooltipWindow { this }; // アイコンのみのボタン（歯車等）のホバー説明用
 
