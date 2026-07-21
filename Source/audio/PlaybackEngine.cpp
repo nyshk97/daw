@@ -78,7 +78,6 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
 
     // ---- 入力（出力で上書きする前に消費する）----
     const float* input = buffer.getReadPointer (0, startSample);
-    transport.inputPeakLevel.store (buffer.getMagnitude (0, startSample, numSamples));
 
     const bool armed = transport.recordArmed.load();
     const juce::int64 punchIn = transport.punchInSample.load();

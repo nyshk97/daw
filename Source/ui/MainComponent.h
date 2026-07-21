@@ -89,9 +89,6 @@ private:
     juce::Label bpmCaption, bpmValue, positionLabel, srWarningLabel;
     juce::TooltipWindow tooltipWindow { this }; // アイコンのみのボタン（歯車等）のホバー説明用
 
-    juce::Rectangle<int> meterArea;
-    float meterLevel = 0.0f; // 描画用（メッセージスレッド専用）
-
     int selectedTrack = -1;
     bool dirty = false;
     bool focusGrabbed = false;

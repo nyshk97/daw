@@ -214,14 +214,12 @@ void MainComponent::timerCallback()
         }
     }
 
-    meterLevel = transport.inputPeakLevel.load();
     headers.updateMeters();
     updatePositionLabel();
     updateTransportButtons();
     updateSampleRateWarning();
     logDeviceIfChanged();
     pollAudioAnomalies();
-    repaint (meterArea);
 }
 
 void MainComponent::logDeviceIfChanged()
@@ -915,13 +913,6 @@ void MainComponent::updateSampleRateWarning()
 void MainComponent::paint (juce::Graphics& g)
 {
     g.fillAll (getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId));
-
-    // 入力レベルメーター（録音のゲイン確認用に1本だけ）
-    g.setColour (juce::Colours::darkgrey);
-    g.fillRect (meterArea);
-    g.setColour (meterLevel > 0.9f ? juce::Colours::red : juce::Colours::limegreen);
-    auto bar = meterArea;
-    g.fillRect (bar.removeFromLeft ((int) (juce::jmin (1.0f, meterLevel) * (float) meterArea.getWidth())));
 }
 
 void MainComponent::resized()
@@ -942,8 +933,6 @@ void MainComponent::resized()
     positionLabel.setBounds (topRow.removeFromLeft (140));
 
     settingsButton.setBounds (topRow.removeFromRight (44));
-    topRow.removeFromRight (10);
-    meterArea = topRow.removeFromRight (120).reduced (0, 6);
     topRow.removeFromRight (10);
     srWarningLabel.setBounds (topRow);
 

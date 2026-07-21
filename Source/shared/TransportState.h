@@ -25,7 +25,6 @@ struct TransportState
     // ---- オーディオ→UI ----
     std::atomic<double> sampleRate { 0.0 };           // prepareToPlay で確定した実サンプルレート
     std::atomic<int> blockSizeExpected { 0 };         // prepareToPlay で通知されたブロックサイズ（SynthBankの確保基準）
-    std::atomic<float> inputPeakLevel { 0.0f };       // 入力のピークレベル（メーター用）
     std::atomic<int> midiDroppedNoteOns { 0 };        // MIDIイベント上限超過で捨てたノートオン数。UIのTimerが集約ログして0に戻す
     std::atomic<int> recordDroppedBlocks { 0 };       // 録音FIFO満杯で捨てたブロック数。UIのTimerが集約ログして0に戻す
 
