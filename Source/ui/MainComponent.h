@@ -70,6 +70,7 @@ private:
     void updateTransportButtons();
     void updatePositionLabel();
     void updateSampleRateWarning();
+    void applyProjectSampleRate(); // デバイスSRをプロジェクトSRに自動で合わせる（Timerから。Logicと同じ挙動）
     void logDeviceIfChanged();   // デバイス名・SR・ブロックサイズの確定/変化をログ（Timerから）
     void pollAudioAnomalies();   // オーディオスレッドの異常atomicを回収し、まとめてログ（Timerから）
 
@@ -110,6 +111,10 @@ private:
     static constexpr int maxSeekKeyCodes = 4;
     int seekKeyCodes[maxSeekKeyCodes] = {};
     int numSeekKeyCodes = 0;
+
+    // デバイスSRのプロジェクトSR合わせは1デバイスにつき1回だけ試す
+    // （ユーザーが設定画面で手動変更したSRと戦わないため。デバイスが替わったらリセットして再適用）
+    bool projectRateApplied = false;
 
     // ログ用の前回値・集約カウンタ（メッセージスレッド専用）
     double loggedSampleRate = -1.0;

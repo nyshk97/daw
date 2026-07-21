@@ -228,9 +228,51 @@ void MainComponent::timerCallback()
     headers.updateMeters();
     updatePositionLabel();
     updateTransportButtons();
+    applyProjectSampleRate();
     updateSampleRateWarning();
     logDeviceIfChanged();
     pollAudioAnomalies();
+}
+
+void MainComponent::applyProjectSampleRate()
+{
+    if (projectRateApplied)
+        return;
+
+    auto* device = deviceManager.getCurrentAudioDevice();
+    if (device == nullptr)
+        return; // デバイス確定待ち。確定後のtickで再試行する
+
+    if (engine.isRecording())
+        return; // 録音中のデバイス再起動は避け、録音終了後のtickに回す
+
+    projectRateApplied = true;
+
+    // SR未確定の新規プロジェクトは最初の録音でデバイスレートに合わせて確定するので何もしない
+    if (project->sampleRate <= 0.0)
+        return;
+
+    if (std::abs (device->getCurrentSampleRate() - project->sampleRate) <= 0.5)
+        return;
+
+    bool supported = false;
+    for (auto rate : device->getAvailableSampleRates())
+        supported = supported || std::abs (rate - project->sampleRate) <= 0.5;
+    if (! supported)
+    {
+        // 合わせられないデバイスではSR不一致警告が出たままになる（従来挙動）
+        Log::warn ("audio.device.rate_unsupported", "name=" + device->getName()
+                                                        + " projectSr=" + juce::String (project->sampleRate, 0));
+        return;
+    }
+
+    auto setup = deviceManager.getAudioDeviceSetup();
+    setup.sampleRate = project->sampleRate;
+    const auto error = deviceManager.setAudioDeviceSetup (setup, true);
+    if (error.isNotEmpty())
+        Log::warn ("audio.device.rate_change_failed", "error=" + error);
+    else
+        Log::info ("audio.device.rate_change", "sr=" + juce::String (project->sampleRate, 0));
 }
 
 void MainComponent::logDeviceIfChanged()
@@ -244,6 +286,9 @@ void MainComponent::logDeviceIfChanged()
     if (juce::approximatelyEqual (sr, loggedSampleRate)
         && blockSize == loggedBlockSize && name == loggedDeviceName)
         return;
+
+    if (name != loggedDeviceName)
+        projectRateApplied = false; // 別デバイスに替わったらプロジェクトSR合わせをやり直す
 
     loggedSampleRate = sr;
     loggedBlockSize = blockSize;
