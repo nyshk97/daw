@@ -107,8 +107,9 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     addTrackButton.setButtonText (jp (u8"＋トラック"));
     addTrackButton.onClick = [this] { showAddTrackMenu(); };
 
-    settingsButton.setButtonText (jp (u8"デバイス設定"));
     settingsButton.onClick = [this] { showDeviceSettings(); };
+    settingsButton.setTooltip (jp (u8"オーディオ設定"));
+    settingsButton.setBorderless (true);
 
     clickButton.setClickingTogglesState (true); // ONで点灯（Logicのメトロノームボタン風）
     clickButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff4a6ea9));
@@ -783,6 +784,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         timeline.zoomBy (juce::MathConstants<double>::sqrt2);
         return true;
     }
+    // macOS標準: ⌘, = 設定（オーディオ設定ダイアログ）
+    if (key == juce::KeyPress (',', juce::ModifierKeys::commandModifier, 0))
+    {
+        showDeviceSettings();
+        return true;
+    }
 
     // Cmd/Ctrl/Optなしの1文字ショートカット（,/.=1拍シーク、Shift+,/.=1小節、mでミュート、rで録音）
     if (! key.getModifiers().testFlags (juce::ModifierKeys::commandModifier
@@ -934,7 +941,7 @@ void MainComponent::resized()
     topRow.removeFromLeft (14);
     positionLabel.setBounds (topRow.removeFromLeft (140));
 
-    settingsButton.setBounds (topRow.removeFromRight (110));
+    settingsButton.setBounds (topRow.removeFromRight (44));
     topRow.removeFromRight (10);
     meterArea = topRow.removeFromRight (120).reduced (0, 6);
     topRow.removeFromRight (10);

@@ -84,8 +84,10 @@ private:
     IconButton playButton { IconButton::Icon::play, juce::String::fromUTF8 (u8"再生") };
     IconButton recordButton { IconButton::Icon::record, juce::String::fromUTF8 (u8"録音") };
     IconButton clickButton { IconButton::Icon::metronome, juce::String::fromUTF8 (u8"クリック") };
-    juce::TextButton addTrackButton, settingsButton;
+    IconButton settingsButton { IconButton::Icon::gear, juce::String::fromUTF8 (u8"オーディオ設定") };
+    juce::TextButton addTrackButton;
     juce::Label bpmCaption, bpmValue, positionLabel, srWarningLabel;
+    juce::TooltipWindow tooltipWindow { this }; // アイコンのみのボタン（歯車等）のホバー説明用
 
     juce::Rectangle<int> meterArea;
     float meterLevel = 0.0f; // 描画用（メッセージスレッド専用）

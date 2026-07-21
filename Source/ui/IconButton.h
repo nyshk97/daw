@@ -7,7 +7,7 @@
 class IconButton : public juce::Button
 {
 public:
-    enum class Icon { play, stop, record, metronome };
+    enum class Icon { play, stop, record, metronome, gear };
 
     IconButton (Icon initialIcon, const juce::String& accessibleName)
         : juce::Button (accessibleName), icon (initialIcon) {}
@@ -30,11 +30,32 @@ public:
         }
     }
 
+    // 枠・背景を描かない（歯車など補助ボタン用）。ホバー/押下時だけ薄い背景で反応を示す
+    void setBorderless (bool shouldBeBorderless)
+    {
+        if (borderless != shouldBeBorderless)
+        {
+            borderless = shouldBeBorderless;
+            repaint();
+        }
+    }
+
     void paintButton (juce::Graphics& g, bool highlighted, bool down) override
     {
-        const auto bg = findColour (getToggleState() ? juce::TextButton::buttonOnColourId
-                                                     : juce::TextButton::buttonColourId);
-        getLookAndFeel().drawButtonBackground (g, *this, bg, highlighted, down);
+        if (borderless)
+        {
+            if (highlighted || down)
+            {
+                g.setColour (juce::Colours::white.withAlpha (down ? 0.10f : 0.06f));
+                g.fillRoundedRectangle (getLocalBounds().toFloat(), 6.0f);
+            }
+        }
+        else
+        {
+            const auto bg = findColour (getToggleState() ? juce::TextButton::buttonOnColourId
+                                                         : juce::TextButton::buttonColourId);
+            getLookAndFeel().drawButtonBackground (g, *this, bg, highlighted, down);
+        }
 
         g.setColour (isEnabled() ? iconColour : iconColour.withAlpha (0.35f));
 
@@ -79,11 +100,45 @@ public:
                             stroke);
                 break;
             }
+            case Icon::gear:
+            {
+                const auto centre = bounds.getCentre();
+                const float rOuter = side * 0.75f;
+                const float rBody  = side * 0.55f;
+                const float rHole  = side * 0.27f;
+                const int teeth = 8;
+                const float step = juce::MathConstants<float>::twoPi / (float) teeth;
+                const float half = step * 0.22f; // 歯の角度幅の半分
+
+                juce::Path p;
+                for (int i = 0; i < teeth; ++i)
+                {
+                    const float a = step * (float) i;
+                    auto pt = [&] (float radius, float angle)
+                    {
+                        return centre.getPointOnCircumference (radius, angle);
+                    };
+                    if (i == 0)
+                        p.startNewSubPath (pt (rOuter, a - half));
+                    else
+                        p.lineTo (pt (rOuter, a - half));
+                    p.lineTo (pt (rOuter, a + half));
+                    p.lineTo (pt (rBody, a + half * 1.9f));
+                    p.lineTo (pt (rBody, a + step - half * 1.9f));
+                }
+                p.closeSubPath();
+                auto rounded = p.createPathWithRoundedCorners (side * 0.06f);
+                rounded.addEllipse (juce::Rectangle<float> (rHole * 2.0f, rHole * 2.0f).withCentre (centre));
+                rounded.setUsingNonZeroWinding (false); // 中心の穴を抜くため偶奇塗り（rounded生成後に設定しないと消える）
+                g.fillPath (rounded);
+                break;
+            }
         }
     }
 
 private:
     Icon icon;
+    bool borderless = false;
     juce::Colour iconColour { juce::Colours::white.withAlpha (0.85f) };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (IconButton)
