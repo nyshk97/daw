@@ -20,6 +20,22 @@ sleep 3 && pgrep -fl "daw.app/Contents/MacOS/daw"   # プロセス生存確認
 - マイク権限のplist文言確認: `plutil -extract NSMicrophoneUsageDescription raw build/daw_artefacts/Debug/daw.app/Contents/Info.plist`
 - **リビルドするとマイク権限が再要求される**（ad-hoc署名でcdhashが変わるため）。ダイアログで許可し直す
 
+## アプリログでの裏取り
+
+操作がスクショで判別しにくいときは `~/Library/Logs/daw/` のセッションログを ground truth にする:
+
+```sh
+tail -20 ~/Library/Logs/daw/"$(ls -t ~/Library/Logs/daw | head -1)"   # 最新セッションのログ
+```
+
+- 1行 = `<ISO8601ミリ秒> LEVEL イベント名 key=value ...`。主なイベント:
+  `session.start/end`・`project.open/save/close`・`audio.device`（デバイス名/SR/ブロックサイズ）・
+  `transport.play/stop`・`record.start/stop/discard/start_failed`・`track.add/delete`・`edit.undo/redo` 等
+- **正常終了の確認**: 終了後にログ末尾が `session.end` であること
+- **異常終了の検知**: 次回起動時に `session.previous_abnormal` の WARN が出る（`pkill -9 -x daw` → 再起動で再現可能）
+- **エラー系の確認**: ダイアログ表示（`ui.alert`）・オーディオスレッドの異常（`audio.midi_overflow` / `audio.record_fifo_drop`、2秒集約）は ERROR/WARN で残る
+- ログはセッションごと1ファイル・新しい20世代のみ保持・1セッション1MiB上限
+
 ## CLI＋AppleScriptでの半自動確認
 
 JUCEアプリはAppleScriptの合成キーストローク・座標クリック（`click at`）が効かないが、

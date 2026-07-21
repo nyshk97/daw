@@ -64,6 +64,8 @@ private:
     void updateTransportButtons();
     void updatePositionLabel();
     void updateSampleRateWarning();
+    void logDeviceIfChanged();   // デバイス名・SR・ブロックサイズの確定/変化をログ（Timerから）
+    void pollAudioAnomalies();   // オーディオスレッドの異常atomicを回収し、まとめてログ（Timerから）
 
     // 宣言順 = 初期化順。engine は transport/snapshots への参照を取るので後に置く
     TransportState transport;
@@ -88,6 +90,14 @@ private:
     int selectedTrack = -1;
     bool dirty = false;
     bool focusGrabbed = false;
+
+    // ログ用の前回値・集約カウンタ（メッセージスレッド専用）
+    double loggedSampleRate = -1.0;
+    int loggedBlockSize = -1;
+    juce::String loggedDeviceName;
+    int pendingMidiDrops = 0;
+    int pendingRecordDrops = 0;
+    int anomalyFlushTicks = 0;
 
     // 録音中のクリップ情報（停止時にクリップ化する）
     juce::File pendingRecordFile;

@@ -1,7 +1,11 @@
 #include "SynthBank.h"
 
+#include "Log.h"
+
 namespace
 {
+juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
+
 // DLSMusicDevice（macOS内蔵GM音源）のJUCE形式識別子
 const char* const dlsIdentifier = "AudioUnit:Synths/aumu,dls ,appl";
 
@@ -71,6 +75,13 @@ std::shared_ptr<SynthInstance> SynthBank::get (juce::uint64 trackId) const
     return it != entries.end() ? it->second.synth : nullptr;
 }
 
+juce::StringArray SynthBank::takeCreateErrors()
+{
+    auto errors = std::move (pendingCreateErrors);
+    pendingCreateErrors.clear();
+    return errors;
+}
+
 std::shared_ptr<SynthInstance> SynthBank::createSynth (int gmProgram, bool drums,
                                                        double sampleRate, int blockSize)
 {
@@ -80,6 +91,8 @@ std::shared_ptr<SynthInstance> SynthBank::createSynth (int gmProgram, bool drums
     format.findAllTypesForFile (found, dlsIdentifier);
     if (found.isEmpty())
     {
+        Log::error ("synth.dls_not_found", juce::String ("identifier=") + dlsIdentifier);
+        pendingCreateErrors.add (jp (u8"GM音源（DLSMusicDevice）が見つかりませんでした。"));
         jassertfalse; // macOSなら常に見つかるはず
         return nullptr;
     }
@@ -87,7 +100,14 @@ std::shared_ptr<SynthInstance> SynthBank::createSynth (int gmProgram, bool drums
     juce::String error;
     auto plugin = format.createInstanceFromDescription (*found.getFirst(), sampleRate, blockSize, error);
     if (plugin == nullptr)
+    {
+        // 該当トラックは無音になる。sync() は失敗をキャッシュするので設定が変わるまで再試行されない
+        Log::error ("synth.create_failed", "error=" + error + " program=" + juce::String (gmProgram)
+                                               + " drums=" + juce::String ((int) drums)
+                                               + " sr=" + juce::String (sampleRate, 0));
+        pendingCreateErrors.add (jp (u8"GM音源を作成できませんでした（トラックは無音になります）: ") + error);
         return nullptr;
+    }
 
     auto synth = std::make_shared<SynthInstance>();
     synth->midiChannel = drums ? 10 : 1; // GM: ch10はドラムキット固定

@@ -75,7 +75,8 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
         // パンチイン位置をまたぐブロックは途中から書く
         const int offset = (int) juce::jmax ((juce::int64) 0, punchIn - pos);
         const float* channels[] = { input + offset };
-        recorder.write (channels, numSamples - offset);
+        if (! recorder.write (channels, numSamples - offset))
+            transport.recordDroppedBlocks.fetch_add (1); // FIFO満杯。録音WAVに欠落が生じている
         transport.recordedSamples.fetch_add (numSamples - offset);
     }
 
@@ -346,7 +347,7 @@ void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, juce::AudioBu
                     {
                         // 上限超過: 新規ノートオンを対応オフごと捨てる（activeNotesに載らないので
                         // オフも送られない＝鳴りっぱなしも誤オフも構造的に起きない）
-                        transport.midiOverflow.store (true);
+                        transport.midiDroppedNoteOns.fetch_add (1);
                         continue;
                     }
 
@@ -369,7 +370,7 @@ void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, juce::AudioBu
                     }
                     else
                     {
-                        transport.midiOverflow.store (true); // active枠が満杯: オンごと諦める
+                        transport.midiDroppedNoteOns.fetch_add (1); // active枠が満杯: オンごと諦める
                     }
                 }
             }

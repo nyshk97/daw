@@ -22,6 +22,12 @@
 - **プログラムチェンジは公開前に適用**: 生成直後（他スレッドから見えるようになる前）ならメッセージスレッドから `processBlock` を直接1回呼んでプログラムチェンジを流せる。楽器変更は既存インスタンスへのイベント送信でなくインスタンス差し替えにすると、発音中ノートの後始末（All Notes Off）そのものが不要になる
 - **AUの寿命はスナップショットの `shared_ptr` 共有で守る**: `ClipPlayback::audio` と同じパターン。オーディオスレッドは snapshot 内の参照を辿るだけ（shared_ptrのコピーはしない）。参照カウントの増減（構築・破棄）は必ずメッセージスレッド側（`buildSnapshot` / `deleteRetired`）で起きる
 
+### ログとクラッシュ処理の落とし穴
+
+- **`SystemStats::setApplicationCrashHandler` からログを書いてはならない**: JUCE 8.0.9 の実装は POSIX シグナルハンドラで、コールバック後に `::kill(getpid(), SIGKILL)` する（`juce_SystemStats.cpp`）。シグナル文脈での `FileLogger`（mutex・String確保・ファイルopen/write）や `getStackBacktrace()`（`backtrace_symbols` が malloc する）は未定義動作。**このプロジェクトでは使わない**。クラッシュのスタックトレースは macOS 標準の `~/Library/Logs/DiagnosticReports/*.ips` に任せ、自前ログ（`shared/Log.h`）は「直前に何をしていたか」の文脈提供に徹する
+- **`juce::FileLogger` は1メッセージごとにファイルを開閉し、タイムスタンプもセッション中のサイズ上限も付けない**: 常用ログには薄い自前実装（`shared/Log.cpp` の SessionLogger）を使う。`Logger::setCurrentLogger` は生ポインタ参照なので、shutdown では **`setCurrentLogger(nullptr)` を先に呼んでから logger を破棄**する
+- **オーディオスレッドの異常はatomicカウンタに載せてUIのTimerで集約ログする**: `transport.midiDroppedNoteOns` / `transport.recordDroppedBlocks` のパターン（boolフラグだと発生件数が数えられない。発生箇所で `fetch_add`、Timer側で `exchange(0)`）。`ThreadedWriter::write` は FIFO 満杯時に false を返すので録音ドロップもこれで拾える。連続発生に備えてログは2秒に1回・件数付き1行に抑える（`MainComponent::pollAudioAnomalies`）
+
 ## オーディオコールバック内の禁止事項
 
 ### 前提: なぜ厳しいのか

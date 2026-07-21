@@ -25,6 +25,7 @@ target_sources(daw PRIVATE
     Source/Main.cpp
     Source/audio/PlaybackEngine.cpp
     Source/audio/Recorder.cpp
+    Source/shared/Log.cpp
     Source/shared/Project.cpp
     Source/shared/SynthBank.cpp
     Source/ui/MainComponent.cpp
@@ -40,6 +41,8 @@ target_compile_definitions(daw PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_PLUGINHOST_AU=1
+    # メッセージループまで漏れた例外を unhandledException に届ける（ログしてからterminateする）
+    JUCE_CATCH_UNHANDLED_EXCEPTIONS=1
 )
 
 target_link_libraries(daw
@@ -60,6 +63,7 @@ target_sources(daw_tests PRIVATE
     Tests/TestsMain.cpp
     Source/audio/PlaybackEngine.cpp
     Source/audio/Recorder.cpp
+    Source/shared/Log.cpp
     Source/shared/Project.cpp
     Source/shared/SynthBank.cpp
 )

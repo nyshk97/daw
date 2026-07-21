@@ -45,6 +45,7 @@ open build/daw_artefacts/Debug/daw.app
 - JUCEは`CMakeLists.txt`で **8.0.9 に pin** 済み。GOTCHAS.mdの`createWriterFor`（`AudioFormatWriterOptions`版）が実在することは`build/_deps/juce-src/modules/juce_audio_formats/format/juce_AudioFormat.h`で照合済み。**バージョンを上げるときは再照合すること**
 - プロジェクトの置き場所: `~/Music/daw/<プロジェクト名>/`（project.json＋`clip-NNN.wav`）
 - 録音フォーマット: モノラル24bit WAV。サンプルレートはデバイスに追従し project.json に記録
+- アプリログ: `~/Library/Logs/daw/`（セッションごと1ファイル）。不具合調査・動作確認の裏取りはまずここを見る（`shared/Log.h`。オーディオスレッドからは呼ばない）
 
 ## ディレクトリ構成方針
 

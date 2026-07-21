@@ -1,5 +1,7 @@
+#include <exception>
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "shared/Log.h"
 #include "ui/MainComponent.h"
 #include "ui/ProjectChooserComponent.h"
 
@@ -17,12 +19,26 @@ public:
 
     void initialise (const juce::String&) override
     {
+        Log::init (getApplicationVersion());
         mainWindow = std::make_unique<MainWindow>();
     }
 
     void shutdown() override
     {
         mainWindow.reset();
+        Log::shutdown();
+    }
+
+    // JUCE_CATCH_UNHANDLED_EXCEPTIONS=1 でメッセージループまで漏れた例外がここに届く。
+    // ログを残した上でterminateし、OS標準のクラッシュレポート（.ips）も生成させる
+    void unhandledException (const std::exception* e,
+                             const juce::String& sourceFilename,
+                             int lineNumber) override
+    {
+        Log::error ("app.unhandled_exception",
+                    juce::String ("what=") + (e != nullptr ? e->what() : "(unknown)")
+                        + " source=" + sourceFilename + ":" + juce::String (lineNumber));
+        std::terminate();
     }
 
     void systemRequestedQuit() override

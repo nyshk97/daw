@@ -20,6 +20,11 @@ public:
 
     std::shared_ptr<SynthInstance> get (juce::uint64 trackId) const;
 
+    // 生成失敗のユーザー向けメッセージを取り出す（取り出したら空になる）。
+    // 失敗はキャッシュされ再試行されないため、1回の失敗につき1件だけ入る。
+    // 呼び出し側（MainComponentのTimer）がダイアログ表示に使う
+    juce::StringArray takeCreateErrors();
+
 private:
     struct Entry
     {
@@ -29,7 +34,8 @@ private:
     };
 
     std::map<juce::uint64, Entry> entries;
+    juce::StringArray pendingCreateErrors;
 
-    static std::shared_ptr<SynthInstance> createSynth (int gmProgram, bool drums,
-                                                       double sampleRate, int blockSize);
+    std::shared_ptr<SynthInstance> createSynth (int gmProgram, bool drums,
+                                                double sampleRate, int blockSize);
 };

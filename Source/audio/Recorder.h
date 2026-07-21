@@ -13,12 +13,13 @@ public:
     ~Recorder();
 
     // ---- メッセージスレッド専用 ----
-    void startRecording (const juce::File& file, double sampleRate);
+    void startRecording (const juce::File& file, double sampleRate); // 失敗理由はここでログする
     void stop();
     bool isRecording() const;
 
     // ---- オーディオスレッド専用 ----
-    void write (const float* const* inputChannelData, int numSamples);
+    // false = FIFO満杯でこのブロックを捨てた（呼び出し側がatomicに計上し、UI側で集約ログする）
+    bool write (const float* const* inputChannelData, int numSamples);
 
 private:
     juce::TimeSliceThread backgroundThread { "Audio Recorder Thread" };

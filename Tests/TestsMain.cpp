@@ -702,7 +702,7 @@ void testOverflowDoesNotKillOtherNotes()
     engine.play();
     processBlocks (10); // Cの終端（50tick ≈ ブロック3）を確実に通過させる
 
-    expect (transport.midiOverflow.load(), "上限超過フラグが立つこと");
+    expect (transport.midiDroppedNoteOns.load() > 0, "上限超過で捨てたノートオンが計上されること");
     int activeAt60 = 0;
     for (int i = 0; i < synth->numActiveNotes; ++i)
         if (synth->activeNotes[i].pitch == 60)

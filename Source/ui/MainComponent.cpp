@@ -2,12 +2,16 @@
 
 #include <cmath>
 
+#include "../shared/Log.h"
+
 namespace
 {
 juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
 
+// ユーザーに見せるエラーは必ずログにも残す（ダイアログは閉じたら消えるため）
 void showAlert (const juce::String& title, const juce::String& message)
 {
+    Log::error ("ui.alert", "title=" + title + " message=" + message.replace ("\n", " / "));
     juce::NativeMessageBox::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
                                                  title, message);
 }
@@ -17,6 +21,10 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     : project (std::move (projectToOpen))
 {
     jassert (project != nullptr);
+    Log::info ("project.open", "name=" + project->name()
+                                   + " tracks=" + juce::String ((int) project->tracks.size())
+                                   + " bpm=" + juce::String (project->bpm)
+                                   + " sr=" + juce::String (project->sampleRate, 0));
     transport.bpm.store (project->bpm);
 
     addAndMakeVisible (timeline);
@@ -47,6 +55,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     timeline.onWillEditModel = [this] { undoStack.begin (*project); };
     timeline.onModelEdited = [this]
     {
+        Log::info ("edit.timeline"); // 操作確定時（mouseUp等）に1回だけ来る
         pushSnapshot();
         setDirty (true);
         timeline.refresh();
@@ -55,6 +64,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     pianoRoll.onWillEditModel = [this] { undoStack.begin (*project); };
     pianoRoll.onModelEdited = [this]
     {
+        Log::info ("edit.pianoroll"); // 操作確定時（mouseUp等）に1回だけ来る
         pushSnapshot();
         setDirty (true);
         timeline.refresh(); // リージョンのノートミニチュアを更新
@@ -77,6 +87,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     headers.onWillChangeStructure = [this] { undoStack.begin (*project); };
     headers.onInstrumentChanged = [this]
     {
+        Log::info ("track.instrument");
         pushSnapshot(); // SynthBank が楽器変更を検知して音源を差し替える
         setDirty (true);
     };
@@ -131,6 +142,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
 
 MainComponent::~MainComponent()
 {
+    Log::info ("project.close", "name=" + project->name() + " dirty=" + juce::String ((int) dirty));
     // engine・snapshots より先にオーディオコールバックを止める
     shutdownAudio();
 }
@@ -168,11 +180,60 @@ void MainComponent::timerCallback()
     if (synthBank.sync (*project, transport.sampleRate.load(), transport.blockSizeExpected.load()))
         pushSnapshot();
 
+    // 音源生成の失敗をユーザーに通知（失敗はキャッシュされるので1件につき1回だけ出る）
+    for (const auto& error : synthBank.takeCreateErrors())
+        showAlert (jp (u8"ソフトウェア音源エラー"), error);
+
     meterLevel = transport.inputPeakLevel.load();
     updatePositionLabel();
     updateTransportButtons();
     updateSampleRateWarning();
+    logDeviceIfChanged();
+    pollAudioAnomalies();
     repaint (meterArea);
+}
+
+void MainComponent::logDeviceIfChanged()
+{
+    // 起動ヘッダの後段: デバイス情報は prepareToPlay 後にしか確定しないため、ここで確定/変化を拾う
+    const double sr = transport.sampleRate.load();
+    const int blockSize = transport.blockSizeExpected.load();
+    auto* device = deviceManager.getCurrentAudioDevice();
+    const auto name = device != nullptr ? device->getName() : juce::String();
+
+    if (juce::approximatelyEqual (sr, loggedSampleRate)
+        && blockSize == loggedBlockSize && name == loggedDeviceName)
+        return;
+
+    loggedSampleRate = sr;
+    loggedBlockSize = blockSize;
+    loggedDeviceName = name;
+    Log::info ("audio.device", "name=" + (name.isEmpty() ? "(none)" : name)
+                                   + " sr=" + juce::String (sr, 0)
+                                   + " blockSize=" + juce::String (blockSize));
+}
+
+void MainComponent::pollAudioAnomalies()
+{
+    // オーディオスレッドはログを書けないので、atomic経由で受け取りここで集約する。
+    // 連続発生してもログは2秒に1回・件数付きの1行に抑える
+    pendingMidiDrops += transport.midiDroppedNoteOns.exchange (0);
+    pendingRecordDrops += transport.recordDroppedBlocks.exchange (0);
+
+    if (++anomalyFlushTicks < 60) // 30Hz × 60 = 2秒
+        return;
+    anomalyFlushTicks = 0;
+
+    if (pendingMidiDrops > 0)
+    {
+        Log::warn ("audio.midi_overflow", "droppedNoteOns=" + juce::String (pendingMidiDrops));
+        pendingMidiDrops = 0;
+    }
+    if (pendingRecordDrops > 0)
+    {
+        Log::warn ("audio.record_fifo_drop", "blocks=" + juce::String (pendingRecordDrops));
+        pendingRecordDrops = 0;
+    }
 }
 
 // ---- 再生・録音 ----
@@ -180,11 +241,19 @@ void MainComponent::timerCallback()
 void MainComponent::togglePlay()
 {
     if (engine.isRecording())
+    {
         finishRecording();
+    }
     else if (transport.isPlaying.load())
+    {
         engine.stop();
+        Log::info ("transport.stop", "pos=" + juce::String (transport.playheadSamplePos.load()));
+    }
     else
+    {
+        Log::info ("transport.play", "pos=" + juce::String (transport.playheadSamplePos.load()));
         engine.play();
+    }
     updateTransportButtons();
 }
 
@@ -241,9 +310,14 @@ void MainComponent::startRecordingFlow()
     if (! engine.startRecording (pendingRecordFile, punchIn,
                                  (juce::int64) std::llround (barLen), deviceRate))
     {
+        // 失敗理由は Recorder::startRecording が record.start_failed としてログ済み
         showAlert (jp (u8"録音できません"), jp (u8"録音ファイルを作成できませんでした。"));
         return;
     }
+    Log::info ("record.start", "file=" + pendingRecordFile.getFileName()
+                                   + " track=" + juce::String (selectedTrack)
+                                   + " punchIn=" + juce::String (punchIn)
+                                   + " sr=" + juce::String (deviceRate, 0));
     updateTransportButtons();
 }
 
@@ -257,10 +331,14 @@ void MainComponent::finishRecording()
     if (recordedLength <= 0)
     {
         // カウントイン中に止めた等、何も録れていない
+        Log::info ("record.discard", "file=" + pendingRecordFile.getFileName());
         pendingRecordFile.deleteFile();
     }
     else
     {
+        // timelineSamples = タイムライン上の録音区間長。FIFO drop があると実WAVはこれより短い
+        Log::info ("record.stop", "file=" + pendingRecordFile.getFileName()
+                                      + " timelineSamples=" + juce::String (recordedLength));
         Clip clip;
         clip.fileName = pendingRecordFile.getFileName();
         clip.startSample = pendingPunchIn;
@@ -312,6 +390,8 @@ void MainComponent::requestDeleteSelectedClip()
             if (sel.clip >= (int) clips.size())
                 return;
 
+            Log::info ("clip.delete", "track=" + juce::String (sel.track)
+                                          + " file=" + clips[(size_t) sel.clip].fileName);
             undoStack.begin (*project);
             clips.erase (clips.begin() + sel.clip);
             timeline.clearSelection();
@@ -339,6 +419,7 @@ void MainComponent::requestDeleteTrack (int index)
             if (result != 0 || index >= (int) project->tracks.size())
                 return;
 
+            Log::info ("track.delete", "name=" + project->tracks[(size_t) index].name);
             undoStack.begin (*project);
             project->tracks.erase (project->tracks.begin() + index);
             timeline.clearSelection();
@@ -373,6 +454,7 @@ void MainComponent::addTrack (TrackType type)
     if (engine.isRecording())
         return;
 
+    Log::info ("track.add", juce::String ("type=") + (type == TrackType::midi ? "midi" : "audio"));
     undoStack.begin (*project);
 
     Track track;
@@ -406,6 +488,7 @@ void MainComponent::deleteSelectedRegion()
     if (sel.region >= (int) regions.size())
         return;
 
+    Log::info ("region.delete", "track=" + juce::String (sel.track));
     undoStack.begin (*project);
     regions.erase (regions.begin() + sel.region);
     timeline.clearSelection();
@@ -419,7 +502,10 @@ void MainComponent::performUndo()
     if (engine.isRecording())
         return;
     if (undoStack.undo (*project))
+    {
+        Log::info ("edit.undo");
         afterHistoryRestore();
+    }
 }
 
 void MainComponent::performRedo()
@@ -427,7 +513,10 @@ void MainComponent::performRedo()
     if (engine.isRecording())
         return;
     if (undoStack.redo (*project))
+    {
+        Log::info ("edit.redo");
         afterHistoryRestore();
+    }
 }
 
 void MainComponent::afterHistoryRestore()
@@ -507,6 +596,7 @@ void MainComponent::applyBpmText()
         bpmValue.setText (juce::String (transport.bpm.load()), juce::dontSendNotification);
         return;
     }
+    Log::info ("project.bpm", "value=" + juce::String (value));
     transport.bpm.store (value);
     project->bpm = value;
     setDirty (true);
@@ -528,6 +618,7 @@ bool MainComponent::trySave()
         showAlert (jp (u8"保存に失敗しました"), error);
         return false;
     }
+    Log::info ("project.save", "name=" + project->name());
     setDirty (false);
     return true;
 }

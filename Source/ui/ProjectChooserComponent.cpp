@@ -1,5 +1,7 @@
 #include "ProjectChooserComponent.h"
 
+#include "../shared/Log.h"
+
 namespace
 {
 juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
@@ -94,14 +96,20 @@ void ProjectChooserComponent::openRow (int row)
 
     if (project == nullptr)
     {
+        Log::error ("project.load_failed", "dir=" + projectDirs[row].getFullPathName()
+                                               + " error=" + error);
         errorLabel.setText (error, juce::dontSendNotification);
         return;
     }
 
     if (! warnings.isEmpty())
+    {
+        Log::warn ("project.load_warnings", "dir=" + projectDirs[row].getFullPathName()
+                                                + " " + warnings.joinIntoString (" / "));
         juce::NativeMessageBox::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
                                                      jp (u8"読み込み時の警告"),
                                                      warnings.joinIntoString ("\n"));
+    }
 
     if (onProjectOpened)
         onProjectOpened (std::move (project));
@@ -120,9 +128,11 @@ void ProjectChooserComponent::createNewProject()
     auto project = Project::createNew (Project::projectsRoot().getChildFile (name), error);
     if (project == nullptr)
     {
+        Log::error ("project.create_failed", "name=" + name + " error=" + error);
         errorLabel.setText (error, juce::dontSendNotification);
         return;
     }
+    Log::info ("project.create", "name=" + name);
 
     if (onProjectOpened)
         onProjectOpened (std::move (project));
