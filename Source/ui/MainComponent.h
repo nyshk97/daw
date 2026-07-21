@@ -43,7 +43,7 @@ private:
     void toggleRecord();
     void startRecordingFlow();
     void finishRecording();
-    void seekByStep (int direction, bool wholeBar);  // ,/.キー: 1拍（Shiftで1小節）単位で再生ヘッドを移動
+    void seekByStep (int direction, bool wholeBar, int keyCode);  // ,/.キー: 1拍（Shiftで1小節）単位で再生ヘッドを移動
     void toggleMuteSelectedTrack();      // mキー
     void requestDeleteSelectedClip();
     void deleteSelectedRegion();         // MIDIリージョンは確認なしで削除（undo可能なので）
@@ -90,6 +90,15 @@ private:
     int selectedTrack = -1;
     bool dirty = false;
     bool focusGrabbed = false;
+
+    // 再生中の ,/. シークは一時停止し、キーが離れて少し経ってから自動再開する（timerCallbackで判定）。
+    // 押下継続の判定は文字でなくkeyPressedで受けたキーコードで行う（非US配列で<>に化けても追跡できるように）。
+    // ,と.の同時押しでも取りこぼさないよう、再開待ち中に認識したキーコードを全部保持する
+    bool seekResumePending = false;
+    juce::uint32 lastSeekKeyMs = 0;
+    static constexpr int maxSeekKeyCodes = 4;
+    int seekKeyCodes[maxSeekKeyCodes] = {};
+    int numSeekKeyCodes = 0;
 
     // ログ用の前回値・集約カウンタ（メッセージスレッド専用）
     double loggedSampleRate = -1.0;

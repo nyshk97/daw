@@ -184,6 +184,26 @@ void MainComponent::timerCallback()
     for (const auto& error : synthBank.takeCreateErrors())
         showAlert (jp (u8"ソフトウェア音源エラー"), error);
 
+    // ,/. シークによる一時停止からの自動再開。いずれかのシークキーが押されている間（リピート中）は待ち続ける
+    if (seekResumePending)
+    {
+        bool anyKeyDown = false;
+        for (int i = 0; i < numSeekKeyCodes; ++i)
+            anyKeyDown = anyKeyDown || juce::KeyPress::isKeyCurrentlyDown (seekKeyCodes[i]);
+
+        if (anyKeyDown)
+        {
+            lastSeekKeyMs = juce::Time::getMillisecondCounter();
+        }
+        else if (juce::Time::getMillisecondCounter() - lastSeekKeyMs >= 200)
+        {
+            seekResumePending = false;
+            numSeekKeyCodes = 0;
+            Log::info ("transport.seek_resume", "pos=" + juce::String (transport.playheadSamplePos.load()));
+            engine.play();
+        }
+    }
+
     meterLevel = transport.inputPeakLevel.load();
     updatePositionLabel();
     updateTransportButtons();
@@ -244,6 +264,13 @@ void MainComponent::togglePlay()
     {
         finishRecording();
     }
+    else if (seekResumePending)
+    {
+        // シーク後の再開待ち中は見かけ上「再生中」なので、spaceは停止として扱う
+        seekResumePending = false;
+        numSeekKeyCodes = 0;
+        Log::info ("transport.stop", "pos=" + juce::String (transport.playheadSamplePos.load()));
+    }
     else if (transport.isPlaying.load())
     {
         engine.stop();
@@ -267,6 +294,9 @@ void MainComponent::toggleRecord()
 
 void MainComponent::startRecordingFlow()
 {
+    seekResumePending = false; // 録音はカウントイン込みで自前のトランスポート制御を行う
+    numSeekKeyCodes = 0;
+
     if (selectedTrack < 0 || selectedTrack >= (int) project->tracks.size())
     {
         showAlert (jp (u8"録音できません"), jp (u8"録音先のトラックがありません。トラックを追加してください。"));
@@ -737,10 +767,10 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         const bool shift = key.getModifiers().isShiftDown();
         switch (key.getTextCharacter())
         {
-            case ',': seekByStep (-1, shift); return true;
-            case '.': seekByStep (1, shift); return true;
-            case '<': seekByStep (-1, true); return true;   // Shift+,/. はレイアウトにより <> になる
-            case '>': seekByStep (1, true); return true;
+            case ',': seekByStep (-1, shift, key.getKeyCode()); return true;
+            case '.': seekByStep (1, shift, key.getKeyCode()); return true;
+            case '<': seekByStep (-1, true, key.getKeyCode()); return true;   // Shift+,/. はレイアウトにより <> になる
+            case '>': seekByStep (1, true, key.getKeyCode()); return true;
             case 'm': toggleMuteSelectedTrack(); return true;
             case 'r': toggleRecord(); return true;
             default: break;
@@ -749,10 +779,27 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     return false;
 }
 
-void MainComponent::seekByStep (int direction, bool wholeBar)
+void MainComponent::seekByStep (int direction, bool wholeBar, int keyCode)
 {
     if (engine.isRecording())
         return;
+
+    // 再生中のシークは一時停止し、キー入力が止まってから自動再開する（シーク戻しと再生進行が同時に走るのを防ぐ）
+    if (transport.isPlaying.load())
+    {
+        engine.stop();
+        seekResumePending = true;
+        Log::info ("transport.seek_pause", "pos=" + juce::String (transport.playheadSamplePos.load()));
+    }
+    if (seekResumePending)
+    {
+        lastSeekKeyMs = juce::Time::getMillisecondCounter();
+        bool known = false;
+        for (int i = 0; i < numSeekKeyCodes; ++i)
+            known = known || seekKeyCodes[i] == keyCode;
+        if (! known && numSeekKeyCodes < maxSeekKeyCodes)
+            seekKeyCodes[numSeekKeyCodes++] = keyCode;
+    }
 
     const double stepLen = timeline.barLengthSamples() / (wholeBar ? 1.0 : 4.0);
     const auto pos = juce::jmax ((juce::int64) 0, transport.playheadSamplePos.load());
@@ -790,7 +837,8 @@ void MainComponent::toggleMuteSelectedTrack()
 void MainComponent::updateTransportButtons()
 {
     const bool recording = engine.isRecording();
-    playButton.setButtonText (transport.isPlaying.load() ? jp (u8"停止") : jp (u8"再生"));
+    // シーク後の再開待ち中も見かけ上は「再生中」として表示する
+    playButton.setButtonText ((transport.isPlaying.load() || seekResumePending) ? jp (u8"停止") : jp (u8"再生"));
     recordButton.setButtonText (recording ? jp (u8"録音停止") : jp (u8"録音"));
     recordButton.setColour (juce::TextButton::buttonColourId,
                             recording ? juce::Colours::darkred
