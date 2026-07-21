@@ -37,9 +37,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     addAndMakeVisible (settingsButton);
     addAndMakeVisible (clickButton);
     addChildComponent (addTrackOverlay); // トラック追加メニュー表示中のみ可視
-    addAndMakeVisible (bpmCaption);
-    addAndMakeVisible (bpmValue);
-    addAndMakeVisible (positionLabel);
+    addAndMakeVisible (lcd);
     addChildComponent (srWarningLabel); // 不一致時のみ表示
 
     timeline.setProject (project.get());
@@ -126,18 +124,8 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     clickButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff4a6ea9));
     clickButton.onClick = [this] { transport.clickEnabled.store (clickButton.getToggleState()); };
 
-    bpmCaption.setText ("BPM", juce::dontSendNotification);
-    bpmCaption.setFont (Fonts::body());
-    bpmCaption.setJustificationType (juce::Justification::centredRight);
-    bpmValue.setFont (Fonts::mono (13.0f));
-    bpmValue.setEditable (true, false, false);
-    bpmValue.setText (juce::String (project->bpm), juce::dontSendNotification);
-    bpmValue.setJustificationType (juce::Justification::centred);
-    bpmValue.setColour (juce::Label::outlineColourId, juce::Colour (0xff55555a));
-    bpmValue.onTextChange = [this] { applyBpmText(); };
-
-    positionLabel.setFont (Fonts::mono (13.0f));
-    positionLabel.setJustificationType (juce::Justification::centredLeft);
+    lcd.tempoLabel().setText (juce::String (project->bpm), juce::dontSendNotification);
+    lcd.tempoLabel().onTextChange = [this] { applyBpmText(); };
 
     srWarningLabel.setFont (Fonts::body());
     srWarningLabel.setColour (juce::Label::textColourId, juce::Colours::orangered);
@@ -226,7 +214,7 @@ void MainComponent::timerCallback()
     }
 
     headers.updateMeters();
-    updatePositionLabel();
+    updateLcdTime();
     updateTransportButtons();
     applyProjectSampleRate();
     updateSampleRateWarning();
@@ -703,10 +691,10 @@ void MainComponent::showDeviceSettings()
 
 void MainComponent::applyBpmText()
 {
-    const double value = bpmValue.getText().getDoubleValue();
+    const double value = lcd.tempoLabel().getText().getDoubleValue();
     if (value < 30.0 || value > 300.0)
     {
-        bpmValue.setText (juce::String (transport.bpm.load()), juce::dontSendNotification);
+        lcd.tempoLabel().setText (juce::String (transport.bpm.load()), juce::dontSendNotification);
         return;
     }
     Log::info ("project.bpm", "value=" + juce::String (value));
@@ -974,28 +962,34 @@ void MainComponent::updateTransportButtons()
     // シーク後の再開待ち中も見かけ上は「再生中」として表示する
     const bool playing = transport.isPlaying.load() || seekResumePending;
     playButton.setIcon (playing ? IconButton::Icon::stop : IconButton::Icon::play);
+    playButton.setIconColour (playing ? juce::Colour (0xff7bc47b)  // 再生中は緑（メーターと同色）
+                                      : juce::Colours::white.withAlpha (0.85f));
     recordButton.setToggleState (recording, juce::dontSendNotification); // 録音中は赤点灯
     recordButton.setIconColour (recording ? juce::Colours::white : juce::Colour (0xffd94a43));
+    if (recording)
+    {
+        // 録音中はアイコンの周りに赤いハローをゆっくり明滅させる（Timer 30Hzから毎tick呼ばれる）。
+        // グロー色は録音中の暗赤背景(0xff8e2a26)に埋もれないよう明るめの赤にする
+        const float phase = (float) (juce::Time::getMillisecondCounter() % 1600) / 1600.0f;
+        const float wave = 0.5f + 0.5f * std::sin (phase * juce::MathConstants<float>::twoPi);
+        recordButton.setGlow (0.30f + 0.70f * wave, juce::Colour (0xffff5a4d));
+    }
+    else
+        recordButton.setGlow (0.0f, juce::Colour (0xffff5a4d));
     // MIDIトラック選択中は録音ボタン無効（録音停止としては常に押せる）
     recordButton.setEnabled (recording || ! selectedTrackIsMidi());
 }
 
-void MainComponent::updatePositionLabel()
+void MainComponent::updateLcdTime()
 {
-    const double barLen = timeline.barLengthSamples();
-    const double beatLen = barLen / 4.0;
     const double sr = timeline.effectiveSampleRate();
     const auto playhead = juce::jmax ((juce::int64) 0, transport.playheadSamplePos.load());
-
-    const int bar = (int) std::floor ((double) playhead / barLen) + 1;
-    const int beat = (int) std::floor (std::fmod ((double) playhead, barLen) / beatLen) + 1;
     const double seconds = (double) playhead / sr;
     const int minutes = (int) (seconds / 60.0);
 
-    positionLabel.setText (juce::String (bar) + "." + juce::String (beat)
-                               + "  |  " + juce::String (minutes) + ":"
-                               + juce::String (seconds - minutes * 60.0, 1),
-                           juce::dontSendNotification);
+    // 秒はゼロ埋め（"0:05.3"）にして再生中の桁揺れを抑える
+    lcd.setTimeText (juce::String (minutes) + ":"
+                     + juce::String::formatted ("%04.1f", seconds - minutes * 60.0));
 }
 
 void MainComponent::updateSampleRateWarning()
@@ -1015,13 +1009,20 @@ void MainComponent::updateSampleRateWarning()
 void MainComponent::paint (juce::Graphics& g)
 {
     g.fillAll (getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId));
+
+    // 上部バー: 上端ハイライト＋下端境界線でタイムラインと区切る（塗りはフラットのまま）
+    auto bar = getLocalBounds().removeFromTop (topBarHeight).toFloat();
+    g.setColour (juce::Colours::white.withAlpha (0.05f));
+    g.fillRect (bar.removeFromTop (1.0f));
+    g.setColour (juce::Colours::black.withAlpha (0.35f));
+    g.fillRect (bar.removeFromBottom (1.0f));
 }
 
 void MainComponent::resized()
 {
     auto area = getLocalBounds();
 
-    auto topRow = area.removeFromTop (44).reduced (8, 7);
+    auto topRow = area.removeFromTop (topBarHeight).reduced (8, 7);
     // トランスポートボタンは行の高さいっぱいだと大きすぎるので一回り小さくして縦中央に置く
     auto transportButton = [&topRow] { return topRow.removeFromLeft (38).withSizeKeepingCentre (38, 26); };
     playButton.setBounds (transportButton());
@@ -1030,15 +1031,22 @@ void MainComponent::resized()
     topRow.removeFromLeft (14);
     clickButton.setBounds (transportButton());
     topRow.removeFromLeft (10);
-    bpmCaption.setBounds (topRow.removeFromLeft (40));
-    topRow.removeFromLeft (4);
-    bpmValue.setBounds (topRow.removeFromLeft (56));
-    topRow.removeFromLeft (14);
-    positionLabel.setBounds (topRow.removeFromLeft (140));
 
     settingsButton.setBounds (topRow.removeFromRight (44));
     topRow.removeFromRight (10);
-    srWarningLabel.setBounds (topRow);
+
+    // LCDはウィンドウ中央に置く（Logicの配置）。狭いときは左のボタン群を優先して右へ逃がす
+    auto lcdArea = juce::Rectangle<int> (TransportLcd::preferredWidth, topRow.getHeight())
+                       .withCentre ({ getWidth() / 2, topRow.getCentreY() });
+    lcdArea.setX (juce::jlimit (topRow.getX(),
+                                juce::jmax (topRow.getX(),
+                                            topRow.getRight() - TransportLcd::preferredWidth),
+                                lcdArea.getX()));
+    lcd.setBounds (lcdArea);
+
+    auto warnArea = topRow;
+    warnArea.setLeft (juce::jmin (warnArea.getRight(), lcdArea.getRight() + 10));
+    srWarningLabel.setBounds (warnArea);
 
     if (pianoRoll.isOpen())
         pianoRoll.setBounds (area.removeFromBottom (PianoRollView::preferredHeight));

@@ -40,6 +40,17 @@ public:
         }
     }
 
+    // アイコン中心からの放射グロー（録音中の明滅表示用）。amount 0で消灯
+    void setGlow (float amount, juce::Colour colour)
+    {
+        if (! juce::exactlyEqual (glowAmount, amount) || glowColour != colour)
+        {
+            glowAmount = amount;
+            glowColour = colour;
+            repaint();
+        }
+    }
+
     void paintButton (juce::Graphics& g, bool highlighted, bool down) override
     {
         if (borderless)
@@ -57,9 +68,22 @@ public:
             getLookAndFeel().drawButtonBackground (g, *this, bg, highlighted, down);
         }
 
+        const auto bounds = getLocalBounds().toFloat();
+
+        // グローはアイコンの下・背景の上に重ねる（録音中の明滅ハロー）
+        if (glowAmount > 0.001f)
+        {
+            const auto centre = bounds.getCentre();
+            const float radius = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.85f;
+            g.setGradientFill (juce::ColourGradient (
+                glowColour.withAlpha (0.85f * glowAmount), centre.x, centre.y,
+                glowColour.withAlpha (0.0f), centre.x, centre.y - radius, true));
+            g.fillEllipse (juce::Rectangle<float> (radius * 2.0f, radius * 2.0f)
+                               .withCentre (centre));
+        }
+
         g.setColour (isEnabled() ? iconColour : iconColour.withAlpha (0.35f));
 
-        const auto bounds = getLocalBounds().toFloat();
         const float side = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.42f;
         const auto r = juce::Rectangle<float> (side, side).withCentre (bounds.getCentre());
 
@@ -152,6 +176,8 @@ public:
 private:
     Icon icon;
     bool borderless = false;
+    float glowAmount = 0.0f;
+    juce::Colour glowColour;
     juce::Colour iconColour { juce::Colours::white.withAlpha (0.85f) };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (IconButton)

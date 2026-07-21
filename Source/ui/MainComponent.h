@@ -8,6 +8,7 @@
 #include "PianoRollView.h"
 #include "TimelineView.h"
 #include "TrackHeadersView.h"
+#include "TransportLcd.h"
 #include "../audio/PlaybackEngine.h"
 #include "../shared/PreviewFifo.h"
 #include "../shared/PlaybackSnapshot.h"
@@ -68,7 +69,7 @@ private:
     void pushSnapshot();
     void setDirty (bool nowDirty);
     void updateTransportButtons();
-    void updatePositionLabel();
+    void updateLcdTime();
     void updateSampleRateWarning();
     void applyProjectSampleRate(); // デバイスSRをプロジェクトSRに自動で合わせる（Timerから。Logicと同じ挙動）
     void logDeviceIfChanged();   // デバイス名・SR・ブロックサイズの確定/変化をログ（Timerから）
@@ -93,8 +94,11 @@ private:
     IconButton settingsButton { IconButton::Icon::gear, juce::String::fromUTF8 (u8"オーディオ設定") };
     IconButton addTrackButton { IconButton::Icon::plus, juce::String::fromUTF8 (u8"トラックを追加") };
     AddTrackOverlay addTrackOverlay;
-    juce::Label bpmCaption, bpmValue, positionLabel, srWarningLabel;
+    TransportLcd lcd; // BPM・小節位置・時間のLCD風パネル（バー中央に置く）
+    juce::Label srWarningLabel;
     juce::TooltipWindow tooltipWindow { this }; // アイコンのみのボタン（歯車等）のホバー説明用
+
+    static constexpr int topBarHeight = 48; // paint（グラデーション帯）とresizedで共有
 
     int selectedTrack = -1;
     bool dirty = false;
