@@ -59,7 +59,8 @@ public:
     // リージョン単位の操作。対象は引数で明示する（「現在の選択」を暗黙に読まない）。
     // itemIndex はオーディオトラックなら clips、MIDIトラックなら midiRegions のindex
     void toggleMuteAt (int trackIndex, int itemIndex);
-    void duplicateAt (int trackIndex, int itemIndex); // 複製を元の終端直後に置いて選択する
+    void duplicateAt (int trackIndex, int itemIndex);      // 複製を元の終端直後に置いて選択する
+    void splitAtPlayhead (int trackIndex, int itemIndex);  // 再生ヘッド位置で2分割（範囲外はno-op）。左側を選択する
 
     void scrollVertically (float wheelDeltaY);       // ヘッダ上のホイールを転送してもらう
     void zoomBy (double factor);                     // 横ズーム（アンカー: 再生ヘッド or ビュー中央）
@@ -95,6 +96,7 @@ private:
     void handleLaneMouseUp (const juce::MouseEvent& e);
     void handleLaneDoubleClick (const juce::MouseEvent& e);
     void seekFromX (int x);
+    juce::int64 playheadPpq() const;                 // 再生ヘッド位置をPPQへ換算（最近傍tickへ丸め）
     int hitTestRegion (int trackIndex, int x) const; // 見つからなければ-1（重なりは後勝ち）
     int hitTestClip (int trackIndex, int x) const;   // 同上（オーディオトラック用）
     void showItemMenu (int trackIndex, int itemIndex); // 右クリックメニュー（ミュート/複製/削除）

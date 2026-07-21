@@ -402,6 +402,8 @@ void MainComponent::finishRecording()
         clip.fileName = pendingRecordFile.getFileName();
         clip.startSample = pendingPunchIn;
         clip.audio = Project::loadWavMono (pendingRecordFile);
+        if (clip.audio != nullptr)
+            clip.lengthSamples = clip.audio->getNumSamples(); // 録音直後はWAV全長を参照
 
         if (clip.audio != nullptr
             && pendingRecordTrack >= 0 && pendingRecordTrack < (int) project->tracks.size())
@@ -817,6 +819,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         toggleMuteSelectedItem();
         return true;
     }
+    // Logic準拠: ⌘T = 選択中のリージョン/クリップを再生ヘッド位置で分割
+    if (key == juce::KeyPress ('t', juce::ModifierKeys::commandModifier, 0))
+    {
+        splitSelectedItemAtPlayhead();
+        return true;
+    }
 
     // Cmd/Ctrl/Optなしの1文字ショートカット（,/.=1拍シーク、Shift+,/.=1小節、mでミュート、rで録音）
     if (! key.getModifiers().testFlags (juce::ModifierKeys::commandModifier
@@ -901,6 +909,16 @@ void MainComponent::toggleMuteSelectedItem()
         timeline.toggleMuteAt (sel.track, sel.clip);
     else if (const auto rsel = timeline.getRegionSelection(); rsel.isValid())
         timeline.toggleMuteAt (rsel.track, rsel.region);
+}
+
+void MainComponent::splitSelectedItemAtPlayhead()
+{
+    if (engine.isRecording())
+        return;
+    if (const auto sel = timeline.getSelection(); sel.isValid())
+        timeline.splitAtPlayhead (sel.track, sel.clip);
+    else if (const auto rsel = timeline.getRegionSelection(); rsel.isValid())
+        timeline.splitAtPlayhead (rsel.track, rsel.region);
 }
 
 // ---- 表示更新 ----

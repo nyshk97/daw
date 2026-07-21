@@ -1,6 +1,7 @@
 #include "Project.h"
 
 #include <algorithm>
+#include <map>
 
 namespace
 {
@@ -13,8 +14,12 @@ void Clip::buildPeakCache()
     if (audio == nullptr)
         return;
 
-    const int numSamples = audio->getNumSamples();
-    const float* data = audio->getReadPointer (0);
+    // 参照範囲 [offsetSamples, offsetSamples + lengthSamples) のみをキャッシュする
+    // （index 0 = クリップ先頭。描画側はクリップ相対位置でそのまま引ける）
+    const int numSamples = (int) juce::jlimit ((juce::int64) 0,
+                                               (juce::int64) audio->getNumSamples() - offsetSamples,
+                                               lengthSamples);
+    const float* data = audio->getReadPointer (0, (int) offsetSamples);
     peakCache.reserve ((size_t) (numSamples / samplesPerPeak + 1));
 
     for (int i = 0; i < numSamples; i += samplesPerPeak)
@@ -25,6 +30,58 @@ void Clip::buildPeakCache()
             peak = juce::jmax (peak, std::abs (data[i + j]));
         peakCache.push_back (peak);
     }
+}
+
+bool splitClip (const Clip& clip, juce::int64 splitSample, Clip& left, Clip& right)
+{
+    if (splitSample <= clip.startSample || splitSample >= clip.startSample + clip.lengthSamples)
+        return false;
+
+    const auto leftLength = splitSample - clip.startSample;
+
+    left = clip; // fileName/audio は共有参照
+    left.lengthSamples = leftLength;
+    left.buildPeakCache();
+
+    right = clip;
+    right.startSample = splitSample;
+    right.offsetSamples = clip.offsetSamples + leftLength;
+    right.lengthSamples = clip.lengthSamples - leftLength;
+    right.buildPeakCache();
+    return true;
+}
+
+bool splitMidiRegion (const MidiRegion& region, juce::int64 splitPpq, MidiRegion& left, MidiRegion& right)
+{
+    if (splitPpq <= region.startPpq || splitPpq >= region.startPpq + region.lengthPpq)
+        return false;
+
+    const auto leftLength = splitPpq - region.startPpq;
+
+    left = region;
+    left.lengthPpq = leftLength;
+    left.notes.clear();
+
+    right = region;
+    right.id = 0; // 呼び出し側で採番する
+    right.startPpq = splitPpq;
+    right.lengthPpq = region.lengthPpq - leftLength;
+    right.notes.clear();
+
+    for (const auto& note : region.notes)
+    {
+        if (note.startPpq < leftLength)
+        {
+            left.notes.push_back (note); // またぎノートもフル長のまま残す（Keep。再生は境界マスクが止める）
+        }
+        else
+        {
+            auto moved = note;
+            moved.startPpq -= leftLength;
+            right.notes.push_back (moved);
+        }
+    }
+    return true;
 }
 
 juce::File Project::projectsRoot()
@@ -75,6 +132,8 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
                 auto* clipObj = new juce::DynamicObject();
                 clipObj->setProperty ("file", clip.fileName);
                 clipObj->setProperty ("startSample", clip.startSample);
+                clipObj->setProperty ("offsetSamples", clip.offsetSamples);
+                clipObj->setProperty ("lengthSamples", clip.lengthSamples);
                 clipObj->setProperty ("muted", clip.muted);
                 clipsArray.add (juce::var (clipObj));
             }
@@ -162,6 +221,10 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
     project->sampleRate = juce::jmax (0.0, (double) parsed.getProperty ("sampleRate", 0.0));
     project->nextId = (juce::uint64) juce::jmax ((juce::int64) 1, (juce::int64) parsed.getProperty ("nextId", 1));
 
+    // 同一WAVを参照する複数クリップ（分割・複製後）が別々の全量バッファを持たないよう、
+    // fileName 単位でロード結果を共有する（読めなかったWAVも nullptr を記録して再デコードを避ける）
+    std::map<juce::String, std::shared_ptr<juce::AudioBuffer<float>>> wavCache;
+
     if (auto* tracksArray = parsed.getProperty ("tracks", {}).getArray())
     {
         for (auto& trackVar : *tracksArray)
@@ -192,13 +255,34 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
                         clip.fileName = clipVar.getProperty ("file", "").toString();
                         clip.startSample = (juce::int64) clipVar.getProperty ("startSample", 0);
                         clip.muted = (bool) clipVar.getProperty ("muted", false);
-                        clip.audio = loadWavMono (dir.getChildFile (clip.fileName));
+
+                        const auto cached = wavCache.find (clip.fileName);
+                        if (cached != wavCache.end())
+                            clip.audio = cached->second;
+                        else
+                            wavCache[clip.fileName] = clip.audio = loadWavMono (dir.getChildFile (clip.fileName));
 
                         if (clip.audio == nullptr)
                         {
                             warnings.add (clip.fileName + jp (u8" を読み込めないためスキップしました"));
                             continue;
                         }
+
+                        // v2以前は offset/length が無い（全長参照）。v3は不正値をクランプする。
+                        // 順序が重要: offset を先にバッファ内へ収めてから length を残り範囲へ収める
+                        // （offset + length を先に計算すると手編集JSONの極端値でオーバーフローするため）
+                        const auto bufferLength = (juce::int64) clip.audio->getNumSamples();
+                        clip.offsetSamples = juce::jlimit ((juce::int64) 0, bufferLength,
+                                                           (juce::int64) clipVar.getProperty ("offsetSamples", 0));
+                        clip.lengthSamples = juce::jlimit ((juce::int64) 0, bufferLength - clip.offsetSamples,
+                                                           (juce::int64) clipVar.getProperty ("lengthSamples",
+                                                                                              bufferLength - clip.offsetSamples));
+                        if (clip.lengthSamples <= 0)
+                        {
+                            warnings.add (clip.fileName + jp (u8" の参照範囲が不正なためスキップしました"));
+                            continue;
+                        }
+
                         clip.buildPeakCache();
                         track.clips.push_back (std::move (clip));
                     }
@@ -346,8 +430,18 @@ std::unique_ptr<PlaybackSnapshot> Project::buildSnapshot() const
         if (track.type == TrackType::audio)
         {
             for (auto& clip : track.clips)
-                if (clip.audio != nullptr && ! clip.muted)
-                    trackPlayback.clips.push_back ({ clip.audio, clip.startSample });
+            {
+                if (clip.audio == nullptr || clip.muted)
+                    continue;
+
+                // オーディオスレッドの範囲外読みを防ぐ最終防衛線（モデル側の不変条件が正なら素通し）
+                const auto bufferLength = (juce::int64) clip.audio->getNumSamples();
+                const auto offset = juce::jlimit ((juce::int64) 0, bufferLength, clip.offsetSamples);
+                const auto length = juce::jlimit ((juce::int64) 0, bufferLength - offset, clip.lengthSamples);
+                if (length <= 0)
+                    continue;
+                trackPlayback.clips.push_back ({ clip.audio, clip.startSample, offset, length });
+            }
         }
         else
         {

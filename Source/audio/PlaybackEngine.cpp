@@ -133,7 +133,7 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
             bool anyOverlap = false;
             for (auto& clip : track.clips)
             {
-                const auto clipLen = (juce::int64) clip.audio->getNumSamples();
+                const auto clipLen = clip.lengthSamples;
                 const auto overlapStart = juce::jmax (pos, clip.startSample);
                 const auto overlapEnd = juce::jmin (pos + numSamples, clip.startSample + clipLen);
                 if (overlapEnd <= overlapStart)
@@ -141,7 +141,7 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
                 anyOverlap = true;
 
                 const int destOffset = (int) (overlapStart - pos);
-                const int srcOffset = (int) (overlapStart - clip.startSample);
+                const int srcOffset = (int) (clip.offsetSamples + (overlapStart - clip.startSample));
                 const int count = (int) (overlapEnd - overlapStart);
                 const float* src = clip.audio->getReadPointer (0, srcOffset);
 

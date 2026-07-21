@@ -10,19 +10,28 @@
 // メッセージスレッドが所有するデータモデル。オーディオスレッドへは
 // buildSnapshot() で作った PlaybackSnapshot を SnapshotExchange 経由で渡す。
 
+// クリップはソースWAVへの非破壊参照（offsetSamples から lengthSamples 分）。
+// 分割・複製で複数クリップが同じ audio（と fileName）を共有する。
+// 不変条件: 0 <= offsetSamples / offsetSamples + lengthSamples <= バッファ全長 / lengthSamples >= 1。
+// 読込時のクランプと splitClip がこれを保つ
 struct Clip
 {
     static constexpr int samplesPerPeak = 512; // 描画用ピークキャッシュの集約単位
 
     juce::String fileName;      // プロジェクトフォルダ相対（例: clip-001.wav）
     juce::int64 startSample = 0;
+    juce::int64 offsetSamples = 0;  // ソースWAV内の読み出し開始位置
+    juce::int64 lengthSamples = 0;  // 再生長（サンプル）
     bool muted = false;         // リージョン単位のミュート（再生スナップショットから除外）
     std::shared_ptr<juce::AudioBuffer<float>> audio; // モノラル・メモリ常駐
-    std::vector<float> peakCache;                    // samplesPerPeak ごとの絶対値ピーク
+    std::vector<float> peakCache;                    // samplesPerPeak ごとの絶対値ピーク（参照範囲のみ）
 
-    juce::int64 lengthSamples() const { return audio != nullptr ? audio->getNumSamples() : 0; }
     void buildPeakCache();
 };
+
+// クリップを splitSample（絶対サンプル位置）で左右に分ける。左右は同じソースWAVを共有参照する。
+// 分割点が内側（開始 < 分割点 < 終端）にないときは false（境界ちょうどは分割しない）
+bool splitClip (const Clip& clip, juce::int64 splitSample, Clip& left, Clip& right);
 
 // MIDIノート。startPpq はリージョン相対。
 // 不変条件: pitch 0..127 / velocity 1..127 / startPpq >= 0（リージョン内）/ lengthPpq >= 1。
@@ -54,6 +63,11 @@ struct MidiRegion
     }
 };
 
+// リージョンを splitPpq（絶対PPQ）で左右に分ける。分割点をまたぐノートは左にフル長のまま残し（Keep）、
+// 分割点以降に始まるノートは相対シフトして右へ移す。右の id は 0 のまま返す（呼び出し側で採番する）。
+// 分割点が内側にないときは false
+bool splitMidiRegion (const MidiRegion& region, juce::int64 splitPpq, MidiRegion& left, MidiRegion& right);
+
 enum class TrackType { audio, midi };
 
 struct Track
@@ -76,7 +90,7 @@ struct Track
 class Project
 {
 public:
-    static constexpr int currentVersion = 2; // v2: MIDIトラック・ID追加
+    static constexpr int currentVersion = 3; // v2: MIDIトラック・ID追加 / v3: クリップのoffsetSamples・lengthSamples
 
     juce::File directory;
     double bpm = 120.0;

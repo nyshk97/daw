@@ -48,6 +48,7 @@ private:
     void seekByStep (int direction, bool wholeBar, int keyCode);  // ,/.キー: 1拍（Shiftで1小節）単位で再生ヘッドを移動
     void toggleMuteSelectedTrack();      // mキー
     void toggleMuteSelectedItem();       // Ctrl+M: 選択中のクリップ/リージョンをミュート
+    void splitSelectedItemAtPlayhead();  // ⌘T: 選択中のクリップ/リージョンを再生ヘッド位置で分割
     void requestDeleteSelectedClip();    // 選択を読んで requestDeleteClipAt に渡す薄いラッパー
     void deleteSelectedRegion();         // 同上（deleteRegionAt へ）
     void requestDeleteClipAt (int trackIndex, int clipIndex);   // 確認ダイアログあり

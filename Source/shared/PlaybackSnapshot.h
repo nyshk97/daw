@@ -30,6 +30,8 @@ struct ClipPlayback
 {
     std::shared_ptr<const juce::AudioBuffer<float>> audio; // モノラル・メモリ常駐。生存保証のため所有を共有
     juce::int64 startSample = 0;
+    juce::int64 offsetSamples = 0;  // ソースバッファ内の読み出し開始位置（buildSnapshotでバッファ範囲内を保証済み）
+    juce::int64 lengthSamples = 0;  // 再生長
 };
 
 // GM音源（DLSMusicDevice）1インスタンス＋オーディオスレッド専用の発音状態。

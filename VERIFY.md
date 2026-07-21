@@ -77,6 +77,7 @@ screencapture -x -R<x,y,w,h> /tmp/daw-check.png
 ```
 
 - プロジェクト選択画面は**アルファベット順の先頭行が自動選択**され、「開く」は選択行を開く（AXでは行選択不可）。複数のテストプロジェクトがあると `cli-test` が先頭にならないため、AX確認用は `0-` 始まりの名前で常に先頭へソートさせる（`0-ms-test`＝オーディオ2＋MIDI 1の構成で作成済み）
+- **「0-」系テストプロジェクトが複数あると辞書順で先のものが開く**（例: `0-0-split-test` を作っても既存の `0-0-region-mute` が先頭になる）。新規テストプロジェクトは `ls ~/Music/daw/` で既存名を確認して辞書順で前になる名前にし、開いた直後にタイトルバーの名前で対象プロジェクトか確認する
 
 確認できること:
 
@@ -124,6 +125,9 @@ EOF
   - AppleScriptのAXクリックはJUCEのPopupMenu項目・ComboBox項目には効かない。CGEventの座標クリック（sandbox無効実行が必要）なら効く
   - スクショの目視だけで判定しない。閉じる→「保存して終了」→ `python3 -m json.tool project.json` で startPpq/lengthPpq/drums 等の値を確認する
   - 合成クリックを短時間に連続して撃つとOSのクリック集約で意図しないダブルクリックになる。操作間に時間を空ける
+  - **リージョンの右クリックメニューはCGEventの `.rightMouseDown` では開かない**（クリップ選択まではされるがJUCE側でポップアップトリガー扱いにならない。clickState/buttonNumber明示・hid/sessionタップどちらも不可）。**Ctrl+左クリック**（イベントの `flags` に `.maskControl` を直接セットし `.cgSessionEventTap` へpost）なら開く
+  - **メニュー表示中に別プロセスのCLIツール（AppKitをリンクしたswift製など）を起動するとメニューが閉じる**。検証は「Ctrl+左クリックで開く → CGWindowListで owner=daw・name=menu のウィンドウboundsを取る → bounds高さを項目数で等分して対象項目の中心を左クリック」までを**1プロセス内**で完結させる（各操作の間に1秒程度sleep）。着弾はアプリログ（`region.split` / `region.mute` 等）で裏取りする
+  - 分割の確認例: ルーラークリックでシーク → リージョンをCtrl+左クリック → 「再生ヘッド位置で分割」 → 保存後のproject.jsonで オーディオは同一`file`参照2クリップの `offsetSamples`/`lengthSamples` が連続すること、MIDIは右リージョンのノート `startPpq` が相対シフトされていることを確認
   - スクロールが必要な確認（ピアノロールの鍵盤帯域移動等）はCGEventの `scrollWheelEvent2Source`（units: .pixel）を対象座標に連打すればViewportに効く。ピアノロールを開いた直後は最上部（pitch 127側）表示なので、GMドラム名の確認は下方向へスクロールしてから撮る
 - 座標の目安（ウィンドウ位置 X,Y・デフォルトズーム pxPerBar=80）: タイムライン左端 = X+200、
   レーン先頭 = Y+28(タイトルバー)+44(トランスポート)+26(ルーラー)、トラック行高 = 84

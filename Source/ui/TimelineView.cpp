@@ -227,7 +227,7 @@ private:
     {
         const double spp = owner.samplesPerPixel();
         const int x = owner.sampleToX (clip.startSample);
-        const int w = juce::jmax (2, (int) ((double) clip.lengthSamples() / spp));
+        const int w = juce::jmax (2, (int) ((double) clip.lengthSamples / spp));
         if (x > clipRegion.getRight() || x + w < clipRegion.getX())
             return;
 
@@ -490,7 +490,7 @@ void TimelineView::updateContentSize()
         for (auto& track : project->tracks)
         {
             for (auto& clip : track.clips)
-                maxSample = juce::jmax (maxSample, clip.startSample + clip.lengthSamples());
+                maxSample = juce::jmax (maxSample, clip.startSample + clip.lengthSamples);
             for (auto& region : track.midiRegions)
                 maxSample = juce::jmax (maxSample,
                                         (juce::int64) std::llround ((double) (region.startPpq + region.lengthPpq) * spt));
@@ -761,7 +761,7 @@ int TimelineView::hitTestClip (int trackIndex, int x) const
     for (int ci = (int) track.clips.size() - 1; ci >= 0; --ci)
     {
         const auto& clip = track.clips[(size_t) ci];
-        if (samplePos >= clip.startSample && samplePos < clip.startSample + clip.lengthSamples())
+        if (samplePos >= clip.startSample && samplePos < clip.startSample + clip.lengthSamples)
             return ci;
     }
     return -1;
@@ -778,9 +778,25 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
     const bool muted = isMidi ? track.midiRegions[(size_t) itemIndex].muted
                               : track.clips[(size_t) itemIndex].muted;
 
+    // 分割は再生ヘッドが対象の内側（境界を除く）にあるときだけ有効
+    bool canSplit = false;
+    if (isMidi)
+    {
+        const auto& region = track.midiRegions[(size_t) itemIndex];
+        const auto splitPpq = playheadPpq();
+        canSplit = splitPpq > region.startPpq && splitPpq < region.startPpq + region.lengthPpq;
+    }
+    else
+    {
+        const auto& clip = track.clips[(size_t) itemIndex];
+        const auto playhead = transport.playheadSamplePos.load();
+        canSplit = playhead > clip.startSample && playhead < clip.startSample + clip.lengthSamples;
+    }
+
     juce::PopupMenu menu;
     menu.addItem (1, muted ? jp (u8"ミュート解除") : jp (u8"ミュート"));
     menu.addItem (2, jp (u8"複製"));
+    menu.addItem (4, jp (u8"再生ヘッド位置で分割"), canSplit);
     menu.addItem (3, jp (u8"削除"));
 
     // コールバックは後から呼ばれるためSafePointerで寿命を確認し、右クリック時点の対象を捕捉して渡す。
@@ -797,6 +813,8 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
                                 safe->duplicateAt (trackIndex, itemIndex);
                             else if (result == 3 && safe->onDeleteItemRequested)
                                 safe->onDeleteItemRequested (trackIndex, itemIndex);
+                            else if (result == 4)
+                                safe->splitAtPlayhead (trackIndex, itemIndex);
                         });
 }
 
@@ -850,7 +868,7 @@ void TimelineView::duplicateAt (int trackIndex, int itemIndex)
         if (onWillEditModel)
             onWillEditModel();
         Clip copy = track.clips[(size_t) itemIndex]; // fileName/audioは共有、peakCacheは値コピー
-        copy.startSample += copy.lengthSamples();    // 元の終端直後（Logicのリピート相当）
+        copy.startSample += copy.lengthSamples;      // 元の終端直後（Logicのリピート相当）
         track.clips.push_back (std::move (copy));
         selection = { trackIndex, (int) track.clips.size() - 1 };
         regionSelection.clear();
@@ -864,6 +882,60 @@ void TimelineView::duplicateAt (int trackIndex, int itemIndex)
     if (onModelEdited)
         onModelEdited();
     lanes->repaint();
+}
+
+void TimelineView::splitAtPlayhead (int trackIndex, int itemIndex)
+{
+    if (project == nullptr || trackIndex < 0 || trackIndex >= (int) project->tracks.size())
+        return;
+    auto& track = project->tracks[(size_t) trackIndex];
+    const auto playhead = transport.playheadSamplePos.load();
+
+    // 左は元のindexを上書き、右は末尾に追加する（既存indexが動かないので選択の維持が単純になる。
+    // 左右は重ならないため描画順が変わっても見た目に影響しない。duplicateAtと同じ方針）
+    if (track.type == TrackType::midi)
+    {
+        if (itemIndex < 0 || itemIndex >= (int) track.midiRegions.size())
+            return;
+        MidiRegion left, right;
+        if (! splitMidiRegion (track.midiRegions[(size_t) itemIndex], playheadPpq(), left, right))
+            return;
+        if (onWillEditModel)
+            onWillEditModel();
+        right.id = project->allocateId();
+        track.midiRegions[(size_t) itemIndex] = std::move (left);
+        track.midiRegions.push_back (std::move (right));
+        selection.clear();
+        regionSelection = { trackIndex, itemIndex }; // 左側を選択したまま
+    }
+    else
+    {
+        if (itemIndex < 0 || itemIndex >= (int) track.clips.size())
+            return;
+        Clip left, right;
+        if (! splitClip (track.clips[(size_t) itemIndex], playhead, left, right))
+            return;
+        if (onWillEditModel)
+            onWillEditModel();
+        track.clips[(size_t) itemIndex] = std::move (left);
+        track.clips.push_back (std::move (right));
+        selection = { trackIndex, itemIndex };
+        regionSelection.clear();
+    }
+
+    Log::info ("region.split", "track=" + juce::String (trackIndex)
+                                   + " item=" + juce::String (itemIndex)
+                                   + " pos=" + juce::String (playhead));
+    if (onSelectionChanged)
+        onSelectionChanged();
+    if (onModelEdited)
+        onModelEdited();
+    lanes->repaint();
+}
+
+juce::int64 TimelineView::playheadPpq() const
+{
+    return (juce::int64) std::llround ((double) transport.playheadSamplePos.load() / samplesPerTick());
 }
 
 void TimelineView::seekFromX (int x)

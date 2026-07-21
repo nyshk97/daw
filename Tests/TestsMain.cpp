@@ -257,6 +257,334 @@ void testClampNoteBoundaries()
             "リージョン端を越える長さは維持されること");
 }
 
+// ---- v2プロジェクト（offset/length無し）の読込 → v3保存 → 再読込 ----
+void testClipOffsetsV2Migration()
+{
+    beginTest ("clip offsets v2 migration");
+    const auto dir = makeTempDir();
+
+    constexpr int wavLength = 4410;
+    expect (writeTestWav (dir.getChildFile ("clip-001.wav"), wavLength), "テストWAVを書けること");
+
+    const char* v2json = R"({
+        "version": 2, "bpm": 120.0, "sampleRate": 44100.0, "nextId": 5,
+        "tracks": [
+            { "id": 1, "type": "audio", "name": "Vocal",
+              "clips": [ { "file": "clip-001.wav", "startSample": 100 } ] }
+        ]
+    })";
+    dir.getChildFile ("project.json").replaceWithText (v2json);
+
+    juce::StringArray warnings;
+    juce::String error;
+    auto project = Project::load (dir, warnings, error);
+    expect (project != nullptr && project->tracks.size() == 1 && project->tracks[0].clips.size() == 1,
+            "v2を読込めること");
+    if (project == nullptr || project->tracks.empty() || project->tracks[0].clips.empty())
+        { dir.deleteRecursively(); return; }
+
+    expect (project->tracks[0].clips[0].offsetSamples == 0, "v2読込時はoffset=0");
+    expect (project->tracks[0].clips[0].lengthSamples == wavLength, "v2読込時はlength=WAV全長");
+
+    // 参照範囲を狭めて保存 → v3として再読込で維持される
+    project->tracks[0].clips[0].offsetSamples = 1000;
+    project->tracks[0].clips[0].lengthSamples = 2000;
+    expect (project->save (error), "v3で保存できること");
+
+    const auto saved = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
+    expect ((int) saved.getProperty ("version", 0) == 3, "保存バージョンが3であること");
+
+    auto reloaded = Project::load (dir, warnings, error);
+    expect (reloaded != nullptr && reloaded->tracks.size() == 1 && reloaded->tracks[0].clips.size() == 1,
+            "v3を再読込できること");
+    if (reloaded != nullptr && ! reloaded->tracks.empty() && ! reloaded->tracks[0].clips.empty())
+    {
+        expect (reloaded->tracks[0].clips[0].offsetSamples == 1000, "offset維持");
+        expect (reloaded->tracks[0].clips[0].lengthSamples == 2000, "length維持");
+        expect (reloaded->tracks[0].clips[0].startSample == 100, "startSample維持");
+    }
+
+    dir.deleteRecursively();
+}
+
+// ---- v3の不正なoffset/lengthのクランプ（オーバーフロー誘発値を含む）----
+void testClipOffsetClamp()
+{
+    beginTest ("clip offset/length clamp");
+    const auto dir = makeTempDir();
+
+    constexpr int wavLength = 4410;
+    expect (writeTestWav (dir.getChildFile ("clip-001.wav"), wavLength), "テストWAVを書けること");
+
+    // clip1: int64最大値（offset+lengthを先に足すとオーバーフローする）→ 範囲ゼロでスキップ
+    // clip2: 負のoffset → 0 に。lengthはそのまま収まる
+    // clip3: length省略 → offset以降の残り全部
+    // clip4: length過大 → 残り範囲へクランプ
+    // clip5: length 0 → スキップ
+    const char* v3json = R"({
+        "version": 3, "bpm": 120.0, "sampleRate": 44100.0, "nextId": 5,
+        "tracks": [
+            { "id": 1, "type": "audio", "name": "X",
+              "clips": [
+                { "file": "clip-001.wav", "startSample": 0,
+                  "offsetSamples": 9223372036854775807, "lengthSamples": 9223372036854775807 },
+                { "file": "clip-001.wav", "startSample": 0, "offsetSamples": -100, "lengthSamples": 200 },
+                { "file": "clip-001.wav", "startSample": 0, "offsetSamples": 400 },
+                { "file": "clip-001.wav", "startSample": 0, "offsetSamples": 4000, "lengthSamples": 99999 },
+                { "file": "clip-001.wav", "startSample": 0, "offsetSamples": 0, "lengthSamples": 0 }
+              ] }
+        ]
+    })";
+    dir.getChildFile ("project.json").replaceWithText (v3json);
+
+    juce::StringArray warnings;
+    juce::String error;
+    auto project = Project::load (dir, warnings, error);
+    expect (project != nullptr && project->tracks.size() == 1, "読込めること（クラッシュしない）");
+    if (project == nullptr || project->tracks.empty())
+        { dir.deleteRecursively(); return; }
+
+    const auto& clips = project->tracks[0].clips;
+    expect (clips.size() == 3, "範囲ゼロの2クリップはスキップされること");
+    expect (warnings.size() == 2, "スキップ分の警告が出ること");
+    if (clips.size() == 3)
+    {
+        expect (clips[0].offsetSamples == 0 && clips[0].lengthSamples == 200, "負offsetは0へ");
+        expect (clips[1].offsetSamples == 400 && clips[1].lengthSamples == wavLength - 400,
+                "length省略はoffset以降の全部");
+        expect (clips[2].offsetSamples == 4000 && clips[2].lengthSamples == wavLength - 4000,
+                "過大lengthは残り範囲へクランプ");
+    }
+
+    dir.deleteRecursively();
+}
+
+// ---- 同一WAVを参照するクリップ間のバッファ共有 ----
+void testSharedWavBufferOnLoad()
+{
+    beginTest ("shared wav buffer on load");
+    const auto dir = makeTempDir();
+
+    expect (writeTestWav (dir.getChildFile ("clip-001.wav"), 4410), "テストWAVを書けること");
+
+    // 分割後相当: 同じWAVを参照する2クリップ（別トラックにも1つ）
+    const char* v3json = R"({
+        "version": 3, "bpm": 120.0, "sampleRate": 44100.0, "nextId": 5,
+        "tracks": [
+            { "id": 1, "type": "audio", "name": "A",
+              "clips": [
+                { "file": "clip-001.wav", "startSample": 0, "offsetSamples": 0, "lengthSamples": 2000 },
+                { "file": "clip-001.wav", "startSample": 2000, "offsetSamples": 2000, "lengthSamples": 2410 }
+              ] },
+            { "id": 2, "type": "audio", "name": "B",
+              "clips": [ { "file": "clip-001.wav", "startSample": 0 } ] }
+        ]
+    })";
+    dir.getChildFile ("project.json").replaceWithText (v3json);
+
+    juce::StringArray warnings;
+    juce::String error;
+    auto project = Project::load (dir, warnings, error);
+    expect (project != nullptr && project->tracks.size() == 2, "読込めること");
+    if (project == nullptr || project->tracks.size() != 2
+        || project->tracks[0].clips.size() != 2 || project->tracks[1].clips.size() != 1)
+        { dir.deleteRecursively(); return; }
+
+    expect (project->tracks[0].clips[0].audio.get() == project->tracks[0].clips[1].audio.get(),
+            "同一トラック内の同一WAV参照はバッファ共有");
+    expect (project->tracks[0].clips[0].audio.get() == project->tracks[1].clips[0].audio.get(),
+            "トラックを跨いでもバッファ共有");
+
+    // 保存 → 再読込でも共有が保たれる
+    expect (project->save (error), "保存できること");
+    auto reloaded = Project::load (dir, warnings, error);
+    expect (reloaded != nullptr, "再読込できること");
+    if (reloaded != nullptr && reloaded->tracks.size() == 2
+        && reloaded->tracks[0].clips.size() == 2 && reloaded->tracks[1].clips.size() == 1)
+    {
+        expect (reloaded->tracks[0].clips[0].audio.get() == reloaded->tracks[0].clips[1].audio.get()
+                    && reloaded->tracks[0].clips[0].audio.get() == reloaded->tracks[1].clips[0].audio.get(),
+                "再読込後もバッファ共有");
+    }
+
+    dir.deleteRecursively();
+}
+
+// ---- buildSnapshot が offset/length を ClipPlayback へ伝播すること ----
+void testBuildSnapshotClipOffsets()
+{
+    beginTest ("buildSnapshot clip offsets");
+
+    Project project;
+    Track track;
+    track.id = 1;
+
+    Clip clip;
+    clip.startSample = 500;
+    clip.offsetSamples = 128;
+    clip.lengthSamples = 256;
+    clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, 1024);
+    track.clips.push_back (clip);
+
+    // 範囲外のoffset/lengthはオーディオスレッドに渡る前に除外/クランプされる
+    Clip broken = clip;
+    broken.offsetSamples = 2000;
+    track.clips.push_back (broken);
+    project.tracks.push_back (std::move (track));
+
+    auto snapshot = project.buildSnapshot();
+    expect (snapshot->tracks.size() == 1 && snapshot->tracks[0].clips.size() == 1,
+            "範囲ゼロのクリップはスナップショットに載らないこと");
+    if (snapshot->tracks.size() == 1 && snapshot->tracks[0].clips.size() == 1)
+    {
+        const auto& playback = snapshot->tracks[0].clips[0];
+        expect (playback.startSample == 500, "startSample伝播");
+        expect (playback.offsetSamples == 128, "offsetSamples伝播");
+        expect (playback.lengthSamples == 256, "lengthSamples伝播");
+    }
+}
+
+// ---- PlaybackEngine が offset付きの左右クリップを連続した元音源として読むこと ----
+void testEngineReadsClipOffsets()
+{
+    beginTest ("engine reads clip offsets");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+    constexpr int totalSamples = blockSize * 4;
+    constexpr int splitAt = blockSize + 100; // ブロック境界とズラした分割点
+
+    TransportState transport;
+    SnapshotExchange snapshots;
+    PreviewFifo previewFifo;
+    PlaybackEngine engine (transport, snapshots, previewFifo);
+    engine.prepareToPlay (blockSize, sr);
+
+    // ソース: サンプル値 = 位置に比例するランプ波（読み出し位置のズレを1サンプル単位で検出できる）
+    auto source = std::make_shared<juce::AudioBuffer<float>> (1, totalSamples);
+    for (int i = 0; i < totalSamples; ++i)
+        source->setSample (0, i, (float) i / (float) totalSamples);
+
+    Project project;
+    Track track;
+    track.id = 1;
+    track.params->gain.store (1.0f);
+    Clip left;
+    left.startSample = 0;
+    left.offsetSamples = 0;
+    left.lengthSamples = splitAt;
+    left.audio = source;
+    Clip right;
+    right.startSample = splitAt;
+    right.offsetSamples = splitAt;
+    right.lengthSamples = totalSamples - splitAt;
+    right.audio = source;
+    track.clips.push_back (std::move (left));
+    track.clips.push_back (std::move (right));
+    project.tracks.push_back (std::move (track));
+    snapshots.push (project.buildSnapshot());
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    engine.play();
+    int mismatches = 0;
+    for (int block = 0; block < 4; ++block)
+    {
+        buffer.clear();
+        juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+        engine.process (info);
+        for (int i = 0; i < blockSize; ++i)
+            if (std::abs (buffer.getSample (0, i) - source->getSample (0, block * blockSize + i)) > 1.0e-6f)
+                ++mismatches;
+    }
+    engine.stop();
+
+    expect (mismatches == 0, "分割された左右クリップの出力が元音源と全サンプル一致すること");
+    snapshots.deleteRetired();
+}
+
+// ---- splitClip: 左右のoffset/length・バッファ共有・境界no-op ----
+void testSplitClip()
+{
+    beginTest ("splitClip");
+
+    Clip clip;
+    clip.fileName = "clip-001.wav";
+    clip.startSample = 1000;
+    clip.offsetSamples = 50;
+    clip.lengthSamples = 400;
+    clip.muted = true;
+    clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, 1000);
+    for (int i = 0; i < 1000; ++i)
+        clip.audio->setSample (0, i, (float) i);
+    clip.buildPeakCache();
+
+    Clip left, right;
+    expect (splitClip (clip, 1100, left, right), "内側の分割点で分割できること");
+    expect (left.startSample == 1000 && left.offsetSamples == 50 && left.lengthSamples == 100,
+            "左: start/offset維持・length=分割点まで");
+    expect (right.startSample == 1100 && right.offsetSamples == 150 && right.lengthSamples == 300,
+            "右: 分割点から開始・offsetが左のぶん進む");
+    expect (left.audio.get() == clip.audio.get() && right.audio.get() == clip.audio.get(),
+            "左右ともソースバッファを共有すること");
+    expect (left.fileName == clip.fileName && right.fileName == clip.fileName, "fileName共有");
+    expect (left.muted && right.muted, "mutedが両方に引き継がれること");
+
+    // peakCacheは参照範囲のみ: 右の先頭ピークはソースのoffset位置以降の値になる
+    expect (left.peakCache.size() == 1 && right.peakCache.size() == 1, "peakCacheが再構築されること");
+    if (! right.peakCache.empty())
+        expect (juce::approximatelyEqual (right.peakCache[0], 449.0f), // max(|150..449|)
+                "右のpeakCacheが自分の参照範囲から作られること");
+
+    Clip unused1, unused2;
+    expect (! splitClip (clip, 1000, unused1, unused2), "開始境界ちょうどはno-op");
+    expect (! splitClip (clip, 1400, unused1, unused2), "終端境界ちょうどはno-op");
+    expect (! splitClip (clip, 999, unused1, unused2), "範囲外はno-op");
+}
+
+// ---- splitMidiRegion: またぎノートKeep・右への相対シフト移動・境界no-op ----
+void testSplitMidiRegion()
+{
+    beginTest ("splitMidiRegion");
+
+    MidiRegion region;
+    region.id = 10;
+    region.startPpq = 3840; // 2小節目
+    region.lengthPpq = 3840;
+    region.muted = true;
+    region.notes.push_back ({ 1, 60, 0, 100, 100 });      // 左に残る
+    region.notes.push_back ({ 2, 62, 1900, 400, 90 });    // 分割点(相対1920)をまたぐ → Keep
+    region.notes.push_back ({ 3, 64, 1920, 10, 80 });     // 分割点ちょうどから → 右へ
+    region.notes.push_back ({ 4, 65, 3000, 100, 70 });    // 右へ
+
+    MidiRegion left, right;
+    expect (splitMidiRegion (region, 3840 + 1920, left, right), "内側の分割点で分割できること");
+    expect (left.id == 10 && left.startPpq == 3840 && left.lengthPpq == 1920, "左: id/start維持");
+    expect (right.id == 0, "右のidは未採番（呼び出し側で採番）");
+    expect (right.startPpq == 3840 + 1920 && right.lengthPpq == 1920, "右: 分割点から残り");
+    expect (left.muted && right.muted, "mutedが両方に引き継がれること");
+
+    expect (left.notes.size() == 2, "左に2ノート");
+    if (left.notes.size() == 2)
+    {
+        expect (left.notes[0].id == 1 && left.notes[0].startPpq == 0, "左ノート1維持");
+        expect (left.notes[1].id == 2 && left.notes[1].startPpq == 1900 && left.notes[1].lengthPpq == 400,
+                "またぎノートはフル長のまま左に残ること（Keep）");
+    }
+    expect (right.notes.size() == 2, "右に2ノート");
+    if (right.notes.size() == 2)
+    {
+        expect (right.notes[0].id == 3 && right.notes[0].startPpq == 0 && right.notes[0].lengthPpq == 10,
+                "分割点ちょうどのノートは右の先頭へ");
+        expect (right.notes[1].id == 4 && right.notes[1].startPpq == 1080 && right.notes[1].velocity == 70,
+                "右ノートは相対シフトされること");
+    }
+
+    MidiRegion unused1, unused2;
+    expect (! splitMidiRegion (region, 3840, unused1, unused2), "開始境界ちょうどはno-op");
+    expect (! splitMidiRegion (region, 3840 + 3840, unused1, unused2), "終端境界ちょうどはno-op");
+    expect (! splitMidiRegion (region, 0, unused1, unused2), "範囲外はno-op");
+}
+
 // ---- UndoStack: 構造編集の巻き戻し・ミキサー値の非対象・WAV GC保護 ----
 void testUndoStack()
 {
@@ -318,6 +646,7 @@ void testSaveGcProtectsUndoWavs()
     Clip clip;
     clip.fileName = "clip-001.wav";
     clip.audio = Project::loadWavMono (wavFile);
+    clip.lengthSamples = clip.audio != nullptr ? clip.audio->getNumSamples() : 0;
     project->tracks[0].clips.push_back (std::move (clip));
 
     UndoStack undo;
@@ -575,6 +904,7 @@ void testTrackLevelMeter()
     {
         Clip clip;
         clip.startSample = 0;
+        clip.lengthSamples = numSamples;
         clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, numSamples);
         for (int i = 0; i < numSamples; ++i)
             clip.audio->setSample (0, i, amplitude);
@@ -837,6 +1167,13 @@ int main()
     testMidiRoundtrip();
     testInvalidJson();
     testClampNoteBoundaries();
+    testClipOffsetsV2Migration();
+    testClipOffsetClamp();
+    testSharedWavBufferOnLoad();
+    testBuildSnapshotClipOffsets();
+    testEngineReadsClipOffsets();
+    testSplitClip();
+    testSplitMidiRegion();
     testUndoStack();
     testSaveGcProtectsUndoWavs();
     testBuildSnapshotFlattensNotes();
