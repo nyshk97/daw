@@ -25,9 +25,39 @@ public:
     // 大きく、全角を目一杯使う日本語では特に大きく見えるためHIGの13pxに固定する。
     // getLabelFontは「Label自身のフォントを返す」実装なのでoverrideしない
     // （無条件に13pxを返すとFonts::mono等のsetFont指定を壊す。Labelは生成側でsetFontする）
-    juce::Font getTextButtonFont (juce::TextButton&, int) override { return Fonts::body(); }
+    juce::Font getTextButtonFont (juce::TextButton& button, int) override
+    {
+        return button.getProperties().contains ("flatButton") ? Fonts::bodyStrong()
+                                                              : Fonts::body();
+    }
     juce::Font getComboBoxFont (juce::ComboBox&) override          { return Fonts::body(); }
     juce::Font getPopupMenuFont() override                         { return Fonts::body(); }
+
+    // "flatButton"プロパティを立てたTextButton（M/S等の小型トグル）はアウトライン無しの
+    // フラット角丸で描く。デフォルトの明るい縁取りはフラットに描き直したスライダー・
+    // ComboBoxから浮くため。塗り色は呼び出し側が buttonColourId / buttonOnColourId で渡す
+    void drawButtonBackground (juce::Graphics& g, juce::Button& button,
+                               const juce::Colour& backgroundColour,
+                               bool shouldDrawButtonAsHighlighted,
+                               bool shouldDrawButtonAsDown) override
+    {
+        if (! button.getProperties().contains ("flatButton"))
+        {
+            juce::LookAndFeel_V4::drawButtonBackground (g, button, backgroundColour,
+                                                        shouldDrawButtonAsHighlighted,
+                                                        shouldDrawButtonAsDown);
+            return;
+        }
+
+        auto colour = backgroundColour;
+        if (shouldDrawButtonAsDown)
+            colour = colour.brighter (0.25f);
+        else if (shouldDrawButtonAsHighlighted)
+            colour = colour.brighter (0.1f);
+
+        g.setColour (colour);
+        g.fillRoundedRectangle (button.getLocalBounds().toFloat(), 4.0f);
+    }
 
     // 水平スライダーはデフォルトだと溝が背景に溶けて値も読めないため、
     // 「丸端の溝＋左端からつまみまでの値塗り＋つまみ」で描き直す

@@ -31,8 +31,19 @@ TrackHeaderComponent::TrackHeaderComponent()
     // ラベル上のシングルクリックでもトラック選択が効くように親へ流す
     nameLabel.addMouseListener (this, false);
 
-    muteButton.setClickingTogglesState (true);
-    muteButton.setColour (juce::TextButton::buttonOnColourId, juce::Colours::orangered);
+    // M/Sはフラット角丸トグル（AppLookAndFeelの"flatButton"描画）。
+    // 点灯色はLogic準拠でM=青・S=黄、点灯時は暗い文字にして読ませる
+    for (auto* b : std::initializer_list<juce::TextButton*> { &muteButton, &soloButton })
+    {
+        b->setClickingTogglesState (true);
+        b->getProperties().set ("flatButton", true);
+        b->setColour (juce::TextButton::buttonColourId, juce::Colour (0xff3f3f46));
+        b->setColour (juce::TextButton::textColourOffId, juce::Colours::white.withAlpha (0.55f));
+        b->setColour (juce::TextButton::textColourOnId, juce::Colour (0xff1c1c20));
+    }
+    muteButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff5b82c4));
+    soloButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffdfae4a));
+
     muteButton.onClick = [this]
     {
         if (track != nullptr)
@@ -41,8 +52,6 @@ TrackHeaderComponent::TrackHeaderComponent()
             onChanged();
     };
 
-    soloButton.setClickingTogglesState (true);
-    soloButton.setColour (juce::TextButton::buttonOnColourId, juce::Colours::goldenrod);
     soloButton.onClick = [this]
     {
         if (track != nullptr)
@@ -168,9 +177,9 @@ void TrackHeaderComponent::resized()
 
     area.removeFromTop (4);
     auto row2 = area.removeFromTop (22);
-    muteButton.setBounds (row2.removeFromLeft (26));
+    muteButton.setBounds (row2.removeFromLeft (20).reduced (0, 2));
     row2.removeFromLeft (4);
-    soloButton.setBounds (row2.removeFromLeft (26));
+    soloButton.setBounds (row2.removeFromLeft (20).reduced (0, 2));
     row2.removeFromLeft (6);
     volumeSlider.setBounds (row2);
 

@@ -10,6 +10,7 @@ namespace Fonts
 {
 inline juce::Font small()      { return juce::Font (juce::FontOptions (11.0f)); }  // 小ラベル（鍵盤名など。11pxを下限とする）
 inline juce::Font body()       { return juce::Font (juce::FontOptions (13.0f)); }  // 標準（トラック名・ボタン・キャプション）
+inline juce::Font bodyStrong() { return juce::Font (juce::FontOptions (".AppleSystemUIFont", "Semibold", 13.0f)); } // 強調（M/S等の1文字トグル）
 inline juce::Font title()      { return juce::Font (juce::FontOptions (".AppleSystemUIFont", "Semibold", 15.0f)); }
 inline juce::Font largeTitle() { return juce::Font (juce::FontOptions (20.0f, juce::Font::bold)); }
 
