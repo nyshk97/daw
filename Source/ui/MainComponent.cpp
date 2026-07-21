@@ -49,7 +49,10 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     timeline.onSeek = [this] (juce::int64 samplePos)
     {
         if (! engine.isRecording())
+        {
             transport.seekRequest.store (samplePos);
+            playStartSample = samplePos; // 再生中のクリックシークでも停止時の戻り先を更新する
+        }
     };
     timeline.onTrackSelected = [this] (int index) { selectTrack (index); };
     timeline.onVerticalScroll = [this] (int y) { headers.setViewY (y); };
@@ -281,11 +284,18 @@ void MainComponent::togglePlay()
     else if (transport.isPlaying.load())
     {
         engine.stop();
-        Log::info ("transport.stop", "pos=" + juce::String (transport.playheadSamplePos.load()));
+        transport.seekRequest.store (playStartSample); // 停止したら再生開始位置に戻す（Logicのデフォルト挙動）
+        Log::info ("transport.stop", "pos=" + juce::String (transport.playheadSamplePos.load())
+                                         + " returnTo=" + juce::String (playStartSample));
     }
     else
     {
-        Log::info ("transport.play", "pos=" + juce::String (transport.playheadSamplePos.load()));
+        // 直前のシークがまだオーディオスレッドに適用されていなければ、そちらが実際の開始位置
+        const auto pendingSeek = transport.seekRequest.load();
+        playStartSample = pendingSeek != TransportState::kNoSeek
+                              ? pendingSeek
+                              : juce::jmax ((juce::int64) 0, transport.playheadSamplePos.load());
+        Log::info ("transport.play", "pos=" + juce::String (playStartSample));
         engine.play();
     }
     updateTransportButtons();
@@ -362,6 +372,8 @@ void MainComponent::finishRecording()
 {
     engine.stopRecording();
     engine.stop();
+    playStartSample = pendingPunchIn;
+    transport.seekRequest.store (pendingPunchIn); // 停止で録音開始小節の頭に戻し、テイクをすぐ聴き直せるようにする
 
     const auto recordedLength = transport.recordedSamples.load();
 
@@ -831,7 +843,9 @@ void MainComponent::seekByStep (int direction, bool wholeBar, int keyCode)
         step = juce::jmax ((juce::int64) 0, step);
     }
 
-    transport.seekRequest.store ((juce::int64) std::llround ((double) step * stepLen));
+    const auto target = (juce::int64) std::llround ((double) step * stepLen);
+    transport.seekRequest.store (target);
+    playStartSample = target; // シーク先が新しい戻り先になる（自動再開後の停止でもここへ戻る）
 }
 
 void MainComponent::toggleMuteSelectedTrack()

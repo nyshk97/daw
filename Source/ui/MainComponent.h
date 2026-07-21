@@ -99,6 +99,9 @@ private:
     // ,と.の同時押しでも取りこぼさないよう、再開待ち中に認識したキーコードを全部保持する
     bool seekResumePending = false;
     juce::uint32 lastSeekKeyMs = 0;
+
+    // 停止時に戻る再生開始位置（Logicのlast locate position相当）。シーク・録音でも更新される
+    juce::int64 playStartSample = 0;
     static constexpr int maxSeekKeyCodes = 4;
     int seekKeyCodes[maxSeekKeyCodes] = {};
     int numSeekKeyCodes = 0;
