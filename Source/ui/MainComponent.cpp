@@ -95,10 +95,10 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     headers.onWheel = [this] (float deltaY) { timeline.scrollVertically (deltaY); };
 
     // ---- トランスポートバー ----
-    playButton.setButtonText (jp (u8"再生"));
     playButton.onClick = [this] { togglePlay(); };
 
-    recordButton.setButtonText (jp (u8"録音"));
+    recordButton.setIconColour (juce::Colour (0xffd94a43)); // 待機中も録音ボタンと分かる赤
+    recordButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff8e2a26));
     recordButton.onClick = [this] { toggleRecord(); };
 
     addTrackButton.setButtonText (jp (u8"＋トラック"));
@@ -107,7 +107,8 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     settingsButton.setButtonText (jp (u8"デバイス設定"));
     settingsButton.onClick = [this] { showDeviceSettings(); };
 
-    clickButton.setButtonText (jp (u8"クリック"));
+    clickButton.setClickingTogglesState (true); // ONで点灯（Logicのメトロノームボタン風）
+    clickButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff4a6ea9));
     clickButton.onClick = [this] { transport.clickEnabled.store (clickButton.getToggleState()); };
 
     bpmCaption.setText ("BPM", juce::dontSendNotification);
@@ -701,6 +702,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (key.getKeyCode() == juce::KeyPress::deleteKey
         || key.getKeyCode() == juce::KeyPress::backspaceKey)
     {
+        // Logic準拠: ⌘Delete = 選択トラックを削除
+        if (key.getModifiers().testFlags (juce::ModifierKeys::commandModifier))
+        {
+            requestDeleteTrack (selectedTrack);
+            return true;
+        }
         if (pianoRoll.isOpen() && pianoRoll.deleteSelectedNotes())
             return true;
         if (timeline.getRegionSelection().isValid())
@@ -843,11 +850,10 @@ void MainComponent::updateTransportButtons()
 {
     const bool recording = engine.isRecording();
     // シーク後の再開待ち中も見かけ上は「再生中」として表示する
-    playButton.setButtonText ((transport.isPlaying.load() || seekResumePending) ? jp (u8"停止") : jp (u8"再生"));
-    recordButton.setButtonText (recording ? jp (u8"録音停止") : jp (u8"録音"));
-    recordButton.setColour (juce::TextButton::buttonColourId,
-                            recording ? juce::Colours::darkred
-                                      : getLookAndFeel().findColour (juce::TextButton::buttonColourId));
+    const bool playing = transport.isPlaying.load() || seekResumePending;
+    playButton.setIcon (playing ? IconButton::Icon::stop : IconButton::Icon::play);
+    recordButton.setToggleState (recording, juce::dontSendNotification); // 録音中は赤点灯
+    recordButton.setIconColour (recording ? juce::Colours::white : juce::Colour (0xffd94a43));
     // MIDIトラック選択中は録音ボタン無効（録音停止としては常に押せる）
     recordButton.setEnabled (recording || ! selectedTrackIsMidi());
 }
@@ -901,12 +907,12 @@ void MainComponent::resized()
     auto area = getLocalBounds();
 
     auto topRow = area.removeFromTop (44).reduced (8, 7);
-    playButton.setBounds (topRow.removeFromLeft (80));
+    playButton.setBounds (topRow.removeFromLeft (44));
     topRow.removeFromLeft (6);
-    recordButton.setBounds (topRow.removeFromLeft (80));
+    recordButton.setBounds (topRow.removeFromLeft (44));
     topRow.removeFromLeft (14);
-    clickButton.setBounds (topRow.removeFromLeft (86));
-    topRow.removeFromLeft (6);
+    clickButton.setBounds (topRow.removeFromLeft (44));
+    topRow.removeFromLeft (10);
     bpmCaption.setBounds (topRow.removeFromLeft (40));
     topRow.removeFromLeft (4);
     bpmValue.setBounds (topRow.removeFromLeft (56));

@@ -7,7 +7,8 @@
 
 #include "../shared/Project.h"
 
-// トラック1本分のヘッダ（名前・削除・M/S・音量。MIDIトラックは楽器ドロップダウンも）。
+// トラック1本分のヘッダ（名前・M/S・音量。MIDIトラックは楽器ドロップダウンも）。
+// トラック削除は右クリックメニュー（または⌘Delete。MainComponent側で処理）。
 // 音量・ミュート・ソロは TrackParams の atomic に直接書く（スナップショット再構築は不要）。
 class TrackHeaderComponent : public juce::Component
 {
@@ -17,7 +18,7 @@ public:
     void bind (Track* trackToBind, bool isSelected); // rebuild/選択変更時に呼ぶ
 
     std::function<void()> onSelect;
-    std::function<void()> onDeleteClicked;
+    std::function<void()> onDeleteClicked; // 右クリックメニューの「トラックを削除」
     std::function<void()> onChanged;             // M/S・音量の変更（dirtyマーク用）
     std::function<void()> onWillChangeStructure; // リネーム・楽器変更の直前（undoスナップショット用）
     std::function<void()> onInstrumentChanged;   // 楽器変更の確定後（pushSnapshotで音源差し替え）
@@ -31,7 +32,6 @@ private:
     bool selected = false;
 
     juce::Label nameLabel;
-    juce::TextButton deleteButton { juce::String::fromUTF8 (u8"×") };
     juce::TextButton muteButton { "M" };
     juce::TextButton soloButton { "S" };
     juce::Slider volumeSlider;

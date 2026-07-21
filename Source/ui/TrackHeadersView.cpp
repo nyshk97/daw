@@ -9,7 +9,6 @@
 TrackHeaderComponent::TrackHeaderComponent()
 {
     addAndMakeVisible (nameLabel);
-    addAndMakeVisible (deleteButton);
     addAndMakeVisible (muteButton);
     addAndMakeVisible (soloButton);
     addAndMakeVisible (volumeSlider);
@@ -31,12 +30,6 @@ TrackHeaderComponent::TrackHeaderComponent()
     };
     // ラベル上のシングルクリックでもトラック選択が効くように親へ流す
     nameLabel.addMouseListener (this, false);
-
-    deleteButton.onClick = [this]
-    {
-        if (onDeleteClicked)
-            onDeleteClicked();
-    };
 
     muteButton.setClickingTogglesState (true);
     muteButton.setColour (juce::TextButton::buttonOnColourId, juce::Colours::orangered);
@@ -92,7 +85,7 @@ TrackHeaderComponent::TrackHeaderComponent()
     };
 
     // Space（再生/停止）を奪わせない
-    for (auto* c : std::initializer_list<juce::Component*> { &deleteButton, &muteButton, &soloButton,
+    for (auto* c : std::initializer_list<juce::Component*> { &muteButton, &soloButton,
                                                             &volumeSlider, &instrumentBox })
     {
         c->setWantsKeyboardFocus (false);
@@ -143,10 +136,7 @@ void TrackHeaderComponent::resized()
 {
     auto area = getLocalBounds().reduced (8, 4);
 
-    auto row1 = area.removeFromTop (24);
-    deleteButton.setBounds (row1.removeFromRight (24));
-    row1.removeFromRight (4);
-    nameLabel.setBounds (row1);
+    nameLabel.setBounds (area.removeFromTop (24));
 
     area.removeFromTop (4);
     auto row2 = area.removeFromTop (22);
@@ -160,10 +150,24 @@ void TrackHeaderComponent::resized()
     instrumentBox.setBounds (area.removeFromTop (22)); // MIDIトラックのみ表示（3行目）
 }
 
-void TrackHeaderComponent::mouseDown (const juce::MouseEvent&)
+void TrackHeaderComponent::mouseDown (const juce::MouseEvent& e)
 {
     if (onSelect)
         onSelect();
+
+    if (e.mods.isPopupMenu())
+    {
+        juce::PopupMenu menu;
+        menu.addItem (1, juce::String::fromUTF8 (u8"トラックを削除"));
+        // メニュー表示中にrebuild()でヘッダが破棄されることがあるためSafePointerで守る
+        juce::Component::SafePointer<TrackHeaderComponent> safe (this);
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this),
+                            [safe] (int result)
+                            {
+                                if (result == 1 && safe != nullptr && safe->onDeleteClicked)
+                                    safe->onDeleteClicked();
+                            });
+    }
 }
 
 // ---- TrackHeadersView ----------------------------------------------------

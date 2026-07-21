@@ -3,6 +3,7 @@
 #include <memory>
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include "IconButton.h"
 #include "PianoRollView.h"
 #include "TimelineView.h"
 #include "TrackHeadersView.h"
@@ -80,8 +81,10 @@ private:
     TrackHeadersView headers;
     PianoRollView pianoRoll { transport };
 
-    juce::TextButton playButton, recordButton, addTrackButton, settingsButton;
-    juce::ToggleButton clickButton;
+    IconButton playButton { IconButton::Icon::play, juce::String::fromUTF8 (u8"再生") };
+    IconButton recordButton { IconButton::Icon::record, juce::String::fromUTF8 (u8"録音") };
+    IconButton clickButton { IconButton::Icon::metronome, juce::String::fromUTF8 (u8"クリック") };
+    juce::TextButton addTrackButton, settingsButton;
     juce::Label bpmCaption, bpmValue, positionLabel, srWarningLabel;
 
     juce::Rectangle<int> meterArea;
