@@ -18,7 +18,9 @@ sleep 3 && pgrep -fl "daw.app/Contents/MacOS/daw"   # プロセス生存確認
 
 - 起動するとプロジェクト選択画面が出る（`~/Music/daw/` のフォルダ一覧＋新規作成）
 - マイク権限のplist文言確認: `plutil -extract NSMicrophoneUsageDescription raw build/daw_artefacts/Debug/daw.app/Contents/Info.plist`
-- **リビルドするとマイク権限が再要求される**（ad-hoc署名でcdhashが変わるため）。ダイアログで許可し直す
+- **リビルドしてもマイク権限は再要求されない**（POST_BUILD で Apple Development 証明書により再署名しているため）。ダイアログが出たら署名が壊れている兆候なので以下を確認:
+  - `codesign -dvv build/daw_artefacts/Debug/daw.app 2>&1 | grep Signature` → `Signature=adhoc` になっていたら POST_BUILD 署名が走っていない
+  - 署名の安定性確認: リビルド前後で `codesign -dr - <app>` の出力が一致すること（証明書更新後もこれで確認する）
 
 ## アプリログでの裏取り
 
@@ -52,7 +54,7 @@ open build/daw_artefacts/Debug/daw.app && sleep 3
 osascript -e 'tell application "daw" to activate' \
           -e 'delay 0.5' \
           -e 'tell application "System Events" to tell process "daw" to click button "開く" of window 1'
-# マイク権限ダイアログが出たら:
+# マイク権限ダイアログが出たら（通常は初回許可後は出ない。tccutil reset 後の初回のみ）:
 osascript -e 'tell application "System Events" to tell process "UserNotificationCenter" to click button "許可" of window 1'
 
 # ウィンドウ位置を取ってスクリーンショットで目視確認

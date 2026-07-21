@@ -54,6 +54,17 @@ target_link_libraries(daw
         juce::juce_recommended_warning_flags
 )
 
+# ad-hoc 署名だとリビルドごとに cdhash が変わり、TCC のマイク許可が毎回リセットされる。
+# 安定した証明書で再署名して許可を永続化する（Apple Development: nyshk97@gmail.com）
+# 証明書は約1年で失効する。再発行したら `security find-identity -v -p codesigning` で
+# 新しいハッシュに差し替え、リビルド前後の `codesign -dr -` 一致で許可維持を確認すること
+add_custom_command(TARGET daw POST_BUILD
+    COMMAND codesign --force
+        --sign 7B158CF1876B7D0C89A173E85E33A2DC61196CB7
+        "$<TARGET_BUNDLE_DIR:daw>"
+    COMMENT "Signing daw.app with stable identity for persistent TCC permissions"
+)
+
 # ---- テスト（CTest から実行するコンソールアプリ。GUI不要のモデル・音源検証）----
 enable_testing()
 
