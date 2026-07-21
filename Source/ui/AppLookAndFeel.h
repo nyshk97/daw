@@ -25,6 +25,33 @@ public:
     juce::Font getComboBoxFont (juce::ComboBox&) override          { return Fonts::body(); }
     juce::Font getPopupMenuFont() override                         { return Fonts::body(); }
 
+    // 基底実装（LookAndFeel_V4::drawComboBox）のコピー。デフォルトの矢印（幅14px・
+    // 太さ2px）は主張が強いため、macOSのポップアップボタン風の小さく細いシェブロンにする
+    void drawComboBox (juce::Graphics& g, int width, int height, bool,
+                       int, int, int, int, juce::ComboBox& box) override
+    {
+        const float cornerSize = 3.0f;
+        const auto boxBounds = juce::Rectangle<int> (0, 0, width, height).toFloat();
+
+        g.setColour (box.findColour (juce::ComboBox::backgroundColourId));
+        g.fillRoundedRectangle (boxBounds, cornerSize);
+
+        g.setColour (box.findColour (juce::ComboBox::outlineColourId));
+        g.drawRoundedRectangle (boxBounds.reduced (0.5f, 0.5f), cornerSize, 1.0f);
+
+        const float cx = (float) width - 13.0f;
+        const float cy = (float) height * 0.5f;
+        juce::Path path;
+        path.startNewSubPath (cx - 3.5f, cy - 1.5f);
+        path.lineTo (cx, cy + 2.0f);
+        path.lineTo (cx + 3.5f, cy - 1.5f);
+
+        g.setColour (box.findColour (juce::ComboBox::arrowColourId)
+                         .withAlpha (box.isEnabled() ? 0.7f : 0.2f));
+        g.strokePath (path, juce::PathStrokeType (1.5f, juce::PathStrokeType::curved,
+                                                  juce::PathStrokeType::rounded));
+    }
+
     // ToggleButtonはフォント取得フックがなく描画内に15pxがハードコードされているため、
     // 基底実装（LookAndFeel_V4::drawToggleButton）をコピーしてフォントだけ差し替える
     void drawToggleButton (juce::Graphics& g, juce::ToggleButton& button,
