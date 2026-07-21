@@ -2,6 +2,18 @@
 
 #include <cmath>
 
+namespace
+{
+// メーター用ピークのCAS max更新（UI側の exchange(0) と組。TrackParams::peakLevel のコメント参照）
+void storePeakMax (std::atomic<float>& target, float value)
+{
+    float current = target.load();
+    while (value > current && ! target.compare_exchange_weak (current, value))
+    {
+    }
+}
+}
+
 PlaybackEngine::PlaybackEngine (TransportState& transportState, SnapshotExchange& snapshotExchange,
                                 PreviewFifo& previewFifoToUse)
     : transport (transportState), snapshots (snapshotExchange), previewFifo (previewFifoToUse)
@@ -18,6 +30,7 @@ void PlaybackEngine::prepareToPlay (int samplesPerBlockExpected, double sampleRa
     // SynthBank側のAUも同じ基準（max(4096, expected)）で prepareToPlay される
     const int maxBlock = juce::jmax (4096, samplesPerBlockExpected);
     synthScratch.setSize (maxSynthChannels, maxBlock);
+    trackScratch.setSize (1, maxBlock);
 
     // ノートオン上限（1024）＋オフ（activeNotes追跡により最大 SynthInstance::maxActiveNotes = 256 に有界）
     // ＋All Notes Off等。1イベントあたりの格納コストは数バイト＋ヘッダなので、1イベント16バイト換算で余裕を持って確保
@@ -99,6 +112,11 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
 
     if (playing && snapshot != nullptr)
     {
+        // メーターは重なったクリップの「加算後」ピークを測る必要があるため、トラックごとに
+        // モノスクラッチへ一旦合算してから計測・出力する。想定外の巨大ブロックが来たときだけ
+        // 計測を諦めて従来の per-clip 加算にフォールバックする（音を落とさないことを最優先）
+        const bool canMeter = numSamples <= trackScratch.getNumSamples();
+
         for (auto& track : snapshot->tracks)
         {
             const bool audible = ! track.params->mute.load()
@@ -110,6 +128,10 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
             if (gain <= 0.0f)
                 continue;
 
+            if (canMeter)
+                trackScratch.clear (0, 0, numSamples); // 全トラックで再利用するため毎回必ずclear
+
+            bool anyOverlap = false;
             for (auto& clip : track.clips)
             {
                 const auto clipLen = (juce::int64) clip.audio->getNumSamples();
@@ -117,6 +139,7 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
                 const auto overlapEnd = juce::jmin (pos + numSamples, clip.startSample + clipLen);
                 if (overlapEnd <= overlapStart)
                     continue;
+                anyOverlap = true;
 
                 const int destOffset = (int) (overlapStart - pos);
                 const int srcOffset = (int) (overlapStart - clip.startSample);
@@ -124,8 +147,18 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
                 const float* src = clip.audio->getReadPointer (0, srcOffset);
 
                 // 重なったクリップは加算再生
+                if (canMeter)
+                    trackScratch.addFrom (0, destOffset, src, count, gain);
+                else
+                    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                        buffer.addFrom (ch, startSample + destOffset, src, count, gain);
+            }
+
+            if (canMeter && anyOverlap)
+            {
+                storePeakMax (track.params->peakLevel, trackScratch.getMagnitude (0, 0, numSamples));
                 for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
-                    buffer.addFrom (ch, startSample + destOffset, src, count, gain);
+                    buffer.addFrom (ch, startSample, trackScratch, 0, 0, numSamples);
             }
         }
     }
@@ -390,8 +423,17 @@ void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, juce::AudioBu
                              && (! anySolo || track.params->solo.load());
         const float gain = audible ? track.params->gain.load() : 0.0f;
         if (gain > 0.0f)
+        {
             for (int outCh = 0; outCh < buffer.getNumChannels(); ++outCh)
                 buffer.addFrom (outCh, startSample, block, juce::jmin (outCh, 1), 0, numSamples, gain);
+
+            // メーター: ミックスは出力chごとにblockのch0/ch1を対応させるステレオなので、
+            // 1本メーターにはch0/ch1のピークの大きい方を採用する
+            float peak = 0.0f;
+            for (int c = 0; c < juce::jmin (2, block.getNumChannels()); ++c)
+                peak = juce::jmax (peak, block.getMagnitude (c, 0, numSamples));
+            storePeakMax (track.params->peakLevel, peak * gain);
+        }
     }
 }
 

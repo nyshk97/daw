@@ -557,6 +557,77 @@ void testPlaybackEngineMidi()
     snapshots.deleteRetired();
 }
 
+// ---- PlaybackEngine: トラックメーターは重なるクリップの「合算後」ピークを測る（混入なし）----
+void testTrackLevelMeter()
+{
+    beginTest ("track level meter");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+
+    TransportState transport;
+    SnapshotExchange snapshots;
+    PreviewFifo previewFifo;
+    PlaybackEngine engine (transport, snapshots, previewFifo);
+    engine.prepareToPlay (blockSize, sr);
+
+    auto makeClip = [] (float amplitude, int numSamples)
+    {
+        Clip clip;
+        clip.startSample = 0;
+        clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, numSamples);
+        for (int i = 0; i < numSamples; ++i)
+            clip.audio->setSample (0, i, amplitude);
+        return clip;
+    };
+
+    Project project;
+    {
+        Track track; // 0.6+0.6の重なり → 合算後ピークは約1.2（個別maxの0.6では0.9を超えない）
+        track.id = 1;
+        track.name = "overlap";
+        track.params->gain.store (1.0f);
+        track.clips.push_back (makeClip (0.6f, blockSize * 8));
+        track.clips.push_back (makeClip (0.6f, blockSize * 8));
+        project.tracks.push_back (std::move (track));
+    }
+    {
+        Track track; // 0.3単独 → trackScratchのclear漏れがあると前トラックの1.2が混入する
+        track.id = 2;
+        track.name = "single";
+        track.params->gain.store (1.0f);
+        track.clips.push_back (makeClip (0.3f, blockSize * 8));
+        project.tracks.push_back (std::move (track));
+    }
+    snapshots.push (project.buildSnapshot());
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    engine.play();
+    for (int i = 0; i < 4; ++i)
+    {
+        buffer.clear();
+        juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+        engine.process (info);
+    }
+    engine.stop();
+
+    const float peak0 = project.tracks[0].params->peakLevel.exchange (0.0f);
+    const float peak1 = project.tracks[1].params->peakLevel.exchange (0.0f);
+    expect (peak0 > 0.9f, "重なったクリップは合算後ピークで測ること（0.6+0.6 > 0.9）");
+    expect (peak0 > 1.15f && peak0 < 1.25f, "合算後ピークが約1.2であること");
+    expect (peak1 > 0.25f && peak1 < 0.35f, "他トラックの音が混入しないこと（clear漏れ検知）");
+
+    // 出力自体も従来どおり両トラック合算で鳴っていること（スクラッチ経由への置き換えで無音化していない）
+    buffer.clear();
+    engine.play();
+    juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+    engine.process (info);
+    engine.stop();
+    expect (buffer.getMagnitude (0, 0, blockSize) > 1.4f, "出力は全トラック合算（1.2+0.3）で鳴ること");
+
+    snapshots.deleteRetired();
+}
+
 // ---- 再生中のノート編集: スナップショット差し替え時に消音→跨ぎノート再発音（鳴りっぱなし防止）----
 void testSnapshotSwapDuringPlayback()
 {
@@ -771,6 +842,7 @@ int main()
     testBuildSnapshotFlattensNotes();
     testSynthBank();
     testPlaybackEngineMidi();
+    testTrackLevelMeter();
     testSnapshotSwapDuringPlayback();
     testOverflowDoesNotKillOtherNotes();
     testDlsMusicDeviceRendersAudio();

@@ -15,6 +15,11 @@ struct TrackParams
     std::atomic<bool> mute { false };
     std::atomic<bool> solo { false };
 
+    // トラック出力のピークレベル（UIメーター用）。オーディオスレッドはCASでmax更新し、
+    // UI（30Hz Timer）は exchange(0) で読み取りリセットする。1UIフレームに複数ブロックが
+    // 走っても最大値が渡る（storeだと最後のブロックしか見えず瞬発音を取りこぼす）
+    std::atomic<float> peakLevel { 0.0f };
+
     static_assert (std::atomic<float>::is_always_lock_free);
     static_assert (std::atomic<bool>::is_always_lock_free);
 };

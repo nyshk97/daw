@@ -211,6 +211,7 @@ void MainComponent::timerCallback()
     }
 
     meterLevel = transport.inputPeakLevel.load();
+    headers.updateMeters();
     updatePositionLabel();
     updateTransportButtons();
     updateSampleRateWarning();

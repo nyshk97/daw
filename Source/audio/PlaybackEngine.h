@@ -62,6 +62,10 @@ private:
     juce::AudioBuffer<float> synthScratch;
     juce::MidiBuffer midiScratch;
 
+    // オーディオトラックのクリップ合算用モノスクラッチ（メーターは加算後ピークを測る必要があるため。
+    // クリップはモノで全出力chに同一加算されるのでモノ1本で正確）。全トラックで再利用する
+    juce::AudioBuffer<float> trackScratch;
+
     // ---- 以下はオーディオスレッド専用の状態 ----
 
     // プレビュー発音（停止中のみ）。オンはFIFOコマンド、オフは固定発音長のサンプルカウントで自動送出

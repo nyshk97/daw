@@ -120,6 +120,34 @@ void TrackHeaderComponent::bind (Track* trackToBind, bool isSelected)
     repaint();
 }
 
+void TrackHeaderComponent::updateMeter()
+{
+    if (track == nullptr)
+        return;
+
+    // 読み取りリセット（audio側のCAS maxと組）。表示は「新しい値」か「前回の減衰」の大きい方
+    const float incoming = track->params->peakLevel.exchange (0.0f);
+    const float next = juce::jmax (incoming, meterDisplay * 0.8f);
+
+    if (next < 0.005f)
+    {
+        if (meterDisplay > 0.0f) // 消える瞬間だけ描画し、無音トラックは再描画しない
+        {
+            meterDisplay = 0.0f;
+            volumeSlider.getProperties().set ("meterLevel", 0.0);
+            volumeSlider.repaint();
+        }
+        return;
+    }
+
+    if (juce::approximatelyEqual (next, meterDisplay))
+        return; // 定常値（一定音量の持続音等）では再描画しない
+
+    meterDisplay = next;
+    volumeSlider.getProperties().set ("meterLevel", (double) meterDisplay);
+    volumeSlider.repaint();
+}
+
 void TrackHeaderComponent::paint (juce::Graphics& g)
 {
     g.fillAll (selected ? juce::Colour (0xff33333c) : juce::Colour (0xff26262a));
@@ -212,6 +240,12 @@ void TrackHeadersView::rebuild()
 void TrackHeadersView::refreshValues()
 {
     refreshBindings();
+}
+
+void TrackHeadersView::updateMeters()
+{
+    for (auto& item : items)
+        item->updateMeter();
 }
 
 void TrackHeadersView::setSelectedTrack (int index)

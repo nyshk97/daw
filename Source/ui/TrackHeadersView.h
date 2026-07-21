@@ -16,6 +16,7 @@ public:
     TrackHeaderComponent();
 
     void bind (Track* trackToBind, bool isSelected); // rebuild/選択変更時に呼ぶ
+    void updateMeter(); // 30Hz Timerから。peakLevelの読み取り・減衰・スライダー再描画まで行う
 
     std::function<void()> onSelect;
     std::function<void()> onDeleteClicked; // 右クリックメニューの「トラックを削除」
@@ -30,6 +31,7 @@ public:
 private:
     Track* track = nullptr;
     bool selected = false;
+    float meterDisplay = 0.0f; // メーターの表示値（読み取り値とディケイのmax）
 
     juce::Label nameLabel;
     juce::TextButton muteButton { "M" };
@@ -52,6 +54,7 @@ public:
     void setProject (Project* p);
     void rebuild(); // トラックの追加・削除後に呼ぶ
     void refreshValues(); // モデル側の値変更（キー操作でのミュート等）を表示に反映する
+    void updateMeters(); // 30Hz Timerから（各ヘッダへの転送のみ）
     void setSelectedTrack (int index);
     void setViewY (int y);
 
