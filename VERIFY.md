@@ -19,7 +19,7 @@ sleep 3 && pgrep -fl "daw.app/Contents/MacOS/daw"   # プロセス生存確認
 - 起動するとプロジェクト選択画面が出る（`~/Music/daw/` のフォルダ一覧＋新規作成）
 - マイク権限のplist文言確認: `plutil -extract NSMicrophoneUsageDescription raw build/daw_artefacts/Debug/daw.app/Contents/Info.plist`
 - **リビルドしてもマイク権限は再要求されない**（POST_BUILD で Apple Development 証明書により再署名しているため）。ダイアログが出たら署名が壊れている兆候なので以下を確認:
-  - `codesign -dvv build/daw_artefacts/Debug/daw.app 2>&1 | grep Signature` → `Signature=adhoc` になっていたら POST_BUILD 署名が走っていない
+  - `codesign -dvv build/daw_artefacts/Debug/daw.app 2>&1 | grep Signature` → `Signature=adhoc` になっていたら、configure 時の証明書自動解決が失敗して ad-hoc フォールバックしている（`cmake -B build` を再実行して `Codesign identity:` の STATUS 行と WARNING の有無を見る）
   - 署名の安定性確認: リビルド前後で `codesign -dr - <app>` の出力が一致すること（証明書更新後もこれで確認する）
 
 ## アプリログでの裏取り
@@ -68,8 +68,8 @@ screencapture -x -R<x,y,w,h> /tmp/daw-check.png
 
 確認できること:
 
-1. **再生**: `click button "再生"` → 数秒後のスクショで位置表示（小節.拍｜秒）が進み、再生ヘッドが移動・追従スクロールする。ボタンは「停止」表示になる
-2. **録音**: `click button "録音"` → 7秒待つ → `click button "録音停止"` →
+1. **再生**: `click button "再生"` → 数秒後のスクショで位置表示（小節.拍｜秒）が進み、再生ヘッドが移動・追従スクロールする。表示は■アイコンに変わるが**AX名は「再生」のまま**なので、停止はもう一度 `click button "再生"`
+2. **録音**: `click button "録音"` → 7秒待つ → もう一度 `click button "録音"`（AX名は録音中も「録音」のまま。「録音停止」では引けない）→
    - `afinfo ~/Music/daw/cli-test/clip-001.wav` が モノラル・24bit・デバイスレート であること
    - 長さ ≒ 録音時間 − 1小節（カウントイン分）であること
    - スクショで選択トラックの小節頭にクリップが置かれ、タイトルに未保存マーク「●」が付くこと
