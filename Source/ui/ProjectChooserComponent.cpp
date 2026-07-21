@@ -1,6 +1,7 @@
 #include "ProjectChooserComponent.h"
 
 #include "../shared/Log.h"
+#include "Fonts.h"
 
 namespace
 {
@@ -18,7 +19,7 @@ ProjectChooserComponent::ProjectChooserComponent()
     addAndMakeVisible (errorLabel);
 
     titleLabel.setText (jp (u8"プロジェクトを選択"), juce::dontSendNotification);
-    titleLabel.setFont (juce::FontOptions (20.0f, juce::Font::bold));
+    titleLabel.setFont (Fonts::largeTitle());
 
     listBox.setRowHeight (28);
 
@@ -26,12 +27,15 @@ ProjectChooserComponent::ProjectChooserComponent()
     openButton.onClick = [this] { openRow (listBox.getSelectedRow()); };
 
     newCaptionLabel.setText (jp (u8"新規プロジェクト名"), juce::dontSendNotification);
+    newCaptionLabel.setFont (Fonts::body());
+    nameEditor.setFont (Fonts::body());
     nameEditor.setTextToShowWhenEmpty (jp (u8"例: my-song"), juce::Colours::grey);
     nameEditor.onReturnKey = [this] { createNewProject(); };
 
     newButton.setButtonText (jp (u8"新規作成"));
     newButton.onClick = [this] { createNewProject(); };
 
+    errorLabel.setFont (Fonts::body());
     errorLabel.setColour (juce::Label::textColourId, juce::Colours::orangered);
 
     refreshList();
@@ -74,7 +78,9 @@ void ProjectChooserComponent::paintListBoxItem (int rowNumber, juce::Graphics& g
     if (rowNumber >= 0 && rowNumber < projectDirs.size())
     {
         g.setColour (juce::Colours::white);
-        g.setFont (15.0f);
+        // リスト行は主要コンテンツなのでbodyより一回り大きく。プロジェクト名は自由入力なのでCJK補正
+        g.setFont (Fonts::forText (Fonts::body().withHeight (15.0f),
+                                   projectDirs[rowNumber].getFileName()));
         g.drawText (projectDirs[rowNumber].getFileName(), 10, 0, width - 20, height,
                     juce::Justification::centredLeft);
     }

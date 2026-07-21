@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "../shared/GmInstruments.h"
+#include "Fonts.h"
 
 namespace
 {
@@ -48,13 +49,13 @@ public:
             if (drumName != nullptr)
             {
                 g.setColour (isBlackKey (pitch) ? juce::Colour (0xffaaaaae) : juce::Colour (0xff333338));
-                g.setFont (8.0f);
+                g.setFont (Fonts::small());
                 g.drawText (drumName, 2, y, getWidth() - 6, rowHeight, juce::Justification::centredRight);
             }
             else if (! drums && pitch % 12 == 0)
             {
                 g.setColour (juce::Colour (0xff333338));
-                g.setFont (9.0f);
+                g.setFont (Fonts::small());
                 g.drawText (juce::MidiMessage::getMidiNoteName (pitch, true, true, 3),
                             2, y, getWidth() - 6, rowHeight, juce::Justification::centredRight);
             }
@@ -218,10 +219,10 @@ PianoRollView::PianoRollView (TransportState& transportState)
     keyboardHolder.addAndMakeVisible (keyboard.get());
     addAndMakeVisible (*viewport);
 
-    titleLabel.setFont (juce::FontOptions (13.0f));
+    titleLabel.setFont (Fonts::body());
 
     velocityCaption.setText ("Vel", juce::dontSendNotification);
-    velocityCaption.setFont (juce::FontOptions (12.0f));
+    velocityCaption.setFont (Fonts::body());
     velocityCaption.setJustificationType (juce::Justification::centredRight);
     velocitySlider.setSliderStyle (juce::Slider::LinearHorizontal);
     velocitySlider.setRange (1.0, 127.0, 1.0);

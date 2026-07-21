@@ -2,6 +2,8 @@
 
 #include <cmath>
 
+#include "Fonts.h"
+
 // ---- 内部コンポーネント -------------------------------------------------
 
 class TimelineView::LaneViewport : public juce::Viewport
@@ -63,7 +65,7 @@ public:
             if (bar % labelStep == 0)
             {
                 g.setColour (juce::Colours::lightgrey);
-                g.setFont (11.0f);
+                g.setFont (Fonts::mono (11.0f));
                 g.drawText (juce::String (bar + 1),
                             (int) std::llround (bar * barWidth) + 4, 0,
                             (int) (labelStep * barWidth) - 6, getHeight(),

@@ -2,6 +2,7 @@
 
 #include "TimelineView.h"
 #include "../shared/GmInstruments.h"
+#include "Fonts.h"
 
 // ---- TrackHeaderComponent -----------------------------------------------
 
@@ -14,9 +15,11 @@ TrackHeaderComponent::TrackHeaderComponent()
     addAndMakeVisible (volumeSlider);
     addChildComponent (instrumentBox); // MIDIトラックのみ bind() で表示
 
+    nameLabel.setFont (Fonts::body());
     nameLabel.setEditable (false, true, false); // ダブルクリックでリネーム
     nameLabel.onTextChange = [this]
     {
+        nameLabel.setFont (Fonts::forText (Fonts::body(), nameLabel.getText()));
         if (track != nullptr && nameLabel.getText() != track->name)
         {
             if (onWillChangeStructure)
@@ -105,6 +108,7 @@ void TrackHeaderComponent::bind (Track* trackToBind, bool isSelected)
     if (track != nullptr)
     {
         nameLabel.setText (track->name, juce::dontSendNotification);
+        nameLabel.setFont (Fonts::forText (Fonts::body(), track->name));
         muteButton.setToggleState (track->params->mute.load(), juce::dontSendNotification);
         soloButton.setToggleState (track->params->solo.load(), juce::dontSendNotification);
         volumeSlider.setValue (track->params->gain.load(), juce::dontSendNotification);

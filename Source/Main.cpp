@@ -2,6 +2,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "shared/Log.h"
+#include "ui/AppLookAndFeel.h"
 #include "ui/MainComponent.h"
 #include "ui/ProjectChooserComponent.h"
 
@@ -20,12 +21,17 @@ public:
     void initialise (const juce::String&) override
     {
         Log::init (getApplicationVersion());
+        lookAndFeel = std::make_unique<AppLookAndFeel>();
+        juce::LookAndFeel::setDefaultLookAndFeel (lookAndFeel.get());
         mainWindow = std::make_unique<MainWindow>();
     }
 
     void shutdown() override
     {
+        // LookAndFeelはウィンドウより長生きさせ、参照を外してから破棄する
         mainWindow.reset();
+        juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
+        lookAndFeel.reset();
         Log::shutdown();
     }
 
@@ -127,6 +133,7 @@ private:
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainWindow)
     };
 
+    std::unique_ptr<AppLookAndFeel> lookAndFeel;
     std::unique_ptr<MainWindow> mainWindow;
 };
 

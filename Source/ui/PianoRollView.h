@@ -16,9 +16,9 @@ class PianoRollView : public juce::Component,
 {
 public:
     static constexpr int preferredHeight = 260;
-    static constexpr int keyboardWidth = 56;
+    static constexpr int keyboardWidth = 80;  // 11pxのGMドラム名がある程度収まる幅
     static constexpr int headerHeight = 30;
-    static constexpr int rowHeight = 12;
+    static constexpr int rowHeight = 14;      // 11pxフォント（Fonts::small）が縦に切れない高さ
 
     explicit PianoRollView (TransportState& transportState);
     ~PianoRollView() override;

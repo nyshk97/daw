@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "../shared/Log.h"
+#include "Fonts.h"
 
 namespace
 {
@@ -110,15 +111,19 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     clickButton.onClick = [this] { transport.clickEnabled.store (clickButton.getToggleState()); };
 
     bpmCaption.setText ("BPM", juce::dontSendNotification);
+    bpmCaption.setFont (Fonts::body());
     bpmCaption.setJustificationType (juce::Justification::centredRight);
+    bpmValue.setFont (Fonts::mono (13.0f));
     bpmValue.setEditable (true, false, false);
     bpmValue.setText (juce::String (project->bpm), juce::dontSendNotification);
     bpmValue.setJustificationType (juce::Justification::centred);
     bpmValue.setColour (juce::Label::outlineColourId, juce::Colour (0xff55555a));
     bpmValue.onTextChange = [this] { applyBpmText(); };
 
+    positionLabel.setFont (Fonts::mono (13.0f));
     positionLabel.setJustificationType (juce::Justification::centredLeft);
 
+    srWarningLabel.setFont (Fonts::body());
     srWarningLabel.setColour (juce::Label::textColourId, juce::Colours::orangered);
     srWarningLabel.setJustificationType (juce::Justification::centredLeft);
 
