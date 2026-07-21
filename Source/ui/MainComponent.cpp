@@ -977,11 +977,13 @@ void MainComponent::resized()
     auto area = getLocalBounds();
 
     auto topRow = area.removeFromTop (44).reduced (8, 7);
-    playButton.setBounds (topRow.removeFromLeft (44));
+    // トランスポートボタンは行の高さいっぱいだと大きすぎるので一回り小さくして縦中央に置く
+    auto transportButton = [&topRow] { return topRow.removeFromLeft (38).withSizeKeepingCentre (38, 26); };
+    playButton.setBounds (transportButton());
     topRow.removeFromLeft (6);
-    recordButton.setBounds (topRow.removeFromLeft (44));
+    recordButton.setBounds (transportButton());
     topRow.removeFromLeft (14);
-    clickButton.setBounds (topRow.removeFromLeft (44));
+    clickButton.setBounds (transportButton());
     topRow.removeFromLeft (10);
     bpmCaption.setBounds (topRow.removeFromLeft (40));
     topRow.removeFromLeft (4);

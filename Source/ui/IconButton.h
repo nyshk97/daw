@@ -83,7 +83,7 @@ public:
                 break;
             case Icon::metronome:
             {
-                const auto m = juce::Rectangle<float> (side * 1.25f, side * 1.25f)
+                const auto m = juce::Rectangle<float> (side * 1.05f, side * 1.05f)
                                    .withCentre (bounds.getCentre());
                 const float stroke = juce::jmax (1.5f, side * 0.13f);
                 juce::Path p; // 上すぼまりの台形（本体）
