@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <functional>
 #include <juce_gui_basics/juce_gui_basics.h>
 
@@ -57,8 +58,19 @@ public:
                 g.fillRoundedRectangle (row.reduced (3, 1).toFloat(), 3.0f);
             }
             g.setColour (juce::Colours::white.withAlpha (0.9f));
+
+            const auto iconArea = juce::Rectangle<float> ((float) iconSize, (float) iconSize)
+                                      .withCentre ({ (float) row.getX() + itemInsetX + (float) iconSize * 0.5f,
+                                                     (float) row.getCentreY() });
+            if (i == 0)
+                drawWaveformIcon (g, iconArea);
+            else
+                drawKeyboardIcon (g, iconArea);
+
             g.setFont (Fonts::body());
-            g.drawText (itemLabel (i), row.reduced (12, 0), juce::Justification::centredLeft);
+            g.drawText (itemLabel (i),
+                        row.withTrimmedLeft (itemInsetX + iconSize + iconTextGap).withTrimmedRight (8),
+                        juce::Justification::centredLeft);
         }
     }
 
@@ -103,6 +115,9 @@ private:
     static constexpr int numItems = 2;
     static constexpr int itemHeight = 26;
     static constexpr int panelPaddingY = 4;
+    static constexpr int itemInsetX = 12;
+    static constexpr int iconSize = 16;
+    static constexpr int iconTextGap = 8;
 
     static juce::String itemLabel (int i)
     {
@@ -110,10 +125,55 @@ private:
                                               : u8"ソフトウェア音源トラック");
     }
 
+    // オーディオトラック: 波形（中心線対称の縦バー）
+    static void drawWaveformIcon (juce::Graphics& g, juce::Rectangle<float> r)
+    {
+        const float heights[] = { 0.35f, 0.75f, 1.0f, 0.55f, 0.85f, 0.3f };
+        const int n = juce::numElementsInArray (heights);
+        const float barW = 1.8f;
+        const float step = (r.getWidth() - barW) / (float) (n - 1);
+        for (int i = 0; i < n; ++i)
+        {
+            const float h = r.getHeight() * heights[i];
+            g.fillRoundedRectangle (r.getX() + step * (float) i, r.getCentreY() - h * 0.5f,
+                                    barW, h, barW * 0.5f);
+        }
+    }
+
+    // ソフトウェア音源トラック: 鍵盤（外枠＋黒鍵2つ＋黒鍵下の区切り線）
+    static void drawKeyboardIcon (juce::Graphics& g, juce::Rectangle<float> r)
+    {
+        const auto kb = r.reduced (0.0f, r.getHeight() * 0.16f); // 横長にする
+        const float stroke = 1.2f;
+        g.drawRoundedRectangle (kb.reduced (stroke * 0.5f), 2.0f, stroke);
+
+        const float keyW = kb.getWidth() / 3.0f;
+        const float blackH = kb.getHeight() * 0.52f;
+        for (int k = 1; k <= 2; ++k)
+        {
+            const float x = kb.getX() + keyW * (float) k;
+            const float blackW = keyW * 0.55f;
+            g.fillRect (x - blackW * 0.5f, kb.getY() + stroke, blackW, blackH);
+            g.drawLine (x, kb.getY() + blackH, x, kb.getBottom() - stroke, stroke);
+        }
+    }
+
     juce::Rectangle<int> panelBounds() const
     {
+        // アイコン分のインセットが付くとanchor幅（＋ボタン幅）では文字が入り切らない
+        // ことがあるため、最長ラベルの実測幅ぶんまで右に広げる
+        float maxTextW = 0.0f;
+        for (int i = 0; i < numItems; ++i)
+        {
+            juce::GlyphArrangement ga;
+            ga.addLineOfText (Fonts::body(), itemLabel (i), 0.0f, 0.0f);
+            maxTextW = juce::jmax (maxTextW, ga.getBoundingBox (0, -1, true).getWidth());
+        }
+        const int w = juce::jmax (anchor.getWidth(),
+                                  itemInsetX + iconSize + iconTextGap
+                                      + juce::roundToInt (std::ceil (maxTextW)) + 14);
         const int h = numItems * itemHeight + panelPaddingY * 2;
-        return { anchor.getX(), anchor.getY() - 2 - h, anchor.getWidth(), h };
+        return { anchor.getX(), anchor.getY() - 2 - h, w, h };
     }
 
     juce::Rectangle<int> itemBounds (int i) const
