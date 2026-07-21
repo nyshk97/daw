@@ -3,6 +3,7 @@
 #include <memory>
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include "AddTrackOverlay.h"
 #include "IconButton.h"
 #include "PianoRollView.h"
 #include "TimelineView.h"
@@ -86,6 +87,7 @@ private:
     IconButton clickButton { IconButton::Icon::metronome, juce::String::fromUTF8 (u8"クリック") };
     IconButton settingsButton { IconButton::Icon::gear, juce::String::fromUTF8 (u8"オーディオ設定") };
     IconButton addTrackButton { IconButton::Icon::plus, juce::String::fromUTF8 (u8"トラックを追加") };
+    AddTrackOverlay addTrackOverlay;
     juce::Label bpmCaption, bpmValue, positionLabel, srWarningLabel;
     juce::TooltipWindow tooltipWindow { this }; // アイコンのみのボタン（歯車等）のホバー説明用
 

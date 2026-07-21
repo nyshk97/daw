@@ -36,6 +36,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     addAndMakeVisible (addTrackButton);
     addAndMakeVisible (settingsButton);
     addAndMakeVisible (clickButton);
+    addChildComponent (addTrackOverlay); // トラック追加メニュー表示中のみ可視
     addAndMakeVisible (bpmCaption);
     addAndMakeVisible (bpmValue);
     addAndMakeVisible (positionLabel);
@@ -106,6 +107,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
 
     addTrackButton.onClick = [this] { showAddTrackMenu(); };
     addTrackButton.setTooltip (jp (u8"トラックを追加"));
+    addTrackOverlay.onPick = [this] (TrackType type) { addTrack (type); };
 
     settingsButton.onClick = [this] { showDeviceSettings(); };
     settingsButton.setTooltip (jp (u8"オーディオ設定"));
@@ -484,17 +486,8 @@ void MainComponent::showAddTrackMenu()
     if (engine.isRecording())
         return;
 
-    juce::PopupMenu menu;
-    menu.addItem (1, jp (u8"オーディオトラック"));
-    menu.addItem (2, jp (u8"ソフトウェア音源トラック"));
-    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (addTrackButton),
-                        [this] (int result)
-                        {
-                            if (result == 1)
-                                addTrack (TrackType::audio);
-                            else if (result == 2)
-                                addTrack (TrackType::midi);
-                        });
+    addTrackOverlay.setBounds (getLocalBounds());
+    addTrackOverlay.show (addTrackButton.getBounds());
 }
 
 void MainComponent::addTrack (TrackType type)
@@ -706,6 +699,11 @@ void MainComponent::pushSnapshot()
 
 bool MainComponent::keyPressed (const juce::KeyPress& key)
 {
+    if (addTrackOverlay.isVisible() && key == juce::KeyPress (juce::KeyPress::escapeKey))
+    {
+        addTrackOverlay.dismiss();
+        return true;
+    }
     if (key == juce::KeyPress::spaceKey)
     {
         togglePlay();
@@ -945,4 +943,10 @@ void MainComponent::resized()
     addTrackButton.setBounds (headerColumn.removeFromBottom (32).reduced (8, 4));
     headers.setBounds (headerColumn);
     timeline.setBounds (area);
+
+    if (addTrackOverlay.isVisible())
+    {
+        addTrackOverlay.setBounds (getLocalBounds());
+        addTrackOverlay.setAnchor (addTrackButton.getBounds());
+    }
 }
