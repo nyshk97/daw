@@ -66,6 +66,15 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         timeline.refresh();
     };
     timeline.onOpenRegion = [this] (int trackIndex, int regionIndex) { openPianoRoll (trackIndex, regionIndex); };
+    timeline.onDeleteItemRequested = [this] (int trackIndex, int itemIndex)
+    {
+        if (trackIndex < 0 || trackIndex >= (int) project->tracks.size())
+            return;
+        if (project->tracks[(size_t) trackIndex].type == TrackType::midi)
+            deleteRegionAt (trackIndex, itemIndex);
+        else
+            requestDeleteClipAt (trackIndex, itemIndex);
+    };
     pianoRoll.onWillEditModel = [this] { undoStack.begin (*project); };
     pianoRoll.onModelEdited = [this]
     {
@@ -419,7 +428,17 @@ void MainComponent::finishRecording()
 void MainComponent::requestDeleteSelectedClip()
 {
     const auto sel = timeline.getSelection();
-    if (! sel.isValid() || engine.isRecording())
+    if (sel.isValid())
+        requestDeleteClipAt (sel.track, sel.clip);
+}
+
+void MainComponent::requestDeleteClipAt (int trackIndex, int clipIndex)
+{
+    if (engine.isRecording())
+        return;
+    if (trackIndex < 0 || trackIndex >= (int) project->tracks.size())
+        return;
+    if (clipIndex < 0 || clipIndex >= (int) project->tracks[(size_t) trackIndex].clips.size())
         return;
 
     juce::NativeMessageBox::showAsync (
@@ -429,21 +448,21 @@ void MainComponent::requestDeleteSelectedClip()
             .withMessage (jp (u8"選択中のクリップを削除しますか？"))
             .withButton (jp (u8"削除"))
             .withButton (jp (u8"キャンセル")),
-        [this, sel] (int result)
+        [this, trackIndex, clipIndex] (int result)
         {
             if (result != 0)
                 return;
             // 非同期ダイアログの間にモデルが変わっている可能性があるので再検証
-            if (sel.track >= (int) project->tracks.size())
+            if (trackIndex >= (int) project->tracks.size())
                 return;
-            auto& clips = project->tracks[(size_t) sel.track].clips;
-            if (sel.clip >= (int) clips.size())
+            auto& clips = project->tracks[(size_t) trackIndex].clips;
+            if (clipIndex >= (int) clips.size())
                 return;
 
-            Log::info ("clip.delete", "track=" + juce::String (sel.track)
-                                          + " file=" + clips[(size_t) sel.clip].fileName);
+            Log::info ("clip.delete", "track=" + juce::String (trackIndex)
+                                          + " file=" + clips[(size_t) clipIndex].fileName);
             undoStack.begin (*project);
-            clips.erase (clips.begin() + sel.clip);
+            clips.erase (clips.begin() + clipIndex);
             timeline.clearSelection();
             pushSnapshot();
             setDirty (true);
@@ -521,17 +540,23 @@ bool MainComponent::selectedTrackIsMidi() const
 void MainComponent::deleteSelectedRegion()
 {
     const auto sel = timeline.getRegionSelection();
-    if (! sel.isValid() || engine.isRecording())
+    if (sel.isValid())
+        deleteRegionAt (sel.track, sel.region);
+}
+
+void MainComponent::deleteRegionAt (int trackIndex, int regionIndex)
+{
+    if (engine.isRecording())
         return;
-    if (sel.track >= (int) project->tracks.size())
+    if (trackIndex < 0 || trackIndex >= (int) project->tracks.size())
         return;
-    auto& regions = project->tracks[(size_t) sel.track].midiRegions;
-    if (sel.region >= (int) regions.size())
+    auto& regions = project->tracks[(size_t) trackIndex].midiRegions;
+    if (regionIndex < 0 || regionIndex >= (int) regions.size())
         return;
 
-    Log::info ("region.delete", "track=" + juce::String (sel.track));
+    Log::info ("region.delete", "track=" + juce::String (trackIndex));
     undoStack.begin (*project);
-    regions.erase (regions.begin() + sel.region);
+    regions.erase (regions.begin() + regionIndex);
     timeline.clearSelection();
     pushSnapshot();
     setDirty (true);
@@ -786,6 +811,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         showDeviceSettings();
         return true;
     }
+    // Logic準拠: Ctrl+M = 選択中のリージョン/クリップをミュート/ミュート解除
+    if (key == juce::KeyPress ('m', juce::ModifierKeys::ctrlModifier, 0))
+    {
+        toggleMuteSelectedItem();
+        return true;
+    }
 
     // Cmd/Ctrl/Optなしの1文字ショートカット（,/.=1拍シーク、Shift+,/.=1小節、mでミュート、rで録音）
     if (! key.getModifiers().testFlags (juce::ModifierKeys::commandModifier
@@ -860,6 +891,16 @@ void MainComponent::toggleMuteSelectedTrack()
     params.mute.store (! params.mute.load());
     headers.refreshValues();
     setDirty (true);
+}
+
+void MainComponent::toggleMuteSelectedItem()
+{
+    if (engine.isRecording())
+        return;
+    if (const auto sel = timeline.getSelection(); sel.isValid())
+        timeline.toggleMuteAt (sel.track, sel.clip);
+    else if (const auto rsel = timeline.getRegionSelection(); rsel.isValid())
+        timeline.toggleMuteAt (rsel.track, rsel.region);
 }
 
 // ---- 表示更新 ----

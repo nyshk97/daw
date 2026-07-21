@@ -54,6 +54,12 @@ public:
     std::function<void()> onWillEditModel;           // 編集の直前（undoスナップショット用）
     std::function<void()> onModelEdited;             // 編集の確定後（pushSnapshot・dirty用）
     std::function<void (int, int)> onOpenRegion;     // リージョンをダブルクリック（track, region）
+    std::function<void (int, int)> onDeleteItemRequested; // 右クリックメニューの削除（track, クリップorリージョンindex）
+
+    // リージョン単位の操作。対象は引数で明示する（「現在の選択」を暗黙に読まない）。
+    // itemIndex はオーディオトラックなら clips、MIDIトラックなら midiRegions のindex
+    void toggleMuteAt (int trackIndex, int itemIndex);
+    void duplicateAt (int trackIndex, int itemIndex); // 複製を元の終端直後に置いて選択する
 
     void scrollVertically (float wheelDeltaY);       // ヘッダ上のホイールを転送してもらう
     void zoomBy (double factor);                     // 横ズーム（アンカー: 再生ヘッド or ビュー中央）
@@ -90,6 +96,8 @@ private:
     void handleLaneDoubleClick (const juce::MouseEvent& e);
     void seekFromX (int x);
     int hitTestRegion (int trackIndex, int x) const; // 見つからなければ-1（重なりは後勝ち）
+    int hitTestClip (int trackIndex, int x) const;   // 同上（オーディオトラック用）
+    void showItemMenu (int trackIndex, int itemIndex); // 右クリックメニュー（ミュート/複製/削除）
 
     TransportState& transport;
     Project* project = nullptr;

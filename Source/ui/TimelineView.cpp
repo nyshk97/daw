@@ -3,6 +3,12 @@
 #include <cmath>
 
 #include "Fonts.h"
+#include "../shared/Log.h"
+
+namespace
+{
+juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
+}
 
 // ---- 内部コンポーネント -------------------------------------------------
 
@@ -226,7 +232,9 @@ private:
             return;
 
         const auto rect = juce::Rectangle<int> (x, y + 4, w, trackHeight - 8);
-        g.setColour (isSelected ? juce::Colour (0xff4a6ea9) : juce::Colour (0xff39537d));
+        // ミュート中はグレー減光（Logic準拠）
+        g.setColour (clip.muted ? (isSelected ? juce::Colour (0xff54565e) : juce::Colour (0xff3c3d43))
+                                : (isSelected ? juce::Colour (0xff4a6ea9) : juce::Colour (0xff39537d)));
         g.fillRoundedRectangle (rect.toFloat(), 4.0f);
         if (isSelected)
         {
@@ -235,7 +243,7 @@ private:
         }
 
         // 波形（ロード時に作ったピークキャッシュから描く）
-        g.setColour (juce::Colours::white.withAlpha (0.75f));
+        g.setColour (juce::Colours::white.withAlpha (clip.muted ? 0.3f : 0.75f));
         const int x0 = juce::jmax (rect.getX(), clipRegion.getX());
         const int x1 = juce::jmin (rect.getRight(), clipRegion.getRight());
         const float midY = (float) rect.getCentreY();
@@ -266,7 +274,9 @@ private:
             return;
 
         const auto rect = juce::Rectangle<int> (x, y + 4, w, trackHeight - 8);
-        g.setColour (isSelected ? juce::Colour (0xff4a9968) : juce::Colour (0xff3a7350));
+        // ミュート中はグレー減光（Logic準拠）
+        g.setColour (region.muted ? (isSelected ? juce::Colour (0xff54565e) : juce::Colour (0xff3c3d43))
+                                  : (isSelected ? juce::Colour (0xff4a9968) : juce::Colour (0xff3a7350)));
         g.fillRoundedRectangle (rect.toFloat(), 4.0f);
         if (isSelected)
         {
@@ -275,7 +285,7 @@ private:
         }
 
         // ノートのミニチュア（ピッチ範囲 C1..C7 に射影。範囲外はクランプ）
-        g.setColour (juce::Colours::white.withAlpha (0.8f));
+        g.setColour (juce::Colours::white.withAlpha (region.muted ? 0.3f : 0.8f));
         constexpr int loPitch = 24, hiPitch = 96;
         const auto inner = rect.reduced (1, 3);
         const double tickW = (double) w / (double) juce::jmax ((juce::int64) 1, region.lengthPpq);
@@ -527,6 +537,36 @@ void TimelineView::handleLaneMouseDown (const juce::MouseEvent& e)
     if (row >= 0 && row < numTracks && onTrackSelected)
         onTrackSelected (row);
 
+    // 右クリック: リージョン/クリップ上ならまず選択してからメニュー表示（ドラッグ・シークはしない）。
+    // リージョン外の右クリックは何もしない
+    if (e.mods.isPopupMenu())
+    {
+        if (row >= 0 && row < numTracks)
+        {
+            const auto& track = project->tracks[(size_t) row];
+            const int item = track.type == TrackType::midi ? hitTestRegion (row, e.x)
+                                                           : hitTestClip (row, e.x);
+            if (item >= 0)
+            {
+                if (track.type == TrackType::midi)
+                {
+                    selection.clear();
+                    regionSelection = { row, item };
+                }
+                else
+                {
+                    selection = { row, item };
+                    regionSelection.clear();
+                }
+                if (onSelectionChanged)
+                    onSelectionChanged();
+                lanes->repaint();
+                showItemMenu (row, item);
+            }
+        }
+        return;
+    }
+
     if (row >= 0 && row < numTracks)
     {
         auto& track = project->tracks[(size_t) row];
@@ -560,21 +600,15 @@ void TimelineView::handleLaneMouseDown (const juce::MouseEvent& e)
         }
         else
         {
-            // クリップのヒット判定（重なりは後勝ち＝後から録ったものを優先）
-            const auto samplePos = xToSample (e.x);
-            auto& clips = track.clips;
-            for (int ci = (int) clips.size() - 1; ci >= 0; --ci)
+            const int ci = hitTestClip (row, e.x);
+            if (ci >= 0)
             {
-                auto& clip = clips[(size_t) ci];
-                if (samplePos >= clip.startSample && samplePos < clip.startSample + clip.lengthSamples())
-                {
-                    selection = { row, ci };
-                    regionSelection.clear();
-                    if (onSelectionChanged)
-                        onSelectionChanged();
-                    lanes->repaint();
-                    return;
-                }
+                selection = { row, ci };
+                regionSelection.clear();
+                if (onSelectionChanged)
+                    onSelectionChanged();
+                lanes->repaint();
+                return;
             }
         }
     }
@@ -712,6 +746,124 @@ int TimelineView::hitTestRegion (int trackIndex, int x) const
             return ri;
     }
     return -1;
+}
+
+int TimelineView::hitTestClip (int trackIndex, int x) const
+{
+    if (project == nullptr || trackIndex < 0 || trackIndex >= (int) project->tracks.size())
+        return -1;
+    const auto& track = project->tracks[(size_t) trackIndex];
+    if (track.type != TrackType::audio)
+        return -1;
+
+    // 重なりは後勝ち＝後から録ったものを優先
+    const auto samplePos = xToSample (x);
+    for (int ci = (int) track.clips.size() - 1; ci >= 0; --ci)
+    {
+        const auto& clip = track.clips[(size_t) ci];
+        if (samplePos >= clip.startSample && samplePos < clip.startSample + clip.lengthSamples())
+            return ci;
+    }
+    return -1;
+}
+
+void TimelineView::showItemMenu (int trackIndex, int itemIndex)
+{
+    if (project == nullptr || trackIndex < 0 || trackIndex >= (int) project->tracks.size())
+        return;
+    const auto& track = project->tracks[(size_t) trackIndex];
+    const bool isMidi = track.type == TrackType::midi;
+    if (itemIndex < 0 || itemIndex >= (int) (isMidi ? track.midiRegions.size() : track.clips.size()))
+        return;
+    const bool muted = isMidi ? track.midiRegions[(size_t) itemIndex].muted
+                              : track.clips[(size_t) itemIndex].muted;
+
+    juce::PopupMenu menu;
+    menu.addItem (1, muted ? jp (u8"ミュート解除") : jp (u8"ミュート"));
+    menu.addItem (2, jp (u8"複製"));
+    menu.addItem (3, jp (u8"削除"));
+
+    // コールバックは後から呼ばれるためSafePointerで寿命を確認し、右クリック時点の対象を捕捉して渡す。
+    // メニュー表示中はモーダルで他の編集操作が発生せずインデックスは変化しない前提（各操作側でも範囲チェックする）
+    juce::Component::SafePointer<TimelineView> safe (this);
+    menu.showMenuAsync (juce::PopupMenu::Options(),
+                        [safe, trackIndex, itemIndex] (int result)
+                        {
+                            if (safe == nullptr)
+                                return;
+                            if (result == 1)
+                                safe->toggleMuteAt (trackIndex, itemIndex);
+                            else if (result == 2)
+                                safe->duplicateAt (trackIndex, itemIndex);
+                            else if (result == 3 && safe->onDeleteItemRequested)
+                                safe->onDeleteItemRequested (trackIndex, itemIndex);
+                        });
+}
+
+void TimelineView::toggleMuteAt (int trackIndex, int itemIndex)
+{
+    if (project == nullptr || trackIndex < 0 || trackIndex >= (int) project->tracks.size())
+        return;
+    auto& track = project->tracks[(size_t) trackIndex];
+    const bool isMidi = track.type == TrackType::midi;
+    if (itemIndex < 0 || itemIndex >= (int) (isMidi ? track.midiRegions.size() : track.clips.size()))
+        return;
+
+    if (onWillEditModel)
+        onWillEditModel();
+    bool& muted = isMidi ? track.midiRegions[(size_t) itemIndex].muted
+                         : track.clips[(size_t) itemIndex].muted;
+    muted = ! muted;
+    Log::info ("region.mute", "track=" + juce::String (trackIndex)
+                                  + " item=" + juce::String (itemIndex)
+                                  + " muted=" + (muted ? "1" : "0"));
+    if (onModelEdited)
+        onModelEdited();
+    lanes->repaint();
+}
+
+void TimelineView::duplicateAt (int trackIndex, int itemIndex)
+{
+    if (project == nullptr || trackIndex < 0 || trackIndex >= (int) project->tracks.size())
+        return;
+    auto& track = project->tracks[(size_t) trackIndex];
+
+    if (track.type == TrackType::midi)
+    {
+        if (itemIndex < 0 || itemIndex >= (int) track.midiRegions.size())
+            return;
+        if (onWillEditModel)
+            onWillEditModel();
+        MidiRegion copy = track.midiRegions[(size_t) itemIndex];
+        copy.id = project->allocateId();
+        for (auto& note : copy.notes)
+            note.id = project->allocateId();
+        copy.startPpq += copy.lengthPpq; // 元の終端直後（Logicのリピート相当）
+        track.midiRegions.push_back (std::move (copy));
+        selection.clear();
+        regionSelection = { trackIndex, (int) track.midiRegions.size() - 1 };
+    }
+    else
+    {
+        if (itemIndex < 0 || itemIndex >= (int) track.clips.size())
+            return;
+        if (onWillEditModel)
+            onWillEditModel();
+        Clip copy = track.clips[(size_t) itemIndex]; // fileName/audioは共有、peakCacheは値コピー
+        copy.startSample += copy.lengthSamples();    // 元の終端直後（Logicのリピート相当）
+        track.clips.push_back (std::move (copy));
+        selection = { trackIndex, (int) track.clips.size() - 1 };
+        regionSelection.clear();
+    }
+
+    Log::info ("region.duplicate", "track=" + juce::String (trackIndex)
+                                       + " item=" + juce::String (itemIndex));
+    updateContentSize();
+    if (onSelectionChanged)
+        onSelectionChanged();
+    if (onModelEdited)
+        onModelEdited();
+    lanes->repaint();
 }
 
 void TimelineView::seekFromX (int x)

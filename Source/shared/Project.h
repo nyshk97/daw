@@ -16,6 +16,7 @@ struct Clip
 
     juce::String fileName;      // プロジェクトフォルダ相対（例: clip-001.wav）
     juce::int64 startSample = 0;
+    bool muted = false;         // リージョン単位のミュート（再生スナップショットから除外）
     std::shared_ptr<juce::AudioBuffer<float>> audio; // モノラル・メモリ常駐
     std::vector<float> peakCache;                    // samplesPerPeak ごとの絶対値ピーク
 
@@ -40,6 +41,7 @@ struct MidiRegion
     juce::uint64 id = 0;
     juce::int64 startPpq = 0;                  // 曲頭からの絶対位置（>= 0）
     juce::int64 lengthPpq = Ppq::ticksPerBar;  // >= 1
+    bool muted = false;                        // リージョン単位のミュート（再生スナップショットから除外）
     std::vector<MidiNote> notes;
 
     // 不変条件をモデル層で強制する。ノートの追加・移動・リサイズ後に必ず通すこと

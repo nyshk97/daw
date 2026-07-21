@@ -75,6 +75,7 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
                 auto* clipObj = new juce::DynamicObject();
                 clipObj->setProperty ("file", clip.fileName);
                 clipObj->setProperty ("startSample", clip.startSample);
+                clipObj->setProperty ("muted", clip.muted);
                 clipsArray.add (juce::var (clipObj));
             }
             trackObj->setProperty ("clips", clipsArray);
@@ -92,6 +93,7 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
                 regionObj->setProperty ("id", (juce::int64) region.id);
                 regionObj->setProperty ("startPpq", region.startPpq);
                 regionObj->setProperty ("lengthPpq", region.lengthPpq);
+                regionObj->setProperty ("muted", region.muted);
 
                 juce::Array<juce::var> notesArray;
                 for (auto& note : region.notes)
@@ -189,6 +191,7 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
                         Clip clip;
                         clip.fileName = clipVar.getProperty ("file", "").toString();
                         clip.startSample = (juce::int64) clipVar.getProperty ("startSample", 0);
+                        clip.muted = (bool) clipVar.getProperty ("muted", false);
                         clip.audio = loadWavMono (dir.getChildFile (clip.fileName));
 
                         if (clip.audio == nullptr)
@@ -221,6 +224,7 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
                                                       (juce::int64) regionVar.getProperty ("startPpq", 0));
                         region.lengthPpq = juce::jmax ((juce::int64) 1,
                                                        (juce::int64) regionVar.getProperty ("lengthPpq", Ppq::ticksPerBar));
+                        region.muted = (bool) regionVar.getProperty ("muted", false);
 
                         if (auto* notesArray = regionVar.getProperty ("notes", {}).getArray())
                         {
@@ -342,7 +346,7 @@ std::unique_ptr<PlaybackSnapshot> Project::buildSnapshot() const
         if (track.type == TrackType::audio)
         {
             for (auto& clip : track.clips)
-                if (clip.audio != nullptr)
+                if (clip.audio != nullptr && ! clip.muted)
                     trackPlayback.clips.push_back ({ clip.audio, clip.startSample });
         }
         else
@@ -353,6 +357,8 @@ std::unique_ptr<PlaybackSnapshot> Project::buildSnapshot() const
             const bool fixedPitch = track.drums && track.drumPitch >= 0;
             for (auto& region : track.midiRegions)
             {
+                if (region.muted)
+                    continue;
                 const auto regionEnd = region.startPpq + region.lengthPpq;
                 for (auto& note : region.notes)
                 {

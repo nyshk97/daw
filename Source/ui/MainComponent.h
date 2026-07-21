@@ -47,8 +47,11 @@ private:
     void finishRecording();
     void seekByStep (int direction, bool wholeBar, int keyCode);  // ,/.キー: 1拍（Shiftで1小節）単位で再生ヘッドを移動
     void toggleMuteSelectedTrack();      // mキー
-    void requestDeleteSelectedClip();
-    void deleteSelectedRegion();         // MIDIリージョンは確認なしで削除（undo可能なので）
+    void toggleMuteSelectedItem();       // Ctrl+M: 選択中のクリップ/リージョンをミュート
+    void requestDeleteSelectedClip();    // 選択を読んで requestDeleteClipAt に渡す薄いラッパー
+    void deleteSelectedRegion();         // 同上（deleteRegionAt へ）
+    void requestDeleteClipAt (int trackIndex, int clipIndex);   // 確認ダイアログあり
+    void deleteRegionAt (int trackIndex, int regionIndex);      // MIDIリージョンは確認なしで削除（undo可能なので）
     void requestDeleteTrack (int index);
     void showAddTrackMenu();
     void addTrack (TrackType type);
