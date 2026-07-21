@@ -29,6 +29,10 @@ public:
     void mouseDown (const juce::MouseEvent& e) override;
 
 private:
+    static constexpr int iconSlotWidth = 20; // トラック名の左のトラック種別アイコン領域
+
+    juce::Rectangle<float> typeIconArea() const;
+
     Track* track = nullptr;
     bool selected = false;
     float meterDisplay = 0.0f; // メーターの表示値（読み取り値とディケイのmax）

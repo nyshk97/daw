@@ -3,6 +3,7 @@
 #include "TimelineView.h"
 #include "../shared/GmInstruments.h"
 #include "Fonts.h"
+#include "TrackIcons.h"
 
 // ---- TrackHeaderComponent -----------------------------------------------
 
@@ -167,13 +168,31 @@ void TrackHeaderComponent::paint (juce::Graphics& g)
     }
     g.setColour (juce::Colour (0xff333338));
     g.drawHorizontalLine (getHeight() - 1, 0.0f, (float) getWidth());
+
+    if (track != nullptr)
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.65f));
+        if (track->type == TrackType::midi)
+            TrackIcons::drawKeyboard (g, typeIconArea());
+        else
+            TrackIcons::drawWaveform (g, typeIconArea());
+    }
+}
+
+juce::Rectangle<float> TrackHeaderComponent::typeIconArea() const
+{
+    auto row1 = getLocalBounds().reduced (8, 4).removeFromTop (24);
+    return juce::Rectangle<float> (16.0f, 16.0f)
+               .withCentre (row1.removeFromLeft (iconSlotWidth).toFloat().getCentre());
 }
 
 void TrackHeaderComponent::resized()
 {
     auto area = getLocalBounds().reduced (8, 4);
 
-    nameLabel.setBounds (area.removeFromTop (24));
+    auto row1 = area.removeFromTop (24);
+    row1.removeFromLeft (iconSlotWidth); // トラック種別アイコン（paintで描く）
+    nameLabel.setBounds (row1);
 
     area.removeFromTop (4);
     auto row2 = area.removeFromTop (22);
