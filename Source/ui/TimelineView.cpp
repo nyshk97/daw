@@ -334,6 +334,9 @@ private:
         g.setColour (clip.muted ? (isSelected ? Theme::clipMutedSelected : Theme::clipMuted)
                                 : (isSelected ? Theme::accent : Theme::clipAudio));
         g.fillRoundedRectangle (rect.toFloat(), 4.0f);
+        // 上端1pxの微かなハイライトで面の上面を作る（Logicのリージョンと同じ。強くしない）
+        g.setColour (juce::Colours::white.withAlpha (0.08f));
+        g.fillRect (rect.getX() + 4, rect.getY() + 1, rect.getWidth() - 8, 1);
         if (isSelected)
         {
             g.setColour (juce::Colours::white);
@@ -376,6 +379,9 @@ private:
         g.setColour (region.muted ? (isSelected ? Theme::clipMutedSelected : Theme::clipMuted)
                                   : (isSelected ? Theme::regionMidiSelected : Theme::regionMidi));
         g.fillRoundedRectangle (rect.toFloat(), 4.0f);
+        // 上端1pxの微かなハイライトで面の上面を作る（Logicのリージョンと同じ。強くしない）
+        g.setColour (juce::Colours::white.withAlpha (0.08f));
+        g.fillRect (rect.getX() + 4, rect.getY() + 1, rect.getWidth() - 8, 1);
         if (isSelected)
         {
             g.setColour (juce::Colours::white);
