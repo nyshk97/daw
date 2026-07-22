@@ -17,6 +17,8 @@ public:
     AppLookAndFeel()
     {
         setDefaultSansSerifTypefaceName (".AppleSystemUIFont");
+        // V4デフォルトの青みグレー(0xff323e44)は他パネルの無彩色系から浮くため差し替える
+        setColour (juce::ResizableWindow::backgroundColourId, Theme::windowBg);
         // 水平スライダー（音量・ベロシティ）: 溝は背景より一段明るく、値部分はアクセント青で塗る
         setColour (juce::Slider::backgroundColourId, Theme::controlBg);
         setColour (juce::Slider::trackColourId, Theme::accent);

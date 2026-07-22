@@ -1076,12 +1076,10 @@ void MainComponent::paint (juce::Graphics& g)
 {
     g.fillAll (getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId));
 
-    // 上部バー: 上端ハイライト＋下端境界線でタイムラインと区切る（塗りはフラットのまま）
+    // 上部バー: 上端の1pxハイライトのみ。下との区切りは境界線でなく背景の明度差に任せる
     auto bar = getLocalBounds().removeFromTop (topBarHeight).toFloat();
     g.setColour (juce::Colours::white.withAlpha (0.05f));
     g.fillRect (bar.removeFromTop (1.0f));
-    g.setColour (juce::Colours::black.withAlpha (0.35f));
-    g.fillRect (bar.removeFromBottom (1.0f));
 }
 
 void MainComponent::resized()
