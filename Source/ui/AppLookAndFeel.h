@@ -33,6 +33,44 @@ public:
     juce::Font getComboBoxFont (juce::ComboBox&) override          { return Fonts::body(); }
     juce::Font getPopupMenuFont() override                         { return Fonts::body(); }
 
+    // デフォルトのツールチップは13px boldで、日本語（ヒラギノ太字）だと主張が強すぎる。
+    // 11px regular（Fonts::small）・PopupMenu系と同じ配色のパネルで控えめに描き直す。
+    // bounds計算も同じレイアウトを使わないと太字前提の広い箱になるため両方overrideする
+    static juce::TextLayout layoutTooltipText (const juce::String& text, juce::Colour colour)
+    {
+        juce::AttributedString s;
+        s.setJustification (juce::Justification::centred);
+        s.append (text, Fonts::small(), colour);
+        juce::TextLayout tl;
+        tl.createLayoutWithBalancedLineLengths (s, 400.0f);
+        return tl;
+    }
+
+    juce::Rectangle<int> getTooltipBounds (const juce::String& tipText, juce::Point<int> screenPos,
+                                           juce::Rectangle<int> parentArea) override
+    {
+        const auto tl = layoutTooltipText (tipText, juce::Colours::black);
+        const int w = (int) std::ceil (tl.getWidth()) + 12;
+        const int h = (int) std::ceil (tl.getHeight()) + 6;
+        return juce::Rectangle<int> (screenPos.x > parentArea.getCentreX() ? screenPos.x - (w + 12)
+                                                                           : screenPos.x + 24,
+                                     screenPos.y > parentArea.getCentreY() ? screenPos.y - (h + 6)
+                                                                           : screenPos.y + 6,
+                                     w, h)
+            .constrainedWithin (parentArea);
+    }
+
+    void drawTooltip (juce::Graphics& g, const juce::String& text, int width, int height) override
+    {
+        const auto bounds = juce::Rectangle<float> ((float) width, (float) height);
+        g.setColour (juce::Colour (0xff2c2c30));
+        g.fillRoundedRectangle (bounds, 4.0f);
+        g.setColour (juce::Colour (0xff55555a));
+        g.drawRoundedRectangle (bounds.reduced (0.5f), 4.0f, 1.0f);
+        layoutTooltipText (text, juce::Colours::white.withAlpha (0.9f))
+            .draw (g, bounds);
+    }
+
     // "flatButton"プロパティを立てたTextButton（M/S等の小型トグル）はアウトライン無しの
     // フラット角丸で描く。デフォルトの明るい縁取りはフラットに描き直したスライダー・
     // ComboBoxから浮くため。塗り色は呼び出し側が buttonColourId / buttonOnColourId で渡す

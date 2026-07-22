@@ -6,6 +6,7 @@
 #include "AddTrackOverlay.h"
 #include "IconButton.h"
 #include "PianoRollView.h"
+#include "ShortcutListOverlay.h"
 #include "TimelineView.h"
 #include "TrackHeadersView.h"
 #include "TransportLcd.h"
@@ -94,6 +95,7 @@ private:
     IconButton settingsButton { IconButton::Icon::gear, juce::String::fromUTF8 (u8"オーディオ設定") };
     IconButton addTrackButton { IconButton::Icon::plus, juce::String::fromUTF8 (u8"トラックを追加") };
     AddTrackOverlay addTrackOverlay;
+    ShortcutListOverlay shortcutOverlay; // ⌘?のショートカット一覧（表示中のみ可視）
     TransportLcd lcd; // BPM・小節位置・時間のLCD風パネル（バー中央に置く）
     juce::Label srWarningLabel;
     juce::TooltipWindow tooltipWindow { this }; // アイコンのみのボタン（歯車等）のホバー説明用

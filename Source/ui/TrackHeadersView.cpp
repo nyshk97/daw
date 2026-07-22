@@ -3,6 +3,7 @@
 #include "TimelineView.h"
 #include "../shared/GmInstruments.h"
 #include "Fonts.h"
+#include "Shortcuts.h"
 #include "TrackIcons.h"
 
 // ---- TrackHeaderComponent -----------------------------------------------
@@ -214,7 +215,10 @@ void TrackHeaderComponent::mouseDown (const juce::MouseEvent& e)
     if (e.mods.isPopupMenu())
     {
         juce::PopupMenu menu;
-        menu.addItem (1, juce::String::fromUTF8 (u8"トラックを削除"));
+        juce::PopupMenu::Item deleteItem (juce::String::fromUTF8 (u8"トラックを削除"));
+        deleteItem.itemID = 1;
+        deleteItem.shortcutKeyDescription = Shortcuts::keyText (Shortcuts::ID::deleteTrack);
+        menu.addItem (deleteItem);
         // メニュー表示中にrebuild()でヘッダが破棄されることがあるためSafePointerで守る
         juce::Component::SafePointer<TrackHeaderComponent> safe (this);
         menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this),

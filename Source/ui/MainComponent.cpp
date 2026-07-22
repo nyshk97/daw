@@ -4,6 +4,7 @@
 
 #include "../shared/Log.h"
 #include "Fonts.h"
+#include "Shortcuts.h"
 
 namespace
 {
@@ -37,6 +38,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     addAndMakeVisible (settingsButton);
     addAndMakeVisible (clickButton);
     addChildComponent (addTrackOverlay); // トラック追加メニュー表示中のみ可視
+    addChildComponent (shortcutOverlay); // ⌘?表示中のみ可視
     addAndMakeVisible (lcd);
     addChildComponent (srWarningLabel); // 不一致時のみ表示
 
@@ -107,22 +109,25 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
 
     // ---- トランスポートバー ----
     playButton.onClick = [this] { togglePlay(); };
+    playButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::playStop));
 
     recordButton.setIconColour (juce::Colour (0xffd94a43)); // 待機中も録音ボタンと分かる赤
     recordButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff8e2a26));
     recordButton.onClick = [this] { toggleRecord(); };
+    recordButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::record));
 
     addTrackButton.onClick = [this] { showAddTrackMenu(); };
     addTrackButton.setTooltip (jp (u8"トラックを追加"));
     addTrackOverlay.onPick = [this] (TrackType type) { addTrack (type); };
 
     settingsButton.onClick = [this] { showDeviceSettings(); };
-    settingsButton.setTooltip (jp (u8"オーディオ設定"));
+    settingsButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::audioSettings));
     settingsButton.setBorderless (true);
 
     clickButton.setClickingTogglesState (true); // ONで点灯（Logicのメトロノームボタン風）
     clickButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff4a6ea9));
     clickButton.onClick = [this] { transport.clickEnabled.store (clickButton.getToggleState()); };
+    clickButton.setTooltip (jp (u8"メトロノーム")); // ショートカットなし
 
     lcd.tempoLabel().setText (juce::String (project->bpm), juce::dontSendNotification);
     lcd.tempoLabel().onTextChange = [this] { applyBpmText(); };
@@ -757,27 +762,50 @@ void MainComponent::pushSnapshot()
 
 // ---- キーボード ----
 
+// キー判定は Shortcuts.h のテーブル（matches）を必ず経由する（KeyPress直書き禁止）。
+// 各分岐の実処理と「ピアノロール表示中のみ」等の有効条件はここに手書きする
 bool MainComponent::keyPressed (const juce::KeyPress& key)
 {
-    if (addTrackOverlay.isVisible() && key == juce::KeyPress (juce::KeyPress::escapeKey))
+    using SC = Shortcuts::ID;
+    const auto is = [&key] (SC id) { return Shortcuts::matches (key, id); };
+    const bool escape = key == juce::KeyPress (juce::KeyPress::escapeKey);
+
+    // ショートカット一覧表示中はモーダル: 閉じる操作（Esc/⌘?）以外のキーは全て消費する
+    if (shortcutOverlay.isVisible())
     {
-        addTrackOverlay.dismiss();
+        if (escape || is (SC::shortcutList))
+            shortcutOverlay.dismiss();
         return true;
     }
-    if (key == juce::KeyPress::spaceKey)
+    if (addTrackOverlay.isVisible())
+    {
+        if (escape)
+        {
+            addTrackOverlay.dismiss();
+            return true;
+        }
+        if (is (SC::shortcutList))
+            return true; // オーバーレイは高々1枚: AddTrack表示中の⌘?は無視
+    }
+    if (is (SC::shortcutList))
+    {
+        shortcutOverlay.setBounds (getLocalBounds());
+        shortcutOverlay.show();
+        return true;
+    }
+    if (is (SC::playStop))
     {
         togglePlay();
         return true;
     }
-    if (key.getKeyCode() == juce::KeyPress::deleteKey
-        || key.getKeyCode() == juce::KeyPress::backspaceKey)
+    // Logic準拠: ⌘Delete = 選択トラックを削除
+    if (is (SC::deleteTrack))
     {
-        // Logic準拠: ⌘Delete = 選択トラックを削除
-        if (key.getModifiers().testFlags (juce::ModifierKeys::commandModifier))
-        {
-            requestDeleteTrack (selectedTrack);
-            return true;
-        }
+        requestDeleteTrack (selectedTrack);
+        return true;
+    }
+    if (is (SC::deleteItem))
+    {
         if (pianoRoll.isOpen() && pianoRoll.deleteSelectedNotes())
             return true;
         if (timeline.getRegionSelection().isValid())
@@ -789,92 +817,84 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     // ピアノロールの選択ノートへのキー操作（Logic準拠: ↑↓=半音・⌥↑↓=オクターブ、⌘C/⌘V）
     if (pianoRoll.isOpen() && ! engine.isRecording())
     {
-        if (key == juce::KeyPress (juce::KeyPress::upKey, juce::ModifierKeys::altModifier, 0))
-            return pianoRoll.transposeSelection (12);
-        if (key == juce::KeyPress (juce::KeyPress::downKey, juce::ModifierKeys::altModifier, 0))
-            return pianoRoll.transposeSelection (-12);
-        if (key == juce::KeyPress (juce::KeyPress::upKey))
-            return pianoRoll.transposeSelection (1);
-        if (key == juce::KeyPress (juce::KeyPress::downKey))
-            return pianoRoll.transposeSelection (-1);
-        if (key == juce::KeyPress ('c', juce::ModifierKeys::commandModifier, 0))
+        const bool up = key.isKeyCode (juce::KeyPress::upKey);
+        if (is (SC::noteOctave))
+            return pianoRoll.transposeSelection (up ? 12 : -12);
+        if (is (SC::noteSemitone))
+            return pianoRoll.transposeSelection (up ? 1 : -1);
+        if (is (SC::noteCopy))
             return pianoRoll.copySelection();
-        if (key == juce::KeyPress ('v', juce::ModifierKeys::commandModifier, 0))
+        if (is (SC::notePaste))
             return pianoRoll.pasteAtPlayhead();
     }
-    // Undo/Redo（構造編集のみ対象。⇧⌘Zを先に判定する）
-    if (key == juce::KeyPress ('z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0))
+    // Undo/Redo（構造編集のみ対象）
+    if (is (SC::redo))
     {
         performRedo();
         return true;
     }
-    if (key == juce::KeyPress ('z', juce::ModifierKeys::commandModifier, 0))
+    if (is (SC::undo))
     {
         performUndo();
         return true;
     }
-    if (key == juce::KeyPress ('s', juce::ModifierKeys::commandModifier, 0))
+    if (is (SC::save))
     {
         trySave();
         return true;
     }
-    if (key == juce::KeyPress ('a', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0))
+    if (is (SC::addAudioTrack))
     {
         addTrack (TrackType::audio);
         return true;
     }
-    // Logic準拠: ⌘⌥S = ソフトウェア音源トラックを追加
-    if (key == juce::KeyPress ('s', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0))
+    if (is (SC::addMidiTrack))
     {
         addTrack (TrackType::midi);
         return true;
     }
     // Logic準拠: ⌘←/→ = 横ズームアウト/イン
-    if (key == juce::KeyPress (juce::KeyPress::leftKey, juce::ModifierKeys::commandModifier, 0))
+    if (is (SC::zoomHorizontal))
     {
-        timeline.zoomBy (1.0 / juce::MathConstants<double>::sqrt2);
+        const bool out = key.isKeyCode (juce::KeyPress::leftKey);
+        timeline.zoomBy (out ? 1.0 / juce::MathConstants<double>::sqrt2
+                             : juce::MathConstants<double>::sqrt2);
         return true;
     }
-    if (key == juce::KeyPress (juce::KeyPress::rightKey, juce::ModifierKeys::commandModifier, 0))
-    {
-        timeline.zoomBy (juce::MathConstants<double>::sqrt2);
-        return true;
-    }
-    // macOS標準: ⌘, = 設定（オーディオ設定ダイアログ）
-    if (key == juce::KeyPress (',', juce::ModifierKeys::commandModifier, 0))
+    if (is (SC::audioSettings))
     {
         showDeviceSettings();
         return true;
     }
     // Logic準拠: Ctrl+M = 選択中のリージョン/クリップをミュート/ミュート解除
-    if (key == juce::KeyPress ('m', juce::ModifierKeys::ctrlModifier, 0))
+    if (is (SC::muteRegion))
     {
         toggleMuteSelectedItem();
         return true;
     }
     // Logic準拠: ⌘T = 選択中のリージョン/クリップを再生ヘッド位置で分割
-    if (key == juce::KeyPress ('t', juce::ModifierKeys::commandModifier, 0))
+    if (is (SC::split))
     {
         splitSelectedItemAtPlayhead();
         return true;
     }
-
-    // Cmd/Ctrl/Optなしの1文字ショートカット（,/.=1拍シーク、Shift+,/.=1小節、mでミュート、rで録音）
-    if (! key.getModifiers().testFlags (juce::ModifierKeys::commandModifier
-                                        | juce::ModifierKeys::ctrlModifier
-                                        | juce::ModifierKeys::altModifier))
+    // ,/.=1拍シーク、Shift+,/.（レイアウトにより<>）=1小節シーク
+    if (is (SC::seekBeat) || is (SC::seekBar))
     {
-        const bool shift = key.getModifiers().isShiftDown();
-        switch (key.getTextCharacter())
-        {
-            case ',': seekByStep (-1, shift, key.getKeyCode()); return true;
-            case '.': seekByStep (1, shift, key.getKeyCode()); return true;
-            case '<': seekByStep (-1, true, key.getKeyCode()); return true;   // Shift+,/. はレイアウトにより <> になる
-            case '>': seekByStep (1, true, key.getKeyCode()); return true;
-            case 'm': toggleMuteSelectedTrack(); return true;
-            case 'r': toggleRecord(); return true;
-            default: break;
-        }
+        const auto tc = key.getTextCharacter();
+        const int direction = (tc == ',' || tc == '<') ? -1 : 1;
+        seekByStep (direction, is (SC::seekBar), key.getKeyCode());
+        return true;
+    }
+    if (is (SC::muteTrack))
+    {
+        toggleMuteSelectedTrack();
+        return true;
+    }
+    if (is (SC::record))
+    {
+        toggleRecord();
+        return true;
     }
     return false;
 }
@@ -1063,4 +1083,7 @@ void MainComponent::resized()
         addTrackOverlay.setBounds (getLocalBounds());
         addTrackOverlay.setAnchor (addTrackButton.getBounds());
     }
+
+    if (shortcutOverlay.isVisible())
+        shortcutOverlay.setBounds (getLocalBounds());
 }

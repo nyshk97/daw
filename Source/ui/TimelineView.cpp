@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "Fonts.h"
+#include "Shortcuts.h"
 #include "../shared/Log.h"
 
 namespace
@@ -793,11 +794,23 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
         canSplit = playhead > clip.startSample && playhead < clip.startSample + clip.lengthSamples;
     }
 
+    // ショートカット持ちの項目は表記を横に出す（shortcutKeyDescriptionはsetterのない公開フィールド）
+    const auto itemWithKey = [] (int id, const juce::String& text, Shortcuts::ID shortcutId,
+                                 bool enabled = true)
+    {
+        juce::PopupMenu::Item item (text);
+        item.itemID = id;
+        item.isEnabled = enabled;
+        item.shortcutKeyDescription = Shortcuts::keyText (shortcutId);
+        return item;
+    };
+
     juce::PopupMenu menu;
-    menu.addItem (1, muted ? jp (u8"ミュート解除") : jp (u8"ミュート"));
+    menu.addItem (itemWithKey (1, muted ? jp (u8"ミュート解除") : jp (u8"ミュート"),
+                               Shortcuts::ID::muteRegion));
     menu.addItem (2, jp (u8"複製"));
-    menu.addItem (4, jp (u8"再生ヘッド位置で分割"), canSplit);
-    menu.addItem (3, jp (u8"削除"));
+    menu.addItem (itemWithKey (4, jp (u8"再生ヘッド位置で分割"), Shortcuts::ID::split, canSplit));
+    menu.addItem (itemWithKey (3, jp (u8"削除"), Shortcuts::ID::deleteItem));
 
     // コールバックは後から呼ばれるためSafePointerで寿命を確認し、右クリック時点の対象を捕捉して渡す。
     // メニュー表示中はモーダルで他の編集操作が発生せずインデックスは変化しない前提（各操作側でも範囲チェックする）
