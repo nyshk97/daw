@@ -4,6 +4,16 @@ project(daw VERSION 0.1.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# dev/常用版の切り替え（後述）は CMAKE_BUILD_TYPE 前提のため、それが空になる
+# マルチ構成ジェネレータ（Xcode 等）は明示的に拒否する
+# （Xcode で生成すると Release まで dev 版の名前・bundle id・TCC 権限になってしまう）
+get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(_is_multi_config)
+    message(FATAL_ERROR
+        "マルチ構成ジェネレータ（${CMAKE_GENERATOR}）は非対応です。"
+        "単一構成ジェネレータで -DCMAKE_BUILD_TYPE=Debug|Release を指定してください")
+endif()
+
 include(FetchContent)
 FetchContent_Declare(
     JUCE
@@ -15,8 +25,26 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(JUCE)
 
+# Debug は dev 版として別アプリ扱いにする（名前・bundle id・アイコンを分離し、
+# Dock・⌘Tab・TCC 権限が常用版（Release）と独立する）。
+# bundle id が異なるため dev 版の初回起動時のみマイク許可の再付与が必要。
+# プロジェクト置き場（~/Music/daw/）とログ（~/Library/Logs/daw/）は両版で共有
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(DAW_PRODUCT_NAME "daw")
+    set(DAW_BUNDLE_ID "com.yourcompany.daw")
+    set(DAW_ICON "Assets/icon.png")
+else()
+    set(DAW_PRODUCT_NAME "daw-dev")
+    set(DAW_BUNDLE_ID "com.yourcompany.daw.dev")
+    set(DAW_ICON "Assets/icon-dev.png")
+endif()
+
 juce_add_gui_app(daw
-    PRODUCT_NAME "daw"
+    PRODUCT_NAME "${DAW_PRODUCT_NAME}"
+    BUNDLE_ID "${DAW_BUNDLE_ID}"
+    # フルブリード画像（macOS 26以降はシステム側が角丸マスク・影を付与する）。
+    # 再生成は Assets/make_icon.swift を参照（dev 版は --dev フラグ）
+    ICON_BIG "${DAW_ICON}"
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT "録音のためにマイク入力を使用します"
 )
@@ -38,6 +66,8 @@ target_sources(daw PRIVATE
 target_include_directories(daw PRIVATE Source)
 
 target_compile_definitions(daw PRIVATE
+    # アプリ表示名（Debug=daw-dev / Release=daw）。Main.cpp が参照する
+    DAW_APP_NAME="${DAW_PRODUCT_NAME}"
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_PLUGINHOST_AU=1
@@ -77,11 +107,40 @@ if(NOT DEFINED DAW_CODESIGN_IDENTITY)
     endif()
 endif()
 
+# 署名は POST_BUILD で行う（`--build --target daw` の単体ビルドでも必ず署名されるように、
+# daw 自身のビルドに含める。別ターゲット方式だと --target daw で署名がスキップされ
+# ad-hoc のまま残り、TCC のマイク許可が失われる）。
+# ただし Makefile ジェネレータはバンドルリソース（JUCE 生成の Icon.icns や
+# RecentFilesMenuTemplate.nib 等、MACOSX_PACKAGE_LOCATION 付きソース）を
+# POST_BUILD より後にコピーするため、素朴に署名すると初回・cleanビルドで
+# シールが壊れる（"a sealed resource is missing or invalid"）。
+# そこで同じリソース一式を署名の前に自前でコピーして封印対象に入れる。
+# 後続の CMake によるコピーは同一内容の上書きなのでシールは壊れない
+get_target_property(_daw_sources daw SOURCES)
+set(_daw_resource_copy_cmds "")
+set(_daw_found_icns FALSE)
+foreach(_src IN LISTS _daw_sources)
+    get_source_file_property(_loc "${_src}" MACOSX_PACKAGE_LOCATION)
+    if(_loc)
+        get_filename_component(_name "${_src}" NAME)
+        list(APPEND _daw_resource_copy_cmds
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_src}" "$<TARGET_BUNDLE_DIR:daw>/Contents/${_loc}/${_name}")
+        if(_src MATCHES "\\.icns$")
+            set(_daw_found_icns TRUE)
+        endif()
+    endif()
+endforeach()
+if(NOT _daw_found_icns)
+    message(FATAL_ERROR "JUCE が生成する .icns がターゲットソースに見つかりません（JUCE 更新で内部構造が変わった可能性。署名順序の前提を再確認すること）")
+endif()
+
 add_custom_command(TARGET daw POST_BUILD
+    ${_daw_resource_copy_cmds}
     COMMAND codesign --force
         --sign "${DAW_CODESIGN_IDENTITY}"
         "$<TARGET_BUNDLE_DIR:daw>"
-    COMMENT "Signing daw.app with stable identity for persistent TCC permissions"
+    COMMENT "Signing ${DAW_PRODUCT_NAME}.app with stable identity for persistent TCC permissions"
 )
 
 # ---- テスト（CTest から実行するコンソールアプリ。GUI不要のモデル・音源検証）----

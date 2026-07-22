@@ -14,7 +14,8 @@ juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
 class DawApplication : public juce::JUCEApplication
 {
 public:
-    const juce::String getApplicationName() override    { return "daw"; }
+    // PRODUCT_NAME 由来（Debug=daw-dev / Release=daw）。名前は CMakeLists.txt で一元管理
+    const juce::String getApplicationName() override    { return DAW_APP_NAME; }
     const juce::String getApplicationVersion() override { return "0.2.0"; }
     bool moreThanOneInstanceAllowed() override          { return false; }
 
@@ -60,7 +61,7 @@ private:
     {
     public:
         MainWindow()
-            : DocumentWindow ("daw",
+            : DocumentWindow (DAW_APP_NAME,
                               juce::Desktop::getInstance().getDefaultLookAndFeel()
                                   .findColour (juce::ResizableWindow::backgroundColourId),
                               DocumentWindow::allButtons)
