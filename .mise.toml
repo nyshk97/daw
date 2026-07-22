@@ -1,7 +1,7 @@
 [tasks.start]
-description = 'ローカルアプリ（daw.app）を起動する'
-run = 'open build/daw_artefacts/Debug/daw.app'
+description = 'dev版アプリ（daw-dev.app）を起動する'
+run = 'open build/daw_artefacts/Debug/daw-dev.app'
 
 [tasks.stop]
-description = 'ローカルアプリ（daw.app）を停止する'
-run = 'pkill -f "daw.app/Contents/MacOS/daw" || true'
+description = 'dev版アプリ（daw-dev.app）を停止する'
+run = 'pkill -f "daw-dev.app/Contents/MacOS/daw-dev" || true'
