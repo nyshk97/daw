@@ -57,7 +57,9 @@ public:
         {
             if (highlighted || down)
             {
-                g.setColour (juce::Colours::white.withAlpha (down ? 0.10f : 0.06f));
+                // hoverは明るいオーバーレイ、押下は暗いオーバーレイで「沈む」表現に揃える
+                g.setColour (down ? juce::Colours::black.withAlpha (0.25f)
+                                  : juce::Colours::white.withAlpha (0.06f));
                 g.fillRoundedRectangle (getLocalBounds().toFloat(), 6.0f);
             }
         }

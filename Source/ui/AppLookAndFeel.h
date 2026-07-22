@@ -74,9 +74,10 @@ public:
             .draw (g, bounds);
     }
 
+    // ボタンの状態表現は「hoverで少し明るく・押下で沈む（暗く）」に統一する。
+    // 基底実装は押下で明るくなり（contrasting）物理感が逆になるため描き直す。
     // "flatButton"プロパティを立てたTextButton（M/S等の小型トグル）はアウトライン無しの
-    // フラット角丸で描く。デフォルトの明るい縁取りはフラットに描き直したスライダー・
-    // ComboBoxから浮くため。塗り色は呼び出し側が buttonColourId / buttonOnColourId で渡す
+    // フラット角丸、それ以外は基底と同じ「塗り＋縁取り」の角丸で描く
     void drawButtonBackground (juce::Graphics& g, juce::Button& button,
                                const juce::Colour& backgroundColour,
                                bool shouldDrawButtonAsHighlighted,
@@ -84,15 +85,27 @@ public:
     {
         if (! button.getProperties().contains ("flatButton"))
         {
-            juce::LookAndFeel_V4::drawButtonBackground (g, button, backgroundColour,
-                                                        shouldDrawButtonAsHighlighted,
-                                                        shouldDrawButtonAsDown);
+            // 通常状態の見た目は基底実装（LookAndFeel_V4）と同一に保つ
+            const float cornerSize = 6.0f;
+            const auto bounds = button.getLocalBounds().toFloat().reduced (0.5f, 0.5f);
+            auto colour = backgroundColour
+                              .withMultipliedSaturation (button.hasKeyboardFocus (true) ? 1.3f : 0.9f)
+                              .withMultipliedAlpha (button.isEnabled() ? 1.0f : 0.5f);
+            if (shouldDrawButtonAsDown)
+                colour = colour.darker (0.25f);
+            else if (shouldDrawButtonAsHighlighted)
+                colour = colour.brighter (0.08f);
+
+            g.setColour (colour);
+            g.fillRoundedRectangle (bounds, cornerSize);
+            g.setColour (button.findColour (juce::ComboBox::outlineColourId));
+            g.drawRoundedRectangle (bounds, cornerSize, 1.0f);
             return;
         }
 
         auto colour = backgroundColour;
         if (shouldDrawButtonAsDown)
-            colour = colour.brighter (0.25f);
+            colour = colour.darker (0.25f);
         else if (shouldDrawButtonAsHighlighted)
             colour = colour.brighter (0.1f);
 
