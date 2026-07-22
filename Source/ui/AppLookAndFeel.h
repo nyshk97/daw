@@ -14,6 +14,8 @@
 class AppLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
+    static constexpr int menuItemGutter = 22; // メニュー項目の左ガター（チェックマーク用。macと同じく常に確保）
+
     AppLookAndFeel()
     {
         setDefaultSansSerifTypefaceName (".AppleSystemUIFont");
@@ -22,6 +24,9 @@ public:
         // 水平スライダー（音量・ベロシティ）: 溝は背景より一段明るく、値部分はアクセント青で塗る
         setColour (juce::Slider::backgroundColourId, Theme::controlBg);
         setColour (juce::Slider::trackColourId, Theme::accent);
+        // メニュー背景は透明にして自前の角丸パネルを描く（非opaqueなウィンドウになり角丸の外が抜ける。
+        // juce_PopupMenu.cppのMenuWindowがこの色のisOpaque()でウィンドウの不透明化を決めている）
+        setColour (juce::PopupMenu::backgroundColourId, juce::Colours::transparentBlack);
     }
 
     // JUCEデフォルトのコントロールフォント（高さ連動で最大16px）はmacOS標準の13pxより
@@ -157,6 +162,111 @@ public:
         const float thumbD = 12.0f;
         g.setColour (slider.findColour (juce::Slider::thumbColourId));
         g.fillEllipse (juce::Rectangle<float> (thumbD, thumbD).withCentre ({ sliderPos, cy }));
+    }
+
+    // ---- PopupMenu（右クリックメニュー・ComboBoxのドロップダウン）----
+    // V4デフォルトは直角パネル＋ハード枠＋全幅ハイライトで浮くため、
+    // macOSのメニュー風（角丸パネル・角丸ハイライト・上下パディング・チェック用の左ガター）に描き直す
+
+    void drawPopupMenuBackground (juce::Graphics& g, int width, int height) override
+    {
+        const auto bounds = juce::Rectangle<float> ((float) width, (float) height);
+        g.setColour (Theme::popupBg);
+        g.fillRoundedRectangle (bounds, 8.0f);
+        g.setColour (Theme::popupBorder);
+        g.drawRoundedRectangle (bounds.reduced (0.5f), 8.0f, 1.0f);
+    }
+
+    void drawPopupMenuBackgroundWithOptions (juce::Graphics& g, int width, int height,
+                                             const juce::PopupMenu::Options&) override
+    {
+        drawPopupMenuBackground (g, width, height);
+    }
+
+    int getPopupMenuBorderSize() override { return 5; } // 項目とパネル縁の余白
+
+    void getIdealPopupMenuItemSize (const juce::String& text, bool isSeparator,
+                                    int standardMenuItemHeight,
+                                    int& idealWidth, int& idealHeight) override
+    {
+        if (isSeparator)
+        {
+            idealWidth = 50;
+            idealHeight = 9;
+            return;
+        }
+        idealHeight = standardMenuItemHeight > 0 ? standardMenuItemHeight : 26;
+        // 幅の計測にはショートカット表記が渡ってこないため、右側に多めの余白を足しておく
+        idealWidth = menuItemGutter
+                     + juce::GlyphArrangement::getStringWidthInt (getPopupMenuFont(), text) + 44;
+    }
+
+    void drawPopupMenuItem (juce::Graphics& g, const juce::Rectangle<int>& area,
+                            bool isSeparator, bool isActive, bool isHighlighted, bool isTicked,
+                            bool hasSubMenu, const juce::String& text,
+                            const juce::String& shortcutKeyText,
+                            const juce::Drawable* icon, const juce::Colour* textColour) override
+    {
+        if (isSeparator)
+        {
+            g.setColour (Theme::popupBorder);
+            g.fillRect (area.reduced (8, 0).withHeight (1).withY (area.getCentreY()));
+            return;
+        }
+
+        const bool showHighlight = isHighlighted && isActive;
+        if (showHighlight)
+        {
+            g.setColour (Theme::accent);
+            g.fillRoundedRectangle (area.toFloat(), 5.0f);
+        }
+
+        const auto baseColour = textColour != nullptr ? *textColour : juce::Colours::white;
+        const auto mainColour = baseColour.withAlpha (isActive ? (showHighlight ? 1.0f : 0.9f)
+                                                               : 0.3f);
+        const float cy = (float) area.getCentreY();
+
+        if (isTicked)
+        {
+            juce::Path tick;
+            tick.startNewSubPath (0.0f, 5.5f);
+            tick.lineTo (3.5f, 9.0f);
+            tick.lineTo (10.0f, 0.5f);
+            g.setColour (mainColour);
+            g.strokePath (tick, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved,
+                                                      juce::PathStrokeType::rounded),
+                          juce::AffineTransform::translation ((float) area.getX() + 7.0f,
+                                                              cy - 5.0f));
+        }
+        else if (icon != nullptr)
+        {
+            icon->drawWithin (g,
+                              area.toFloat().withWidth ((float) menuItemGutter).reduced (5.0f),
+                              juce::RectanglePlacement::centred, isActive ? 1.0f : 0.3f);
+        }
+
+        g.setColour (mainColour);
+        g.setFont (getPopupMenuFont());
+        g.drawText (text, area.withTrimmedLeft (menuItemGutter).withTrimmedRight (10),
+                    juce::Justification::centredLeft);
+
+        if (hasSubMenu)
+        {
+            const float cx = (float) area.getRight() - 12.0f;
+            juce::Path chevron;
+            chevron.startNewSubPath (cx - 1.75f, cy - 3.5f);
+            chevron.lineTo (cx + 1.75f, cy);
+            chevron.lineTo (cx - 1.75f, cy + 3.5f);
+            g.setColour (baseColour.withAlpha (showHighlight ? 0.9f : 0.6f));
+            g.strokePath (chevron, juce::PathStrokeType (1.5f, juce::PathStrokeType::curved,
+                                                         juce::PathStrokeType::rounded));
+        }
+        else if (shortcutKeyText.isNotEmpty())
+        {
+            g.setColour (baseColour.withAlpha (showHighlight ? 0.9f : 0.5f));
+            g.drawText (shortcutKeyText, area.withTrimmedRight (10),
+                        juce::Justification::centredRight);
+        }
     }
 
     // 基底実装（LookAndFeel_V4::drawComboBox）のコピー。デフォルトの矢印（幅14px・
