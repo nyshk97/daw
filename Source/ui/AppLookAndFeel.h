@@ -4,6 +4,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "Fonts.h"
+#include "Theme.h"
 
 // アプリ全体のLookAndFeel。デフォルトsans-serifをmacOSのシステムUIフォント
 // （SF Pro、CoreText内部名 ".AppleSystemUIFont"）に差し替える。
@@ -17,8 +18,8 @@ public:
     {
         setDefaultSansSerifTypefaceName (".AppleSystemUIFont");
         // 水平スライダー（音量・ベロシティ）: 溝は背景より一段明るく、値部分はアクセント青で塗る
-        setColour (juce::Slider::backgroundColourId, juce::Colour (0xff3f3f46));
-        setColour (juce::Slider::trackColourId, juce::Colour (0xff4a6ea9));
+        setColour (juce::Slider::backgroundColourId, Theme::controlBg);
+        setColour (juce::Slider::trackColourId, Theme::accent);
     }
 
     // JUCEデフォルトのコントロールフォント（高さ連動で最大16px）はmacOS標準の13pxより
@@ -63,9 +64,9 @@ public:
     void drawTooltip (juce::Graphics& g, const juce::String& text, int width, int height) override
     {
         const auto bounds = juce::Rectangle<float> ((float) width, (float) height);
-        g.setColour (juce::Colour (0xff2c2c30));
+        g.setColour (Theme::popupBg);
         g.fillRoundedRectangle (bounds, 4.0f);
-        g.setColour (juce::Colour (0xff55555a));
+        g.setColour (Theme::popupBorder);
         g.drawRoundedRectangle (bounds.reduced (0.5f), 4.0f, 1.0f);
         layoutTooltipText (text, juce::Colours::white.withAlpha (0.9f))
             .draw (g, bounds);
@@ -134,7 +135,7 @@ public:
             const float meterH = 2.0f;
             const auto meterBar = juce::Rectangle<float> (
                 (float) x, cy - meterH * 0.5f, norm * (float) width, meterH);
-            g.setColour (meter > 0.9f ? juce::Colour (0xffd94a43) : juce::Colour (0xff7bc47b));
+            g.setColour (meter > 0.9f ? Theme::recordRed : Theme::playGreen);
             g.fillRoundedRectangle (meterBar, meterH * 0.5f);
         }
 

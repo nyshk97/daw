@@ -4,6 +4,7 @@
 #include "../shared/GmInstruments.h"
 #include "Fonts.h"
 #include "Shortcuts.h"
+#include "Theme.h"
 #include "TrackIcons.h"
 
 // ---- TrackHeaderComponent -----------------------------------------------
@@ -39,12 +40,12 @@ TrackHeaderComponent::TrackHeaderComponent()
     {
         b->setClickingTogglesState (true);
         b->getProperties().set ("flatButton", true);
-        b->setColour (juce::TextButton::buttonColourId, juce::Colour (0xff3f3f46));
+        b->setColour (juce::TextButton::buttonColourId, Theme::controlBg);
         b->setColour (juce::TextButton::textColourOffId, juce::Colours::white.withAlpha (0.55f));
-        b->setColour (juce::TextButton::textColourOnId, juce::Colour (0xff1c1c20));
+        b->setColour (juce::TextButton::textColourOnId, Theme::controlTextOn);
     }
-    muteButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff5b82c4));
-    soloButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffdfae4a));
+    muteButton.setColour (juce::TextButton::buttonOnColourId, Theme::muteOn);
+    soloButton.setColour (juce::TextButton::buttonOnColourId, Theme::soloOn);
 
     muteButton.onClick = [this]
     {
@@ -161,13 +162,13 @@ void TrackHeaderComponent::updateMeter()
 
 void TrackHeaderComponent::paint (juce::Graphics& g)
 {
-    g.fillAll (selected ? juce::Colour (0xff33333c) : juce::Colour (0xff26262a));
+    g.fillAll (selected ? Theme::headerSelectedBg : Theme::headerBg);
     if (selected)
     {
-        g.setColour (juce::Colour (0xff4a6ea9));
+        g.setColour (Theme::accent);
         g.fillRect (0, 0, 3, getHeight());
     }
-    g.setColour (juce::Colour (0xff333338));
+    g.setColour (Theme::panelBorder);
     g.drawHorizontalLine (getHeight() - 1, 0.0f, (float) getWidth());
 
     if (track != nullptr)

@@ -4,6 +4,7 @@
 
 #include "Fonts.h"
 #include "Shortcuts.h"
+#include "Theme.h"
 #include "../shared/Log.h"
 
 namespace
@@ -16,14 +17,14 @@ juce::Colour sectionColour (SectionType type)
 {
     switch (type)
     {
-        case SectionType::intro:  return juce::Colour (0xffc4813d); // オレンジ
-        case SectionType::verse:  return juce::Colour (0xff5da35f); // 緑
-        case SectionType::hook:   return juce::Colour (0xffc4b04a); // 黄
-        case SectionType::bridge: return juce::Colour (0xff5b87b8); // 青
-        case SectionType::outro:  return juce::Colour (0xffb05a50); // 赤茶
-        case SectionType::other:  return juce::Colour (0xff85858c); // グレー
+        case SectionType::intro:  return Theme::sectionIntro;
+        case SectionType::verse:  return Theme::sectionVerse;
+        case SectionType::hook:   return Theme::sectionHook;
+        case SectionType::bridge: return Theme::sectionBridge;
+        case SectionType::outro:  return Theme::sectionOutro;
+        case SectionType::other:  return Theme::sectionOther;
     }
-    return juce::Colour (0xff85858c);
+    return Theme::sectionOther;
 }
 } // namespace
 
@@ -50,7 +51,7 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        g.fillAll (juce::Colour (0xff2a2a2e));
+        g.fillAll (Theme::rulerBg);
         const auto clip = g.getClipBounds();
         const double barWidth = owner.pxPerBar;
 
@@ -70,24 +71,24 @@ public:
                 const int x = (int) std::llround ((bar + i / (double) div) * barWidth);
                 if (i == 0)
                 {
-                    g.setColour (juce::Colour (0xff55555a));
+                    g.setColour (Theme::rulerTickBar);
                     g.drawVerticalLine (x, 8.0f, (float) getHeight());
                 }
                 else if ((i * 4) % div == 0)   // 拍（1/2表示時はその線も同格に）
                 {
-                    g.setColour (juce::Colour (0xff4a4a4f));
+                    g.setColour (Theme::rulerTickBeat);
                     g.drawVerticalLine (x, 14.0f, (float) getHeight());
                 }
                 else
                 {
-                    g.setColour (juce::Colour (0xff3c3c41));
+                    g.setColour (Theme::rulerTickSub);
                     g.drawVerticalLine (x, 19.0f, (float) getHeight());
                 }
             }
 
             if (bar % labelStep == 0)
             {
-                g.setColour (juce::Colours::lightgrey);
+                g.setColour (Theme::rulerLabel);
                 g.setFont (Fonts::mono (11.0f));
                 g.drawText (juce::String (bar + 1),
                             (int) std::llround (bar * barWidth) + 4, 0,
@@ -97,7 +98,7 @@ public:
         }
 
         const int playheadX = owner.sampleToX (owner.transport.playheadSamplePos.load());
-        g.setColour (juce::Colours::white);
+        g.setColour (Theme::playhead);
         g.drawVerticalLine (playheadX, 0.0f, (float) getHeight());
     }
 
@@ -122,7 +123,7 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        g.fillAll (juce::Colour (0xff242428));
+        g.fillAll (Theme::markerLaneBg);
         const auto clip = g.getClipBounds();
 
         if (auto* proj = owner.project)
@@ -156,7 +157,7 @@ public:
 
         // 再生ヘッド（ルーラー・レーンの縦線と繋がって見えるように同じ白）
         const int playheadX = owner.sampleToX (owner.transport.playheadSamplePos.load());
-        g.setColour (juce::Colours::white);
+        g.setColour (Theme::playhead);
         g.drawVerticalLine (playheadX, 0.0f, (float) getHeight());
     }
 
@@ -181,7 +182,7 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        g.fillAll (juce::Colour (0xff1e1e22));
+        g.fillAll (Theme::timelineBg);
         const auto clip = g.getClipBounds();
         auto* proj = owner.project;
         if (proj == nullptr)
@@ -197,10 +198,10 @@ public:
                 continue;
             if (t == owner.selectedTrack)
             {
-                g.setColour (juce::Colour (0xff26262e));
+                g.setColour (Theme::laneSelectedRowBg);
                 g.fillRect (clip.getX(), y, clip.getWidth(), trackHeight);
             }
-            g.setColour (juce::Colour (0xff333338));
+            g.setColour (Theme::panelBorder);
             g.drawHorizontalLine (y + trackHeight - 1, (float) clip.getX(), (float) clip.getRight());
         }
 
@@ -214,9 +215,9 @@ public:
             for (int i = 0; i < div; ++i)
             {
                 const int x = (int) std::llround ((bar + i / (double) div) * barWidth);
-                g.setColour (i == 0             ? juce::Colour (0xff2c2c31)
-                             : (i * 4) % div == 0 ? juce::Colour (0xff28282c)
-                                                  : juce::Colour (0xff242428));
+                g.setColour (i == 0             ? Theme::gridLineBar
+                             : (i * 4) % div == 0 ? Theme::gridLineBeat
+                                                  : Theme::gridLineSub);
                 g.drawVerticalLine (x, (float) clip.getY(), (float) clip.getBottom());
             }
         }
@@ -267,7 +268,7 @@ public:
         const int playheadX = owner.sampleToX (owner.transport.playheadSamplePos.load());
         if (playheadX >= clip.getX() - 1 && playheadX <= clip.getRight() + 1)
         {
-            g.setColour (juce::Colours::white.withAlpha (0.8f));
+            g.setColour (Theme::playhead.withAlpha (0.8f));
             g.drawVerticalLine (playheadX, (float) clip.getY(), (float) clip.getBottom());
         }
     }
@@ -309,8 +310,8 @@ private:
 
         const auto rect = juce::Rectangle<int> (x, y + 4, w, trackHeight - 8);
         // ミュート中はグレー減光（Logic準拠）
-        g.setColour (clip.muted ? (isSelected ? juce::Colour (0xff54565e) : juce::Colour (0xff3c3d43))
-                                : (isSelected ? juce::Colour (0xff4a6ea9) : juce::Colour (0xff39537d)));
+        g.setColour (clip.muted ? (isSelected ? Theme::clipMutedSelected : Theme::clipMuted)
+                                : (isSelected ? Theme::accent : Theme::clipAudio));
         g.fillRoundedRectangle (rect.toFloat(), 4.0f);
         if (isSelected)
         {
@@ -351,8 +352,8 @@ private:
 
         const auto rect = juce::Rectangle<int> (x, y + 4, w, trackHeight - 8);
         // ミュート中はグレー減光（Logic準拠）
-        g.setColour (region.muted ? (isSelected ? juce::Colour (0xff54565e) : juce::Colour (0xff3c3d43))
-                                  : (isSelected ? juce::Colour (0xff4a9968) : juce::Colour (0xff3a7350)));
+        g.setColour (region.muted ? (isSelected ? Theme::clipMutedSelected : Theme::clipMuted)
+                                  : (isSelected ? Theme::regionMidiSelected : Theme::regionMidi));
         g.fillRoundedRectangle (rect.toFloat(), 4.0f);
         if (isSelected)
         {
@@ -557,7 +558,7 @@ void TimelineView::resized()
 
 void TimelineView::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xff1e1e22));
+    g.fillAll (Theme::timelineBg);
 }
 
 void TimelineView::timerCallback()

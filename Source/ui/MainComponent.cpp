@@ -5,6 +5,7 @@
 #include "../shared/Log.h"
 #include "Fonts.h"
 #include "Shortcuts.h"
+#include "Theme.h"
 
 namespace
 {
@@ -111,8 +112,8 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     playButton.onClick = [this] { togglePlay(); };
     playButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::playStop));
 
-    recordButton.setIconColour (juce::Colour (0xffd94a43)); // 待機中も録音ボタンと分かる赤
-    recordButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff8e2a26));
+    recordButton.setIconColour (Theme::recordRed); // 待機中も録音ボタンと分かる赤
+    recordButton.setColour (juce::TextButton::buttonOnColourId, Theme::recordActiveBg);
     recordButton.onClick = [this] { toggleRecord(); };
     recordButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::record));
 
@@ -125,7 +126,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     settingsButton.setBorderless (true);
 
     clickButton.setClickingTogglesState (true); // ONで点灯（Logicのメトロノームボタン風）
-    clickButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff4a6ea9));
+    clickButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
     clickButton.onClick = [this] { transport.clickEnabled.store (clickButton.getToggleState()); };
     clickButton.setTooltip (jp (u8"メトロノーム")); // ショートカットなし
 
@@ -133,7 +134,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     lcd.tempoLabel().onTextChange = [this] { applyBpmText(); };
 
     srWarningLabel.setFont (Fonts::body());
-    srWarningLabel.setColour (juce::Label::textColourId, juce::Colours::orangered);
+    srWarningLabel.setColour (juce::Label::textColourId, Theme::warning);
     srWarningLabel.setJustificationType (juce::Justification::centredLeft);
 
     // Space（再生/停止）をボタンに奪わせない
@@ -1027,20 +1028,20 @@ void MainComponent::updateTransportButtons()
     // シーク後の再開待ち中も見かけ上は「再生中」として表示する
     const bool playing = transport.isPlaying.load() || seekResumePending;
     playButton.setIcon (playing ? IconButton::Icon::stop : IconButton::Icon::play);
-    playButton.setIconColour (playing ? juce::Colour (0xff7bc47b)  // 再生中は緑（メーターと同色）
+    playButton.setIconColour (playing ? Theme::playGreen  // 再生中は緑（メーターと同色）
                                       : juce::Colours::white.withAlpha (0.85f));
     recordButton.setToggleState (recording, juce::dontSendNotification); // 録音中は赤点灯
-    recordButton.setIconColour (recording ? juce::Colours::white : juce::Colour (0xffd94a43));
+    recordButton.setIconColour (recording ? juce::Colours::white : Theme::recordRed);
     if (recording)
     {
         // 録音中はアイコンの周りに赤いハローをゆっくり明滅させる（Timer 30Hzから毎tick呼ばれる）。
-        // グロー色は録音中の暗赤背景(0xff8e2a26)に埋もれないよう明るめの赤にする
+        // グロー色は録音中の暗赤背景(recordActiveBg)に埋もれないよう明るめの赤にする
         const float phase = (float) (juce::Time::getMillisecondCounter() % 1600) / 1600.0f;
         const float wave = 0.5f + 0.5f * std::sin (phase * juce::MathConstants<float>::twoPi);
-        recordButton.setGlow (0.30f + 0.70f * wave, juce::Colour (0xffff5a4d));
+        recordButton.setGlow (0.30f + 0.70f * wave, Theme::recordGlow);
     }
     else
-        recordButton.setGlow (0.0f, juce::Colour (0xffff5a4d));
+        recordButton.setGlow (0.0f, Theme::recordGlow);
     // MIDIトラック選択中は録音ボタン無効（録音停止としては常に押せる）
     recordButton.setEnabled (recording || ! selectedTrackIsMidi());
 }

@@ -5,6 +5,7 @@
 
 #include "Fonts.h"
 #include "Shortcuts.h"
+#include "Theme.h"
 
 // ⌘? のショートカット一覧オーバーレイ。AddTrackOverlayと同じ「親全面を透明に覆い
 // パネルを自前描画」方式。項目は Shortcuts::table の走査で自動生成するので、
@@ -34,9 +35,9 @@ public:
         g.fillAll (juce::Colours::black.withAlpha (0.45f)); // 背後を暗くして一覧に集中させる
 
         const auto panel = panelBounds();
-        g.setColour (juce::Colour (0xff2c2c30));
+        g.setColour (Theme::popupBg);
         g.fillRoundedRectangle (panel.toFloat(), 8.0f);
-        g.setColour (juce::Colour (0xff55555a));
+        g.setColour (Theme::popupBorder);
         g.drawRoundedRectangle (panel.toFloat().reduced (0.5f), 8.0f, 1.0f);
 
         g.setColour (juce::Colours::white.withAlpha (0.95f));

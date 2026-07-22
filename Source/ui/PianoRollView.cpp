@@ -5,6 +5,7 @@
 
 #include "../shared/GmInstruments.h"
 #include "Fonts.h"
+#include "Theme.h"
 
 namespace
 {
@@ -37,9 +38,9 @@ public:
             if (y > clip.getBottom() || y + rowHeight < clip.getY())
                 continue;
 
-            g.setColour (isBlackKey (pitch) ? juce::Colour (0xff2a2a2e) : juce::Colour (0xffd8d8dc));
+            g.setColour (isBlackKey (pitch) ? Theme::prBlackKey : Theme::prWhiteKey);
             g.fillRect (0, y, getWidth(), rowHeight);
-            g.setColour (juce::Colour (0xff444448));
+            g.setColour (Theme::prKeyOutline);
             g.drawHorizontalLine (y, 0.0f, (float) getWidth());
 
             // ドラムキット選択時はGMドラム名、それ以外はCだけ音名（C3 = 60 のLogic式表記）
@@ -48,19 +49,19 @@ public:
             const char* drumName = drums ? gmDrumName (pitch) : nullptr;
             if (drumName != nullptr)
             {
-                g.setColour (isBlackKey (pitch) ? juce::Colour (0xffaaaaae) : juce::Colour (0xff333338));
+                g.setColour (isBlackKey (pitch) ? Theme::prKeyLabelLight : Theme::prKeyLabelDark);
                 g.setFont (Fonts::small());
                 g.drawText (drumName, 2, y, getWidth() - 6, rowHeight, juce::Justification::centredRight);
             }
             else if (! drums && pitch % 12 == 0)
             {
-                g.setColour (juce::Colour (0xff333338));
+                g.setColour (Theme::prKeyLabelDark);
                 g.setFont (Fonts::small());
                 g.drawText (juce::MidiMessage::getMidiNoteName (pitch, true, true, 3),
                             2, y, getWidth() - 6, rowHeight, juce::Justification::centredRight);
             }
         }
-        g.setColour (juce::Colour (0xff55555a));
+        g.setColour (Theme::prKeyboardBorder);
         g.drawVerticalLine (getWidth() - 1, 0.0f, (float) getHeight());
     }
 
@@ -96,7 +97,7 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        g.fillAll (juce::Colour (0xff1e1e22));
+        g.fillAll (Theme::timelineBg);
         const auto clip = g.getClipBounds();
         auto* region = owner.findRegion();
         if (region == nullptr)
@@ -111,16 +112,16 @@ public:
                 continue;
             if (pitch == forced)
             {
-                g.setColour (juce::Colour (0xff2c3a30));
+                g.setColour (Theme::prRegionTint);
                 g.fillRect (clip.getX(), y, clip.getWidth(), rowHeight);
             }
             else if (isBlackKey (pitch))
             {
-                g.setColour (juce::Colour (0xff1a1a1e));
+                g.setColour (Theme::prRowDark);
                 g.fillRect (clip.getX(), y, clip.getWidth(), rowHeight);
             }
-            g.setColour (pitch % 12 == 11 ? juce::Colour (0xff36363b)   // B/Cの境界を強調
-                                          : juce::Colour (0xff26262a));
+            g.setColour (pitch % 12 == 11 ? Theme::prLineStrong   // B/Cの境界を強調
+                                          : Theme::prLineFaint);
             g.drawHorizontalLine (y, (float) clip.getX(), (float) clip.getRight());
         }
 
@@ -131,9 +132,9 @@ public:
             const int x = owner.ppqToX (tick);
             if (x < clip.getX() - 1 || x > clip.getRight() + 1)
                 continue;
-            g.setColour (tick % Ppq::ticksPerBar == 0       ? juce::Colour (0xff4a4a50)
-                         : tick % Ppq::ticksPerQuarter == 0 ? juce::Colour (0xff36363b)
-                                                            : juce::Colour (0xff26262a));
+            g.setColour (tick % Ppq::ticksPerBar == 0       ? Theme::prGridBar
+                         : tick % Ppq::ticksPerQuarter == 0 ? Theme::prLineStrong
+                                                            : Theme::prLineFaint);
             g.drawVerticalLine (x, (float) clip.getY(), (float) clip.getBottom());
         }
 
@@ -151,7 +152,7 @@ public:
             g.fillRoundedRectangle (rect.toFloat(), 2.0f);
             if (isSelected)
             {
-                g.setColour (juce::Colour (0xff3a7350));
+                g.setColour (Theme::regionMidi);
                 g.drawRoundedRectangle (rect.toFloat().reduced (0.5f), 2.0f, 1.0f);
             }
         }
@@ -822,8 +823,8 @@ void PianoRollView::resized()
 
 void PianoRollView::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xff232327));
-    g.setColour (juce::Colour (0xff44444a));
+    g.fillAll (Theme::prVelocityBg);
+    g.setColour (Theme::prVelocityBorder);
     g.drawHorizontalLine (0, 0.0f, (float) getWidth());
 }
 

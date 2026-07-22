@@ -2,6 +2,7 @@
 
 #include "../shared/Log.h"
 #include "Fonts.h"
+#include "Theme.h"
 
 namespace
 {
@@ -36,7 +37,7 @@ ProjectChooserComponent::ProjectChooserComponent()
     newButton.onClick = [this] { createNewProject(); };
 
     errorLabel.setFont (Fonts::body());
-    errorLabel.setColour (juce::Label::textColourId, juce::Colours::orangered);
+    errorLabel.setColour (juce::Label::textColourId, Theme::warning);
 
     refreshList();
     setSize (520, 480);
@@ -73,7 +74,7 @@ void ProjectChooserComponent::paintListBoxItem (int rowNumber, juce::Graphics& g
                                                 int width, int height, bool rowIsSelected)
 {
     if (rowIsSelected)
-        g.fillAll (juce::Colour (0xff39537d));
+        g.fillAll (Theme::chooserRowSelected);
 
     if (rowNumber >= 0 && rowNumber < projectDirs.size())
     {

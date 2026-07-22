@@ -5,6 +5,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "Fonts.h"
+#include "Theme.h"
 #include "TrackIcons.h"
 #include "../shared/Project.h"
 
@@ -45,9 +46,9 @@ public:
     void paint (juce::Graphics& g) override
     {
         const auto panel = panelBounds().toFloat();
-        g.setColour (juce::Colour (0xff2c2c30));
+        g.setColour (Theme::popupBg);
         g.fillRoundedRectangle (panel, 5.0f);
-        g.setColour (juce::Colour (0xff55555a));
+        g.setColour (Theme::popupBorder);
         g.drawRoundedRectangle (panel.reduced (0.5f), 5.0f, 1.0f);
 
         for (int i = 0; i < numItems; ++i)
@@ -55,7 +56,7 @@ public:
             const auto row = itemBounds (i);
             if (i == hoveredItem)
             {
-                g.setColour (juce::Colour (0xff4a6ea9));
+                g.setColour (Theme::accent);
                 g.fillRoundedRectangle (row.reduced (3, 1).toFloat(), 3.0f);
             }
             g.setColour (juce::Colours::white.withAlpha (0.9f));
