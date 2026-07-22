@@ -5,3 +5,59 @@ run = 'open build/daw_artefacts/Debug/LaLa-dev.app'
 [tasks.stop]
 description = 'dev版アプリ（LaLa-dev.app）を停止する'
 run = 'pkill -f "LaLa-dev.app/Contents/MacOS/LaLa-dev" || true'
+
+[tasks.release]
+description = 'いまのHEADをリリースする（バージョン自動bump→CHANGELOG編集→ビルド→notarize→署名→GitHub Release。notarytoolがkeychainを使うためユーザーのTerminalで実行すること）'
+usage = 'arg "<version>" default="auto" help="auto(既定)=リリース済みならminor bump / patch|minor|major=刻み指定 / 0.3.0等=明示指定"'
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+v="$usage_version"
+current=$(sed -nE 's/^project\(daw VERSION ([0-9.]+).*/\1/p' CMakeLists.txt)
+if [ -z "$current" ]; then
+  echo "ERROR: CMakeLists.txt から現在バージョンを取得できません"
+  exit 1
+fi
+
+case "$v" in
+auto|major|minor|patch)
+  if [ "$v" = "auto" ] && ! git rev-parse "v$current" >/dev/null 2>&1; then
+    # 現在バージョンが未リリース = 手で bump 済み。それをそのまま使う
+    echo "==> CMakeLists.txt の $current は未リリースのため、そのままリリースします"
+    v="$current"
+  else
+    kind="$v"; [ "$kind" = "auto" ] && kind=minor
+    IFS=. read -r maj min pat <<< "$current"
+    case "$kind" in
+    major) v="$((maj + 1)).0.0" ;;
+    minor) v="$maj.$((min + 1)).0" ;;
+    patch) v="$maj.$min.$((pat + 1))" ;;
+    esac
+    echo "==> $current から $kind bump: $v"
+  fi
+  ;;
+*)
+  if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "ERROR: バージョンは x.y.z 形式か auto/major/minor/patch で指定してください: $v"
+    exit 1
+  fi
+  ;;
+esac
+
+if [ "$v" != "$current" ]; then
+  # bump commit が他の変更を巻き込まない・空リリースにならないよう、bump 前に clean を確認する
+  # （release.sh の preflight と同じ基準。docs/plans/ の未追跡だけ除外）
+  dirty=$(git status --porcelain | grep -v '^?? docs/plans/' || true)
+  if [ -n "$dirty" ]; then
+    echo "ERROR: 未コミットの変更があります。commit してから再実行してください"
+    echo "$dirty"
+    exit 1
+  fi
+  sed -i '' -E "s/^project\(daw VERSION [0-9.]+/project(daw VERSION $v/" CMakeLists.txt
+  git add CMakeLists.txt
+  git commit -m "chore: bump version to $v"
+  echo "==> CMakeLists.txt を $v に bump してコミットしました"
+fi
+
+exec scripts/release.sh "$v"
+'''
