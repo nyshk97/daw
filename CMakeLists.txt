@@ -93,6 +93,7 @@ target_sources(daw PRIVATE
     Source/shared/Project.cpp
     Source/shared/SynthBank.cpp
     Source/ui/MainComponent.cpp
+    Source/ui/MixerOverlay.cpp
     Source/ui/PianoRollView.cpp
     Source/ui/ProjectChooserComponent.cpp
     Source/ui/TimelineView.cpp

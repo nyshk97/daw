@@ -2,6 +2,8 @@
 
 #include <cmath>
 
+#include "../shared/Pan.h"
+
 namespace
 {
 // メーター用ピークのCAS max更新（UI側の exchange(0) と組。TrackParams::peakLevel のコメント参照）
@@ -31,6 +33,9 @@ void PlaybackEngine::prepareToPlay (int samplesPerBlockExpected, double sampleRa
     const int maxBlock = juce::jmax (4096, samplesPerBlockExpected);
     synthScratch.setSize (maxSynthChannels, maxBlock);
     trackScratch.setSize (1, maxBlock);
+    mixScratch.setSize (2, maxBlock);
+    for (auto& bus : busScratch)
+        bus.setSize (2, maxBlock);
 
     // ノートオン上限（1024）＋オフ（activeNotes追跡により最大 SynthInstance::maxActiveNotes = 256 に有界）
     // ＋All Notes Off等。1イベントあたりの格納コストは数バイト＋ヘッダなので、1イベント16バイト換算で余裕を持って確保
@@ -109,13 +114,27 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
             if (track.params->solo.load())
                 { anySolo = true; break; }
 
+    // ステレオミックス（mixScratch）とsendバスの準備。全信号は
+    // 「トラック（gain・pan）→ mixScratch/busScratch → バス素通し加算 → Masterゲイン → 出力ch0/1」
+    // の順で流れる。想定外の巨大ブロックが来たときだけこの経路を諦めて
+    // クリップの直接加算にフォールバックする（音を落とさないことを最優先。send・メーターは失う）
+    const bool canProcess = numSamples <= mixScratch.getNumSamples();
+    if (canProcess)
+    {
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            mixScratch.clear (ch, 0, numSamples);
+            for (auto& bus : busScratch)
+                bus.clear (ch, 0, numSamples);
+        }
+    }
+
+    const float masterGain = (snapshot != nullptr && snapshot->masterParams != nullptr)
+                                 ? snapshot->masterParams->gain.load()
+                                 : 1.0f;
+
     if (playing && snapshot != nullptr)
     {
-        // メーターは重なったクリップの「加算後」ピークを測る必要があるため、トラックごとに
-        // モノスクラッチへ一旦合算してから計測・出力する。想定外の巨大ブロックが来たときだけ
-        // 計測を諦めて従来の per-clip 加算にフォールバックする（音を落とさないことを最優先）
-        const bool canMeter = numSamples <= trackScratch.getNumSamples();
-
         for (auto& track : snapshot->tracks)
         {
             const bool audible = ! track.params->mute.load()
@@ -127,7 +146,10 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
             if (gain <= 0.0f)
                 continue;
 
-            if (canMeter)
+            float panL = 1.0f, panR = 1.0f;
+            Pan::monoGains (track.params->pan.load(), panL, panR);
+
+            if (canProcess)
                 trackScratch.clear (0, 0, numSamples); // 全トラックで再利用するため毎回必ずclear
 
             bool anyOverlap = false;
@@ -145,19 +167,42 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
                 const int count = (int) (overlapEnd - overlapStart);
                 const float* src = clip.audio->getReadPointer (0, srcOffset);
 
-                // 重なったクリップは加算再生
-                if (canMeter)
+                // 重なったクリップは加算再生（メーターは加算後ピークを測る必要があるため
+                // 一旦モノスクラッチへ合算し、pan分配は後でまとめて行う）
+                if (canProcess)
+                {
                     trackScratch.addFrom (0, destOffset, src, count, gain);
+                }
+                else if (buffer.getNumChannels() >= 2)
+                {
+                    // フォールバックの縮退はsend/メーターのみ。出力ルール（ch0/1・1chダウンミックス）と
+                    // pan・Masterは本編と揃える
+                    buffer.addFrom (0, startSample + destOffset, src, count, gain * panL * masterGain);
+                    buffer.addFrom (1, startSample + destOffset, src, count, gain * panR * masterGain);
+                }
                 else
-                    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
-                        buffer.addFrom (ch, startSample + destOffset, src, count, gain);
+                {
+                    buffer.addFrom (0, startSample + destOffset, src, count,
+                                    gain * 0.5f * (panL + panR) * masterGain);
+                }
             }
 
-            if (canMeter && anyOverlap)
+            if (canProcess && anyOverlap)
             {
-                storePeakMax (track.params->peakLevel, trackScratch.getMagnitude (0, 0, numSamples));
-                for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
-                    buffer.addFrom (ch, startSample, trackScratch, 0, 0, numSamples);
+                storePeakMax (track.params->peakLevel,
+                              trackScratch.getMagnitude (0, 0, numSamples) * juce::jmax (panL, panR));
+                mixScratch.addFrom (0, 0, trackScratch, 0, 0, numSamples, panL);
+                mixScratch.addFrom (1, 0, trackScratch, 0, 0, numSamples, panR);
+
+                // post-fader send（gain・pan適用後のコピーをバスへ）
+                for (int b = 0; b < numSendBuses; ++b)
+                {
+                    const float send = track.params->sends[b].load();
+                    if (send <= 0.0f)
+                        continue;
+                    busScratch[b].addFrom (0, 0, trackScratch, 0, 0, numSamples, panL * send);
+                    busScratch[b].addFrom (1, 0, trackScratch, 0, 0, numSamples, panR * send);
+                }
             }
         }
     }
@@ -180,15 +225,55 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
         numPreviewNotes = 0;
 
     // ---- MIDIトラック（ミュート/ソロでもイベント送信・レンダリングは止めず、ミックスゲインだけ0にする）----
+    // 出力は mixScratch / busScratch へ（プレビュー発音もこの経路 = pan/send/Masterを通る）。
+    // canProcessでない巨大ブロックでは各シンセのサイズガードが働いて書き込みは起きない
     if (snapshot != nullptr)
-        renderMidiTracks (*snapshot, buffer, startSample, numSamples, pos,
+        renderMidiTracks (*snapshot, numSamples, pos,
                           playing,
                           startedOrSeeked || stoppedNow || snapshotChanged,   // silenceTransport
                           startedOrSeeked || stoppedNow,                      // silenceAll
                           playing && (startedOrSeeked || snapshotChanged),    // resound
                           sr, bpm, anySolo);
 
+    // ---- sendバス（当面FXは無く素通し）→ ミックス、Masterゲイン → 出力バッファ ----
+    // 出力ルール: ch0/1にのみ書く。1chデバイスはL+R等分ダウンミックス、2ch超の余剰chはclearのまま無音
+    if (canProcess && snapshot != nullptr)
+    {
+        for (int b = 0; b < numSendBuses; ++b)
+        {
+            auto* busParams = snapshot->busParams[b].get();
+            if (busParams == nullptr || busParams->mute.load())
+                continue;
+            const float busGain = busParams->gain.load();
+            if (busGain <= 0.0f)
+                continue;
+
+            storePeakMax (busParams->peakLevel,
+                          juce::jmax (busScratch[b].getMagnitude (0, 0, numSamples),
+                                      busScratch[b].getMagnitude (1, 0, numSamples)) * busGain);
+            mixScratch.addFrom (0, 0, busScratch[b], 0, 0, numSamples, busGain);
+            mixScratch.addFrom (1, 0, busScratch[b], 1, 0, numSamples, busGain);
+        }
+
+        if (snapshot->masterParams != nullptr)
+            storePeakMax (snapshot->masterParams->peakLevel,
+                          juce::jmax (mixScratch.getMagnitude (0, 0, numSamples),
+                                      mixScratch.getMagnitude (1, 0, numSamples)) * masterGain);
+
+        if (buffer.getNumChannels() >= 2)
+        {
+            buffer.addFrom (0, startSample, mixScratch, 0, 0, numSamples, masterGain);
+            buffer.addFrom (1, startSample, mixScratch, 1, 0, numSamples, masterGain);
+        }
+        else
+        {
+            buffer.addFrom (0, startSample, mixScratch, 0, 0, numSamples, 0.5f * masterGain);
+            buffer.addFrom (0, startSample, mixScratch, 1, 0, numSamples, 0.5f * masterGain);
+        }
+    }
+
     // ---- クリック（カウントイン中は常に・それ以外はトグルON時のみ）----
+    // Masterフェーダーの後（post-master）に加算する: Masterを絞ってもカウントイン/クリックは聞こえる
     if (playing)
     {
         const bool clickOn = transport.clickEnabled.load();
@@ -221,7 +306,8 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
                 clickPhase += juce::MathConstants<double>::twoPi * clickFreq / sr;
                 --clickSamplesLeft;
 
-                for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                // 出力ルールは本編と同じ（ch0/1のみ。余剰chへ漏らさない）
+                for (int ch = 0; ch < juce::jmin (2, buffer.getNumChannels()); ++ch)
                     buffer.addSample (ch, startSample + i, sample);
             }
         }
@@ -232,8 +318,7 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
 
 // オーディオスレッド専用。snapshot 内の SynthInstance は shared_ptr 共有所有により
 // このブロックの処理中は生存が保証されている（生ポインタ参照のみ・コピーはしない）。
-void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, juce::AudioBuffer<float>& buffer,
-                                       int startSample, int numSamples, juce::int64 pos,
+void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, int numSamples, juce::int64 pos,
                                        bool playing, bool silenceTransport, bool silenceAll, bool resound,
                                        double sr, double bpm, bool anySolo)
 {
@@ -418,20 +503,35 @@ void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, juce::AudioBu
         synth->plugin->processBlock (block, midiScratch);
 
         // ---- ミックス（ミュート/非ソロはゲイン0＝加算しないだけで、上のレンダリングは常に行う）----
+        // シンセ出力はステレオなのでpanはバランス型（センター0dB・振った反対側だけ減衰）
         const bool audible = ! track.params->mute.load()
                              && (! anySolo || track.params->solo.load());
         const float gain = audible ? track.params->gain.load() : 0.0f;
         if (gain > 0.0f)
         {
-            for (int outCh = 0; outCh < buffer.getNumChannels(); ++outCh)
-                buffer.addFrom (outCh, startSample, block, juce::jmin (outCh, 1), 0, numSamples, gain);
+            float balL = 1.0f, balR = 1.0f;
+            Pan::stereoGains (track.params->pan.load(), balL, balR);
+            const float gainL = gain * balL;
+            const float gainR = gain * balR;
+            const int srcR = juce::jmin (1, block.getNumChannels() - 1);
 
-            // メーター: ミックスは出力chごとにblockのch0/ch1を対応させるステレオなので、
-            // 1本メーターにはch0/ch1のピークの大きい方を採用する
-            float peak = 0.0f;
-            for (int c = 0; c < juce::jmin (2, block.getNumChannels()); ++c)
-                peak = juce::jmax (peak, block.getMagnitude (c, 0, numSamples));
-            storePeakMax (track.params->peakLevel, peak * gain);
+            mixScratch.addFrom (0, 0, block, 0, 0, numSamples, gainL);
+            mixScratch.addFrom (1, 0, block, srcR, 0, numSamples, gainR);
+
+            // post-fader send（gain・pan適用後のコピーをバスへ）
+            for (int b = 0; b < numSendBuses; ++b)
+            {
+                const float send = track.params->sends[b].load();
+                if (send <= 0.0f)
+                    continue;
+                busScratch[b].addFrom (0, 0, block, 0, 0, numSamples, gainL * send);
+                busScratch[b].addFrom (1, 0, block, srcR, 0, numSamples, gainR * send);
+            }
+
+            // メーター: 1本メーターにはL/Rのピークの大きい方を採用する
+            storePeakMax (track.params->peakLevel,
+                          juce::jmax (block.getMagnitude (0, 0, numSamples) * gainL,
+                                      block.getMagnitude (srcR, 0, numSamples) * gainR));
         }
     }
 }

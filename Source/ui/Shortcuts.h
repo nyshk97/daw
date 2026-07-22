@@ -43,6 +43,7 @@ enum class ID
     notePaste,
     // 表示・ズーム
     zoomHorizontal,
+    toggleMixer,
     shortcutList,
     // プロジェクト
     save,
@@ -194,6 +195,10 @@ inline const Entry table[] = {
           return k == juce::KeyPress (juce::KeyPress::leftKey, juce::ModifierKeys::commandModifier, 0)
               || k == juce::KeyPress (juce::KeyPress::rightKey, juce::ModifierKeys::commandModifier, 0);
       } },
+    // Logic準拠: X = ミキサー
+    { ID::toggleMixer, Category::view, u8"ミキサーを表示/隠す", u8"X",
+      [] (const juce::KeyPress& k)
+      { return detail::noCmdCtrlAlt (k) && k.getTextCharacter() == 'x'; } },
     { ID::shortcutList, Category::view, u8"ショートカット一覧", u8"⌘?",
       [] (const juce::KeyPress& k)
       {

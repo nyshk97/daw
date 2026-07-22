@@ -293,7 +293,8 @@ void testClipOffsetsV2Migration()
     expect (project->save (error), "v3で保存できること");
 
     const auto saved = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
-    expect ((int) saved.getProperty ("version", 0) == 3, "保存バージョンが3であること");
+    expect ((int) saved.getProperty ("version", 0) == Project::currentVersion,
+            "現行バージョンで保存されること");
 
     auto reloaded = Project::load (dir, warnings, error);
     expect (reloaded != nullptr && reloaded->tracks.size() == 1 && reloaded->tracks[0].clips.size() == 1,
@@ -1453,6 +1454,300 @@ void testBounceRendererMidiTail()
     dir.deleteRecursively();
 }
 
+// ---- v4: pan/sends/バス/Masterの保存・読込と、v3以前のデフォルト補完 ----
+void testMixerParamsRoundtrip()
+{
+    beginTest ("mixer params roundtrip");
+
+    // 新規Projectのデフォルト: バス・Masterはユニティ（TrackParamsの既定0.8を引き継がない）
+    Project fresh;
+    for (int b = 0; b < numSendBuses; ++b)
+        expect (juce::approximatelyEqual (fresh.busParams[b]->gain.load(), 1.0f),
+                "新規Projectのバスgainは1.0");
+    expect (juce::approximatelyEqual (fresh.masterParams->gain.load(), 1.0f),
+            "新規ProjectのMaster gainは1.0");
+
+    // v3形式（pan/sends/buses/masterなし）の読込 → デフォルト補完
+    auto dir = makeTempDir();
+    dir.getChildFile ("project.json").replaceWithText (R"({
+        "version": 3, "bpm": 120.0, "sampleRate": 0.0, "nextId": 2,
+        "tracks": [ { "id": 1, "type": "audio", "name": "t",
+                      "mute": false, "solo": false, "volume": 0.5, "clips": [] } ]
+    })");
+    juce::StringArray warnings;
+    juce::String error;
+    auto project = Project::load (dir, warnings, error);
+    expect (project != nullptr && project->tracks.size() == 1, "v3を読込めること");
+    if (project == nullptr || project->tracks.empty())
+    {
+        dir.deleteRecursively();
+        return;
+    }
+    auto& params = *project->tracks[0].params;
+    expect (juce::approximatelyEqual (params.pan.load(), 0.0f), "v3読込: pan=0");
+    for (int b = 0; b < numSendBuses; ++b)
+        expect (juce::approximatelyEqual (params.sends[b].load(), 0.0f), "v3読込: send=0");
+    for (int b = 0; b < numSendBuses; ++b)
+        expect (juce::approximatelyEqual (project->busParams[b]->gain.load(), 1.0f)
+                    && ! project->busParams[b]->mute.load(),
+                "v3読込: バスgain=1.0・mute=false");
+    expect (juce::approximatelyEqual (project->masterParams->gain.load(), 1.0f),
+            "v3読込: Master gain=1.0");
+
+    // 値を入れて保存 → v4になり、再読込で維持される
+    params.pan.store (-0.5f);
+    params.sends[0].store (0.3f);
+    params.sends[2].store (1.0f);
+    project->busParams[1]->gain.store (0.7f);
+    project->busParams[1]->mute.store (true);
+    project->masterParams->gain.store (0.9f);
+    expect (project->save (error), "v4で保存できること");
+
+    const auto parsed = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
+    expect ((int) parsed.getProperty ("version", 0) == 4, "version=4で保存されること");
+
+    auto reloaded = Project::load (dir, warnings, error);
+    expect (reloaded != nullptr && reloaded->tracks.size() == 1, "v4を再読込できること");
+    if (reloaded != nullptr && ! reloaded->tracks.empty())
+    {
+        auto& p = *reloaded->tracks[0].params;
+        expect (juce::approximatelyEqual (p.pan.load(), -0.5f), "pan維持");
+        expect (juce::approximatelyEqual (p.sends[0].load(), 0.3f)
+                    && juce::approximatelyEqual (p.sends[1].load(), 0.0f)
+                    && juce::approximatelyEqual (p.sends[2].load(), 1.0f),
+                "sends維持");
+        expect (juce::approximatelyEqual (reloaded->busParams[1]->gain.load(), 0.7f)
+                    && reloaded->busParams[1]->mute.load(),
+                "バスgain/mute維持");
+        expect (juce::approximatelyEqual (reloaded->masterParams->gain.load(), 0.9f), "Master gain維持");
+
+        // buildSnapshotにバス・Masterが載ること
+        auto snapshot = reloaded->buildSnapshot();
+        expect (snapshot->busParams[0] == reloaded->busParams[0]
+                    && snapshot->masterParams == reloaded->masterParams,
+                "スナップショットがバス/Masterのparamsを共有すること");
+    }
+    dir.deleteRecursively();
+}
+
+// ---- エンジン: pan法則・post-fader send（素通しバス）・busGain/mute・Masterゲイン・メーター ----
+void testEnginePanSendsMaster()
+{
+    beginTest ("engine pan/sends/master");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+
+    TransportState transport;
+    SnapshotExchange snapshots;
+    PreviewFifo previewFifo;
+    PlaybackEngine engine (transport, snapshots, previewFifo);
+    engine.prepareToPlay (blockSize, sr);
+
+    // 定数振幅0.5のクリップ（レベル検証がしやすい）
+    Project project;
+    Track track;
+    track.id = 1;
+    track.params->gain.store (1.0f);
+    Clip clip;
+    clip.startSample = 0;
+    clip.lengthSamples = blockSize * 64;
+    clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, blockSize * 64);
+    for (int i = 0; i < clip.audio->getNumSamples(); ++i)
+        clip.audio->setSample (0, i, 0.5f);
+    track.clips.push_back (std::move (clip));
+    project.tracks.push_back (std::move (track));
+    auto& params = *project.tracks[0].params;
+    snapshots.push (project.buildSnapshot());
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    auto measure = [&] (float& left, float& right)
+    {
+        transport.seekRequest.store (0);
+        engine.play();
+        buffer.clear();
+        juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+        engine.process (info);
+        left = buffer.getMagnitude (0, 0, blockSize);
+        right = buffer.getMagnitude (1, 0, blockSize);
+        engine.stop();
+        buffer.clear();
+        engine.process (info); // 停止エッジの消化
+    };
+
+    float left = 0.0f, right = 0.0f;
+
+    // panセンター: 両ch 0.5（等パワー補正型はセンター0dB = 既存プロジェクトの音量を変えない）
+    measure (left, right);
+    expect (std::abs (left - 0.5f) < 0.001f && std::abs (right - 0.5f) < 0.001f,
+            "panセンターは両ch等量（0.5）");
+
+    // pan右振り切り: 左ほぼ0・右は+3dB（0.5×√2≈0.707）
+    params.pan.store (1.0f);
+    measure (left, right);
+    expect (left < 0.001f, "pan右振り切りで左chは無音");
+    expect (std::abs (right - 0.7071f) < 0.005f, "pan右振り切りで右chは+3dB（約0.707）");
+    expect (params.peakLevel.exchange (0.0f) > 0.7f, "トラックメーターはpost-panピーク（約0.707）");
+
+    // send（素通しバス）: pan中央・send100% → 原音と二重加算で1.0
+    params.pan.store (0.0f);
+    params.sends[0].store (1.0f);
+    measure (left, right);
+    expect (std::abs (left - 1.0f) < 0.002f, "send100%は素通しバスで二重加算（1.0）");
+    expect (project.busParams[0]->peakLevel.exchange (0.0f) > 0.45f, "バスメーターが振れること");
+
+    // バスミュートでsend分が消える
+    project.busParams[0]->mute.store (true);
+    measure (left, right);
+    expect (std::abs (left - 0.5f) < 0.002f, "バスMでsend分が消えること");
+    project.busParams[0]->mute.store (false);
+
+    // バスのリターン量（gain 0.5 → 0.5 + 0.25 = 0.75）
+    project.busParams[0]->gain.store (0.5f);
+    measure (left, right);
+    expect (std::abs (left - 0.75f) < 0.002f, "バスgainがリターン量として効くこと");
+    project.busParams[0]->gain.store (1.0f);
+
+    // Masterゲイン（全体 1.0 → 0.5）とMasterメーター
+    project.masterParams->gain.store (0.5f);
+    project.masterParams->peakLevel.exchange (0.0f); // 前シナリオの蓄積ピーク（CAS max）をリセット
+    measure (left, right);
+    expect (std::abs (left - 0.5f) < 0.002f, "Masterゲインで全体が半減すること");
+    expect (std::abs (project.masterParams->peakLevel.exchange (0.0f) - 0.5f) < 0.01f,
+            "Masterメーターはpost-masterピーク");
+
+    snapshots.deleteRetired();
+}
+
+// ---- エンジン: 最終出力ルール（ch0/1のみ・1chはダウンミックス・余剰chは無音。クリック含む）----
+void testEngineOutputChannelRule()
+{
+    beginTest ("engine output channel rule");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+
+    TransportState transport;
+    SnapshotExchange snapshots;
+    PreviewFifo previewFifo;
+    PlaybackEngine engine (transport, snapshots, previewFifo);
+    engine.prepareToPlay (blockSize, sr);
+
+    Project project;
+    Track track;
+    track.id = 1;
+    track.params->gain.store (1.0f);
+    track.params->sends[0].store (1.0f); // バス経路も通す（余剰ch漏れの検査対象に含める）
+    Clip clip;
+    clip.startSample = 0;
+    clip.lengthSamples = blockSize * 64;
+    clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, blockSize * 64);
+    for (int i = 0; i < clip.audio->getNumSamples(); ++i)
+        clip.audio->setSample (0, i, 0.5f);
+    track.clips.push_back (std::move (clip));
+    project.tracks.push_back (std::move (track));
+    snapshots.push (project.buildSnapshot());
+
+    // 4ch出力: 通常音（クリップ＋バス）とクリック（曲頭=拍頭で必ず鳴る）がch0/1のみに出ること
+    transport.clickEnabled.store (true);
+    {
+        juce::AudioBuffer<float> buffer (4, blockSize);
+        transport.seekRequest.store (0);
+        engine.play();
+        buffer.clear();
+        juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+        engine.process (info);
+        engine.stop();
+        expect (buffer.getMagnitude (0, 0, blockSize) > 0.9f
+                    && buffer.getMagnitude (1, 0, blockSize) > 0.9f,
+                "4ch出力: ch0/1に音が出ること（クリップ＋バス＋クリック）");
+        expect (buffer.getMagnitude (2, 0, blockSize) == 0.0f
+                    && buffer.getMagnitude (3, 0, blockSize) == 0.0f,
+                "4ch出力: ch2以降は完全に無音（クリックも漏れない）");
+        buffer.clear();
+        engine.process (info); // 停止エッジの消化
+    }
+
+    // 1ch出力: クラッシュせずL+R等分ダウンミックスになること（クリックは切って振幅を検証）
+    transport.clickEnabled.store (false);
+    project.tracks[0].params->sends[0].store (0.0f);
+    {
+        juce::AudioBuffer<float> buffer (1, blockSize);
+        transport.seekRequest.store (0);
+        engine.play();
+        buffer.clear();
+        juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+        engine.process (info);
+        engine.stop();
+        expect (std::abs (buffer.getMagnitude (0, 0, blockSize) - 0.5f) < 0.002f,
+                "1ch出力: L+R等分ダウンミックス（panセンターの0.5が保たれる）");
+        buffer.clear();
+        engine.process (info);
+    }
+
+    snapshots.deleteRetired();
+}
+
+// ---- エンジン: 停止中のMIDIプレビュー発音もMaster（pan/sendバス経路）を通ること ----
+void testPreviewThroughMaster()
+{
+    beginTest ("preview routes through master");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+
+    TransportState transport;
+    SnapshotExchange snapshots;
+    PreviewFifo previewFifo;
+    PlaybackEngine engine (transport, snapshots, previewFifo);
+    engine.prepareToPlay (blockSize, sr);
+
+    Project project;
+    Track track;
+    track.id = 30;
+    track.type = TrackType::midi;
+    track.gmProgram = 48; // Strings（持続音）
+    project.tracks.push_back (std::move (track));
+
+    SynthBank bank;
+    bank.sync (project, sr, blockSize);
+    auto snapshot = project.buildSnapshot();
+    snapshot->tracks[0].synth = bank.get (30);
+    snapshots.push (std::move (snapshot));
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    auto processBlocks = [&] (int count)
+    {
+        float magnitude = 0.0f;
+        for (int i = 0; i < count; ++i)
+        {
+            buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+            engine.process (info);
+            magnitude = juce::jmax (magnitude, buffer.getMagnitude (0, 0, blockSize));
+        }
+        return magnitude;
+    };
+
+    // Master 0 でプレビュー → 無音（Masterを迂回していない証拠）。イベント自体は処理されている
+    project.masterParams->gain.store (0.0f);
+    previewFifo.push ({ PreviewFifo::Command::Type::noteOn, 30, 72, 100 });
+    expect (processBlocks (5) < 0.0001f, "Master 0ならプレビューも無音");
+    auto synth = bank.get (30);
+    bool active = false;
+    if (synth != nullptr)
+        for (int i = 0; i < synth->numActiveNotes; ++i)
+            active = active || synth->activeNotes[i].pitch == 72;
+    expect (active, "無音でもプレビューのイベントは処理されていること");
+
+    // Master 1 に戻すと（同じ発音中ノートが）聞こえる
+    project.masterParams->gain.store (1.0f);
+    expect (processBlocks (5) > 0.001f, "Masterを戻すとプレビューが聞こえること");
+
+    processBlocks (60); // 発音長を消化してから片付け
+    snapshots.deleteRetired();
+}
+
 } // namespace
 
 int main()
@@ -1484,6 +1779,10 @@ int main()
     testBounceRendererBasic();
     testBounceRendererClippingProtection();
     testBounceRendererMidiTail();
+    testMixerParamsRoundtrip();
+    testEnginePanSendsMaster();
+    testEngineOutputChannelRule();
+    testPreviewThroughMaster();
 
     if (failureCount > 0)
     {

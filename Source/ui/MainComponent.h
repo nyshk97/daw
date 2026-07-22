@@ -6,6 +6,7 @@
 #include "AddTrackOverlay.h"
 #include "BounceOverlay.h"
 #include "IconButton.h"
+#include "MixerOverlay.h"
 #include "PianoRollView.h"
 #include "ShortcutListOverlay.h"
 #include "TimelineView.h"
@@ -111,6 +112,7 @@ private:
     AddTrackOverlay addTrackOverlay;
     ShortcutListOverlay shortcutOverlay; // ⌘?のショートカット一覧（表示中のみ可視）
     BounceOverlay bounceOverlay;         // バウンス進捗（表示中のみ可視・モーダル）
+    MixerOverlay mixerOverlay;           // Xのミキサー（表示中のみ可視・キーは奪わない）
     TransportLcd lcd; // BPM・小節位置・時間のLCD風パネル（バー中央に置く）
     juce::Label srWarningLabel;
     juce::TooltipWindow tooltipWindow { this }; // アイコンのみのボタン（歯車等）のホバー説明用
@@ -120,6 +122,14 @@ private:
     int selectedTrack = -1;
     bool dirty = false;
     bool focusGrabbed = false;
+
+    // ミキサーオーバーレイが覆う領域（ヘッダー＋タイムライン。上部バーと下部パネルは覆わない）。
+    // resizedで更新し、Xで開くときに使う
+    juce::Rectangle<int> mixerArea;
+
+    // メーター値の配布用（timerCallbackで毎tick詰め直す。peakLevelのexchange(0)は
+    // ヘッダーとミキサーで取り合わないようここで一元的に行う）
+    std::vector<float> meterPeaks;
 
     // 再生中の ,/. シークは一時停止し、キーが離れて少し経ってから自動再開する（timerCallbackで判定）。
     // 押下継続の判定は文字でなくkeyPressedで受けたキーコードで行う（非US配列で<>に化けても追跡できるように）。

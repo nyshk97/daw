@@ -2,7 +2,9 @@
 
 #include <cmath>
 #include <cstdio>
+#include <vector>
 
+#include "../shared/Pan.h"
 #include "../shared/Ppq.h"
 
 namespace
@@ -134,6 +136,9 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
             ++cursors[i].nextNote;
 
     juce::AudioBuffer<float> mix (2, renderBlockSize);
+    std::vector<juce::AudioBuffer<float>> busMix;
+    for (int b = 0; b < numSendBuses; ++b)
+        busMix.emplace_back (2, renderBlockSize);
 
     // ---- 本編: クリップ＋MIDIのミックス ----
     for (juce::int64 pos = rangeStart; pos < rangeEnd; pos += renderBlockSize)
@@ -143,12 +148,17 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
 
         const int n = (int) juce::jmin ((juce::int64) renderBlockSize, rangeEnd - pos);
         mix.clear();
+        for (auto& bus : busMix)
+            bus.clear();
 
         for (size_t ti = 0; ti < request.tracks.size(); ++ti)
         {
             auto& track = request.tracks[ti];
 
-            // クリップ: 重なりは加算再生・モノラルソースを両chへ（RTのprocessと同じ規則）
+            // クリップ: 重なりは加算再生・モノラルソースを等パワー補正型panで両chへ
+            // （RTのprocessと同じ規則・同じ法則）。sendはpost-fader（gain・pan適用後）
+            float panL = 1.0f, panR = 1.0f;
+            Pan::monoGains (track.pan, panL, panR);
             for (auto& clip : track.clips)
             {
                 const auto overlapStart = juce::jmax (pos, clip.startSample);
@@ -161,15 +171,23 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
                 const int count = (int) (overlapEnd - overlapStart);
                 const float* src = clip.audio->getReadPointer (0, srcOffset);
                 for (int ch = 0; ch < 2; ++ch)
-                    mix.addFrom (ch, destOffset, src, count, track.gain);
+                {
+                    const float gain = track.gain * (ch == 0 ? panL : panR);
+                    mix.addFrom (ch, destOffset, src, count, gain);
+                    for (int b = 0; b < numSendBuses; ++b)
+                        if (track.sends[b] > 0.0f)
+                            busMix[(size_t) b].addFrom (ch, destOffset, src, count, gain * track.sends[b]);
+                }
             }
 
             if (track.synth != nullptr && track.synth->plugin != nullptr)
             {
                 scheduleBlockMidi (track, cursors[ti], pos, n, tps);
-                renderSynthInto (mix, track, n);
+                renderSynthInto (mix, busMix, track, n);
             }
         }
+
+        mixBusesAndMaster (mix, busMix, n);
 
         for (int ch = 0; ch < 2; ++ch)
             runningPeak = juce::jmax (runningPeak, mix.getMagnitude (ch, 0, n));
@@ -198,6 +216,8 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
                 return false;
 
             mix.clear();
+            for (auto& bus : busMix)
+                bus.clear();
             for (size_t ti = 0; ti < request.tracks.size(); ++ti)
             {
                 auto& track = request.tracks[ti];
@@ -212,10 +232,13 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
                         midiScratch.addEvent (juce::MidiMessage::noteOff (ch, pitch), 0);
                     cursors[ti].active.clear();
                 }
-                renderSynthInto (mix, track, renderBlockSize);
+                renderSynthInto (mix, busMix, track, renderBlockSize);
             }
             firstTailBlock = false;
 
+            mixBusesAndMaster (mix, busMix, renderBlockSize);
+
+            // 無音判定はMaster適用後の最終出力で行う（聞こえる信号が-60dBを下回ったら終了）
             float magnitude = 0.0f;
             for (int ch = 0; ch < 2; ++ch)
                 magnitude = juce::jmax (magnitude, mix.getMagnitude (ch, 0, renderBlockSize));
@@ -326,7 +349,9 @@ void BounceRenderer::scheduleBlockMidi (const TrackRender& track, SynthCursor& c
     }
 }
 
-void BounceRenderer::renderSynthInto (juce::AudioBuffer<float>& mix, const TrackRender& track, int numSamples)
+void BounceRenderer::renderSynthInto (juce::AudioBuffer<float>& mix,
+                                      std::vector<juce::AudioBuffer<float>>& busMix,
+                                      const TrackRender& track, int numSamples)
 {
     auto* synth = track.synth.get();
     const int total = synth->totalOutputChannels;
@@ -341,6 +366,30 @@ void BounceRenderer::renderSynthInto (juce::AudioBuffer<float>& mix, const Track
     block.clear();
     synth->plugin->processBlock (block, midiScratch);
 
+    // ステレオソースなのでpanはバランス型（RTのrenderMidiTracksと同じ法則）。sendはpost-fader
+    float balL = 1.0f, balR = 1.0f;
+    Pan::stereoGains (track.pan, balL, balR);
     for (int ch = 0; ch < 2; ++ch)
-        mix.addFrom (ch, 0, block, juce::jmin (ch, 1), 0, numSamples, track.gain);
+    {
+        const float gain = track.gain * (ch == 0 ? balL : balR);
+        mix.addFrom (ch, 0, block, juce::jmin (ch, 1), 0, numSamples, gain);
+        for (int b = 0; b < numSendBuses; ++b)
+            if (track.sends[b] > 0.0f)
+                busMix[(size_t) b].addFrom (ch, 0, block, juce::jmin (ch, 1), 0, numSamples,
+                                            gain * track.sends[b]);
+    }
+}
+
+void BounceRenderer::mixBusesAndMaster (juce::AudioBuffer<float>& mix,
+                                        std::vector<juce::AudioBuffer<float>>& busMix, int numSamples)
+{
+    for (int b = 0; b < numSendBuses; ++b)
+    {
+        if (request.busMute[b] || request.busGain[b] <= 0.0f)
+            continue;
+        for (int ch = 0; ch < 2; ++ch)
+            mix.addFrom (ch, 0, busMix[(size_t) b], ch, 0, numSamples, request.busGain[b]);
+    }
+    if (request.masterGain != 1.0f)
+        mix.applyGain (0, numSamples, request.masterGain);
 }

@@ -42,12 +42,13 @@ private:
     static constexpr int maxSynthChannels = 8;
 
     // MIDIトラックのAUレンダリングとイベント生成。オーディオスレッド専用。
+    // 出力は最終バッファでなく mixScratch / busScratch へ書く（プレビュー発音も含めて
+    // 全MIDI出力が pan→sendバス→Master を通る）。
     // silenceTransport: 送信済みの再生ノートを止めてから始める（トランスポートエッジ＋スナップショット差し替え時）
     // silenceAll: プレビュー発音も含めて全消音＋CC123（トランスポートエッジのみ。
     //             スナップショット差し替え時は「ノート作成→プレビュー→push」の流れでプレビューを殺さないよう区別する）
     // resound: 再生位置を跨いでいるノートを offset 0 で再発音（シーク・再生開始・差し替え時）
-    void renderMidiTracks (PlaybackSnapshot& snapshot, juce::AudioBuffer<float>& buffer,
-                           int startSample, int numSamples, juce::int64 pos,
+    void renderMidiTracks (PlaybackSnapshot& snapshot, int numSamples, juce::int64 pos,
                            bool playing, bool silenceTransport, bool silenceAll, bool resound,
                            double sr, double bpm, bool anySolo);
 
@@ -63,8 +64,15 @@ private:
     juce::MidiBuffer midiScratch;
 
     // オーディオトラックのクリップ合算用モノスクラッチ（メーターは加算後ピークを測る必要があるため。
-    // クリップはモノで全出力chに同一加算されるのでモノ1本で正確）。全トラックで再利用する
+    // クリップはモノソースで、panはミックス分配時に掛けるのでモノ1本で正確）。全トラックで再利用する
     juce::AudioBuffer<float> trackScratch;
+
+    // ステレオミックスの組み立て場所。全トラックのpost-fader/pan信号がここに集まり、
+    // sendバス（素通し）→ Masterゲイン → デバイスバッファ（ch0/1のみ）の順で流れる。
+    // デバイスバッファへ直接書かないのは、チャンネル数の差異（1ch/3ch以上）の吸収と
+    // Master処理を1箇所に集めるため
+    juce::AudioBuffer<float> mixScratch;                 // 2ch
+    juce::AudioBuffer<float> busScratch[numSendBuses];   // 各2ch。sendの蓄積先（毎ブロックclear）
 
     // ---- 以下はオーディオスレッド専用の状態 ----
 

@@ -6,12 +6,21 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 
-// トラックの音量・ミュート・ソロ。Trackモデル（メッセージスレッド）と
+// send用固定バスの本数（Reverb A / Reverb B / Delay）。本数・並びは固定で、
+// UI・保存形式・エンジンすべてこの順序を前提にする（バスの作成・削除UIは作らない）
+inline constexpr int numSendBuses = 3;
+
+// トラックの音量・パン・send・ミュート・ソロ。Trackモデル（メッセージスレッド）と
 // PlaybackSnapshot（オーディオスレッドが参照）が shared_ptr で共有する。
 // 値の変更はスナップショット再構築なしに atomic 経由で即反映される。
+// バス・Masterのパラメータにもこの型を流用する（pan/sends/solo等の不要フィールドは未使用のまま。
+// 注意: バス・Masterの gain 既定はユニティ1.0で、ここでの既定0.8とは異なる。
+// Project 側が全生成経路で明示的に1.0を入れる）
 struct TrackParams
 {
     std::atomic<float> gain { 0.8f };
+    std::atomic<float> pan { 0.0f };                            // -1（左）..+1（右）
+    std::atomic<float> sends[numSendBuses] { { 0.0f }, { 0.0f }, { 0.0f } }; // 各バスへのsend量 0..1（post-fader）
     std::atomic<bool> mute { false };
     std::atomic<bool> solo { false };
 
@@ -103,6 +112,11 @@ struct TrackPlayback
 struct PlaybackSnapshot
 {
     std::vector<TrackPlayback> tracks;
+
+    // send用固定バス（gain=リターン量・mute・peakLevelを使用）とMaster（gain・peakLevelを使用）。
+    // Project が所有する実体を shared_ptr で共有する（トラックの params と同じ寿命規則）
+    std::shared_ptr<TrackParams> busParams[numSendBuses];
+    std::shared_ptr<TrackParams> masterParams;
 };
 
 // GOTCHAS.md パターン3: UIイベント→構築→atomicポインタ差し替え。解放は必ずメッセージスレッド側。

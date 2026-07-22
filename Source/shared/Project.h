@@ -70,6 +70,13 @@ bool splitMidiRegion (const MidiRegion& region, juce::int64 splitPpq, MidiRegion
 
 enum class TrackType { audio, midi };
 
+// send用固定バスの表示名（固定文言は英語）。並びは TrackParams::sends / project.json の "buses" と対応
+namespace SendBuses
+{
+    inline constexpr const char* names[numSendBuses] = { "Reverb A", "Reverb B", "Delay" };
+    inline constexpr const char* shortNames[numSendBuses] = { "A", "B", "D" }; // sendノブの豆ラベル用
+}
+
 // セクションマーカー（ルーラー下のラベル帯）。区間方式: 終端は持たず、
 // 次のマーカーの開始（最後は曲末）までが自分の区間。最初のマーカーより前は無ラベル。
 // Project::markers は常に startBar 昇順・同一barなしを保つ（下のヘルパー経由で編集すること）
@@ -127,13 +134,21 @@ struct Track
 class Project
 {
 public:
-    static constexpr int currentVersion = 3; // v2: MIDIトラック・ID追加 / v3: クリップのoffsetSamples・lengthSamples
+    // v2: MIDIトラック・ID追加 / v3: クリップのoffsetSamples・lengthSamples /
+    // v4: pan・sends・固定バス3本・Master
+    static constexpr int currentVersion = 4;
 
     juce::File directory;
     double bpm = 120.0;
     double sampleRate = 0.0; // 0 = 未確定（最初の録音時にデバイスレートで確定）
     std::vector<Track> tracks;
     std::vector<SectionMarker> markers; // 常にstartBar昇順・同一barなし（SectionMarkersヘルパーで編集する）
+
+    // send用固定バス3本（gain=リターン量・mute使用）とMaster（gain使用）。
+    // gainの既定はトラック（0.8）と違いユニティ1.0（unityParams()が保証。
+    // v3以前の読込・新規作成でもこの初期値のまま）
+    std::shared_ptr<TrackParams> busParams[numSendBuses] { unityParams(), unityParams(), unityParams() };
+    std::shared_ptr<TrackParams> masterParams { unityParams() };
 
     juce::String name() const { return directory.getFileName(); }
 
@@ -157,6 +172,13 @@ public:
 
 private:
     juce::uint64 nextId = 1; // 永続化される採番カウンタ
+
+    static std::shared_ptr<TrackParams> unityParams()
+    {
+        auto params = std::make_shared<TrackParams>();
+        params->gain.store (1.0f); // TrackParamsの既定0.8fを引き継がない（バス/Masterはユニティ）
+        return params;
+    }
 
     void ensureUniqueIds(); // 読込後に未採番(0)・重複IDを振り直す
 };

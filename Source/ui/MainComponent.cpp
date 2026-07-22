@@ -44,12 +44,16 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     addChildComponent (addTrackOverlay); // トラック追加メニュー表示中のみ可視
     addChildComponent (shortcutOverlay); // ⌘?表示中のみ可視
     addChildComponent (bounceOverlay);   // バウンス中のみ可視
+    addChildComponent (mixerOverlay);    // X表示中のみ可視（bounceOverlayより背面に置く）
     addAndMakeVisible (lcd);
     addChildComponent (srWarningLabel); // 不一致時のみ表示
 
     timeline.setProject (project.get());
     headers.setProject (project.get());
     pianoRoll.setProject (project.get());
+    mixerOverlay.setProject (project.get());
+    mixerOverlay.onSelectTrack = [this] (int index) { selectTrack (index); };
+    mixerOverlay.onChanged = [this] { setDirty (true); };
 
     // ---- タイムライン・ヘッダの連携 ----
     timeline.onSeek = [this] (juce::int64 samplePos)
@@ -231,7 +235,18 @@ void MainComponent::timerCallback()
 
     pollBounce();
 
-    headers.updateMeters();
+    // メーター消費の一元化: peakLevel の exchange(0) はここでだけ行い、
+    // 読み取った値をヘッダーとミキサーの両方へ配る（2箇所でexchangeするとピークを取り合う）
+    meterPeaks.resize (project->tracks.size());
+    for (size_t i = 0; i < project->tracks.size(); ++i)
+        meterPeaks[i] = project->tracks[i].params->peakLevel.exchange (0.0f);
+    float busPeaks[numSendBuses];
+    for (int b = 0; b < numSendBuses; ++b)
+        busPeaks[b] = project->busParams[b]->peakLevel.exchange (0.0f);
+    const float masterPeak = project->masterParams->peakLevel.exchange (0.0f);
+    headers.updateMeters (meterPeaks);
+    mixerOverlay.updateMeters (meterPeaks, busPeaks, masterPeak);
+
     updateLcdTime();
     updateTransportButtons();
     applyProjectSampleRate();
@@ -692,6 +707,7 @@ void MainComponent::selectTrack (int index)
         : juce::jlimit (0, (int) project->tracks.size() - 1, index);
     headers.setSelectedTrack (selectedTrack);
     timeline.setSelectedTrack (selectedTrack);
+    mixerOverlay.sync (selectedTrack); // トラック増減・選択変更をストリップに反映（非表示中はno-op）
 }
 
 void MainComponent::showDeviceSettings()
@@ -800,6 +816,14 @@ void MainComponent::beginBounce (const juce::File& target)
     request.bpm = juce::jlimit (20.0, 400.0, transport.bpm.load());
     request.targetFile = target;
 
+    // バス・Masterも開始時の値をプレーン値へ固定する（トラックのmute/solo/gainと同じ扱い）
+    for (int b = 0; b < numSendBuses; ++b)
+    {
+        request.busGain[b] = project->busParams[b]->gain.load();
+        request.busMute[b] = project->busParams[b]->mute.load();
+    }
+    request.masterGain = project->masterParams->gain.load();
+
     // 開始時点のmute/solo/gainをプレーン値へ固定する（共有atomicのTrackParamsはワーカーへ渡さない。
     // 保存ダイアログ表示中に変えられた値もここで確定する）
     bool anySolo = false;
@@ -821,6 +845,9 @@ void MainComponent::beginBounce (const juce::File& target)
 
         BounceRenderer::TrackRender trackRender;
         trackRender.gain = gain;
+        trackRender.pan = params.pan.load();
+        for (int b = 0; b < numSendBuses; ++b)
+            trackRender.sends[b] = params.sends[b].load();
         trackRender.clips = std::move (snapshot->tracks[i].clips);
         trackRender.notes = std::move (snapshot->tracks[i].notes);
 
@@ -1032,8 +1059,29 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
             addTrackOverlay.dismiss();
             return true;
         }
-        if (is (SC::shortcutList))
-            return true; // オーバーレイは高々1枚: AddTrack表示中の⌘?は無視
+        if (is (SC::shortcutList) || is (SC::toggleMixer))
+            return true; // オーバーレイは高々1枚: AddTrack表示中の⌘?/Xは無視
+    }
+    // Logic準拠: X = ミキサー。表示中もモーダルにしない（Space再生・シーク等はそのまま効く）
+    if (is (SC::toggleMixer))
+    {
+        if (mixerOverlay.isVisible())
+        {
+            Log::info ("mixer.close");
+            mixerOverlay.dismiss();
+        }
+        else
+        {
+            Log::info ("mixer.open");
+            mixerOverlay.showOver (mixerArea, selectedTrack);
+        }
+        return true;
+    }
+    if (mixerOverlay.isVisible() && escape)
+    {
+        Log::info ("mixer.close", "source=escape");
+        mixerOverlay.dismiss();
+        return true;
     }
     if (is (SC::shortcutList))
     {
@@ -1259,6 +1307,7 @@ void MainComponent::toggleMuteSelectedTrack()
     auto& params = *project->tracks[(size_t) selectedTrack].params;
     params.mute.store (! params.mute.load());
     headers.refreshValues();
+    mixerOverlay.sync (selectedTrack); // ミキサー表示中のmキーでもM点灯を同期する
     setDirty (true);
 }
 
@@ -1377,6 +1426,11 @@ void MainComponent::resized()
 
     if (pianoRoll.isOpen())
         pianoRoll.setBounds (area.removeFromBottom (PianoRollView::preferredHeight));
+
+    // ミキサーはヘッダー＋タイムライン領域だけを覆う（上部バーと下部パネルは操作可能なまま）
+    mixerArea = area;
+    if (mixerOverlay.isVisible())
+        mixerOverlay.setBounds (mixerArea);
 
     // ＋ボタンの帯はヘッダー列の中だけに置く（全幅に取るとタイムライン下に死にスペースができる）
     auto headerColumn = area.removeFromLeft (TrackHeadersView::preferredWidth);

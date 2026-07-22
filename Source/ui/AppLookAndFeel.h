@@ -164,6 +164,48 @@ public:
         g.fillEllipse (juce::Rectangle<float> (thumbD, thumbD).withCentre ({ sliderPos, cy }));
     }
 
+    // 小径ノブ（ミキサーのPan・send）用のロータリー描画。V4デフォルト（塗り円＋点サム）は
+    // 小さいサイズだと状態が読めないため、「溝アーク＋値アーク＋ポインタ線」で描き直す。
+    // 範囲が負〜正のスライダー（Pan）は値アークを中央起点の双方向にする
+    void drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height,
+                           float sliderPos, float rotaryStartAngle, float rotaryEndAngle,
+                           juce::Slider& slider) override
+    {
+        const auto bounds = juce::Rectangle<int> (x, y, width, height).toFloat().reduced (1.5f);
+        const float radius = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
+        const auto centre = bounds.getCentre();
+        const float angle = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
+        const float thickness = juce::jmax (2.0f, radius * 0.22f);
+        const float arcRadius = radius - thickness * 0.5f;
+
+        juce::Path track;
+        track.addCentredArc (centre.x, centre.y, arcRadius, arcRadius, 0.0f,
+                             rotaryStartAngle, rotaryEndAngle, true);
+        g.setColour (slider.findColour (juce::Slider::rotarySliderOutlineColourId));
+        g.strokePath (track, juce::PathStrokeType (thickness, juce::PathStrokeType::curved,
+                                                   juce::PathStrokeType::rounded));
+
+        const bool bipolar = slider.getMinimum() < 0.0 && slider.getMaximum() > 0.0;
+        const float valueFrom = bipolar ? (rotaryStartAngle + rotaryEndAngle) * 0.5f
+                                        : rotaryStartAngle;
+        if (std::abs (angle - valueFrom) > 0.02f)
+        {
+            juce::Path value;
+            value.addCentredArc (centre.x, centre.y, arcRadius, arcRadius, 0.0f,
+                                 juce::jmin (valueFrom, angle), juce::jmax (valueFrom, angle), true);
+            g.setColour (slider.findColour (juce::Slider::rotarySliderFillColourId));
+            g.strokePath (value, juce::PathStrokeType (thickness, juce::PathStrokeType::curved,
+                                                       juce::PathStrokeType::rounded));
+        }
+
+        juce::Path pointer;
+        pointer.startNewSubPath (centre.getPointOnCircumference (radius * 0.15f, angle));
+        pointer.lineTo (centre.getPointOnCircumference (arcRadius - thickness * 0.6f, angle));
+        g.setColour (juce::Colours::white.withAlpha (0.85f));
+        g.strokePath (pointer, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved,
+                                                     juce::PathStrokeType::rounded));
+    }
+
     // ---- PopupMenu（右クリックメニュー・ComboBoxのドロップダウン）----
     // V4デフォルトは直角パネル＋ハード枠＋全幅ハイライトで浮くため、
     // macOSのメニュー風（角丸パネル・角丸ハイライト・上下パディング・チェック用の左ガター）に描き直す

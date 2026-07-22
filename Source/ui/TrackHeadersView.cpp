@@ -132,13 +132,12 @@ void TrackHeaderComponent::bind (Track* trackToBind, bool isSelected)
     repaint();
 }
 
-void TrackHeaderComponent::updateMeter()
+void TrackHeaderComponent::updateMeter (float incoming)
 {
     if (track == nullptr)
         return;
 
-    // 読み取りリセット（audio側のCAS maxと組）。表示は「新しい値」か「前回の減衰」の大きい方
-    const float incoming = track->params->peakLevel.exchange (0.0f);
+    // 表示は「新しい値」か「前回の減衰」の大きい方
     const float next = juce::jmax (incoming, meterDisplay * 0.8f);
 
     if (next < 0.005f)
@@ -275,10 +274,10 @@ void TrackHeadersView::refreshValues()
     refreshBindings();
 }
 
-void TrackHeadersView::updateMeters()
+void TrackHeadersView::updateMeters (const std::vector<float>& peaks)
 {
-    for (auto& item : items)
-        item->updateMeter();
+    for (int i = 0; i < (int) items.size(); ++i)
+        items[(size_t) i]->updateMeter (i < (int) peaks.size() ? peaks[(size_t) i] : 0.0f);
 }
 
 void TrackHeadersView::setSelectedTrack (int index)

@@ -200,6 +200,12 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
         trackObj->setProperty ("mute", track.params->mute.load());
         trackObj->setProperty ("solo", track.params->solo.load());
         trackObj->setProperty ("volume", (double) track.params->gain.load());
+        trackObj->setProperty ("pan", (double) track.params->pan.load());
+
+        juce::Array<juce::var> sendsArray;
+        for (int b = 0; b < numSendBuses; ++b)
+            sendsArray.add ((double) track.params->sends[b].load());
+        trackObj->setProperty ("sends", sendsArray);
 
         if (track.type == TrackType::audio)
         {
@@ -261,6 +267,21 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
         markersArray.add (juce::var (markerObj));
     }
     root->setProperty ("markers", markersArray);
+
+    // 固定バス3本（並びは SendBuses::names と対応）とMaster
+    juce::Array<juce::var> busesArray;
+    for (int b = 0; b < numSendBuses; ++b)
+    {
+        auto* busObj = new juce::DynamicObject();
+        busObj->setProperty ("gain", (double) busParams[b]->gain.load());
+        busObj->setProperty ("mute", busParams[b]->mute.load());
+        busesArray.add (juce::var (busObj));
+    }
+    root->setProperty ("buses", busesArray);
+
+    auto* masterObj = new juce::DynamicObject();
+    masterObj->setProperty ("gain", (double) masterParams->gain.load());
+    root->setProperty ("master", juce::var (masterObj));
 
     const auto jsonFile = directory.getChildFile ("project.json");
     if (! jsonFile.replaceWithText (juce::JSON::toString (juce::var (root))))
@@ -329,6 +350,13 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
             track.params->solo.store ((bool) trackVar.getProperty ("solo", false));
             track.params->gain.store (juce::jlimit (0.0f, 1.0f,
                                                     (float) (double) trackVar.getProperty ("volume", 0.8)));
+            // v3以前は pan/sends が無い（デフォルト: pan=0・send=0）
+            track.params->pan.store (juce::jlimit (-1.0f, 1.0f,
+                                                   (float) (double) trackVar.getProperty ("pan", 0.0)));
+            if (auto* sendsArray = trackVar.getProperty ("sends", {}).getArray())
+                for (int b = 0; b < numSendBuses && b < sendsArray->size(); ++b)
+                    track.params->sends[b].store (juce::jlimit (0.0f, 1.0f,
+                                                                (float) (double) (*sendsArray)[b]));
 
             if (track.type == TrackType::audio)
             {
@@ -458,6 +486,23 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
         }
     }
 
+    // 固定バス・Master（v3以前は無い → unityParams()の初期値 gain=1.0 のまま）
+    if (auto* busesArray = parsed.getProperty ("buses", {}).getArray())
+    {
+        for (int b = 0; b < numSendBuses && b < busesArray->size(); ++b)
+        {
+            const auto& busVar = (*busesArray)[b];
+            if (! busVar.isObject())
+                continue;
+            project->busParams[b]->gain.store (juce::jlimit (0.0f, 1.0f,
+                                                             (float) (double) busVar.getProperty ("gain", 1.0)));
+            project->busParams[b]->mute.store ((bool) busVar.getProperty ("mute", false));
+        }
+    }
+    if (const auto masterVar = parsed.getProperty ("master", {}); masterVar.isObject())
+        project->masterParams->gain.store (juce::jlimit (0.0f, 1.0f,
+                                                         (float) (double) masterVar.getProperty ("gain", 1.0)));
+
     project->ensureUniqueIds();
     return project;
 }
@@ -542,6 +587,10 @@ std::unique_ptr<PlaybackSnapshot> Project::buildSnapshot() const
 {
     auto snapshot = std::make_unique<PlaybackSnapshot>();
     snapshot->tracks.reserve (tracks.size());
+
+    for (int b = 0; b < numSendBuses; ++b)
+        snapshot->busParams[b] = busParams[b];
+    snapshot->masterParams = masterParams;
 
     for (auto& track : tracks)
     {

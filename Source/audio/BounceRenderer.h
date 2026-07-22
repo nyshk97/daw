@@ -33,6 +33,8 @@ public:
         std::vector<MidiNotePlayback> notes;  // MIDIトラックのみ。startPpq昇順（buildSnapshotが保証）
         std::shared_ptr<SynthInstance> synth; // MIDIトラックのみ。バウンス専用インスタンス
         float gain = 1.0f;                    // 開始時に固定済み（非可聴トラックはRequestに入れない）
+        float pan = 0.0f;                     // -1..+1（クリップは等パワー補正型・シンセはバランス型。RTと同じ法則）
+        float sends[numSendBuses] { 0.0f, 0.0f, 0.0f }; // post-fader send量
     };
 
     struct Request
@@ -44,6 +46,11 @@ public:
         juce::int64 endSample = 0;
         bool wantTail = false;       // 可聴なMIDIトラックがあるときだけ余韻テールを付ける
         juce::File targetFile;
+
+        // 固定バス・Master（開始時に固定済み。RTのprocessと同じく素通しバス→Masterゲインの順）
+        float busGain[numSendBuses] { 1.0f, 1.0f, 1.0f };
+        bool busMute[numSendBuses] { false, false, false };
+        float masterGain = 1.0f;
     };
 
     enum class Status { idle, running, success, cancelled, failed };
@@ -118,7 +125,12 @@ private:
 
     void scheduleBlockMidi (const TrackRender& track, SynthCursor& cursor,
                             juce::int64 pos, int numSamples, double tps);
-    void renderSynthInto (juce::AudioBuffer<float>& mix, const TrackRender& track, int numSamples);
+    void renderSynthInto (juce::AudioBuffer<float>& mix, std::vector<juce::AudioBuffer<float>>& busMix,
+                          const TrackRender& track, int numSamples);
+
+    // 素通しバス（busGain/busMute適用）をmixへ合流 → Masterゲイン（RTのprocessと同じ順序）
+    void mixBusesAndMaster (juce::AudioBuffer<float>& mix,
+                            std::vector<juce::AudioBuffer<float>>& busMix, int numSamples);
 
     Request request;
     Result result;
