@@ -1096,7 +1096,8 @@ void MainComponent::resized()
     clickButton.setBounds (transportButton());
     topRow.removeFromLeft (10);
 
-    settingsButton.setBounds (topRow.removeFromRight (44));
+    // 歯車は補助機能なので控えめに（枠を絞るとアイコンもホバー範囲も一回り小さくなる）
+    settingsButton.setBounds (topRow.removeFromRight (44).withSizeKeepingCentre (32, 32));
     topRow.removeFromRight (10);
 
     // LCDはウィンドウ中央に置く（Logicの配置）。狭いときは左のボタン群を優先して右へ逃がす
