@@ -68,9 +68,6 @@ cat > ~/Music/daw/cli-test/project.json <<'EOF'
 EOF
 
 open build/daw_artefacts/Debug/daw-dev.app && sleep 3
-osascript -e 'tell application "daw-dev" to activate' \
-          -e 'delay 0.5' \
-          -e 'tell application "System Events" to tell process "daw-dev" to click button "開く" of window 1'
 # マイク権限ダイアログが出たら（通常は初回許可後は出ない。tccutil reset 後の初回のみ）:
 osascript -e 'tell application "System Events" to tell process "UserNotificationCenter" to click button "許可" of window 1'
 
@@ -79,9 +76,10 @@ osascript -e 'tell application "System Events" to tell process "daw-dev" to get 
 screencapture -x -R<x,y,w,h> /tmp/daw-check.png
 ```
 
-- プロジェクト選択画面は**アルファベット順の先頭行が自動選択**され、「開く」は選択行を開く（AXでは行選択不可）。複数のテストプロジェクトがあると `cli-test` が先頭にならないため、AX確認用は `0-` 始まりの名前で常に先頭へソートさせる（`0-ms-test`＝オーディオ2＋MIDI 1の構成で作成済み）
-- **先頭以外の行はCGEvent合成の単クリック→「開く」AXPressで開ける**（ダブルクリック合成はOSのクリック集約で不安定なので使わない）。行の座標目安: 行1中心 ≈ ウィンドウ上端+108pt・行高28pt。クリック前に選択画面のスクショで行位置を確認し、クリック後のスクショで選択行が意図どおりかを見てから「開く」を押す
-- **「0-」系テストプロジェクトが複数あると辞書順で先のものが開く**（例: `0-0-split-test` を作っても既存の `0-0-region-mute` が先頭になる）。新規テストプロジェクトは `ls ~/Music/daw/` で既存名を確認して辞書順で前になる名前にし、開いた直後にタイトルバーの名前で対象プロジェクトか確認する
+- プロジェクト選択画面に「開く」ボタンはない。開くのは**ダブルクリック or Return**の2経路。リストは**更新日時の降順**（`project.json` のmtime）で、先頭行が自動選択される（AXでは行選択不可）
+- **CLIから開くにはCGEvent合成の「単クリック→スクショで選択確認→同座標にダブルクリック」**（検証済み）。ダブルクリックは down/up (clickState=1) → 150ms → down/up (clickState=2) の順で `mouseEventClickState` を明示する（単クリック2連打のOS集約任せは不安定）。行の座標目安: コンテンツ上端＝ウィンドウ上端+32pt（タイトルバー）、行高48pt、行1中心 ≈ +86pt・行2中心 ≈ +134pt（左右はウィンドウ中央でよい）
+- **テストプロジェクトを先頭に出すには `touch ~/Music/daw/<name>/project.json`**（更新日時降順のため。旧「`0-` 始まりの名前で辞書順先頭」は効かない）。開いた直後にタイトルバーの名前で対象プロジェクトか確認する
+- **新規作成の自動命名**: 名前欄には候補名 `YYYY-MM-DD-<ランダム英単語>`（例: `2026-07-22-dawn`）がプリフィルされており、そのまま「Create」AXPress（またはEnter）で候補名のまま作成される（フォーカスすると全選択になり、打ち始めれば置き換わる）。作成された名前は `ls ~/Music/daw/` とログ `project.create name=` で裏取りする。検証で作ったプロジェクトは終了後に削除して片付ける
 
 確認できること:
 
@@ -94,14 +92,14 @@ screencapture -x -R<x,y,w,h> /tmp/daw-check.png
 4. **保存**: closeボタン（`first button of window 1 whose subrole is "AXCloseButton"`）→
    「保存して終了」ダイアログ → `click button "保存して終了"` → プロセス終了と
    `python3 -m json.tool ~/Music/daw/cli-test/project.json` で bpm/sampleRate/tracks/clips を確認
-5. **復元**: 再起動 → 「開く」→ スクショでBPM・トラック名・音量スライダー位置・クリップ位置が一致すること
+5. **復元**: 再起動 → 行をダブルクリック（上記CGEvent手順。直前に触ったプロジェクトが先頭に来る）→ スクショでBPM・トラック名・音量スライダー位置・クリップ位置が一致すること
 
 ## プロジェクトを閉じる/選択画面まわりの確認
 
 バツ＝プロジェクトを閉じて選択画面へ（アプリは生存）、選択画面のバツ＝アプリ終了、⌘O＝バツと同じ（要実キー）。CLIで確認できる流れ:
 
 1. **変更なしで閉じる**: 開く → closeボタンAXPress → ダイアログなしで選択画面に戻る。裏取り: `pgrep` でプロセス生存・ログに `project.close ... dirty=0`・ウィンドウタイトルが `daw`（プロジェクト名なし）に戻り選択画面サイズになる（winlist系ツールで確認）
-2. **別プロジェクトへの乗り換え**: 選択画面から行クリック（上記CGEvent手順）→「開く」→ ログの `project.open name=` が対象名であること。閉じる→開くを繰り返してもクラッシュ・`ERROR` ログがないこと
+2. **別プロジェクトへの乗り換え**: 選択画面から行を単クリック→ダブルクリック（上記CGEvent手順）→ ログの `project.open name=` が対象名であること。閉じる→開くを繰り返してもクラッシュ・`ERROR` ログがないこと
 3. **未保存で閉じる**: 変更を作って closeボタン → 「保存して閉じる/保存せず閉じる/キャンセル」の3択が出る。**ダイアログはプロジェクトウィンドウとは別ウィンドウ**なので、スクショはwinlistで小さいウィンドウ（約260×270）のIDを引いて撮る。ボタンはAXPress可。キャンセル→プロジェクト画面に留まる（●維持）→再度バツでまたダイアログが出る（連打ガードが解除されている証拠）
 4. **録音中に閉じる**: `click button "録音"` → 数秒 → closeボタン → 録音が先にクリップ化されて（ログ `record.stop`）からダイアログが出る。「保存して閉じる」後に project.json の clips と `clip-NNN.wav` の実在で裏取り
 5. **選択画面で閉じる**: closeボタン → プロセス終了（`pgrep` 空）・ログ末尾が `session.end`
