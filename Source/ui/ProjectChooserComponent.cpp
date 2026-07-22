@@ -45,6 +45,21 @@ juce::String defaultProjectName()
     }
 }
 
+// ドロップされたパスからプロジェクトフォルダを解決する。
+// フォルダ本体でも中の project.json でも受け付け、最初に見つかった有効なものを返す
+juce::File resolveDroppedProject (const juce::StringArray& files)
+{
+    for (const auto& path : files)
+    {
+        const juce::File f (path);
+        if (f.isDirectory() && f.getChildFile ("project.json").existsAsFile())
+            return f;
+        if (f.getFileName() == "project.json" && f.existsAsFile())
+            return f.getParentDirectory();
+    }
+    return {};
+}
+
 // 更新日時のサブテキスト。直近は「Today/Yesterday HH:MM」、それ以前は日付だけで十分
 juce::String formatModified (const juce::Time& t)
 {
@@ -107,6 +122,11 @@ ProjectChooserComponent::ProjectChooserComponent()
 
 void ProjectChooserComponent::refreshList()
 {
+    const int previousRow = listBox.getSelectedRow();
+    const auto selectedName = (previousRow >= 0 && previousRow < (int) entries.size())
+                                  ? entries[(size_t) previousRow].dir.getFileName()
+                                  : juce::String();
+
     entries.clear();
     for (auto& dir : Project::projectsRoot().findChildFiles (juce::File::findDirectories, false))
     {
@@ -123,12 +143,28 @@ void ProjectChooserComponent::refreshList()
         return a.dir.getFileName().compareIgnoreCase (b.dir.getFileName()) < 0;
     });
 
+    hoveredRow = -1;
     listBox.updateContent();
     if (! entries.empty())
-        listBox.selectRow (0);
-
+    {
+        int rowToSelect = 0;
+        for (int i = 0; i < (int) entries.size(); ++i)
+            if (entries[(size_t) i].dir.getFileName() == selectedName)
+                rowToSelect = i;
+        listBox.selectRow (rowToSelect);
+    }
     emptyLabel.setVisible (entries.empty());
-    nameEditor.setText (defaultProjectName(), juce::dontSendNotification);
+
+    // 候補名はユーザーが編集していなければ維持する（フォーカス復帰のたびに単語が変わらないように）。
+    // 初回と、未編集のまま候補名が既存プロジェクトと衝突したときだけ引き直す
+    const bool untouched = nameEditor.getText() == suggestedName;
+    if (suggestedName.isEmpty()
+        || (untouched && Project::projectsRoot().getChildFile (suggestedName).exists()))
+    {
+        suggestedName = defaultProjectName();
+        if (untouched || nameEditor.isEmpty())
+            nameEditor.setText (suggestedName, juce::dontSendNotification);
+    }
 }
 
 int ProjectChooserComponent::getNumRows()
@@ -171,6 +207,26 @@ void ProjectChooserComponent::paintListBoxItem (int rowNumber, juce::Graphics& g
                 juce::Justification::centredLeft);
 }
 
+void ProjectChooserComponent::listBoxItemClicked (int row, const juce::MouseEvent& e)
+{
+    if (! e.mods.isPopupMenu() || row < 0 || row >= (int) entries.size())
+        return;
+
+    listBox.selectRow (row);
+
+    juce::PopupMenu menu;
+    menu.addItem (1, jp (u8"Finderで表示"));
+
+    // コールバックは後から呼ばれるため、右クリック時点の対象を値で捕捉し寿命はSafePointerで確認する
+    juce::Component::SafePointer<ProjectChooserComponent> safe (this);
+    const auto dir = entries[(size_t) row].dir;
+    menu.showMenuAsync (juce::PopupMenu::Options(), [safe, dir] (int result)
+    {
+        if (safe != nullptr && result == 1)
+            dir.revealToUser();
+    });
+}
+
 void ProjectChooserComponent::listBoxItemDoubleClicked (int row, const juce::MouseEvent&)
 {
     openRow (row);
@@ -183,10 +239,12 @@ void ProjectChooserComponent::returnKeyPressed (int lastRowSelected)
 
 void ProjectChooserComponent::openRow (int row)
 {
-    if (row < 0 || row >= (int) entries.size())
-        return;
+    if (row >= 0 && row < (int) entries.size())
+        openDirectory (entries[(size_t) row].dir);
+}
 
-    const auto dir = entries[(size_t) row].dir;
+void ProjectChooserComponent::openDirectory (const juce::File& dir)
+{
     juce::StringArray warnings;
     juce::String error;
     auto project = Project::load (dir, warnings, error);
@@ -230,6 +288,33 @@ void ProjectChooserComponent::createNewProject()
         onProjectOpened (std::move (project));
 }
 
+bool ProjectChooserComponent::isInterestedInFileDrag (const juce::StringArray& files)
+{
+    return resolveDroppedProject (files) != juce::File();
+}
+
+void ProjectChooserComponent::fileDragEnter (const juce::StringArray&, int, int)
+{
+    dragHover = true;
+    repaint();
+}
+
+void ProjectChooserComponent::fileDragExit (const juce::StringArray&)
+{
+    dragHover = false;
+    repaint();
+}
+
+void ProjectChooserComponent::filesDropped (const juce::StringArray& files, int, int)
+{
+    dragHover = false;
+    repaint();
+
+    const auto dir = resolveDroppedProject (files);
+    if (dir != juce::File())
+        openDirectory (dir);
+}
+
 void ProjectChooserComponent::parentHierarchyChanged()
 {
     // Return・矢印キーを最初から効かせるため、表示されたらリストにフォーカスを渡す
@@ -267,12 +352,14 @@ void ProjectChooserComponent::paint (juce::Graphics& g)
 {
     g.fillAll (getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId));
 
-    // リストの入れ物。地を一段沈めてカードとして浮かせる
+    // リストの入れ物。地を一段沈めてカードとして浮かせる。
+    // プロジェクトフォルダをドラッグで重ねている間はアクセント枠で受け入れ可能を示す
     const auto panel = listPanelArea.toFloat();
     g.setColour (Theme::chooserPanelBg);
     g.fillRoundedRectangle (panel, 8.0f);
-    g.setColour (Theme::panelBorder);
-    g.drawRoundedRectangle (panel.reduced (0.5f), 8.0f, 1.0f);
+    g.setColour (dragHover ? Theme::accent : Theme::panelBorder);
+    g.drawRoundedRectangle (panel.reduced (dragHover ? 1.0f : 0.5f), 8.0f,
+                            dragHover ? 2.0f : 1.0f);
 }
 
 void ProjectChooserComponent::resized()

@@ -72,6 +72,15 @@ private:
             setVisible (true);
         }
 
+        // フォーカス復帰時に選択画面の一覧を読み直す（Finderでのリネーム・削除・追加を反映）
+        void activeWindowStatusChanged() override
+        {
+            DocumentWindow::activeWindowStatusChanged();
+            if (isActiveWindow())
+                if (auto* chooser = dynamic_cast<ProjectChooserComponent*> (getContentComponent()))
+                    chooser->refreshList();
+        }
+
         // バツ: プロジェクト表示中はプロジェクトだけ閉じて選択画面へ。選択画面表示中はアプリ終了
         void closeButtonPressed() override
         {
