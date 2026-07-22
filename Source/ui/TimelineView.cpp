@@ -133,6 +133,17 @@ public:
         g.fillAll (Theme::markerLaneBg);
         const auto clip = g.getClipBounds();
 
+        // ルーラーの小節目盛りをレーンまで通す（背景の同色化と合わせ、ルーラー＋レーンを
+        // 一枚のナビゲーション帯に見せる。入力の扱いは従来どおり上下で別）
+        {
+            const double barWidth = owner.pxPerBar;
+            const int firstBar = juce::jmax (0, (int) std::floor (clip.getX() / barWidth) - 1);
+            const int lastBar = (int) std::floor (clip.getRight() / barWidth) + 1;
+            g.setColour (Theme::rulerTickBar);
+            for (int bar = firstBar; bar <= lastBar; ++bar)
+                g.drawVerticalLine ((int) std::llround (bar * barWidth), 0.0f, (float) getHeight());
+        }
+
         if (auto* proj = owner.project)
         {
             const auto& markers = proj->markers;
