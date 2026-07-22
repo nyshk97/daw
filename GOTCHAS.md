@@ -35,6 +35,7 @@
 - **LookAndFeelデフォルトのコントロールフォントはHIG（13px）より大きい**: TextButton = `min(16, 高さ×0.6)`、ComboBox = `min(16, 高さ×0.85)`、Label = 15px。全角を目一杯使う日本語で特に大きく見える。本プロジェクトは `AppLookAndFeel` + `ui/Fonts.h` で13pxに統一済み。**新しいコントロール種を使うときはデフォルトフォントを確認すること**
 - **`getLabelFont` はoverrideしない**: 基底実装が「Label自身のフォントを返す」ため、無条件overrideすると `setFont` で設定した `Fonts::mono` 等を壊す。Labelは生成側で `setFont` する
 - **ToggleButtonはフォント取得フックがない**: `drawToggleButton` 内に `min(15, 高さ×0.75)` がハードコードされており、変えるには描画メソッドごとコピーしてoverrideするしかない
+- **ツールチップは13px boldハードコード＋bounds計算も太字前提**: `LookAndFeel_V2::drawTooltip` はフォントフックがなく内部ヘルパー（匿名namespaceで再利用不可）で13px boldを使う。日本語はヒラギノ太字になり主張が強い。スタイル変更は `drawTooltip` と `getTooltipBounds` の**両方**を同じ自前レイアウト関数でoverrideする（片方だけだと箱サイズと描画が食い違う）。本プロジェクトは `AppLookAndFeel` で11px regular化済み
 
 ### レベルメーターの表示はdBスケールに写す
 
@@ -43,6 +44,8 @@
 ### PopupMenuは「全画面×画面端」に隣接表示できない
 
 PopupMenuの表示位置はOSの「使用可能画面領域」（Dock除け）にクランプされる。全画面表示ではウィンドウがDock領域まで覆うのに、画面最下部のボタン直上には出せない: デスクトップウィンドウ方式（既定）はDock上端まで押し上げられて余白ができ、`withParentComponent` でもターゲット矩形が使用可能領域との交差で空になり左上に飛ぶ。画面端に置いたボタンのメニューは、ウィンドウ内に自前描画するオーバーレイで作る（`ui/AddTrackOverlay.h` が実例。位置計算にOSの画面情報を使わないので全画面/通常で挙動が一致する）。なおPopupMenuはアプリ非アクティブになると即閉じるため、AXPressで開いて背面スクショで確認する検証もできない（自前オーバーレイなら可能）。
+
+- **メニュー項目のショートカット表記は `PopupMenu::Item::shortcutKeyDescription`**: setterのない公開フィールドに直接代入して `addItem (item)`。ApplicationCommandManager無しで表示できる（描画はLookAndFeel任せ）。`setShortcutKeyDescription` という setter は存在しない（8.0.9で確認）
 
 ## オーディオコールバック内の禁止事項
 
