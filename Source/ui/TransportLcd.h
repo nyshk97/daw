@@ -19,7 +19,7 @@ public:
         const auto setupValue = [this] (juce::Label& label)
         {
             addAndMakeVisible (label);
-            label.setFont (Fonts::mono (16.0f));
+            label.setFont (Fonts::mono (20.0f)); // 数字はLCDの主役なので大きめ（BPM/TIME見出しとの階層を付ける）
             label.setJustificationType (juce::Justification::centred);
             label.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.87f));
         };
