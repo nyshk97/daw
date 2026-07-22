@@ -138,19 +138,22 @@ public:
                 if (x1 <= clip.getX() || x0 >= clip.getRight())
                     continue;
 
+                // ベタ塗りにせず「薄い色帯＋開始位置の色線＋色文字」で描く。マーカーは常時見る
+                // 情報ではないので、プレイヘッドやリージョンより視覚的に沈める（Logic/Ableton式）。
+                // 開始位置の縦線を残すことで、テキストが出ない狭いセクションでも境界が分かる
                 const auto colour = sectionColour (markers[(size_t) i].type);
-                g.setColour (colour);
+                g.setColour (colour.withAlpha (0.12f));
                 g.fillRect (x0, 1, x1 - x0, getHeight() - 2);
-                g.setColour (colour.brighter (0.5f));
-                g.drawVerticalLine (x0, 1.0f, (float) (getHeight() - 1));
+                g.setColour (colour);
+                g.fillRect (x0, 1, 3, getHeight() - 2);
 
-                const int textW = x1 - x0 - 8;
+                const int textW = x1 - x0 - 10;
                 if (textW > 16)
                 {
-                    g.setColour (juce::Colours::black.withAlpha (0.75f));
+                    g.setColour (colour.brighter (0.4f));
                     g.setFont (Fonts::mono (11.0f));
                     g.drawText (SectionMarkers::displayName (markers, i),
-                                x0 + 5, 0, textW, getHeight(), juce::Justification::centredLeft);
+                                x0 + 7, 0, textW, getHeight(), juce::Justification::centredLeft);
                 }
             }
         }
