@@ -100,6 +100,13 @@ public:
         const int playheadX = owner.sampleToX (owner.transport.playheadSamplePos.load());
         g.setColour (Theme::playhead);
         g.drawVerticalLine (playheadX, 0.0f, (float) getHeight());
+
+        // 三角の頭（下向き）。線1本だけでは広い画面で見失うため、
+        // ルーラー上端に頭を付けて現在位置へ視線誘導する（Logic/Cubase等の定番）
+        juce::Path head;
+        const float cx = (float) playheadX + 0.5f;
+        head.addTriangle (cx - 5.0f, 0.0f, cx + 5.0f, 0.0f, cx, 7.0f);
+        g.fillPath (head.createPathWithRoundedCorners (1.5f));
     }
 
     void mouseDown (const juce::MouseEvent& e) override
