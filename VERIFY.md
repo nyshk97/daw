@@ -128,7 +128,7 @@ EOF
   - **リージョンの右クリックメニューはCGEventの `.rightMouseDown` では開かない**（クリップ選択まではされるがJUCE側でポップアップトリガー扱いにならない。clickState/buttonNumber明示・hid/sessionタップどちらも不可）。**Ctrl+左クリック**（イベントの `flags` に `.maskControl` を直接セットし `.cgSessionEventTap` へpost）なら開く
   - **メニュー表示中に別プロセスのCLIツール（AppKitをリンクしたswift製など）を起動するとメニューが閉じる**。検証は「Ctrl+左クリックで開く → CGWindowListで owner=daw・name=menu のウィンドウboundsを取る → bounds高さを項目数で等分して対象項目の中心を左クリック」までを**1プロセス内**で完結させる（各操作の間に1秒程度sleep）。着弾はアプリログ（`region.split` / `region.mute` 等）で裏取りする
   - 分割の確認例: ルーラークリックでシーク → リージョンをCtrl+左クリック → 「再生ヘッド位置で分割」 → 保存後のproject.jsonで オーディオは同一`file`参照2クリップの `offsetSamples`/`lengthSamples` が連続すること、MIDIは右リージョンのノート `startPpq` が相対シフトされていることを確認
-  - スクロールが必要な確認（ピアノロールの鍵盤帯域移動等）はCGEventの `scrollWheelEvent2Source`（units: .pixel）を対象座標に連打すればViewportに効く。ピアノロールを開いた直後は最上部（pitch 127側）表示なので、GMドラム名の確認は下方向へスクロールしてから撮る
+  - スクロールが必要な確認（ピアノロールの鍵盤帯域移動等）はCGEventの `scrollWheelEvent2Source`（units: .pixel）を対象座標に連打すればViewportに効く。横スクロールは `wheelCount: 2` で `wheel2` に値を渡す（タイムラインの後方マーカー確認等で使用）。ピアノロールを開いた直後は最上部（pitch 127側）表示なので、GMドラム名の確認は下方向へスクロールしてから撮る
 - 座標の目安（ウィンドウ位置 X,Y・デフォルトズーム pxPerBar=80）: タイムライン左端 = X+200、
   マーカーレーン中心 = Y+28(タイトルバー)+44(トランスポート)+26(ルーラー)+9、
   レーン先頭 = Y+28+44+26+18(マーカーレーン)、トラック行高 = 84
