@@ -31,6 +31,7 @@ daw の更新履歴。形式は [Keep a Changelog](https://keepachangelog.com/ja
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-22
 ### ✨ Added
 - 初回公開リリース（マルチトラック録音・小節ルーラー・メトロノーム・プロジェクト保存/読み込み）
 - アプリメニューの `Check for Updates…` からアプリ内アップデートが可能に
