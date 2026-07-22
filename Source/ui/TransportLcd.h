@@ -3,6 +3,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "Fonts.h"
+#include "Theme.h"
 
 // トランスポート情報（BPM・経過時間）をまとめて表示するLCD風パネル
 // （Logic Proの中央ディスプレイのイメージ）。表示に徹してモデルへの参照を持たない。
@@ -29,8 +30,8 @@ public:
 
         tempo.setEditable (true, false, false);
         tempo.setMouseCursor (juce::MouseCursor::IBeamCursor);
-        tempo.setColour (juce::Label::backgroundWhenEditingColourId, juce::Colour (0xff26262c));
-        tempo.setColour (juce::Label::outlineWhenEditingColourId, juce::Colour (0xff4a6ea9));
+        tempo.setColour (juce::Label::backgroundWhenEditingColourId, Theme::lcdEditBg);
+        tempo.setColour (juce::Label::outlineWhenEditingColourId, Theme::accent);
         tempo.setColour (juce::Label::textWhenEditingColourId, juce::Colours::white);
     }
 
@@ -43,7 +44,7 @@ public:
         const auto bounds = getLocalBounds().toFloat();
         constexpr float corner = 6.0f;
 
-        g.setColour (juce::Colour (0xff18181c));
+        g.setColour (Theme::lcdBg);
         g.fillRoundedRectangle (bounds, corner);
 
         // 上端内側に影を落として「バーにはめ込まれた液晶」に見せる
@@ -65,7 +66,7 @@ public:
         for (int i = 0; i < numSections; ++i)
         {
             const auto sec = sectionBounds (i);
-            g.setColour (juce::Colour (0xff7f7f88));
+            g.setColour (Theme::lcdLabel);
             g.drawText (captions[i], sec.withHeight (captionHeight).withTrimmedTop (3),
                         juce::Justification::centred);
             if (i > 0)
