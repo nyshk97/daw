@@ -5,6 +5,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "Fonts.h"
+#include "Shortcuts.h"
 #include "Theme.h"
 #include "TrackIcons.h"
 #include "../shared/Project.h"
@@ -73,6 +74,11 @@ public:
             g.drawText (itemLabel (i),
                         row.withTrimmedLeft (itemInsetX + iconSize + iconTextGap).withTrimmedRight (8),
                         juce::Justification::centredLeft);
+
+            // ショートカット表記はPopupMenu（AppLookAndFeel）と同じ減光ルール
+            g.setColour (juce::Colours::white.withAlpha (i == hoveredItem ? 0.9f : 0.5f));
+            g.drawText (itemKeyText (i), row.withTrimmedRight (itemInsetX),
+                        juce::Justification::centredRight);
         }
     }
 
@@ -120,6 +126,7 @@ private:
     static constexpr int itemInsetX = 12;
     static constexpr int iconSize = 16;
     static constexpr int iconTextGap = 8;
+    static constexpr int labelKeyGap = 24; // ラベルとショートカット表記の最小間隔
 
     static juce::String itemLabel (int i)
     {
@@ -127,20 +134,29 @@ private:
                                               : u8"ソフトウェア音源トラック");
     }
 
+    static juce::String itemKeyText (int i)
+    {
+        return Shortcuts::keyText (i == 0 ? Shortcuts::ID::addAudioTrack
+                                          : Shortcuts::ID::addMidiTrack);
+    }
+
     juce::Rectangle<int> panelBounds() const
     {
         // アイコン分のインセットが付くとanchor幅（＋ボタン幅）では文字が入り切らない
-        // ことがあるため、最長ラベルの実測幅ぶんまで右に広げる
-        float maxTextW = 0.0f;
-        for (int i = 0; i < numItems; ++i)
+        // ことがあるため、最長の「ラベル＋ショートカット表記」の実測幅ぶんまで右に広げる
+        auto textWidth = [] (const juce::String& s)
         {
             juce::GlyphArrangement ga;
-            ga.addLineOfText (Fonts::body(), itemLabel (i), 0.0f, 0.0f);
-            maxTextW = juce::jmax (maxTextW, ga.getBoundingBox (0, -1, true).getWidth());
-        }
+            ga.addLineOfText (Fonts::body(), s, 0.0f, 0.0f);
+            return ga.getBoundingBox (0, -1, true).getWidth();
+        };
+        float maxTextW = 0.0f;
+        for (int i = 0; i < numItems; ++i)
+            maxTextW = juce::jmax (maxTextW, textWidth (itemLabel (i)) + labelKeyGap
+                                                 + textWidth (itemKeyText (i)));
         const int w = juce::jmax (anchor.getWidth(),
                                   itemInsetX + iconSize + iconTextGap
-                                      + juce::roundToInt (std::ceil (maxTextW)) + 14);
+                                      + juce::roundToInt (std::ceil (maxTextW)) + itemInsetX);
         const int h = numItems * itemHeight + panelPaddingY * 2;
         return { anchor.getX(), anchor.getY() - 2 - h, w, h };
     }
