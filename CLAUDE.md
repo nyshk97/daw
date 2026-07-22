@@ -47,7 +47,7 @@ cmake --build build
 open build/daw_artefacts/Debug/daw-dev.app
 ```
 
-- **Debug = dev版**（`daw-dev.app`・bundle id `com.yourcompany.daw.dev`・DEVリボン付きアイコン）、**Release = 常用版**（`daw.app`・`cmake -B build-release -DCMAKE_BUILD_TYPE=Release`）。名前・bundle id・アイコンはCMakeLists.txtで切り替え。開発中の動作確認はdev版で行う
+- **Debug = dev版**（`daw-dev.app`・bundle id `local.d0ne1s.daw.dev`・DEVリボン付きアイコン）、**Release = 常用版**（`daw.app`・`cmake -B build-release -DCMAKE_BUILD_TYPE=Release`）。名前・bundle id・アイコンはCMakeLists.txtで切り替え。開発中の動作確認はdev版で行う
 - アプリアイコンは `Assets/make_icon.swift` で生成（`swiftc` でビルドして実行。dev版は `--dev` フラグ。生成済みPNGは `Assets/` にコミット済み）
 
 - JUCEは`CMakeLists.txt`で **8.0.9 に pin** 済み。GOTCHAS.mdの`createWriterFor`（`AudioFormatWriterOptions`版）が実在することは`build/_deps/juce-src/modules/juce_audio_formats/format/juce_AudioFormat.h`で照合済み。**バージョンを上げるときは再照合すること**

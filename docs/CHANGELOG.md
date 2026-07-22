@@ -1,0 +1,36 @@
+---
+build-info: このファイルが source-of-truth。scripts/release.sh が [Unreleased] を [X.Y.Z] - YYYY-MM-DD にリネームし、該当セクションを GitHub Release notes と Sparkle appcast の <description> に注入する。
+---
+
+# Changelog
+
+daw の更新履歴。形式は [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) ベース、バージョニングは [SemVer](https://semver.org/lang/ja/)。
+
+## 書き方
+
+このセクションは AI が release.sh の pause 中に `[Unreleased]` を埋めるときの判断基準でもある。
+
+### フォーマット
+
+- 1 項目 = 1 行の `- ` bullet。インライン Markdown は `` `code` ``、`**strong**`、`[label](url)` のみサポート（Sparkle description の HTML 変換が対応するのはこれだけ）
+- ユーザー目視で気づく変更だけ書く（内部リファクタ・ドキュメント変更は除く）
+- 文体は体言止め（「〜を追加」「〜問題を修正」。「〜しました」体は使わない）
+
+### カテゴリ
+
+```
+✨ Added       — 新しい機能・ボタン・画面・ショートカット
+📝 Changed     — 既存機能の挙動・デフォルト値・配置・配布形式の変更
+🐛 Fixed       — 「期待通りに動かなかった」のが直った
+🗑️ Removed     — UI 要素・機能・ショートカットの削除
+```
+
+迷ったら **ユーザーが画面でどう感じるか** で選ぶ。
+
+---
+
+## [Unreleased]
+
+### ✨ Added
+- 初回公開リリース（マルチトラック録音・小節ルーラー・メトロノーム・プロジェクト保存/読み込み）
+- アプリメニューの `Check for Updates…` からアプリ内アップデートが可能に

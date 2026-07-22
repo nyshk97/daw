@@ -2,3 +2,5 @@
 /build-release/
 .DS_Store
 .refs/
+# Sparkle prebuilt (scripts/fetch-sparkle.sh が取得)
+/.sparkle/

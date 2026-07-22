@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
-project(daw VERSION 0.1.0 LANGUAGES C CXX)
+# VERSION がアプリバージョンの唯一の真実の源（Info.plist の CFBundleVersion と
+# アプリ内表示の両方に流れる。Sparkle は CFBundleVersion で新旧を比較する）。
+# リリース時は scripts/release.sh がこの値とタグの整合を検査する
+project(daw VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,13 +34,43 @@ FetchContent_MakeAvailable(JUCE)
 # プロジェクト置き場（~/Music/daw/）とログ（~/Library/Logs/daw/）は両版で共有
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     set(DAW_PRODUCT_NAME "daw")
-    set(DAW_BUNDLE_ID "com.yourcompany.daw")
+    set(DAW_BUNDLE_ID "local.d0ne1s.daw")
     set(DAW_ICON "Assets/icon.png")
 else()
     set(DAW_PRODUCT_NAME "daw-dev")
-    set(DAW_BUNDLE_ID "com.yourcompany.daw.dev")
+    set(DAW_BUNDLE_ID "local.d0ne1s.daw.dev")
     set(DAW_ICON "Assets/icon-dev.png")
 endif()
+
+# ---- Sparkle（アプリ内アップデート）----
+# prebuilt Sparkle.framework を .sparkle/（gitignore 対象）に取得して埋め込む。
+# バージョン pin と取得処理は scripts/fetch-sparkle.sh に集約
+set(DAW_SPARKLE_DIR "${CMAKE_SOURCE_DIR}/.sparkle")
+if(NOT EXISTS "${DAW_SPARKLE_DIR}/Sparkle.framework")
+    message(STATUS "Sparkle 未取得のため scripts/fetch-sparkle.sh を実行します")
+    execute_process(
+        COMMAND "${CMAKE_SOURCE_DIR}/scripts/fetch-sparkle.sh"
+        RESULT_VARIABLE _sparkle_fetch_result
+    )
+    if(NOT _sparkle_fetch_result EQUAL 0)
+        message(FATAL_ERROR "Sparkle の取得に失敗しました。scripts/fetch-sparkle.sh を手動実行してください")
+    endif()
+endif()
+
+# Sparkle の Info.plist キー。更新チェックは手動メニューのみ（自動チェック無効）。
+# SUFeedURL は Release のみ（dev 版で誤って常用版の更新を引かないように。Debug は
+# 手動チェック時に「フィード未設定」エラーを返すだけ）。
+# SUEnableInstallerLauncherService は設定しない（Sandbox アプリ用の XPC。daw は非 Sandbox）。
+# 公開鍵のペアの秘密鍵は Keychain（アカウント名 "daw"）。
+# バックアップ: ~/Library/CloudStorage/Dropbox/secrets/sparkle-ed25519-daw-private.key
+set(DAW_SPARKLE_PUBLIC_KEY "qicnPwvUMYYTOBCfRGm4wmJHdGYbpv+MPsO9n6OZhVk=")
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(_daw_sparkle_feed "<key>SUFeedURL</key><string>https://github.com/nyshk97/daw-releases/releases/latest/download/appcast.xml</string>")
+else()
+    set(_daw_sparkle_feed "")
+endif()
+set(DAW_PLIST_TO_MERGE
+    "<plist><dict>${_daw_sparkle_feed}<key>SUPublicEDKey</key><string>${DAW_SPARKLE_PUBLIC_KEY}</string><key>SUEnableAutomaticChecks</key><false/></dict></plist>")
 
 juce_add_gui_app(daw
     PRODUCT_NAME "${DAW_PRODUCT_NAME}"
@@ -47,10 +80,12 @@ juce_add_gui_app(daw
     ICON_BIG "${DAW_ICON}"
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT "録音のためにマイク入力を使用します"
+    PLIST_TO_MERGE "${DAW_PLIST_TO_MERGE}"
 )
 
 target_sources(daw PRIVATE
     Source/Main.cpp
+    Source/mac/SparkleBridge.mm
     Source/audio/PlaybackEngine.cpp
     Source/audio/Recorder.cpp
     Source/shared/Log.cpp
@@ -66,8 +101,9 @@ target_sources(daw PRIVATE
 target_include_directories(daw PRIVATE Source)
 
 target_compile_definitions(daw PRIVATE
-    # アプリ表示名（Debug=daw-dev / Release=daw）。Main.cpp が参照する
+    # アプリ表示名（Debug=daw-dev / Release=daw）とバージョン。Main.cpp が参照する
     DAW_APP_NAME="${DAW_PRODUCT_NAME}"
+    DAW_APP_VERSION="${PROJECT_VERSION}"
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_PLUGINHOST_AU=1
@@ -82,6 +118,15 @@ target_link_libraries(daw
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
+)
+
+# Sparkle.framework のリンク（SparkleBridge.mm の #import と実行時ロードの両方に必要）。
+# rpath は埋め込み先の Contents/Frameworks を指す
+target_compile_options(daw PRIVATE "-F${DAW_SPARKLE_DIR}")
+target_link_options(daw PRIVATE
+    "-F${DAW_SPARKLE_DIR}"
+    "-framework" "Sparkle"
+    "-Wl,-rpath,@executable_path/../Frameworks"
 )
 
 # ad-hoc 署名だとリビルドごとに cdhash が変わり、TCC のマイク許可が毎回リセットされる。
@@ -137,6 +182,11 @@ endif()
 
 add_custom_command(TARGET daw POST_BUILD
     ${_daw_resource_copy_cmds}
+    # Sparkle.framework も署名より前に埋め込む（署名後にコピーするとシールが壊れる）。
+    # ditto で symlink（Versions/Current 等）を保持する。cmake -E copy_directory は
+    # symlink を flatten して framework 自体の署名を壊すため使わない
+    COMMAND ditto "${DAW_SPARKLE_DIR}/Sparkle.framework"
+        "$<TARGET_BUNDLE_DIR:daw>/Contents/Frameworks/Sparkle.framework"
     COMMAND codesign --force
         --sign "${DAW_CODESIGN_IDENTITY}"
         "$<TARGET_BUNDLE_DIR:daw>"

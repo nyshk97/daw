@@ -1,6 +1,7 @@
 #include <exception>
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "mac/SparkleBridge.h"
 #include "shared/Log.h"
 #include "ui/AppLookAndFeel.h"
 #include "ui/MainComponent.h"
@@ -9,6 +10,16 @@
 namespace
 {
 juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
+
+// アプリメニューに "Check for Updates…" を足すためだけの最小 MenuBarModel。
+// トップレベルメニューは増やさない（JUCE デフォルトのメニュー構成を維持）
+class AppMenuModel : public juce::MenuBarModel
+{
+public:
+    juce::StringArray getMenuBarNames() override { return {}; }
+    juce::PopupMenu getMenuForIndex (int, const juce::String&) override { return {}; }
+    void menuItemSelected (int, int) override {}
+};
 }
 
 class DawApplication : public juce::JUCEApplication
@@ -16,7 +27,8 @@ class DawApplication : public juce::JUCEApplication
 public:
     // PRODUCT_NAME 由来（Debug=daw-dev / Release=daw）。名前は CMakeLists.txt で一元管理
     const juce::String getApplicationName() override    { return DAW_APP_NAME; }
-    const juce::String getApplicationVersion() override { return "0.2.0"; }
+    // CMakeLists.txt の project(VERSION) 由来。Info.plist の CFBundleVersion と常に一致する
+    const juce::String getApplicationVersion() override { return DAW_APP_VERSION; }
     bool moreThanOneInstanceAllowed() override          { return false; }
 
     void initialise (const juce::String&) override
@@ -24,11 +36,17 @@ public:
         Log::init (getApplicationVersion());
         lookAndFeel = std::make_unique<AppLookAndFeel>();
         juce::LookAndFeel::setDefaultLookAndFeel (lookAndFeel.get());
+        // Sparkle 起動 + アプリメニューに "Check for Updates…" を追加。
+        // canCheckForUpdates の変化（チェック進行中は false）でメニューを組み直して
+        // enable/disable を反映する。コールバックはメッセージスレッドで呼ばれる
+        SparkleBridge::init ([this] (bool canCheck) { rebuildMacMainMenu (canCheck); });
         mainWindow = std::make_unique<MainWindow>();
     }
 
     void shutdown() override
     {
+        juce::MenuBarModel::setMacMainMenu (nullptr);
+        menuModel.reset();
         // LookAndFeelはウィンドウより長生きさせ、参照を外してから破棄する
         mainWindow.reset();
         juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
@@ -57,6 +75,23 @@ public:
     }
 
 private:
+    void rebuildMacMainMenu (bool canCheckForUpdates)
+    {
+        if (menuModel == nullptr)
+            menuModel = std::make_unique<AppMenuModel>();
+
+        juce::PopupMenu extraAppleMenuItems;
+        juce::PopupMenu::Item checkItem (jp (u8"Check for Updates…"));
+        checkItem.isEnabled = canCheckForUpdates;
+        checkItem.action = []
+        {
+            Log::info ("update.check_started", "source=menu");
+            SparkleBridge::checkForUpdates();
+        };
+        extraAppleMenuItems.addItem (std::move (checkItem));
+        juce::MenuBarModel::setMacMainMenu (menuModel.get(), &extraAppleMenuItems);
+    }
+
     class MainWindow : public juce::DocumentWindow
     {
     public:
@@ -215,6 +250,7 @@ private:
     };
 
     std::unique_ptr<AppLookAndFeel> lookAndFeel;
+    std::unique_ptr<AppMenuModel> menuModel;
     std::unique_ptr<MainWindow> mainWindow;
 };
 

@@ -1,0 +1,20 @@
+#pragma once
+
+#include <functional>
+
+// Sparkle (Objective-C framework) を C++ から使うための薄いブリッジ。実装は SparkleBridge.mm。
+// すべてメッセージスレッドから呼ぶこと。
+namespace SparkleBridge
+{
+    // SPUStandardUpdaterController を生成する。起動時に1回だけ呼ぶ。
+    // SUEnableAutomaticChecks=false (Info.plist) のため、ネットワークアクセスは
+    // checkForUpdates() を呼んだときだけ走る。
+    // onCanCheckChanged は canCheckForUpdates の変化時にメッセージスレッドで呼ばれる
+    // （メニュー項目の enable/disable 更新用。init 直後に初期値でも1回呼ばれる）
+    void init (std::function<void (bool canCheck)> onCanCheckChanged);
+
+    // "Check for Updates…" メニューの実体。更新チェックの UI は Sparkle が出す
+    void checkForUpdates();
+
+    bool canCheckForUpdates();
+}

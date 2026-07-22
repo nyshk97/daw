@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- 配布ビルド（scripts/build.sh）の hardened runtime 再署名で本体 .app にのみ適用する。
+     Sparkle.framework 側には適用しない（XPC の既存 entitlement は preserve-metadata で保持）。
+     マイク入力は hardened runtime 下では entitlement が無いと拒否される -->
+<dict>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>
