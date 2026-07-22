@@ -464,6 +464,12 @@ void MainComponent::finishRecording()
     updateTransportButtons();
 }
 
+void MainComponent::finishRecordingForClose()
+{
+    if (engine.isRecording())
+        finishRecording();
+}
+
 // ---- 編集操作 ----
 
 void MainComponent::requestDeleteSelectedClip()
@@ -842,6 +848,14 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (is (SC::save))
     {
         trySave();
+        return true;
+    }
+    if (is (SC::openChooser))
+    {
+        // 未保存確認と画面遷移はMainWindow側。遷移はcallAsyncで遅延されるので
+        // このkeyPressed実行中にthisが破棄されることはない
+        if (onOpenChooserRequested != nullptr)
+            onOpenChooserRequested();
         return true;
     }
     if (is (SC::addAudioTrack))

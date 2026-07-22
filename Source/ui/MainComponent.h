@@ -37,8 +37,10 @@ public:
 
     bool hasUnsavedChanges() const { return dirty; }
     bool trySave(); // 成功でtrue（終了確認からも呼ばれる）
+    void finishRecordingForClose(); // 閉じる/終了フロー専用: 録音中なら確定（クリップ化）する。汎用の外部停止APIにはしない
     juce::String windowTitle() const;
     std::function<void (const juce::String&)> onTitleChanged;
+    std::function<void()> onOpenChooserRequested; // ⌘O: プロジェクトを閉じて選択画面へ（未保存確認はMainWindow側）
 
 private:
     void timerCallback() override;

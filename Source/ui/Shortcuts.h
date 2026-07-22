@@ -46,6 +46,7 @@ enum class ID
     shortcutList,
     // プロジェクト
     save,
+    openChooser,
     audioSettings,
 };
 
@@ -201,6 +202,9 @@ inline const Entry table[] = {
     { ID::save, Category::project, u8"保存", u8"⌘S",
       [] (const juce::KeyPress& k)
       { return k == juce::KeyPress ('s', juce::ModifierKeys::commandModifier, 0); } },
+    { ID::openChooser, Category::project, u8"プロジェクトを閉じて選択画面へ", u8"⌘O",
+      [] (const juce::KeyPress& k)
+      { return k == juce::KeyPress ('o', juce::ModifierKeys::commandModifier, 0); } },
     { ID::audioSettings, Category::project, u8"オーディオ設定", u8"⌘,",
       [] (const juce::KeyPress& k)
       { return k == juce::KeyPress (',', juce::ModifierKeys::commandModifier, 0); } },
