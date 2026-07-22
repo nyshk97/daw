@@ -37,6 +37,10 @@
 - **ToggleButtonはフォント取得フックがない**: `drawToggleButton` 内に `min(15, 高さ×0.75)` がハードコードされており、変えるには描画メソッドごとコピーしてoverrideするしかない
 - **ツールチップは13px boldハードコード＋bounds計算も太字前提**: `LookAndFeel_V2::drawTooltip` はフォントフックがなく内部ヘルパー（匿名namespaceで再利用不可）で13px boldを使う。日本語はヒラギノ太字になり主張が強い。スタイル変更は `drawTooltip` と `getTooltipBounds` の**両方**を同じ自前レイアウト関数でoverrideする（片方だけだと箱サイズと描画が食い違う）。本プロジェクトは `AppLookAndFeel` で11px regular化済み
 
+### `juce::Colours::*` から名前空間スコープの色定数を初期化しない
+
+`Colours::white` 等はヘッダ内の**非constexprなTUローカルconst**（`const Colour white { 0xffffffff };`）。これを自前ヘッダの `inline const juce::Colour` の初期化子に使うと、静的初期化順序次第で**ゼロ初期化（透明黒）のColourを拾う**。実害確認済み: `Theme::playhead { juce::Colours::white }` で再生ヘッドと小節番号が描画されなくなった（コンパイルは通り、実行時も例外なく「静かに消える」）。`ui/Theme.h` の定数は必ず16進リテラル（`{ 0xffffffff }`）で書く。関数内・描画コード内での `juce::Colours::white.withAlpha(...)` の直接使用は問題ない（使用時点では初期化済み）。
+
 ### レベルメーターの表示はdBスケールに写す
 
 リニア振幅をそのままバー幅にすると、実用レベル（振幅0.1 = -20dB）が全幅の2%にしか見えず機能しない。`(20*log10(v) + 60) / 60` で -60dB..0dB を 0..1 に写してから描く（実DAWのメーターと同じ）。閾値判定（クリップ警告0.9等）はリニアのままでよい。なお `juce::Decibels` は juce_audio_basics 所属なので、juce_gui_basics しか include しないヘッダでは `std::log10` で直接計算する。
