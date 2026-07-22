@@ -738,7 +738,7 @@ bool MainComponent::trySave()
 
 juce::String MainComponent::windowTitle() const
 {
-    return jp (u8"daw — ") + project->name() + (dirty ? jp (u8" ●") : juce::String());
+    return juce::String (DAW_APP_NAME) + jp (u8" — ") + project->name() + (dirty ? jp (u8" ●") : juce::String());
 }
 
 void MainComponent::setDirty (bool nowDirty)

@@ -25,7 +25,7 @@ public:
 class DawApplication : public juce::JUCEApplication
 {
 public:
-    // PRODUCT_NAME 由来（Debug=daw-dev / Release=daw）。名前は CMakeLists.txt で一元管理
+    // PRODUCT_NAME 由来（Debug=LaLa-dev / Release=LaLa）。名前は CMakeLists.txt で一元管理
     const juce::String getApplicationName() override    { return DAW_APP_NAME; }
     // CMakeLists.txt の project(VERSION) 由来。Info.plist の CFBundleVersion と常に一致する
     const juce::String getApplicationVersion() override { return DAW_APP_VERSION; }

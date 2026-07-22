@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 配布用 daw.app をビルド → Developer ID で inside-out 再署名 → notarize → staple →
-# build-release/daw.dmg に出力する。~/ide (PolePole) の build.sh の CMake 移植版。
+# 配布用 LaLa.app をビルド → Developer ID で inside-out 再署名 → notarize → staple →
+# build-release/LaLa.dmg に出力する。~/ide (PolePole) の build.sh の CMake 移植版。
 #
 # CMake の POST_BUILD 署名は TCC 維持用の Apple Development なので、配布用に
 # Developer ID + hardened runtime でここで再署名する。順序は Sparkle 公式の
@@ -20,8 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_ROOT/build-release"
 EXPORT_DIR="/tmp/daw-export"
-APP="$EXPORT_DIR/daw.app"
-DMG_PATH="$BUILD_DIR/daw.dmg"
+APP="$EXPORT_DIR/LaLa.app"
+DMG_PATH="$BUILD_DIR/LaLa.dmg"
 ENTITLEMENTS="$PROJECT_ROOT/Resources/daw.entitlements"
 NOTARY_PROFILE="${NOTARY_PROFILE:-ide-notary}"
 
@@ -31,7 +31,7 @@ echo "==> Building (Release, clean)..."
 cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release
 cmake --build "$BUILD_DIR" --target daw --clean-first
 
-BUILT_APP="$BUILD_DIR/daw_artefacts/Release/daw.app"
+BUILT_APP="$BUILD_DIR/daw_artefacts/Release/LaLa.app"
 if [ ! -d "$BUILT_APP" ]; then
   echo "ERROR: $BUILT_APP が見つかりません"
   exit 1
@@ -97,16 +97,16 @@ rm -f "$DMG_PATH"
 DMG_SRC_DIR="/tmp/daw-dmg-src"
 rm -rf "$DMG_SRC_DIR"
 mkdir -p "$DMG_SRC_DIR"
-ditto "$APP" "$DMG_SRC_DIR/daw.app"
+ditto "$APP" "$DMG_SRC_DIR/LaLa.app"
 
 # --codesign + --notarize で dmg の codesign → notarytool submit --wait → staple を自動実行
 create-dmg \
-  --volname "daw" \
+  --volname "LaLa" \
   --window-size 600 400 \
   --icon-size 100 \
-  --icon "daw.app" 150 200 \
+  --icon "LaLa.app" 150 200 \
   --app-drop-link 450 200 \
-  --hide-extension "daw.app" \
+  --hide-extension "LaLa.app" \
   --codesign "$SIGNING_IDENTITY" \
   --notarize "$NOTARY_PROFILE" \
   "$DMG_PATH" \

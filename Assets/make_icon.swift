@@ -1,7 +1,7 @@
 import AppKit
 import CoreText
 
-// daw アプリアイコン生成: 1024x1024 フルブリード（macOS Tahoe はシステム側で角丸マスクされる）
+// LaLa アプリアイコン生成: 1024x1024 フルブリード（macOS Tahoe はシステム側で角丸マスクされる）
 // 使い方: make_icon [--dev] <出力パス>   （--dev で右下にアンバーの DEV リボンを重ねる）
 let isDev = CommandLine.arguments.contains("--dev")
 guard let outPath = CommandLine.arguments.dropFirst().first(where: { $0 != "--dev" }) else {

@@ -33,11 +33,11 @@ FetchContent_MakeAvailable(JUCE)
 # bundle id が異なるため dev 版の初回起動時のみマイク許可の再付与が必要。
 # プロジェクト置き場（~/Music/daw/）とログ（~/Library/Logs/daw/）は両版で共有
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    set(DAW_PRODUCT_NAME "daw")
+    set(DAW_PRODUCT_NAME "LaLa")
     set(DAW_BUNDLE_ID "local.d0ne1s.daw")
     set(DAW_ICON "Assets/icon.png")
 else()
-    set(DAW_PRODUCT_NAME "daw-dev")
+    set(DAW_PRODUCT_NAME "LaLa-dev")
     set(DAW_BUNDLE_ID "local.d0ne1s.daw.dev")
     set(DAW_ICON "Assets/icon-dev.png")
 endif()
@@ -101,7 +101,7 @@ target_sources(daw PRIVATE
 target_include_directories(daw PRIVATE Source)
 
 target_compile_definitions(daw PRIVATE
-    # アプリ表示名（Debug=daw-dev / Release=daw）とバージョン。Main.cpp が参照する
+    # アプリ表示名（Debug=LaLa-dev / Release=LaLa）とバージョン。Main.cpp が参照する
     DAW_APP_NAME="${DAW_PRODUCT_NAME}"
     DAW_APP_VERSION="${PROJECT_VERSION}"
     JUCE_WEB_BROWSER=0

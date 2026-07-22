@@ -20,7 +20,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-DMG_PATH="$PROJECT_ROOT/build-release/daw.dmg"
+DMG_PATH="$PROJECT_ROOT/build-release/LaLa.dmg"
 APPCAST_PATH="$PROJECT_ROOT/build-release/appcast.xml"
 RELEASES_REPO="nyshk97/daw-releases"
 FEED_URL="https://github.com/${RELEASES_REPO}/releases/latest/download/appcast.xml"
@@ -192,7 +192,7 @@ if not m:
 body = m.group(1).strip()
 
 # --- release notes (markdown, そのまま) ---
-notes = f"# daw {version}\n\n{body}\n"
+notes = f"# LaLa {version}\n\n{body}\n"
 notes_path.write_text(notes)
 print(f"  Wrote {notes_path}")
 
@@ -228,7 +228,7 @@ echo "==> Running fresh build (always rebuild to avoid uploading stale dmg)..."
 "$SCRIPT_DIR/build.sh"
 
 # === Step 4: ビルド成果物の整合チェック ===
-BUILT_APP="/tmp/daw-export/daw.app"
+BUILT_APP="/tmp/daw-export/LaLa.app"
 BUNDLE_VERSION=$(plutil -extract CFBundleVersion raw "${BUILT_APP}/Contents/Info.plist")
 SHORT_VERSION=$(plutil -extract CFBundleShortVersionString raw "${BUILT_APP}/Contents/Info.plist")
 if [ "$SHORT_VERSION" != "$VERSION" ]; then
@@ -269,11 +269,11 @@ fi
 echo "==> Generating appcast.xml..."
 # pubDate は RFC 822。LC_ALL=C で曜日/月名を英語に固定（ja_JP のままだと Sparkle がパースできない）
 PUB_DATE=$(LC_ALL=C date -u "+%a, %d %b %Y %H:%M:%S +0000")
-DOWNLOAD_URL="https://github.com/${RELEASES_REPO}/releases/download/${TAG}/daw.dmg"
+DOWNLOAD_URL="https://github.com/${RELEASES_REPO}/releases/download/${TAG}/LaLa.dmg"
 # 最小 OS はビルド済みバイナリの minos から取る（Info.plist に LSMinimumSystemVersion は無い）。
 # 変数に受けてから awk する（pipefail 下での SIGPIPE 対策 + 取得失敗を silent fallback で
 # 誤った既定値にせずエラー停止する）
-OTOOL_OUT=$(otool -l "${BUILT_APP}/Contents/MacOS/daw")
+OTOOL_OUT=$(otool -l "${BUILT_APP}/Contents/MacOS/LaLa")
 MIN_OS=$(echo "$OTOOL_OUT" | awk '/minos/{print $2; exit}')
 if [ -z "$MIN_OS" ]; then
   echo "ERROR: バイナリの minos を otool から取得できません（出力形式が変わった可能性）"
@@ -299,9 +299,9 @@ else
 <?xml version="1.0" standalone="yes"?>
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
-    <title>daw</title>
+    <title>LaLa</title>
     <link>${FEED_URL}</link>
-    <description>Most recent daw updates</description>
+    <description>Most recent LaLa updates</description>
     <language>ja</language>
   </channel>
 </rss>

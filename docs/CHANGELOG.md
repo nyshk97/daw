@@ -4,7 +4,7 @@ build-info: このファイルが source-of-truth。scripts/release.sh が [Unre
 
 # Changelog
 
-daw の更新履歴。形式は [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) ベース、バージョニングは [SemVer](https://semver.org/lang/ja/)。
+LaLa（旧名 daw）の更新履歴。形式は [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) ベース、バージョニングは [SemVer](https://semver.org/lang/ja/)。
 
 ## 書き方
 
