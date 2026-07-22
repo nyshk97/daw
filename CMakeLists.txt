@@ -46,15 +46,15 @@ endif()
 # prebuilt Sparkle.framework を .sparkle/（gitignore 対象）に取得して埋め込む。
 # バージョン pin と取得処理は scripts/fetch-sparkle.sh に集約
 set(DAW_SPARKLE_DIR "${CMAKE_SOURCE_DIR}/.sparkle")
-if(NOT EXISTS "${DAW_SPARKLE_DIR}/Sparkle.framework")
-    message(STATUS "Sparkle 未取得のため scripts/fetch-sparkle.sh を実行します")
-    execute_process(
-        COMMAND "${CMAKE_SOURCE_DIR}/scripts/fetch-sparkle.sh"
-        RESULT_VARIABLE _sparkle_fetch_result
-    )
-    if(NOT _sparkle_fetch_result EQUAL 0)
-        message(FATAL_ERROR "Sparkle の取得に失敗しました。scripts/fetch-sparkle.sh を手動実行してください")
-    endif()
+# 毎 configure で実行する（スクリプト側の .version スタンプ照合で最新なら即 no-op・ネットワーク不要）。
+# 「ディレクトリ存在時はスキップ」にすると fetch-sparkle.sh の SPARKLE_VERSION を上げても
+# 既存環境で永久に反映されない
+execute_process(
+    COMMAND "${CMAKE_SOURCE_DIR}/scripts/fetch-sparkle.sh"
+    RESULT_VARIABLE _sparkle_fetch_result
+)
+if(NOT _sparkle_fetch_result EQUAL 0)
+    message(FATAL_ERROR "Sparkle の取得に失敗しました。scripts/fetch-sparkle.sh を手動実行してください")
 endif()
 
 # Sparkle の Info.plist キー。更新チェックは手動メニューのみ（自動チェック無効）。
@@ -184,7 +184,11 @@ add_custom_command(TARGET daw POST_BUILD
     ${_daw_resource_copy_cmds}
     # Sparkle.framework も署名より前に埋め込む（署名後にコピーするとシールが壊れる）。
     # ditto で symlink（Versions/Current 等）を保持する。cmake -E copy_directory は
-    # symlink を flatten して framework 自体の署名を壊すため使わない
+    # symlink を flatten して framework 自体の署名を壊すため使わない。
+    # ditto は既存ディレクトリへ「上書きマージ」するため、Sparkle 更新でファイルが
+    # 削除・改名された場合に旧ファイルが残って framework の署名シールが壊れる → 先に消す
+    COMMAND ${CMAKE_COMMAND} -E rm -rf
+        "$<TARGET_BUNDLE_DIR:daw>/Contents/Frameworks/Sparkle.framework"
     COMMAND ditto "${DAW_SPARKLE_DIR}/Sparkle.framework"
         "$<TARGET_BUNDLE_DIR:daw>/Contents/Frameworks/Sparkle.framework"
     COMMAND codesign --force

@@ -16,5 +16,7 @@ namespace SparkleBridge
     // "Check for Updates…" メニューの実体。更新チェックの UI は Sparkle が出す
     void checkForUpdates();
 
-    bool canCheckForUpdates();
+    // KVO オブザーバを解除しコールバックを無効化する。アプリの shutdown() から呼ぶ。
+    // 呼ばないと main queue に積まれたコールバックが JUCE の破棄後に走りうる
+    void shutdown();
 }

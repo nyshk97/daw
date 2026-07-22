@@ -51,10 +51,14 @@ if [ "$BRANCH" != "main" ]; then
   echo "ERROR: カレントブランチが main ではありません ($BRANCH)"
   exit 1
 fi
-# clean worktree（未コミット変更があると「DMG の中身とタグの commit が一致する」保証が崩れる）
-if ! git diff --quiet || ! git diff --cached --quiet; then
-  echo "ERROR: 未コミットの変更があります。commit または stash してから再実行してください"
-  git status --short
+# clean worktree（未コミット変更があると「DMG の中身とタグの commit が一致する」保証が崩れる）。
+# 未追跡ファイルも対象にする（CMakeLists に追加済みの新規ソースが未追跡だと、DMG には
+# 入るのにタグの commit には存在しない事故になる）。docs/plans/ だけはビルドに一切
+# 関与しない作業メモ置き場なので除外する
+DIRTY=$(git status --porcelain | grep -v '^?? docs/plans/' || true)
+if [ -n "$DIRTY" ]; then
+  echo "ERROR: 未コミットの変更または未追跡ファイルがあります。commit / stash してから再実行してください"
+  echo "$DIRTY"
   exit 1
 fi
 # CMakeLists の VERSION bump し忘れをビルド前に検知する（ビルド後にも Info.plist で再検査）
@@ -124,6 +128,15 @@ echo "    - ユーザー目視で気づく変更だけ書く (内部リファク
 echo "    - カテゴリは ✨ Added / 📝 Changed / 🐛 Fixed / 🗑️ Removed"
 echo ""
 read -r -p "  編集が終わったら Enter で続行 (Ctrl+C で中断): " _
+
+# ポーズ中に CHANGELOG 以外を編集していないか再検査する。ここで混入したソース変更は
+# ビルド（DMG）には入るのに Step 2 の commit（= タグの commit）には入らず乖離するため
+DIRTY_AFTER_PAUSE=$(git status --porcelain | grep -v '^?? docs/plans/' | grep -v 'docs/CHANGELOG\.md$' || true)
+if [ -n "$DIRTY_AFTER_PAUSE" ]; then
+  echo "ERROR: ポーズ中に CHANGELOG 以外が変更されています。commit してから再実行してください"
+  echo "$DIRTY_AFTER_PAUSE"
+  exit 1
+fi
 
 # === Step 2: [Unreleased] → [<version>] - <today> 書き換え + commit ===
 TODAY=$(date +%Y-%m-%d)
@@ -214,7 +227,7 @@ PY
 echo "==> Running fresh build (always rebuild to avoid uploading stale dmg)..."
 "$SCRIPT_DIR/build.sh"
 
-# === Step 4: ビルド成果物のバージョン整合チェック ===
+# === Step 4: ビルド成果物の整合チェック ===
 BUILT_APP="/tmp/daw-export/daw.app"
 BUNDLE_VERSION=$(plutil -extract CFBundleVersion raw "${BUILT_APP}/Contents/Info.plist")
 SHORT_VERSION=$(plutil -extract CFBundleShortVersionString raw "${BUILT_APP}/Contents/Info.plist")
@@ -222,14 +235,24 @@ if [ "$SHORT_VERSION" != "$VERSION" ]; then
   echo "ERROR: built CFBundleShortVersionString ($SHORT_VERSION) != requested <version> ($VERSION)"
   exit 1
 fi
+# Sparkle が新旧比較に使うのは CFBundleVersion。JUCE の plist 生成が project(VERSION) と
+# 乖離した場合（JUCE 更新等）に、タグと不一致な sparkle:version を配信しないよう検査する
+if [ "$BUNDLE_VERSION" != "$VERSION" ]; then
+  echo "ERROR: built CFBundleVersion ($BUNDLE_VERSION) != requested <version> ($VERSION)"
+  exit 1
+fi
+# ビルド成果物の SUFeedURL が本スクリプトの配信先と一致するか検査する
+# （CMakeLists.txt と release.sh の 2 箇所にある配信 repo 定義の乖離を検知する）
+APP_FEED=$(plutil -extract SUFeedURL raw "${BUILT_APP}/Contents/Info.plist")
+if [ "$APP_FEED" != "$FEED_URL" ]; then
+  echo "ERROR: built SUFeedURL ($APP_FEED) != release.sh FEED_URL ($FEED_URL)"
+  echo "       CMakeLists.txt の SUFeedURL と release.sh の RELEASES_REPO がずれています"
+  exit 1
+fi
 
-# === Step 5: push + 本体 repo にタグ（DMG を作った commit を記録） ===
+# === Step 5: push（タグは Release 作成成功後に打つ） ===
 echo "==> Pushing main to origin..."
 git push origin main
-if ! git rev-parse "$TAG" >/dev/null 2>&1; then
-  git tag "$TAG"
-fi
-git push origin "$TAG"
 
 # === Step 6: EdDSA 署名 ===
 echo "==> Signing dmg with EdDSA (keychain account: $SPARKLE_ACCOUNT)..."
@@ -247,17 +270,31 @@ echo "==> Generating appcast.xml..."
 # pubDate は RFC 822。LC_ALL=C で曜日/月名を英語に固定（ja_JP のままだと Sparkle がパースできない）
 PUB_DATE=$(LC_ALL=C date -u "+%a, %d %b %Y %H:%M:%S +0000")
 DOWNLOAD_URL="https://github.com/${RELEASES_REPO}/releases/download/${TAG}/daw.dmg"
-# 最小 OS はビルド済みバイナリの minos から取る（Info.plist に LSMinimumSystemVersion は無い）
-MIN_OS=$(otool -l "${BUILT_APP}/Contents/MacOS/daw" | awk '/minos/{print $2; exit}')
-MIN_OS="${MIN_OS:-10.13}"
+# 最小 OS はビルド済みバイナリの minos から取る（Info.plist に LSMinimumSystemVersion は無い）。
+# 変数に受けてから awk する（pipefail 下での SIGPIPE 対策 + 取得失敗を silent fallback で
+# 誤った既定値にせずエラー停止する）
+OTOOL_OUT=$(otool -l "${BUILT_APP}/Contents/MacOS/daw")
+MIN_OS=$(echo "$OTOOL_OUT" | awk '/minos/{print $2; exit}')
+if [ -z "$MIN_OS" ]; then
+  echo "ERROR: バイナリの minos を otool から取得できません（出力形式が変わった可能性）"
+  exit 1
+fi
 
-# 既存 appcast を取得（初回は空の RSS テンプレを用意）。累積方式（過去バージョンも残す）
+# 既存 appcast を取得（初回は空の RSS テンプレを用意）。累積方式（過去バージョンも残す）。
+# 既に Release が存在するのに取得に失敗した場合はエラー停止する（一時的なネットワーク障害を
+# 「初回リリース」と誤認して履歴のない appcast を公開し、過去 item を黙って消す事故を防ぐ）
+EXISTING_RELEASES=$(gh release list --repo "$RELEASES_REPO" --limit 1)
 TMP_APPCAST="$(mktemp)"
 trap 'rm -f "$TMP_APPCAST"' EXIT
-if curl -fsSL "${FEED_URL}" -o "$TMP_APPCAST" 2>/dev/null && grep -q "<rss" "$TMP_APPCAST"; then
+if curl -fsSL "${FEED_URL}" -o "$TMP_APPCAST" && grep -q "<rss" "$TMP_APPCAST"; then
   echo "    Fetched existing appcast.xml from ${FEED_URL}"
+elif [ -n "$EXISTING_RELEASES" ]; then
+  echo "ERROR: ${RELEASES_REPO} に既存 Release があるのに appcast.xml を取得できませんでした"
+  echo "       （一時的な障害の可能性。ここで fresh を作ると過去バージョンの item が feed から消えます）"
+  echo "       ネットワークを確認して再実行してください"
+  exit 1
 else
-  echo "    No existing appcast.xml; creating fresh"
+  echo "    No existing appcast.xml; creating fresh (初回リリース)"
   cat > "$TMP_APPCAST" <<EOF
 <?xml version="1.0" standalone="yes"?>
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
@@ -313,6 +350,14 @@ gh release create "$TAG" \
   --repo "${RELEASES_REPO}" \
   --title "$TAG" \
   --notes-file "$RELEASE_NOTES_MD"
+
+# === Step 9: 本体 repo にタグ（DMG を作った commit を記録） ===
+# Release 作成の成功後に打つ。先に push すると、後半失敗時に「リリース物のないタグ」が
+# 公開され、修正コミットが必要なケースで preflight の同名タグガードが再リリースを塞ぐ
+if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+  git tag "$TAG"
+fi
+git push origin "$TAG"
 
 SHA256=$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')
 echo ""

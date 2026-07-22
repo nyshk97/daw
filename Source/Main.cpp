@@ -45,6 +45,9 @@ public:
 
     void shutdown() override
     {
+        // 先に Sparkle のコールバックを無効化してから menu を片付ける
+        // （queue 済みコールバックが破棄後の menu を再構築するのを防ぐ）
+        SparkleBridge::shutdown();
         juce::MenuBarModel::setMacMainMenu (nullptr);
         menuModel.reset();
         // LookAndFeelはウィンドウより長生きさせ、参照を外してから破棄する

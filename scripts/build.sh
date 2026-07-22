@@ -52,7 +52,14 @@ if [ -z "$SIGNING_IDENTITY" ]; then
 fi
 
 echo "==> Re-signing inside-out with Developer ID (hardened runtime)..."
-SPARKLE_B="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+# Versions/B を直書きすると将来の Sparkle レイアウト変更（過去に A→B の実績あり）で
+# リリース途中に死ぬため、Current symlink から実バージョンを解決する
+SPARKLE_FW="$APP/Contents/Frameworks/Sparkle.framework"
+SPARKLE_B="$SPARKLE_FW/Versions/$(readlink "$SPARKLE_FW/Versions/Current")"
+if [ ! -d "$SPARKLE_B" ]; then
+  echo "ERROR: Sparkle.framework の Versions/Current を解決できません ($SPARKLE_B)"
+  exit 1
+fi
 # 1. Downloader.xpc は既存 entitlement（sandbox）を保持して署名する
 codesign --force --options runtime --timestamp --preserve-metadata=entitlements \
   --sign "$SIGNING_IDENTITY" "$SPARKLE_B/XPCServices/Downloader.xpc"

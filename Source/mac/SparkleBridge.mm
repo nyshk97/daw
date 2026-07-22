@@ -62,9 +62,16 @@ void checkForUpdates()
         [updaterController.updater checkForUpdates];
 }
 
-bool canCheckForUpdates()
+void shutdown()
 {
-    return updaterController != nil && updaterController.updater.canCheckForUpdates;
+    if (observer != nil)
+    {
+        [updaterController.updater removeObserver: observer forKeyPath: @"canCheckForUpdates"];
+        // dispatch 済みの pending ブロックは observer を retain しているが、
+        // onChange を nil にすればブロック内の nil ガードで no-op になる
+        observer.onChange = nil;
+        observer = nil;
+    }
 }
 
 } // namespace SparkleBridge
