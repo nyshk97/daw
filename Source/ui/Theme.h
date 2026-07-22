@@ -43,9 +43,10 @@ inline const juce::Colour rulerTickBeat { 0xff4a4a4f };  // 拍目盛り
 inline const juce::Colour rulerTickSub  { 0xff3c3c41 };  // 細分目盛り（1/8・1/16）
 inline const juce::Colour rulerLabel    { 0xffd3d3d3 };  // 小節番号（lightgrey）
 inline const juce::Colour playhead      { 0xffffffff };
-inline const juce::Colour gridLineBar   { 0xff2c2c31 };  // タイムラインの小節線
+// 小節>拍>細分の明度差をはっきり付ける（差が小さいと階層が目に効かず「均一な縦縞」に見える）
+inline const juce::Colour gridLineBar   { 0xff3a3a40 };  // タイムラインの小節線
 inline const juce::Colour gridLineBeat  { 0xff28282c };  // 拍線
-inline const juce::Colour gridLineSub   { 0xff242428 };  // 細分線
+inline const juce::Colour gridLineSub   { 0xff222226 };  // 細分線
 
 // ---- クリップ・リージョン ----
 inline const juce::Colour clipAudio          { 0xff39537d };  // オーディオクリップ（選択時はaccent）
