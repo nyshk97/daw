@@ -77,10 +77,10 @@
     - 配信 repo の Release: 同名 Release が既に存在する場合も同様に扱う（前回の中途半端な Release を検出したら、内容を確認して削除・再作成するか asset 差し替えで続行できるようエラーメッセージで案内する）
 
 ### 動作確認 [人間👨‍💻]
-- [ ] ユーザー Terminal で `scripts/release.sh 0.2.0` を実行して初回リリース
-- [ ] アップデートの一連の流れを確認: 一時的に低い VERSION（例: 0.0.1）でビルドした dmg の .app を **必ず `/Applications` にコピーしてから起動**（Translocation 回避）→ "Check for Updates…" → 0.2.0 が offer される → 更新が完走する
-- [ ] 更新後の検証: `plutil -extract CFBundleVersion raw /Applications/daw.app/Contents/Info.plist` が新バージョンになっている + `codesign --verify --strict /Applications/daw.app` が通る
-- [ ] 別 Mac（または新規ユーザーアカウント）想定: dmg をダウンロード → Gatekeeper を通って起動できる（`spctl --assess --type execute -vv` で `Notarized Developer ID` でも代替可）
+- [x] ユーザー Terminal で `scripts/release.sh 0.2.0` を実行して初回リリース（2026-07-22 完了。https://github.com/nyshk97/daw-releases/releases/tag/v0.2.0）
+- [ ] アップデートの一連の流れを確認: AI が用意した 0.0.1 テストアプリ `/tmp/daw-update-test/daw.app` を起動（ローカルビルドは quarantine なし = Translocation しないため /tmp のままで可）→ "Check for Updates…" → 0.2.0 が offer される → 更新が完走する
+- [ ] 更新後の検証: `plutil -extract CFBundleVersion raw /tmp/daw-update-test/daw.app/Contents/Info.plist` が 0.2.0 になっている + `codesign --verify --strict /tmp/daw-update-test/daw.app` が通る
+- [x] 別 Mac 想定: 公開 URL から dmg を実ダウンロード → sha256 一致・`spctl --assess` が `accepted / Notarized Developer ID`・`stapler validate` OK（AI で確認済み）
 
 ## ログ
 
@@ -91,6 +91,8 @@
 - Sparkle 2.9.1 配布物の Downloader.xpc は元から entitlements 空（`[Dict]` のみ）。`--preserve-metadata=entitlements` で再署名して同一を確認
 - 配布用 inside-out 再署名を notarize 手前まで実走: `flags=0x10000(runtime)`・`Timestamp=` あり・entitlements は audio-input のみ・`codesign --verify --strict --deep` OK
 - Phase 2前の人間タスク（鍵生成・バックアップ）は AI 自走で完了。残る人間作業は release.sh の実行（notarytool が Claude の Bash から Keychain に届かないため）と実アップデートの目視確認のみ
+- 初回リリース v0.2.0 完走（2026-07-22）。appcast・dmg を公開 URL から取得検証: sha256 一致・spctl accepted (Notarized Developer ID)・stapler validate OK
+- appcast の `minimumSystemVersion` が 26.0 になっている: `CMAKE_OSX_DEPLOYMENT_TARGET` 未設定のためバイナリの minos がホスト SDK 既定（macOS 26）になる。自分の Mac では問題ないが、古い macOS のユーザーにも配るなら deployment target の明示設定が必要（現状は意図的に未対応）
 
 ### 方針変更
 - 2026-07-22 実装前レビューを反映: ①非 Sandbox のため Installer Launcher XPC と disable-library-validation を削除 ②Sparkle 再署名手順を公式の順序（Downloader.xpc は entitlement 保持）で明記 ③バージョンを CMake `PROJECT_VERSION` に一本化（Main.cpp のハードコード 0.2.0 を解消、CMake 側を 0.2.0 に bump）④release.sh に clean worktree/main 確認・本体 repo への tag push を追加、daw-releases 作成を初回リリース前に明示
