@@ -31,7 +31,7 @@ public:
 
     static constexpr double minPxPerBar = 20.0;   // これ以下は小節線のみの俯瞰表示
     static constexpr double maxPxPerBar = 640.0;  // 1/16音符グリッドが40px間隔になる上限
-    static constexpr int trackHeight = 84;        // ヘッダの3行レイアウト（名前/M・S・音量/楽器）に合わせる
+    static constexpr int trackHeight = 92;        // ヘッダの3行レイアウト（名前/M・S・音量/楽器）＋上下余白に合わせる
     static constexpr int rulerHeight = 26;
     static constexpr int markerLaneHeight = 18;   // ルーラー直下のセクションマーカー帯
     static constexpr int topHeight = rulerHeight + markerLaneHeight; // レーン上端（ヘッダ側の高さ合わせ用）

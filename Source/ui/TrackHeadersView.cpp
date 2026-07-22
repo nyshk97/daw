@@ -183,14 +183,14 @@ void TrackHeaderComponent::paint (juce::Graphics& g)
 
 juce::Rectangle<float> TrackHeaderComponent::typeIconArea() const
 {
-    auto row1 = getLocalBounds().reduced (8, 4).removeFromTop (24);
+    auto row1 = getLocalBounds().reduced (10, 8).removeFromTop (24);
     return juce::Rectangle<float> (16.0f, 16.0f)
                .withCentre (row1.removeFromLeft (iconSlotWidth).toFloat().getCentre());
 }
 
 void TrackHeaderComponent::resized()
 {
-    auto area = getLocalBounds().reduced (8, 4);
+    auto area = getLocalBounds().reduced (10, 8);
 
     auto row1 = area.removeFromTop (24);
     row1.removeFromLeft (iconSlotWidth); // トラック種別アイコン（paintで描く）

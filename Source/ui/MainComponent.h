@@ -102,7 +102,7 @@ private:
     juce::Label srWarningLabel;
     juce::TooltipWindow tooltipWindow { this }; // アイコンのみのボタン（歯車等）のホバー説明用
 
-    static constexpr int topBarHeight = 48; // paint（グラデーション帯）とresizedで共有
+    static constexpr int topBarHeight = 54; // paint（グラデーション帯）とresizedで共有
 
     int selectedTrack = -1;
     bool dirty = false;

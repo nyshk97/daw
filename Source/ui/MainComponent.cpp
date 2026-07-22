@@ -1086,7 +1086,7 @@ void MainComponent::resized()
 {
     auto area = getLocalBounds();
 
-    auto topRow = area.removeFromTop (topBarHeight).reduced (8, 7);
+    auto topRow = area.removeFromTop (topBarHeight).reduced (12, 8);
     // トランスポートボタンは行の高さいっぱいだと大きすぎるので一回り小さくして縦中央に置く
     auto transportButton = [&topRow] { return topRow.removeFromLeft (38).withSizeKeepingCentre (38, 26); };
     playButton.setBounds (transportButton());
