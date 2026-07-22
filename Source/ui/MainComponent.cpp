@@ -36,6 +36,16 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     addAndMakeVisible (timeline);
     addAndMakeVisible (headers);
     addChildComponent (pianoRoll); // リージョンを開いたときだけ表示
+    addChildComponent (fxEditor);  // 左のFXパネル（概要・基本常設・Iで開閉）
+    addChildComponent (fxDetail);  // 下部のFX詳細（スロットクリックで開く・ピアノロールと排他）
+    addChildComponent (bottomResizeBar); // 下部パネル表示中のみ可視（パネル群より後に追加＝前面）
+    bottomResizeBar.onDragStart = [this] { bottomHeightAtDragStart = bottomPanelHeight; };
+    bottomResizeBar.onDragged = [this] (int dy)
+    {
+        // 上へドラッグ＝パネルが広がる。上限はresized側のクランプに任せる
+        bottomPanelHeight = juce::jmax (bottomPanelMinHeight, bottomHeightAtDragStart - dy);
+        resized();
+    };
     addAndMakeVisible (playButton);
     addAndMakeVisible (recordButton);
     addAndMakeVisible (addTrackButton);
@@ -52,8 +62,44 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     headers.setProject (project.get());
     pianoRoll.setProject (project.get());
     mixerOverlay.setProject (project.get());
-    mixerOverlay.onSelectTrack = [this] (int index) { selectTrack (index); };
-    mixerOverlay.onChanged = [this] { setDirty (true); };
+    mixerOverlay.onSelectTrack = [this] (int index) { selectTrackFromUser (index); };
+    mixerOverlay.onChanged = [this]
+    {
+        setDirty (true);
+        fxEditor.refreshValues(); // 同じsend atomicを表示するエディタ側へ反映
+    };
+    // バス/Masterストリップのクリック → FXパネルでそのチャンネルのチェーンを表示
+    mixerOverlay.onSelectBus = [this] (int bus)
+    {
+        openFxEditor();
+        fxEditor.showBus (bus);
+        syncFxDetail();
+    };
+    mixerOverlay.onSelectMaster = [this]
+    {
+        openFxEditor();
+        fxEditor.showMaster();
+        syncFxDetail();
+    };
+    mixerOverlay.onDismissed = [this]
+    {
+        if (fxEditor.isOpen())
+        {
+            fxEditor.showTrack (selectedTrack); // ミキサーを閉じたら選択トラック追従に戻す
+            syncFxDetail();
+        }
+    };
+
+    fxEditor.setProject (project.get());
+    fxEditor.onCloseRequested = [this] { closeFxEditor(); };
+    fxEditor.onSlotClicked = [this] (int slot) { toggleFxDetailSlot (slot); };
+    fxEditor.onSendChanged = [this]
+    {
+        setDirty (true);
+        mixerOverlay.refreshValues(); // sendはミキサーと同じatomicの表示なので反映（非表示時はno-op）
+    };
+    fxEditor.onFxEnabledChanged = [this] { setDirty (true); }; // ON/OFFはミキサーに表示がないのでdirty化のみ
+    fxDetail.onCloseRequested = [this] { closeFxDetail(); };
 
     // ---- タイムライン・ヘッダの連携 ----
     timeline.onSeek = [this] (juce::int64 samplePos)
@@ -64,7 +110,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
             playStartSample = samplePos; // 再生中のクリックシークでも停止時の戻り先を更新する
         }
     };
-    timeline.onTrackSelected = [this] (int index) { selectTrack (index); };
+    timeline.onTrackSelected = [this] (int index) { selectTrackFromUser (index); };
     timeline.onVerticalScroll = [this] (int y) { headers.setViewY (y); };
     timeline.onWillEditModel = [this] { undoStack.begin (*project); };
     timeline.onModelEdited = [this]
@@ -104,9 +150,17 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         previewFifo.push ({ PreviewFifo::Command::Type::noteOn, trackId, pitch, velocity });
     };
     pianoRoll.onCloseRequested = [this] { closePianoRoll(); };
-    headers.onSelect = [this] (int index) { selectTrack (index); };
+    headers.onSelect = [this] (int index) { selectTrackFromUser (index); };
     headers.onDeleteRequested = [this] (int index) { requestDeleteTrack (index); };
-    headers.onChanged = [this] { setDirty (true); };
+    headers.onChanged = [this]
+    {
+        setDirty (true);
+        if (fxEditor.isOpen())
+        {
+            fxEditor.refreshFromModel (selectedTrack); // リネームのタイトル反映等
+            syncFxDetail();
+        }
+    };
     headers.onWillChangeStructure = [this] { undoStack.begin (*project); };
     headers.onInstrumentChanged = [this]
     {
@@ -160,6 +214,11 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     }
 
     selectTrack (project->tracks.empty() ? -1 : 0);
+
+    // FXパネルは基本常設（Iで開閉）
+    fxEditor.openView();
+    fxEditor.showTrack (selectedTrack);
+
     pushSnapshot();
     updateTransportButtons();
 
@@ -599,7 +658,7 @@ void MainComponent::addTrack (TrackType type)
     project->tracks.push_back (std::move (track));
 
     headers.rebuild();
-    selectTrack ((int) project->tracks.size() - 1);
+    selectTrackFromUser ((int) project->tracks.size() - 1); // トラック追加はユーザー操作＝エディタも追従
     pushSnapshot();
     setDirty (true);
     timeline.refresh();
@@ -684,6 +743,7 @@ void MainComponent::openPianoRoll (int trackIndex, int regionIndex)
         closePianoRoll();
         return;
     }
+    closeFxDetail(); // 下部スロットはFX詳細と排他（後勝ち）
     pianoRoll.openRegion (track.id, region.id);
     resized();
 }
@@ -700,6 +760,86 @@ void MainComponent::closePianoRoll()
     resized();
 }
 
+// ---- 左のFXパネル（基本常設・Iで開閉。ピアノロールとは独立に共存）----
+
+void MainComponent::toggleFxEditor()
+{
+    if (fxEditor.isOpen())
+        closeFxEditor();
+    else
+    {
+        openFxEditor();
+        fxEditor.showTrack (selectedTrack);
+    }
+}
+
+void MainComponent::openFxEditor()
+{
+    if (fxEditor.isOpen())
+        return;
+    Log::info ("fxeditor.open");
+    fxEditor.openView();
+    resized();
+}
+
+void MainComponent::closeFxEditor()
+{
+    if (! fxEditor.isOpen())
+        return;
+    Log::info ("fxeditor.close");
+    closeFxDetail(); // 概要が消えたら詳細も道連れ（詳細だけ残ると対象の手掛かりを失う）
+    fxEditor.closeView();
+    resized();
+}
+
+void MainComponent::toggleFxDetailSlot (int slot)
+{
+    if (fxDetail.isOpen() && fxDetailSlot == slot && fxDetailKey == fxEditor.targetKey())
+    {
+        closeFxDetail(); // 同じスロットの再クリックは閉じる
+        return;
+    }
+    closePianoRoll(); // 下部スロットはピアノロールと排他（後勝ち）
+    fxDetailSlot = slot;
+    fxDetailKey = fxEditor.targetKey();
+    Log::info ("fxdetail.open", "fx=" + fxEditor.slotName (slot)
+                                    + " channel=" + fxEditor.channelName());
+    fxDetail.show (fxEditor.slotName (slot), fxEditor.channelName());
+    fxEditor.setActiveSlot (slot);
+    resized();
+}
+
+void MainComponent::closeFxDetail()
+{
+    if (! fxDetail.isOpen())
+        return;
+    Log::info ("fxdetail.close");
+    fxDetail.close();
+    fxDetailSlot = -1;
+    fxDetailKey.clear();
+    fxEditor.setActiveSlot (-1);
+    resized();
+}
+
+void MainComponent::syncFxDetail()
+{
+    if (! fxDetail.isOpen())
+        return;
+
+    // トラック→トラックは同じスロット（EQ/Comp）のまま追従、同一バス/Masterはタイトル更新のみ。
+    // トラック⇄バス等はチェーン構成が変わるので閉じる
+    const auto key = fxEditor.targetKey();
+    const bool followable = (key == "track" && fxDetailKey == "track") || key == fxDetailKey;
+    if (followable && fxDetailSlot >= 0 && fxDetailSlot < fxEditor.numSlots())
+    {
+        fxDetailKey = key;
+        fxDetail.show (fxEditor.slotName (fxDetailSlot), fxEditor.channelName());
+        fxEditor.setActiveSlot (fxDetailSlot);
+        return;
+    }
+    closeFxDetail();
+}
+
 void MainComponent::selectTrack (int index)
 {
     selectedTrack = project->tracks.empty()
@@ -708,6 +848,21 @@ void MainComponent::selectTrack (int index)
     headers.setSelectedTrack (selectedTrack);
     timeline.setSelectedTrack (selectedTrack);
     mixerOverlay.sync (selectedTrack); // トラック増減・選択変更をストリップに反映（非表示中はno-op）
+    if (fxEditor.isOpen())
+    {
+        fxEditor.refreshFromModel (selectedTrack); // バス/Master表示は維持し、対象消滅時だけ追従に戻す
+        syncFxDetail();
+    }
+}
+
+void MainComponent::selectTrackFromUser (int index)
+{
+    selectTrack (index);
+    if (fxEditor.isOpen())
+    {
+        fxEditor.showTrack (selectedTrack); // ユーザーのトラック選択はパネルも追従（バス/Master表示から戻る）
+        syncFxDetail();
+    }
 }
 
 void MainComponent::showDeviceSettings()
@@ -1059,8 +1214,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
             addTrackOverlay.dismiss();
             return true;
         }
-        if (is (SC::shortcutList) || is (SC::toggleMixer))
-            return true; // オーバーレイは高々1枚: AddTrack表示中の⌘?/Xは無視
+        if (is (SC::shortcutList) || is (SC::toggleMixer) || is (SC::toggleFxEditor))
+            return true; // オーバーレイは高々1枚: AddTrack表示中の⌘?/X/Bは無視
     }
     // Logic準拠: X = ミキサー。表示中もモーダルにしない（Space再生・シーク等はそのまま効く）
     if (is (SC::toggleMixer))
@@ -1081,6 +1236,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     {
         Log::info ("mixer.close", "source=escape");
         mixerOverlay.dismiss();
+        return true;
+    }
+    // Logic準拠: B = 下部FXエディタ（Smart Controls相当）
+    if (is (SC::toggleFxEditor))
+    {
+        toggleFxEditor();
         return true;
     }
     if (is (SC::shortcutList))
@@ -1424,10 +1585,31 @@ void MainComponent::resized()
     warnArea.setLeft (juce::jmin (warnArea.getRight(), lcdArea.getRight() + 10));
     srWarningLabel.setBounds (warnArea);
 
-    if (pianoRoll.isOpen())
-        pianoRoll.setBounds (area.removeFromBottom (PianoRollView::preferredHeight));
+    // 下部スロット: ピアノロール⇄FX詳細の排他（後勝ち）。FXパネルより先に取り、横幅フルを使わせる
+    // （EQカーブ等の詳細UIに横幅を与えるのがこの配置の目的）。
+    // 高さは両パネル共通で、上端のドラッグハンドルで可変（タイムラインの最低高は確保）
+    const bool bottomOpen = pianoRoll.isOpen() || fxDetail.isOpen();
+    bottomResizeBar.setVisible (bottomOpen);
+    if (bottomOpen)
+    {
+        const int h = juce::jlimit (bottomPanelMinHeight,
+                                    juce::jmax (bottomPanelMinHeight, area.getHeight() - 200),
+                                    bottomPanelHeight);
+        auto panelArea = area.removeFromBottom (h);
+        if (pianoRoll.isOpen())
+            pianoRoll.setBounds (panelArea);
+        else
+            fxDetail.setBounds (panelArea);
+        // 境界をまたぐ8pxの帯（掴みやすさ優先。パネル群より前面）
+        bottomResizeBar.setBounds (panelArea.getX(), panelArea.getY() - 4, panelArea.getWidth(), 8);
+    }
 
-    // ミキサーはヘッダー＋タイムライン領域だけを覆う（上部バーと下部パネルは操作可能なまま）
+    // FXパネル（概要）はヘッダー列のさらに左（基本常設）
+    if (fxEditor.isOpen())
+        fxEditor.setBounds (area.removeFromLeft (FxEditorView::preferredWidth));
+
+    // ミキサーはヘッダー＋タイムライン領域だけを覆う（上部バー・下部・FXパネルは操作可能なまま。
+    // バスストリップをクリックしてFXパネルの表示を切り替える動線を塞がない）
     mixerArea = area;
     if (mixerOverlay.isVisible())
         mixerOverlay.setBounds (mixerArea);

@@ -5,6 +5,7 @@
 #include <vector>
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "SendKnob.h"
 #include "../shared/Project.h"
 
 // ミキサーの1本分のストリップ。トラック（sendノブ3・Pan・フェーダー・メーター・M/S・名前）、
@@ -38,14 +39,12 @@ private:
     bool selected = false;
     float meterDisplay = 0.0f;
     bool panDragging = false;                     // ドラッグ中はラベルをライブ値表示にする
-    bool sendDragging[numSendBuses] = {};
 
     juce::Rectangle<int> meterArea; // resizedで確定、paintで描く
     juce::Rectangle<int> nameArea;
-    juce::Rectangle<int> sendLabelAreas[numSendBuses];
     juce::Rectangle<int> panLabelArea;
 
-    juce::Slider sendKnobs[numSendBuses]; // トラックのみ
+    SendKnob sendKnobs[numSendBuses] { SendKnob (0), SendKnob (1), SendKnob (2) }; // トラックのみ
     juce::Slider panKnob;                 // トラックのみ
     juce::Slider fader;
     juce::TextButton muteButton { "M" };  // トラック・バス
@@ -67,11 +66,24 @@ public:
 
     void setProject (Project* p);
     void showOver (juce::Rectangle<int> areaToCover, int selectedTrack);
-    void dismiss() { setVisible (false); }
+
+    // 閉じる（X/Esc/パネル外クリックの全経路がここを通る）。onDismissed で通知する
+    // （FXエディタの表示対象を選択トラック追従に戻すため）
+    void dismiss()
+    {
+        if (! isVisible())
+            return;
+        setVisible (false);
+        if (onDismissed)
+            onDismissed();
+    }
 
     // ストリップ構成・選択ハイライト・表示値をモデルに同期する（トラック増減・選択変更・m/sキー操作後に呼ぶ。
     // 非表示中は何もしない: showOver が開くときに必ず同期する）
     void sync (int selectedTrack);
+
+    // 表示値のみrebind（FXエディタ側でのsend変更を反映する）
+    void refreshValues() { sync (selectedTrack); }
 
     // メーター値の配布（30Hz）。peakLevel の exchange(0) は MainComponent が一元的に行い、
     // ここへは読み取り済みの値が渡ってくる（2箇所でexchangeするとピークを取り合うため）
@@ -79,6 +91,9 @@ public:
                        const float (&busPeaks)[numSendBuses], float masterPeak);
 
     std::function<void (int)> onSelectTrack;
+    std::function<void (int)> onSelectBus; // バスストリップクリック（FXエディタの表示切替）
+    std::function<void()> onSelectMaster;  // Masterストリップクリック（同上）
+    std::function<void()> onDismissed;     // 閉じ通知（全経路）
     std::function<void()> onChanged; // 値変更（dirtyマーク用）
 
     void paint (juce::Graphics& g) override;

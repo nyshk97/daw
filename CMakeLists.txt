@@ -92,6 +92,7 @@ target_sources(daw PRIVATE
     Source/shared/Log.cpp
     Source/shared/Project.cpp
     Source/shared/SynthBank.cpp
+    Source/ui/FxEditorView.cpp
     Source/ui/MainComponent.cpp
     Source/ui/MixerOverlay.cpp
     Source/ui/PianoRollView.cpp

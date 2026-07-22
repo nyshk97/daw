@@ -5,6 +5,8 @@
 
 #include "AddTrackOverlay.h"
 #include "BounceOverlay.h"
+#include "FxDetailView.h"
+#include "FxEditorView.h"
 #include "IconButton.h"
 #include "MixerOverlay.h"
 #include "PianoRollView.h"
@@ -70,13 +72,20 @@ private:
     void requestDeleteTrack (int index);
     void showAddTrackMenu();
     void addTrack (TrackType type);
-    void selectTrack (int index);
+    void selectTrack (int index);         // 内部同期用（削除後の詰め直し・undo復元等）。FXエディタの表示対象は変えない
+    void selectTrackFromUser (int index); // ユーザーのトラック選択（ヘッダー/タイムライン/ミキサー）。FXエディタも追従させる
     bool selectedTrackIsMidi() const;
     void performUndo();
     void performRedo();
     void afterHistoryRestore();          // undo/redo後のUI・スナップショット同期
     void openPianoRoll (int trackIndex, int regionIndex);
     void closePianoRoll();
+    void toggleFxEditor();               // Iキー（左のFXパネル）
+    void openFxEditor();
+    void closeFxEditor();                // パネルを閉じるときは下部詳細も道連れ
+    void toggleFxDetailSlot (int slot);  // FXパネルのスロットクリック（下部詳細の開閉）
+    void closeFxDetail();
+    void syncFxDetail();                 // FXパネルの表示対象変更に下部詳細を追従（不整合なら閉じる）
     void showDeviceSettings();
     void applyBpmText();
     void beginBounce (const juce::File& target); // 保存先確定後: パラメータ固定→専用synth生成→ワーカー開始
@@ -103,6 +112,31 @@ private:
     TimelineView timeline { transport };
     TrackHeadersView headers;
     PianoRollView pianoRoll { transport };
+    FxEditorView fxEditor; // 左のFXパネル（概要・基本常設・Iで開閉。ピアノロールとは独立）
+    FxDetailView fxDetail; // 下部のFX詳細（スロットクリックで開く。ピアノロールと排他・後勝ち）
+    int fxDetailSlot = -1;        // 詳細が表示中のスロット（FXパネルの並びに対応）
+    juce::String fxDetailKey;     // 詳細が対象にしているチャンネル（fxEditor.targetKey()と比較して追従判定）
+
+    // 下部パネル（ピアノロール/FX詳細）の高さを変えるドラッグハンドル（パネル上端の細い帯）。
+    // 高さは両パネル共通・セッション内で保持
+    class BottomResizeBar : public juce::Component
+    {
+    public:
+        std::function<void()> onDragStart;
+        std::function<void (int)> onDragged; // ドラッグ開始からの累計Δy（上方向が負）
+
+        BottomResizeBar() { setMouseCursor (juce::MouseCursor::UpDownResizeCursor); }
+        void mouseDown (const juce::MouseEvent&) override { if (onDragStart) onDragStart(); }
+        void mouseDrag (const juce::MouseEvent& e) override
+        {
+            if (onDragged)
+                onDragged (e.getDistanceFromDragStartY());
+        }
+    };
+    BottomResizeBar bottomResizeBar;
+    int bottomPanelHeight = 320;      // 既定をピアノロール従来値（260）より広めに
+    int bottomHeightAtDragStart = 0;
+    static constexpr int bottomPanelMinHeight = 180;
 
     IconButton playButton { IconButton::Icon::play, juce::String::fromUTF8 (u8"再生") };
     IconButton recordButton { IconButton::Icon::record, juce::String::fromUTF8 (u8"録音") };

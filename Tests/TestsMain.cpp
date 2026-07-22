@@ -1485,6 +1485,7 @@ void testMixerParamsRoundtrip()
     }
     auto& params = *project->tracks[0].params;
     expect (juce::approximatelyEqual (params.pan.load(), 0.0f), "v3読込: pan=0");
+    expect (params.eqEnabled.load() && params.compEnabled.load(), "v3読込: FXはON補完");
     for (int b = 0; b < numSendBuses; ++b)
         expect (juce::approximatelyEqual (params.sends[b].load(), 0.0f), "v3読込: send=0");
     for (int b = 0; b < numSendBuses; ++b)
@@ -1498,6 +1499,7 @@ void testMixerParamsRoundtrip()
     params.pan.store (-0.5f);
     params.sends[0].store (0.3f);
     params.sends[2].store (1.0f);
+    params.eqEnabled.store (false);
     project->busParams[1]->gain.store (0.7f);
     project->busParams[1]->mute.store (true);
     project->masterParams->gain.store (0.9f);
@@ -1516,6 +1518,7 @@ void testMixerParamsRoundtrip()
                     && juce::approximatelyEqual (p.sends[1].load(), 0.0f)
                     && juce::approximatelyEqual (p.sends[2].load(), 1.0f),
                 "sends維持");
+        expect (! p.eqEnabled.load() && p.compEnabled.load(), "FXのON/OFF維持（eq=OFF/comp=ON）");
         expect (juce::approximatelyEqual (reloaded->busParams[1]->gain.load(), 0.7f)
                     && reloaded->busParams[1]->mute.load(),
                 "バスgain/mute維持");

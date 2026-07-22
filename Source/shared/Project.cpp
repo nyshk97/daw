@@ -207,6 +207,16 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
             sendsArray.add ((double) track.params->sends[b].load());
         trackObj->setProperty ("sends", sendsArray);
 
+        // 固定ストリップFX。後続スライスで各FXのパラメータを同じオブジェクトに足す
+        auto* eqObj = new juce::DynamicObject();
+        eqObj->setProperty ("enabled", track.params->eqEnabled.load());
+        auto* compObj = new juce::DynamicObject();
+        compObj->setProperty ("enabled", track.params->compEnabled.load());
+        auto* fxObj = new juce::DynamicObject();
+        fxObj->setProperty ("eq", juce::var (eqObj));
+        fxObj->setProperty ("comp", juce::var (compObj));
+        trackObj->setProperty ("fx", juce::var (fxObj));
+
         if (track.type == TrackType::audio)
         {
             juce::Array<juce::var> clipsArray;
@@ -357,6 +367,11 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
                 for (int b = 0; b < numSendBuses && b < sendsArray->size(); ++b)
                     track.params->sends[b].store (juce::jlimit (0.0f, 1.0f,
                                                                 (float) (double) (*sendsArray)[b]));
+
+            // 固定ストリップFXのON/OFF（欠損＝旧形式はON補完）
+            const auto fxVar = trackVar.getProperty ("fx", {});
+            track.params->eqEnabled.store ((bool) fxVar.getProperty ("eq", {}).getProperty ("enabled", true));
+            track.params->compEnabled.store ((bool) fxVar.getProperty ("comp", {}).getProperty ("enabled", true));
 
             if (track.type == TrackType::audio)
             {

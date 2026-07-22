@@ -44,6 +44,7 @@ enum class ID
     // 表示・ズーム
     zoomHorizontal,
     toggleMixer,
+    toggleFxEditor,
     shortcutList,
     // プロジェクト
     save,
@@ -199,6 +200,10 @@ inline const Entry table[] = {
     { ID::toggleMixer, Category::view, u8"ミキサーを表示/隠す", u8"X",
       [] (const juce::KeyPress& k)
       { return detail::noCmdCtrlAlt (k) && k.getTextCharacter() == 'x'; } },
+    // Logic準拠: I = インスペクタ（本アプリでは左のFXパネル）
+    { ID::toggleFxEditor, Category::view, u8"FXパネルを表示/隠す", u8"I",
+      [] (const juce::KeyPress& k)
+      { return detail::noCmdCtrlAlt (k) && k.getTextCharacter() == 'i'; } },
     { ID::shortcutList, Category::view, u8"ショートカット一覧", u8"⌘?",
       [] (const juce::KeyPress& k)
       {

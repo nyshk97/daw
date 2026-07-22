@@ -24,6 +24,12 @@ struct TrackParams
     std::atomic<bool> mute { false };
     std::atomic<bool> solo { false };
 
+    // 固定ストリップFXのON/OFF（固定チェーンに「挿す」概念はなく常在。既定ON）。
+    // DSP実装（スライス3〜4）でオーディオスレッドが読む前提の共有atomic。
+    // それまではUI＋保存のみで音に影響しない
+    std::atomic<bool> eqEnabled { true };
+    std::atomic<bool> compEnabled { true };
+
     // トラック出力のピークレベル（UIメーター用）。オーディオスレッドはCASでmax更新し、
     // UI（30Hz Timer）は exchange(0) で読み取りリセットする。1UIフレームに複数ブロックが
     // 走っても最大値が渡る（storeだと最後のブロックしか見えず瞬発音を取りこぼす）

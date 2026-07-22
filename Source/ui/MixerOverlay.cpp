@@ -32,19 +32,10 @@ MixerStrip::MixerStrip (Kind kindToUse) : kind (kindToUse)
 
     if (isTrack)
     {
-        for (int b = 0; b < numSendBuses; ++b)
+        for (auto& knob : sendKnobs)
         {
-            setupKnob (sendKnobs[b], 0.0, 1.0, 0.0);
-            sendKnobs[b].onValueChange = [this, b]
-            {
-                if (params != nullptr)
-                    params->sends[b].store ((float) sendKnobs[b].getValue());
-                repaint (sendLabelAreas[b]); // ラベルの値表示を追従させる
-                if (onChanged)
-                    onChanged();
-            };
-            sendKnobs[b].onDragStart = [this, b] { sendDragging[b] = true; repaint (sendLabelAreas[b]); };
-            sendKnobs[b].onDragEnd = [this, b] { sendDragging[b] = false; repaint (sendLabelAreas[b]); };
+            addAndMakeVisible (knob);
+            knob.onChanged = [this] { if (onChanged) onChanged(); };
         }
         setupKnob (panKnob, -1.0, 1.0, 0.0);
         panKnob.onValueChange = [this]
@@ -107,10 +98,9 @@ MixerStrip::MixerStrip (Kind kindToUse) : kind (kindToUse)
         };
     }
 
-    // Space（再生/停止）を奪わせない
+    // Space（再生/停止）を奪わせない（SendKnobは自前で設定済み）
     for (auto* c : std::initializer_list<juce::Component*> {
-             &fader, &panKnob, &muteButton, &soloButton,
-             &sendKnobs[0], &sendKnobs[1], &sendKnobs[2] })
+             &fader, &panKnob, &muteButton, &soloButton })
     {
         c->setWantsKeyboardFocus (false);
         c->setMouseClickGrabsKeyboardFocus (false);
@@ -142,8 +132,8 @@ void MixerStrip::bind (const juce::String& name, std::shared_ptr<TrackParams> pa
         if (kind == Kind::track)
         {
             panKnob.setValue (params->pan.load(), juce::dontSendNotification);
-            for (int b = 0; b < numSendBuses; ++b)
-                sendKnobs[b].setValue (params->sends[b].load(), juce::dontSendNotification);
+            for (auto& knob : sendKnobs)
+                knob.bind (params);
         }
     }
     repaint();
@@ -177,20 +167,11 @@ void MixerStrip::paint (juce::Graphics& g)
         g.fillRect (0, 0, getWidth(), 2);
     }
 
-    // sendノブの豆ラベル（通常はA/B/D、ドラッグ中は送り量0〜100）と
-    // Panラベル（センターはPAN・振っているときはL35/R35、ドラッグ中はセンターでもC）
+    // Panラベル（センターはPAN・振っているときはL35/R35、ドラッグ中はセンターでもC）。
+    // sendノブのラベルは SendKnob 自身が描く
     if (kind == Kind::track && params != nullptr)
     {
         g.setFont (Fonts::small());
-        for (int b = 0; b < numSendBuses; ++b)
-        {
-            const auto text = sendDragging[b]
-                                  ? juce::String (juce::roundToInt (params->sends[b].load() * 100.0f))
-                                  : juce::String (SendBuses::shortNames[b]);
-            g.setColour (juce::Colours::white.withAlpha (sendDragging[b] ? 0.8f : 0.45f));
-            g.drawText (text, sendLabelAreas[b], juce::Justification::centred);
-        }
-
         const float pan = params->pan.load();
         const int amount = juce::roundToInt (std::abs (pan) * 100.0f);
         const auto panValue = (pan < 0.0f ? "L" : "R") + juce::String (amount);
@@ -244,15 +225,11 @@ void MixerStrip::resized()
 
     if (kind == Kind::track)
     {
-        // sendノブ3個（上端の横並び）＋豆ラベル
-        auto sendRow = area.removeFromTop (28);
-        auto labelRow = area.removeFromTop (12);
+        // sendノブ3個（上端の横並び。ノブ＋豆ラベルはSendKnobが内包）
+        auto sendRow = area.removeFromTop (28 + SendKnob::labelHeight);
         const int knobW = sendRow.getWidth() / numSendBuses;
-        for (int b = 0; b < numSendBuses; ++b)
-        {
-            sendKnobs[b].setBounds (sendRow.removeFromLeft (knobW).withSizeKeepingCentre (26, 26));
-            sendLabelAreas[b] = labelRow.removeFromLeft (knobW);
-        }
+        for (auto& knob : sendKnobs)
+            knob.setBounds (sendRow.removeFromLeft (knobW));
         area.removeFromTop (6);
 
         // Panノブ（send より一回り大きく・PANラベル付き）
@@ -289,9 +266,13 @@ MixerOverlay::MixerOverlay()
     viewport.setScrollBarsShown (false, true, false, true);
     viewport.setScrollBarThickness (8);
 
-    for (auto& strip : busStrips)
-        addAndMakeVisible (strip);
+    for (int b = 0; b < numSendBuses; ++b)
+    {
+        addAndMakeVisible (busStrips[b]);
+        busStrips[b].onSelect = [this, b] { if (onSelectBus) onSelectBus (b); };
+    }
     addAndMakeVisible (masterStrip);
+    masterStrip.onSelect = [this] { if (onSelectMaster) onSelectMaster(); };
 }
 
 void MixerOverlay::setProject (Project* p)
