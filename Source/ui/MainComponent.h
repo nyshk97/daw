@@ -4,12 +4,14 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include "AddTrackOverlay.h"
+#include "BounceOverlay.h"
 #include "IconButton.h"
 #include "PianoRollView.h"
 #include "ShortcutListOverlay.h"
 #include "TimelineView.h"
 #include "TrackHeadersView.h"
 #include "TransportLcd.h"
+#include "../audio/BounceRenderer.h"
 #include "../audio/PlaybackEngine.h"
 #include "../shared/PreviewFifo.h"
 #include "../shared/PlaybackSnapshot.h"
@@ -38,6 +40,11 @@ public:
     bool hasUnsavedChanges() const { return dirty; }
     bool trySave(); // 成功でtrue（終了確認からも呼ばれる）
     void finishRecordingForClose(); // 閉じる/終了フロー専用: 録音中なら確定（クリップ化）する。汎用の外部停止APIにはしない
+
+    // バウンス（書き出し）。メニュー（⌘B）から呼ばれる入口と、閉じる/終了フロー用の中断API
+    void startBounceFlow();
+    bool isBouncing() const { return bounceActive; }
+    void cancelBounceForClose(); // バウンス中ならキャンセル→ワーカーjoin→一時ファイル削除まで待つ
     juce::String windowTitle() const;
     std::function<void (const juce::String&)> onTitleChanged;
     std::function<void()> onOpenChooserRequested; // ⌘O: プロジェクトを閉じて選択画面へ（未保存確認はMainWindow側）
@@ -71,6 +78,9 @@ private:
     void closePianoRoll();
     void showDeviceSettings();
     void applyBpmText();
+    void beginBounce (const juce::File& target); // 保存先確定後: パラメータ固定→専用synth生成→ワーカー開始
+    void pollBounce();                           // Timerからの完了ポーリング・進捗反映
+    static void refreshMacMenu();                // Fileメニューのenable状態を組み直させる
     void pushSnapshot();
     void setDirty (bool nowDirty);
     void updateTransportButtons();
@@ -100,6 +110,7 @@ private:
     IconButton addTrackButton { IconButton::Icon::plus, juce::String::fromUTF8 (u8"トラックを追加") };
     AddTrackOverlay addTrackOverlay;
     ShortcutListOverlay shortcutOverlay; // ⌘?のショートカット一覧（表示中のみ可視）
+    BounceOverlay bounceOverlay;         // バウンス進捗（表示中のみ可視・モーダル）
     TransportLcd lcd; // BPM・小節位置・時間のLCD風パネル（バー中央に置く）
     juce::Label srWarningLabel;
     juce::TooltipWindow tooltipWindow { this }; // アイコンのみのボタン（歯車等）のホバー説明用
@@ -138,6 +149,13 @@ private:
     juce::File pendingRecordFile;
     juce::int64 pendingPunchIn = 0;
     int pendingRecordTrack = -1;
+
+    // バウンス。ワーカーは専用スナップショット・専用synth・固定済みgainを自己所有し、
+    // MainComponentの他メンバーを参照しない（デストラクタでcancelAndWaitされる）
+    BounceRenderer bounceRenderer;
+    std::unique_ptr<juce::FileChooser> bounceChooser; // 非同期ダイアログの生存保持
+    bool bounceActive = false;   // running中のみtrue（完了表示中はfalse）
+    int bounceDoneTicks = 0;     // 完了表示の自動クローズ用カウントダウン（30Hz Timer）
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };

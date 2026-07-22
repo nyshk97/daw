@@ -6,19 +6,57 @@
 #include "ui/AppLookAndFeel.h"
 #include "ui/MainComponent.h"
 #include "ui/ProjectChooserComponent.h"
+#include "ui/Shortcuts.h"
 
 namespace
 {
 juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
 
-// アプリメニューに "Check for Updates…" を足すためだけの最小 MenuBarModel。
-// トップレベルメニューは増やさない（JUCE デフォルトのメニュー構成を維持）
+// Fileメニューのコマンド。ネイティブメニューのkeyEquivalent（⌘S/⌘B/⌘O）は
+// ApplicationCommandManagerのKeyPressMappings経由でしか設定されないため（JUCEの
+// juce_MainMenu_mac.mmの実装）、Shortcuts.hテーブルのmenuKeyをここで橋渡しする。
+// キー押下はNSMenuがMainComponent::keyPressedより先に取り、commandManager→
+// DawApplication::perform経由で実行される（keyPressed側の同判定はフォールバック）
+namespace MenuCommands
+{
+    enum : juce::CommandID { save = 1, bounce, closeProject };
+
+    struct Item { juce::CommandID command; Shortcuts::ID shortcut; };
+    inline constexpr Item items[] = {
+        { save, Shortcuts::ID::save },
+        { bounce, Shortcuts::ID::bounce },
+        { closeProject, Shortcuts::ID::openChooser },
+    };
+}
+
+// Fileメニュー＋アプリメニューの "Check for Updates…"（extraAppleMenuItemsは
+// setMacMainMenu呼び出し側が渡す）。コマンドの実体・enable判定は
+// DawApplication（ApplicationCommandTarget）側にあり、ここは並べるだけ
 class AppMenuModel : public juce::MenuBarModel
 {
 public:
-    juce::StringArray getMenuBarNames() override { return {}; }
-    juce::PopupMenu getMenuForIndex (int, const juce::String&) override { return {}; }
+    explicit AppMenuModel (juce::ApplicationCommandManager& cm) : commandManager (cm) {}
+
+    juce::StringArray getMenuBarNames() override { return { "File" }; }
+
+    juce::PopupMenu getMenuForIndex (int, const juce::String& name) override
+    {
+        juce::PopupMenu menu;
+        if (name == "File")
+        {
+            menu.addCommandItem (&commandManager, MenuCommands::save);
+            menu.addCommandItem (&commandManager, MenuCommands::bounce);
+            menu.addSeparator();
+            menu.addCommandItem (&commandManager, MenuCommands::closeProject);
+        }
+        return menu;
+    }
+
+    // 実行はcommandManager→ApplicationCommandTarget::performで行われる（ここには来るが何もしない）
     void menuItemSelected (int, int) override {}
+
+private:
+    juce::ApplicationCommandManager& commandManager;
 };
 }
 
@@ -36,10 +74,19 @@ public:
         Log::init (getApplicationVersion());
         lookAndFeel = std::make_unique<AppLookAndFeel>();
         juce::LookAndFeel::setDefaultLookAndFeel (lookAndFeel.get());
+
+        // Fileメニューのコマンド登録とkeyEquivalent（メニュー構築より先に済ませる）
+        commandManager.registerAllCommandsForTarget (this);
+        commandManager.setFirstCommandTarget (this);
+        for (const auto& item : MenuCommands::items)
+            if (const auto key = Shortcuts::menuKey (item.shortcut); key.isValid())
+                commandManager.getKeyMappings()->addKeyPress (item.command, key);
+
         // Sparkle 起動 + アプリメニューに "Check for Updates…" を追加。
         // canCheckForUpdates の変化（チェック進行中は false）でメニューを組み直して
         // enable/disable を反映する。コールバックはメッセージスレッドで呼ばれる
         SparkleBridge::init ([this] (bool canCheck) { rebuildMacMainMenu (canCheck); });
+        rebuildMacMainMenu (false); // Sparkleのコールバックを待たずFileメニューを出す
         mainWindow = std::make_unique<MainWindow>();
     }
 
@@ -77,11 +124,72 @@ public:
             quit();
     }
 
+    // ---- Fileメニューのコマンド（ApplicationCommandTarget）----
+    // 実体は現在のMainComponentへ委譲する。プロジェクト未オープン（選択画面）や
+    // バウンス中はdisabled（enable状態はメニュー再構築時にここから引き直される）
+
+    void getAllCommands (juce::Array<juce::CommandID>& commands) override
+    {
+        JUCEApplication::getAllCommands (commands);
+        for (const auto& item : MenuCommands::items)
+            commands.add (item.command);
+    }
+
+    void getCommandInfo (juce::CommandID id, juce::ApplicationCommandInfo& info) override
+    {
+        auto* mainComp = mainWindow != nullptr ? mainWindow->currentMainComponent() : nullptr;
+        const bool ready = mainComp != nullptr && ! mainComp->isBouncing();
+
+        switch (id)
+        {
+            case MenuCommands::save:
+                info.setInfo (Shortcuts::name (Shortcuts::ID::save), {}, "File", 0);
+                info.setActive (ready);
+                return;
+            case MenuCommands::bounce:
+                info.setInfo (Shortcuts::name (Shortcuts::ID::bounce) + jp (u8"…"), {}, "File", 0);
+                info.setActive (ready);
+                return;
+            case MenuCommands::closeProject:
+                info.setInfo (jp (u8"プロジェクトを閉じる"), {}, "File", 0);
+                info.setActive (ready);
+                return;
+            default:
+                JUCEApplication::getCommandInfo (id, info);
+                return;
+        }
+    }
+
+    bool perform (const InvocationInfo& info) override
+    {
+        // メニューのenable状態はNSMenu構築時のもので古いことがあるため、ここでも必ずガードする
+        auto* mainComp = mainWindow != nullptr ? mainWindow->currentMainComponent() : nullptr;
+        const bool ready = mainComp != nullptr && ! mainComp->isBouncing();
+
+        switch (info.commandID)
+        {
+            case MenuCommands::save:
+                if (ready)
+                    mainComp->trySave();
+                return true;
+            case MenuCommands::bounce:
+                if (ready)
+                    mainComp->startBounceFlow();
+                return true;
+            case MenuCommands::closeProject:
+                if (ready)
+                    mainWindow->closeProjectToChooser();
+                return true;
+            default:
+                return JUCEApplication::perform (info);
+        }
+    }
+
 private:
     void rebuildMacMainMenu (bool canCheckForUpdates)
     {
         if (menuModel == nullptr)
-            menuModel = std::make_unique<AppMenuModel>();
+            menuModel = std::make_unique<AppMenuModel> (commandManager);
 
         juce::PopupMenu extraAppleMenuItems;
         juce::PopupMenu::Item checkItem (jp (u8"Check for Updates…"));
@@ -142,6 +250,27 @@ private:
             });
         }
 
+        // Fileメニューのenable判定・コマンド委譲用（所有はsetContentOwned側のまま）
+        MainComponent* currentMainComponent() const { return mainComp; }
+
+        // Fileメニュー「プロジェクトを閉じる」からも呼ばれる
+        void closeProjectToChooser()
+        {
+            confirmCloseProject (false, [] (MainWindow& w)
+            {
+                // keyPressed（⌘O）実行中にMainComponent自身を破棄しないよう遷移を遅延する
+                juce::Component::SafePointer<MainWindow> safe (&w);
+                juce::MessageManager::callAsync ([safe]
+                {
+                    if (safe != nullptr)
+                    {
+                        safe->showChooser();
+                        safe->flowPending = false;
+                    }
+                });
+            });
+        }
+
     private:
         void showChooser()
         {
@@ -165,6 +294,10 @@ private:
             setContentOwned (chooser, true);
             setName (DAW_APP_NAME);
             centreWithSize (getWidth(), getHeight());
+
+            // 選択画面ではFileメニューをdisabledにする（enable判定の引き直し）
+            if (auto* model = juce::MenuBarModel::getMacMainMenu())
+                model->menuItemsChanged();
         }
 
         void openPendingProject()
@@ -177,23 +310,10 @@ private:
             setName (component->windowTitle());
             centreWithSize (getWidth(), getHeight());
             flowPending = false;
-        }
 
-        void closeProjectToChooser()
-        {
-            confirmCloseProject (false, [] (MainWindow& w)
-            {
-                // keyPressed（⌘O）実行中にMainComponent自身を破棄しないよう遷移を遅延する
-                juce::Component::SafePointer<MainWindow> safe (&w);
-                juce::MessageManager::callAsync ([safe]
-                {
-                    if (safe != nullptr)
-                    {
-                        safe->showChooser();
-                        safe->flowPending = false;
-                    }
-                });
-            });
+            // プロジェクトが開いたのでFileメニューをenabledにする
+            if (auto* model = juce::MenuBarModel::getMacMainMenu())
+                model->menuItemsChanged();
         }
 
         // 未保存確認 → onClosed。録音中は先に録音を確定（クリップ化）してから確認する。
@@ -206,6 +326,9 @@ private:
                 return;
             flowPending = true;
 
+            // バウンス中の閉じる/終了（バツボタン・⌘Q。メニューはdisabled）は
+            // キャンセル→ワーカーjoin→一時ファイル削除を待ってから進める
+            mainComp->cancelBounceForClose();
             mainComp->finishRecordingForClose();
 
             if (! mainComp->hasUnsavedChanges())
@@ -253,6 +376,7 @@ private:
     };
 
     std::unique_ptr<AppLookAndFeel> lookAndFeel;
+    juce::ApplicationCommandManager commandManager; // menuModelより先に構築・後に破棄（menuModelが参照する）
     std::unique_ptr<AppMenuModel> menuModel;
     std::unique_ptr<MainWindow> mainWindow;
 };

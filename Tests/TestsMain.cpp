@@ -5,6 +5,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include "audio/BounceRenderer.h"
 #include "audio/PlaybackEngine.h"
 #include "shared/Project.h"
 #include "shared/SynthBank.h"
@@ -1296,6 +1297,162 @@ void testDlsMusicDeviceRendersAudio()
 
     instance->releaseResources();
 }
+// ---- バウンス: 完了までポーリング（ワーカースレッドの終了待ち）----
+bool waitForBounce (BounceRenderer& renderer, int timeoutMs = 30000)
+{
+    const auto start = juce::Time::getMillisecondCounter();
+    while (renderer.status() == BounceRenderer::Status::running)
+    {
+        if (juce::Time::getMillisecondCounter() - start > (juce::uint32) timeoutMs)
+            return false;
+        juce::Thread::sleep (10);
+    }
+    return true;
+}
+
+// ---- バウンス基本: クリップ×gainのミックス・24bit/2ch/レート・原子的置換・一時ファイル掃除 ----
+void testBounceRendererBasic()
+{
+    beginTest ("BounceRenderer basic render");
+    const auto dir = makeTempDir();
+    const auto target = dir.getChildFile ("bounce.wav");
+    target.replaceWithText ("stale junk"); // 既存ファイルが置換されることの確認用
+
+    // クリップ: サンプル値0.5×1000サンプルを位置500へ、gain 0.5 → 出力は0.25
+    auto audio = std::make_shared<juce::AudioBuffer<float>> (1, 1000);
+    for (int i = 0; i < 1000; ++i)
+        audio->setSample (0, i, 0.5f);
+
+    BounceRenderer::Request request;
+    request.sampleRate = 44100.0;
+    request.bpm = 120.0;
+    request.endSample = 2000;
+    request.targetFile = target;
+    BounceRenderer::TrackRender track;
+    track.gain = 0.5f;
+    track.clips.push_back ({ audio, 500, 0, 1000 });
+    request.tracks.push_back (std::move (track));
+
+    BounceRenderer renderer;
+    expect (renderer.start (std::move (request)), "startできること");
+    expect (waitForBounce (renderer), "タイムアウトせず完了すること");
+    const auto result = renderer.takeResult();
+    expect (result.status == BounceRenderer::Status::success, "successで終わること");
+    expect (! result.scaled, "ピーク1.0以下ならスケールしないこと");
+    expect (result.writtenSamples == 2000, "テールなし=endSampleちょうどの長さ");
+
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatReader> reader (
+        wav.createReaderFor (new juce::FileInputStream (target), true));
+    expect (reader != nullptr, "書き出したWAVを読めること（junkが置換されている）");
+    if (reader != nullptr)
+    {
+        expect ((int) reader->numChannels == 2, "ステレオであること");
+        expect ((int) reader->bitsPerSample == 24, "24bitであること");
+        expect (juce::approximatelyEqual (reader->sampleRate, 44100.0), "サンプルレートが一致すること");
+        expect (reader->lengthInSamples == 2000, "長さがendSampleと一致すること");
+
+        juce::AudioBuffer<float> readBack (2, 2000);
+        reader->read (&readBack, 0, 2000, 0, true, true);
+        expect (std::abs (readBack.getSample (0, 800) - 0.25f) < 0.001f, "クリップ区間はgain適用値（L）");
+        expect (std::abs (readBack.getSample (1, 800) - 0.25f) < 0.001f, "クリップ区間はgain適用値（R）");
+        expect (std::abs (readBack.getSample (0, 100)) < 0.0001f, "クリップ前は無音");
+        expect (std::abs (readBack.getSample (0, 1800)) < 0.0001f, "クリップ後は無音");
+    }
+
+    expect (dir.getNumberOfChildFiles (juce::File::findFiles, "*.tmp") == 0
+                && dir.getNumberOfChildFiles (juce::File::findFiles, ".*") == 0,
+            "一時ファイルが残らないこと");
+    dir.deleteRecursively();
+}
+
+// ---- バウンス: ピーク>1.0のときだけ全体スケールダウン（オーバーロード保護）----
+void testBounceRendererClippingProtection()
+{
+    beginTest ("BounceRenderer clipping protection");
+    const auto dir = makeTempDir();
+    const auto target = dir.getChildFile ("bounce.wav");
+
+    // 0.8のクリップを同位置に2枚重ねて加算1.6 → 0.999/1.6にスケールされる
+    auto audio = std::make_shared<juce::AudioBuffer<float>> (1, 500);
+    for (int i = 0; i < 500; ++i)
+        audio->setSample (0, i, 0.8f);
+
+    BounceRenderer::Request request;
+    request.sampleRate = 44100.0;
+    request.endSample = 500;
+    request.targetFile = target;
+    BounceRenderer::TrackRender track;
+    track.gain = 1.0f;
+    track.clips.push_back ({ audio, 0, 0, 500 });
+    track.clips.push_back ({ audio, 0, 0, 500 });
+    request.tracks.push_back (std::move (track));
+
+    BounceRenderer renderer;
+    expect (renderer.start (std::move (request)), "startできること");
+    expect (waitForBounce (renderer), "タイムアウトせず完了すること");
+    const auto result = renderer.takeResult();
+    expect (result.status == BounceRenderer::Status::success, "successで終わること");
+    expect (result.scaled, "ピーク>1.0でスケールされること");
+    expect (std::abs (result.peak - 1.6f) < 0.001f, "スケール前ピークが記録されること");
+
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatReader> reader (
+        wav.createReaderFor (new juce::FileInputStream (target), true));
+    expect (reader != nullptr, "書き出したWAVを読めること");
+    if (reader != nullptr)
+    {
+        juce::AudioBuffer<float> readBack (2, 500);
+        reader->read (&readBack, 0, 500, 0, true, true);
+        const float peak = readBack.getMagnitude (0, 500);
+        expect (peak <= 1.0f, "出力ピークが1.0以下に収まること");
+        expect (std::abs (peak - 0.999f) < 0.005f, "0.999へ正規化されること");
+    }
+    dir.deleteRecursively();
+}
+
+// ---- バウンス: MIDIトラック（DLS専用インスタンス）のレンダリングと余韻テール ----
+void testBounceRendererMidiTail()
+{
+    beginTest ("BounceRenderer midi + tail");
+    const auto dir = makeTempDir();
+    const auto target = dir.getChildFile ("bounce.wav");
+
+    SynthBank bank;
+    auto synth = bank.createIndependent (0, false, 44100.0, BounceRenderer::renderBlockSize);
+    expect (synth != nullptr, "バウンス専用DLSインスタンスを作れること");
+    if (synth == nullptr)
+    {
+        dir.deleteRecursively();
+        return;
+    }
+
+    // 1拍のノート（120BPMで0.5秒=22050サンプル）。endSampleはノート終端ちょうど
+    BounceRenderer::Request request;
+    request.sampleRate = 44100.0;
+    request.bpm = 120.0;
+    request.endSample = 22050;
+    request.wantTail = true;
+    request.targetFile = target;
+    BounceRenderer::TrackRender track;
+    track.gain = 0.8f;
+    track.synth = synth;
+    track.notes.push_back ({ 0, Ppq::ticksPerQuarter, 60, 100 });
+    request.tracks.push_back (std::move (track));
+
+    BounceRenderer renderer;
+    expect (renderer.start (std::move (request)), "startできること");
+    expect (waitForBounce (renderer), "タイムアウトせず完了すること");
+    const auto result = renderer.takeResult();
+    expect (result.status == BounceRenderer::Status::success, "successで終わること");
+    expect (result.peak > 0.001f, "無音でないこと");
+    expect (result.writtenSamples >= 22050, "テールで曲末より長くなること（最低でも切り捨てない）");
+    expect (result.writtenSamples <= 22050 + (juce::int64) (44100 * 5.0) + BounceRenderer::renderBlockSize,
+            "テール上限（5秒）を超えないこと");
+
+    dir.deleteRecursively();
+}
+
 } // namespace
 
 int main()
@@ -1324,6 +1481,9 @@ int main()
     testSnapshotSwapDuringPlayback();
     testOverflowDoesNotKillOtherNotes();
     testDlsMusicDeviceRendersAudio();
+    testBounceRendererBasic();
+    testBounceRendererClippingProtection();
+    testBounceRendererMidiTail();
 
     if (failureCount > 0)
     {

@@ -18,6 +18,9 @@ void showAlert (const juce::String& title, const juce::String& message)
     juce::NativeMessageBox::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
                                                  title, message);
 }
+
+// バウンスの前回保存先（セッション内で記憶。プロジェクトを跨いでも引き継ぐ）
+juce::File lastBounceDirectory;
 }
 
 MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
@@ -40,6 +43,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     addAndMakeVisible (clickButton);
     addChildComponent (addTrackOverlay); // トラック追加メニュー表示中のみ可視
     addChildComponent (shortcutOverlay); // ⌘?表示中のみ可視
+    addChildComponent (bounceOverlay);   // バウンス中のみ可視
     addAndMakeVisible (lcd);
     addChildComponent (srWarningLabel); // 不一致時のみ表示
 
@@ -124,6 +128,12 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     settingsButton.onClick = [this] { showDeviceSettings(); };
     settingsButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::audioSettings));
     settingsButton.setBorderless (true);
+
+    bounceOverlay.onCancel = [this]
+    {
+        Log::info ("bounce.cancel_requested", "source=overlay");
+        bounceRenderer.cancel(); // 非同期。完了はpollBounce()が拾う
+    };
 
     clickButton.setClickingTogglesState (true); // ONで点灯（Logicのメトロノームボタン風）
     clickButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
@@ -218,6 +228,8 @@ void MainComponent::timerCallback()
             engine.play();
         }
     }
+
+    pollBounce();
 
     headers.updateMeters();
     updateLcdTime();
@@ -716,6 +728,224 @@ void MainComponent::applyBpmText()
     timeline.refresh(); // 小節幅（サンプル換算）が変わる
 }
 
+// ---- バウンス（書き出し）----
+
+void MainComponent::startBounceFlow()
+{
+    if (bounceActive || engine.isRecording())
+        return;
+
+    // 素材が何も無ければ入口で弾く（mute/soloを踏まえた正確な判定はbeginBounceで行う）
+    bool hasContent = false;
+    for (auto& track : project->tracks)
+        hasContent = hasContent || ! track.clips.empty() || ! track.midiRegions.empty();
+    if (! hasContent)
+    {
+        showAlert (jp (u8"書き出せません"), jp (u8"書き出す内容がありません。"));
+        return;
+    }
+
+    if (project->sampleRate <= 0.0 && transport.sampleRate.load() <= 0.0)
+    {
+        showAlert (jp (u8"書き出せません"), jp (u8"オーディオデバイスが準備できていません。"));
+        return;
+    }
+
+    // 再生中なら停止してから（状態を単純に保つ）
+    if (transport.isPlaying.load() || seekResumePending)
+    {
+        seekResumePending = false;
+        numSeekKeyCodes = 0;
+        engine.stop();
+        transport.seekRequest.store (playStartSample);
+        updateTransportButtons();
+        Log::info ("transport.stop", "reason=bounce pos=" + juce::String (playStartSample));
+    }
+
+    const auto dir = lastBounceDirectory.isDirectory()
+                         ? lastBounceDirectory
+                         : juce::File::getSpecialLocation (juce::File::userDesktopDirectory);
+    bounceChooser = std::make_unique<juce::FileChooser> (
+        jp (u8"書き出し"), dir.getChildFile (project->name() + ".wav"), "*.wav");
+
+    const auto flags = juce::FileBrowserComponent::saveMode
+                       | juce::FileBrowserComponent::canSelectFiles
+                       | juce::FileBrowserComponent::warnAboutOverwriting;
+    bounceChooser->launchAsync (flags, [this] (const juce::FileChooser& chooser)
+    {
+        // thisの生存: bounceChooserはthisのメンバーで、this破棄時にダイアログごと片付く
+        const auto chosen = chooser.getResult();
+        if (chosen == juce::File())
+            return; // キャンセル
+        const auto target = chosen.withFileExtension ("wav");
+        lastBounceDirectory = target.getParentDirectory();
+        beginBounce (target);
+    });
+}
+
+void MainComponent::beginBounce (const juce::File& target)
+{
+    if (bounceActive || engine.isRecording())
+        return;
+
+    const double sr = project->sampleRate > 0.0 ? project->sampleRate : transport.sampleRate.load();
+    if (sr <= 0.0)
+    {
+        showAlert (jp (u8"書き出せません"), jp (u8"オーディオデバイスが準備できていません。"));
+        return;
+    }
+
+    BounceRenderer::Request request;
+    request.sampleRate = sr;
+    request.bpm = juce::jlimit (20.0, 400.0, transport.bpm.load());
+    request.targetFile = target;
+
+    // 開始時点のmute/solo/gainをプレーン値へ固定する（共有atomicのTrackParamsはワーカーへ渡さない。
+    // 保存ダイアログ表示中に変えられた値もここで確定する）
+    bool anySolo = false;
+    for (auto& track : project->tracks)
+        anySolo = anySolo || track.params->solo.load();
+
+    const double tps = Ppq::ticksPerSample (request.bpm, sr);
+    auto snapshot = project->buildSnapshot(); // クリップ参照とノートのフラット化を再利用（synthは空のまま）
+    juce::int64 endSample = 0;
+
+    for (size_t i = 0; i < snapshot->tracks.size() && i < project->tracks.size(); ++i)
+    {
+        auto& model = project->tracks[i];
+        auto& params = *model.params;
+        const bool audible = ! params.mute.load() && (! anySolo || params.solo.load());
+        const float gain = params.gain.load();
+        if (! audible || gain <= 0.0f)
+            continue; // 非可聴トラックはリクエストに入れない（RTのprocessと同じ規則）
+
+        BounceRenderer::TrackRender trackRender;
+        trackRender.gain = gain;
+        trackRender.clips = std::move (snapshot->tracks[i].clips);
+        trackRender.notes = std::move (snapshot->tracks[i].notes);
+
+        // 終端 = 最後のクリップ終端 / MIDIリージョン終端。リージョンは最後のノートの後の
+        // 余白も範囲に含めるため、ノート終端でなくモデル側のリージョン境界から算出する
+        // （スナップショットには境界情報が残らない）。ミュートリージョンは含めない
+        for (auto& clip : trackRender.clips)
+            endSample = juce::jmax (endSample, clip.startSample + clip.lengthSamples);
+        if (model.type == TrackType::midi)
+            for (auto& region : model.midiRegions)
+                if (! region.muted)
+                    endSample = juce::jmax (endSample, (juce::int64) std::llround (
+                                                (double) (region.startPpq + region.lengthPpq) / tps));
+
+        // ノートも音声もないトラックはレンダリング対象にしない（終端への寄与は上で済んでいる。
+        // ノートのないリージョンだけのプロジェクトはリージョン終端までの無音が書き出される）
+        if (trackRender.clips.empty() && trackRender.notes.empty())
+            continue;
+
+        if (model.type == TrackType::midi)
+        {
+            // RT側の共有インスタンスとはprocessBlockが並走するため共有不可。専用に生成する
+            trackRender.synth = synthBank.createIndependent (model.gmProgram, model.drums,
+                                                             sr, BounceRenderer::renderBlockSize);
+            if (trackRender.synth == nullptr)
+            {
+                auto errors = synthBank.takeCreateErrors();
+                showAlert (jp (u8"書き出しを中止しました"),
+                           jp (u8"ソフトウェア音源を作成できませんでした。\n")
+                               + errors.joinIntoString ("\n"));
+                return;
+            }
+            request.wantTail = true; // 可聴なMIDIトラックがあるときだけ余韻テールを付ける
+        }
+
+        request.tracks.push_back (std::move (trackRender));
+    }
+
+    if (endSample <= 0)
+    {
+        showAlert (jp (u8"書き出せません"),
+                   jp (u8"書き出す内容がありません（全トラックがミュート、または空です）。"));
+        return;
+    }
+    request.endSample = endSample;
+
+    Log::info ("bounce.start", "target=" + target.getFullPathName()
+                                   + " sr=" + juce::String (sr, 0)
+                                   + " endSample=" + juce::String (endSample)
+                                   + " tracks=" + juce::String ((int) request.tracks.size())
+                                   + " tail=" + juce::String ((int) request.wantTail));
+
+    if (! bounceRenderer.start (std::move (request)))
+    {
+        showAlert (jp (u8"書き出せません"), jp (u8"前回の書き出しが終了していません。"));
+        return;
+    }
+
+    bounceActive = true;
+    bounceDoneTicks = 0;
+    bounceOverlay.setBounds (getLocalBounds());
+    bounceOverlay.show();
+    refreshMacMenu(); // バウンス中はFileメニューをdisabledにする
+}
+
+void MainComponent::pollBounce()
+{
+    // 完了表示の自動クローズ
+    if (bounceDoneTicks > 0 && --bounceDoneTicks == 0)
+        bounceOverlay.dismiss();
+
+    if (! bounceActive)
+        return;
+
+    bounceOverlay.setProgress (bounceRenderer.progress());
+    if (bounceRenderer.status() == BounceRenderer::Status::running)
+        return;
+
+    bounceActive = false;
+    const auto result = bounceRenderer.takeResult();
+    switch (result.status)
+    {
+        case BounceRenderer::Status::success:
+            Log::info ("bounce.done", "samples=" + juce::String (result.writtenSamples)
+                                          + " peak=" + juce::String (result.peak, 3)
+                                          + " scaled=" + juce::String ((int) result.scaled));
+            bounceOverlay.showDone();
+            bounceDoneTicks = 40; // 30Hz × 40 ≈ 1.3秒表示して自動で消える
+            break;
+
+        case BounceRenderer::Status::cancelled:
+            Log::info ("bounce.cancelled");
+            bounceOverlay.dismiss();
+            break;
+
+        default:
+            Log::error ("bounce.failed", "message=" + result.errorMessage.replace ("\n", " / "));
+            bounceOverlay.dismiss();
+            showAlert (jp (u8"書き出しに失敗しました"), result.errorMessage);
+            break;
+    }
+    refreshMacMenu();
+}
+
+void MainComponent::cancelBounceForClose()
+{
+    if (! bounceActive)
+        return;
+
+    Log::info ("bounce.cancel_requested", "source=close");
+    bounceRenderer.cancelAndWait(); // ワーカーが一時ファイルを削除してから戻る（数十ms想定）
+    bounceActive = false;
+    (void) bounceRenderer.takeResult();
+    bounceOverlay.dismiss();
+    refreshMacMenu();
+    Log::info ("bounce.cancelled", "reason=close");
+}
+
+void MainComponent::refreshMacMenu()
+{
+    // Fileメニューのenable状態はメニュー再構築時にgetCommandInfoから引き直される（Main.cpp側）
+    if (auto* model = juce::MenuBarModel::getMacMainMenu())
+        model->menuItemsChanged();
+}
+
 // ---- 保存 ----
 
 bool MainComponent::trySave()
@@ -776,6 +1006,17 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     using SC = Shortcuts::ID;
     const auto is = [&key] (SC id) { return Shortcuts::matches (key, id); };
     const bool escape = key == juce::KeyPress (juce::KeyPress::escapeKey);
+
+    // バウンス中はモーダル: Esc（キャンセル要求）以外のキーは全て消費する
+    if (bounceActive)
+    {
+        if (escape)
+        {
+            Log::info ("bounce.cancel_requested", "source=escape");
+            bounceRenderer.cancel(); // 非同期。完了はpollBounce()が拾う
+        }
+        return true;
+    }
 
     // ショートカット一覧表示中はモーダル: 閉じる操作（Esc/⌘?）以外のキーは全て消費する
     if (shortcutOverlay.isVisible())
@@ -848,6 +1089,13 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (is (SC::save))
     {
         trySave();
+        return true;
+    }
+    if (is (SC::bounce))
+    {
+        // 通常はネイティブメニューのkeyEquivalent（⌘B）が先にイベントを取るため、
+        // ここはメニューが効かない状況のフォールバック
+        startBounceFlow();
         return true;
     }
     if (is (SC::openChooser))
@@ -1145,4 +1393,7 @@ void MainComponent::resized()
 
     if (shortcutOverlay.isVisible())
         shortcutOverlay.setBounds (getLocalBounds());
+
+    if (bounceOverlay.isVisible())
+        bounceOverlay.setBounds (getLocalBounds());
 }

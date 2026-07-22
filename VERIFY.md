@@ -220,6 +220,22 @@ swiftc -o /tmp/setsr setsr.swift
   検証は**48000のプロジェクト**（`"sampleRate": 48000.0` のテストプロジェクトをCLIで作る）×44.1kデバイスで行う
 - 自動追従は1デバイスにつき1回だけ（設定画面でのユーザー手動変更と戦わないため）。デバイスが替わるとやり直す
 
+## バウンス（書き出し）の確認
+
+レンダリング品質（ミックス・クリッピング保護・DLSテール）はCTestの `BounceRenderer *` テストが担う。アプリ統合の確認:
+
+```sh
+# メニューから駆動（メニューのAXPressはアプリが別Spaceにあっても効く）
+osascript -e 'tell application "System Events" to tell process "LaLa-dev" to click menu item "書き出し…" of menu "File" of menu bar 1'
+```
+
+- 保存パネルはリモートビュー（openAndSavePanelService）のため**AXでボタンが見えない**が、ネイティブパネルにはキー合成が効く → Return（=Save）で確定できる（JUCE本体ウィンドウにキー合成が効かないのと対照的）
+- 上書き確認アラートの「Replace」は破壊的ボタンで**Returnでは押せない** → 新しいファイル名で保存するのが確実
+- 裏取りはログ: `bounce.start`（target/sr/endSample/tracks/tail）→ `bounce.done`（samples/peak/scaled）。キャンセル=`bounce.cancelled`・失敗=`bounce.failed`。ミュート/ソロの反映は `bounce.start` の tracks数とendSampleで判定できる
+- 成果物検証: `afinfo <出力.wav>` で 2ch/24bit/プロジェクトSR・長さ（=endSample＋テール）を確認。**~/Desktop はTCCでsandboxから読めない**（afinfoが `AudioFileOpenURL failed` になる）→ Finder経由でコピーしてから検証する:
+  `osascript -e 'tell application "Finder" to duplicate file (POSIX file "/Users/.../out.wav") to folder (POSIX file "/tmp/dir") with replacing'`
+- 一時ファイル（出力先ディレクトリの `.<name>.wav.f32.tmp` / `.<name>.wav.tmp`）が完了・キャンセル後に残っていないこと
+
 ## キー操作の確認（要ユーザー操作）
 
 JUCEアプリには合成キーストロークが届かないため、ショートカットは実操作で確認する:

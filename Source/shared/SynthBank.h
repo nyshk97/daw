@@ -20,6 +20,12 @@ public:
 
     std::shared_ptr<SynthInstance> get (juce::uint64 trackId) const;
 
+    // バウンス用: 共有インスタンスとは完全に独立した新規インスタンスを生成して返す
+    // （sync()の管理対象外・呼び出し側が所有）。オフラインレンダリング前提で
+    // setNonRealtime(true) を設定する。失敗時は nullptr（理由は takeCreateErrors() に入る）
+    std::shared_ptr<SynthInstance> createIndependent (int gmProgram, bool drums,
+                                                      double sampleRate, int blockSize);
+
     // 生成失敗のユーザー向けメッセージを取り出す（取り出したら空になる）。
     // 失敗はキャッシュされ再試行されないため、1回の失敗につき1件だけ入る。
     // 呼び出し側（MainComponentのTimer）がダイアログ表示に使う

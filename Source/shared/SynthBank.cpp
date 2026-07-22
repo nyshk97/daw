@@ -75,6 +75,15 @@ std::shared_ptr<SynthInstance> SynthBank::get (juce::uint64 trackId) const
     return it != entries.end() ? it->second.synth : nullptr;
 }
 
+std::shared_ptr<SynthInstance> SynthBank::createIndependent (int gmProgram, bool drums,
+                                                             double sampleRate, int blockSize)
+{
+    auto synth = createSynth (gmProgram, drums, sampleRate, blockSize);
+    if (synth != nullptr && synth->plugin != nullptr)
+        synth->plugin->setNonRealtime (true); // オフラインレンダリング（実時間より速いprocessBlock連打）
+    return synth;
+}
+
 juce::StringArray SynthBank::takeCreateErrors()
 {
     auto errors = std::move (pendingCreateErrors);

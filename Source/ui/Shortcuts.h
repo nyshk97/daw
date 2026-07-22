@@ -46,6 +46,7 @@ enum class ID
     shortcutList,
     // プロジェクト
     save,
+    bounce,
     openChooser,
     audioSettings,
 };
@@ -60,6 +61,12 @@ struct Entry
     const char* keyLabel; // u8リテラル。Mac記号表記（⌘⇧⌥⌃）で固定。レイアウト依存キーが
                           // あるためgetTextDescriptionWithIcons等の自動生成は使わない
     bool (*matcher) (const juce::KeyPress&);
+
+    // ネイティブメニュー（NSMenuのkeyEquivalent）に載せる項目だけが持つKeyPress。
+    // JUCEはApplicationCommandManagerのKeyPressMappings経由でしかkeyEquivalentを
+    // 設定しないため、matcherとは別にKeyPressオブジェクトが要る（単修飾＋1文字の
+    // 単純なキーのみ載せる前提。レイアウト依存キーはメニューに載せない）
+    juce::KeyPress menuKey {};
 };
 
 namespace detail
@@ -201,10 +208,16 @@ inline const Entry table[] = {
     // ---- プロジェクト ----
     { ID::save, Category::project, u8"保存", u8"⌘S",
       [] (const juce::KeyPress& k)
-      { return k == juce::KeyPress ('s', juce::ModifierKeys::commandModifier, 0); } },
+      { return k == juce::KeyPress ('s', juce::ModifierKeys::commandModifier, 0); },
+      juce::KeyPress ('s', juce::ModifierKeys::commandModifier, 0) },
+    { ID::bounce, Category::project, u8"書き出し", u8"⌘B",
+      [] (const juce::KeyPress& k)
+      { return k == juce::KeyPress ('b', juce::ModifierKeys::commandModifier, 0); },
+      juce::KeyPress ('b', juce::ModifierKeys::commandModifier, 0) },
     { ID::openChooser, Category::project, u8"プロジェクトを閉じて選択画面へ", u8"⌘O",
       [] (const juce::KeyPress& k)
-      { return k == juce::KeyPress ('o', juce::ModifierKeys::commandModifier, 0); } },
+      { return k == juce::KeyPress ('o', juce::ModifierKeys::commandModifier, 0); },
+      juce::KeyPress ('o', juce::ModifierKeys::commandModifier, 0) },
     { ID::audioSettings, Category::project, u8"オーディオ設定", u8"⌘,",
       [] (const juce::KeyPress& k)
       { return k == juce::KeyPress (',', juce::ModifierKeys::commandModifier, 0); } },
@@ -226,6 +239,7 @@ inline bool matches (const juce::KeyPress& key, ID id)
 
 inline juce::String name (ID id)     { return juce::String::fromUTF8 (entry (id).name); }
 inline juce::String keyText (ID id)  { return juce::String::fromUTF8 (entry (id).keyLabel); }
+inline juce::KeyPress menuKey (ID id) { return entry (id).menuKey; } // メニュー非掲載項目は無効なKeyPress
 
 // ボタンのホバーツールチップ用: 「録音 (R)」形式
 inline juce::String tooltipText (ID id)
