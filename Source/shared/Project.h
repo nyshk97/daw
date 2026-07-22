@@ -70,6 +70,43 @@ bool splitMidiRegion (const MidiRegion& region, juce::int64 splitPpq, MidiRegion
 
 enum class TrackType { audio, midi };
 
+// セクションマーカー（ルーラー下のラベル帯）。区間方式: 終端は持たず、
+// 次のマーカーの開始（最後は曲末）までが自分の区間。最初のマーカーより前は無ラベル。
+// Project::markers は常に startBar 昇順・同一barなしを保つ（下のヘルパー経由で編集すること）
+enum class SectionType { intro, verse, hook, bridge, outro, other };
+
+struct SectionMarker
+{
+    // 曲頭からの拍数（0始まり・4/4固定で4拍=1小節）。上限なし。
+    // 拍より細かくはしない（セクションは曲構造のラベルであり、2/4小節が挟まる曲の
+    // 「半小節ずれ」に追従できれば十分。1/16等はただの誤操作リスクになる）
+    int startBeats = 0;
+    SectionType type = SectionType::other;
+
+    int bar() const { return startBeats / 4 + 1; }  // 1始まりの小節番号（JSON・ログ表記用）
+    int beat() const { return startBeats % 4; }     // 小節内の拍 0..3
+};
+
+namespace SectionMarkers
+{
+    inline constexpr SectionType allTypes[] = { SectionType::intro,  SectionType::verse,
+                                                SectionType::hook,   SectionType::bridge,
+                                                SectionType::outro,  SectionType::other };
+
+    juce::String typeName (SectionType type);                       // "intro" 等（JSONと表示名の共通ベース）
+    bool typeFromName (const juce::String& name, SectionType& out); // 未知名は false
+
+    // 挿入（同一位置へは種別変更として働く）。昇順を保つ
+    void set (std::vector<SectionMarker>& markers, int startBeats, SectionType type);
+    void removeAt (std::vector<SectionMarker>& markers, int index);
+
+    // index のマーカーを newStartBeats へ動かすときの移動先（隣のマーカーの手前・>=0 にクランプ。適用はしない）
+    int clampStartBeats (const std::vector<SectionMarker>& markers, int index, int newStartBeats);
+
+    // 自動採番済み表示名。同種別が2個以上あるときだけ出現順に verse1, verse2... と番号を付ける
+    juce::String displayName (const std::vector<SectionMarker>& markers, int index);
+}
+
 struct Track
 {
     juce::uint64 id = 0; // プロジェクト内で一意。永続化される。0 = 未採番（読込時に採番）
@@ -96,6 +133,7 @@ public:
     double bpm = 120.0;
     double sampleRate = 0.0; // 0 = 未確定（最初の録音時にデバイスレートで確定）
     std::vector<Track> tracks;
+    std::vector<SectionMarker> markers; // 常にstartBar昇順・同一barなし（SectionMarkersヘルパーで編集する）
 
     juce::String name() const { return directory.getFileName(); }
 

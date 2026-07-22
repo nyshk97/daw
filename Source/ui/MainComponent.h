@@ -48,6 +48,8 @@ private:
     void startRecordingFlow();
     void finishRecording();
     void seekByStep (int direction, bool wholeBar, int keyCode);  // ,/.キー: 1拍（Shiftで1小節）単位で再生ヘッドを移動
+    void seekToSection (int direction, int keyCode);              // ⌥,/.キー: 前/次のセクション頭へ（厳密に前/次の境界）
+    void pauseForKeySeek (int keyCode);  // キーシーク共通: 再生中なら一時停止し、自動再開の監視キーに登録する
     void toggleMuteSelectedTrack();      // mキー
     void toggleMuteSelectedItem();       // Ctrl+M: 選択中のクリップ/リージョンをミュート
     void splitSelectedItemAtPlayhead();  // ⌘T: 選択中のクリップ/リージョンを再生ヘッド位置で分割

@@ -9,7 +9,23 @@
 namespace
 {
 juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
+
+// セクション種別ごとの固定色（ユーザー選択なし）。5種は有彩色、otherは「特定の種別ではない」ことが
+// 一目でわかる無彩色。ダーク背景上で黒文字が読める明度に揃える
+juce::Colour sectionColour (SectionType type)
+{
+    switch (type)
+    {
+        case SectionType::intro:  return juce::Colour (0xffc4813d); // オレンジ
+        case SectionType::verse:  return juce::Colour (0xff5da35f); // 緑
+        case SectionType::hook:   return juce::Colour (0xffc4b04a); // 黄
+        case SectionType::bridge: return juce::Colour (0xff5b87b8); // 青
+        case SectionType::outro:  return juce::Colour (0xffb05a50); // 赤茶
+        case SectionType::other:  return juce::Colour (0xff85858c); // グレー
+    }
+    return juce::Colour (0xff85858c);
 }
+} // namespace
 
 // ---- 内部コンポーネント -------------------------------------------------
 
@@ -89,6 +105,65 @@ public:
     {
         owner.seekFromX (e.x);
     }
+
+    void mouseMagnify (const juce::MouseEvent& e, float scaleFactor) override
+    {
+        owner.zoomAroundContentX ((double) scaleFactor, e.x);
+    }
+
+private:
+    TimelineView& owner;
+};
+
+class TimelineView::MarkerLaneContent : public juce::Component
+{
+public:
+    explicit MarkerLaneContent (TimelineView& o) : owner (o) {}
+
+    void paint (juce::Graphics& g) override
+    {
+        g.fillAll (juce::Colour (0xff242428));
+        const auto clip = g.getClipBounds();
+
+        if (auto* proj = owner.project)
+        {
+            const auto& markers = proj->markers;
+            for (int i = 0; i < (int) markers.size(); ++i)
+            {
+                const int x0 = owner.beatToX (markers[(size_t) i].startBeats);
+                const int x1 = i + 1 < (int) markers.size()
+                                   ? owner.beatToX (markers[(size_t) (i + 1)].startBeats)
+                                   : getWidth(); // 最後のセクションはコンテンツ右端（曲末）まで
+                if (x1 <= clip.getX() || x0 >= clip.getRight())
+                    continue;
+
+                const auto colour = sectionColour (markers[(size_t) i].type);
+                g.setColour (colour);
+                g.fillRect (x0, 1, x1 - x0, getHeight() - 2);
+                g.setColour (colour.brighter (0.5f));
+                g.drawVerticalLine (x0, 1.0f, (float) (getHeight() - 1));
+
+                const int textW = x1 - x0 - 8;
+                if (textW > 16)
+                {
+                    g.setColour (juce::Colours::black.withAlpha (0.75f));
+                    g.setFont (Fonts::mono (11.0f));
+                    g.drawText (SectionMarkers::displayName (markers, i),
+                                x0 + 5, 0, textW, getHeight(), juce::Justification::centredLeft);
+                }
+            }
+        }
+
+        // 再生ヘッド（ルーラー・レーンの縦線と繋がって見えるように同じ白）
+        const int playheadX = owner.sampleToX (owner.transport.playheadSamplePos.load());
+        g.setColour (juce::Colours::white);
+        g.drawVerticalLine (playheadX, 0.0f, (float) getHeight());
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override { owner.handleMarkerLaneMouseDown (e); }
+    void mouseDrag (const juce::MouseEvent& e) override { owner.handleMarkerLaneMouseDrag (e); }
+    void mouseUp (const juce::MouseEvent& e) override { owner.handleMarkerLaneMouseUp (e); }
+    void mouseMove (const juce::MouseEvent& e) override { owner.handleMarkerLaneMouseMove (e); }
 
     void mouseMagnify (const juce::MouseEvent& e, float scaleFactor) override
     {
@@ -312,6 +387,7 @@ TimelineView::TimelineView (TransportState& transportState)
     : transport (transportState)
 {
     ruler = std::make_unique<RulerContent> (*this);
+    markerLane = std::make_unique<MarkerLaneContent> (*this);
     lanes = std::make_unique<LaneContent> (*this);
     viewport = std::make_unique<LaneViewport> (*this);
 
@@ -320,6 +396,7 @@ TimelineView::TimelineView (TransportState& transportState)
 
     addAndMakeVisible (*viewport);
     addAndMakeVisible (*ruler);
+    addAndMakeVisible (*markerLane);
 
     startTimerHz (30); // GOTCHAS.md: 通知はpush型でなくpull型（Timerポーリング）
 }
@@ -346,6 +423,7 @@ void TimelineView::refresh()
     updateContentSize();
     lanes->repaint();
     ruler->repaint();
+    markerLane->repaint();
 }
 
 void TimelineView::clearSelection()
@@ -412,6 +490,7 @@ void TimelineView::zoomAroundContentX (double factor, int contentX)
                                viewport->getViewPositionY());
     lanes->repaint();
     ruler->repaint();
+    markerLane->repaint();
 }
 
 int TimelineView::sampleToX (juce::int64 samplePos) const
@@ -445,9 +524,33 @@ juce::int64 TimelineView::gridPpq() const
     return Ppq::ticksPerBar / gridDivisionsPerBar();
 }
 
+juce::int64 TimelineView::beatStartSample (int beats) const
+{
+    return (juce::int64) std::llround ((double) juce::jmax (0, beats) * barLengthSamples() / 4.0);
+}
+
+int TimelineView::beatToX (int beats) const
+{
+    return (int) std::llround ((double) juce::jmax (0, beats) * pxPerBar / 4.0);
+}
+
+int TimelineView::snapUnitBeats() const
+{
+    // 表示中グリッドと同じ刻みで置けるが、上限は拍（セクションは曲構造のラベルなので
+    // 1/8以下の細かさは誤操作リスクにしかならない）。ズームアウト中は小節頭のまま
+    return 4 / juce::jmin (gridDivisionsPerBar(), 4);
+}
+
+int TimelineView::xToMarkerBeats (int x) const
+{
+    const int unit = snapUnitBeats();
+    const double unitPx = pxPerBar / 4.0 * unit;
+    return juce::jmax (0, (int) std::floor ((double) x / unitPx)) * unit;
+}
+
 void TimelineView::resized()
 {
-    viewport->setBounds (0, rulerHeight, getWidth(), getHeight() - rulerHeight);
+    viewport->setBounds (0, topHeight, getWidth(), getHeight() - topHeight);
     updateContentSize();
     syncScroll();
 }
@@ -478,6 +581,7 @@ void TimelineView::timerCallback()
 
     lanes->repaint();
     ruler->repaint();
+    markerLane->repaint();
 }
 
 void TimelineView::updateContentSize()
@@ -496,6 +600,10 @@ void TimelineView::updateContentSize()
                 maxSample = juce::jmax (maxSample,
                                         (juce::int64) std::llround ((double) (region.startPpq + region.lengthPpq) * spt));
         }
+        // 後方のマーカー（素材より先の小節）もコンテンツ幅に含める（見えない・操作できないを防ぐ）
+        if (! project->markers.empty())
+            maxSample = juce::jmax (maxSample,
+                                    beatStartSample (project->markers.back().startBeats + 4));
     }
     if (transport.recordArmed.load())
         maxSample = juce::jmax (maxSample,
@@ -511,11 +619,14 @@ void TimelineView::updateContentSize()
         lanes->setSize (contentWidth, contentHeight);
     if (contentWidth != ruler->getWidth() || ruler->getHeight() != rulerHeight)
         ruler->setSize (contentWidth, rulerHeight);
+    if (contentWidth != markerLane->getWidth() || markerLane->getHeight() != markerLaneHeight)
+        markerLane->setSize (contentWidth, markerLaneHeight);
 }
 
 void TimelineView::syncScroll()
 {
     ruler->setTopLeftPosition (-viewport->getViewPositionX(), 0);
+    markerLane->setTopLeftPosition (-viewport->getViewPositionX(), rulerHeight);
     if (onVerticalScroll)
         onVerticalScroll (viewport->getViewPositionY());
 }
@@ -959,4 +1070,239 @@ void TimelineView::seekFromX (int x)
     const auto gridIndex = (juce::int64) std::floor ((double) samplePos / gridLen);
     if (onSeek)
         onSeek ((juce::int64) std::llround ((double) gridIndex * gridLen));
+}
+
+// ---- セクションマーカー -------------------------------------------------
+
+int TimelineView::hitTestMarker (int x) const
+{
+    if (project == nullptr)
+        return -1;
+
+    // 区間 = 自分の開始x〜次のマーカーの開始x。最初のマーカーより前は無ラベル（-1）
+    int found = -1;
+    for (int i = 0; i < (int) project->markers.size(); ++i)
+    {
+        if (beatToX (project->markers[(size_t) i].startBeats) > x)
+            break;
+        found = i;
+    }
+    return found;
+}
+
+int TimelineView::hitTestMarkerEdge (int x) const
+{
+    if (project == nullptr)
+        return -1;
+
+    for (int i = 0; i < (int) project->markers.size(); ++i)
+        if (std::abs (x - beatToX (project->markers[(size_t) i].startBeats)) <= 4)
+            return i;
+    return -1;
+}
+
+void TimelineView::handleMarkerLaneMouseDown (const juce::MouseEvent& e)
+{
+    markerDrag = {};
+    if (project == nullptr)
+        return;
+
+    const int hit = hitTestMarker (e.x);
+    if (e.mods.isPopupMenu())
+    {
+        if (hit >= 0)
+            showMarkerMenu (hit, xToMarkerBeats (e.x));
+        else
+            showAddMarkerMenu (xToMarkerBeats (e.x));
+        return;
+    }
+
+    // 境界・本体どちらを掴んでもドラッグで開始位置を移動できる。
+    // 動かさず離したときだけシーク（mouseUpで判定）。空白は追加メニュー
+    const int edge = hitTestMarkerEdge (e.x);
+    const int target = edge >= 0 ? edge : hit;
+    if (target >= 0)
+    {
+        markerDrag.index = target;
+        markerDrag.origStartBeats = project->markers[(size_t) target].startBeats;
+        markerDrag.startX = e.x;
+        markerDrag.fromEdge = edge >= 0;
+        return;
+    }
+    showAddMarkerMenu (xToMarkerBeats (e.x));
+}
+
+void TimelineView::handleMarkerLaneMouseDrag (const juce::MouseEvent& e)
+{
+    if (project == nullptr || markerDrag.index < 0
+        || markerDrag.index >= (int) project->markers.size())
+        return;
+
+    // 境界掴みは最近傍のスナップ位置へ吸着、本体掴みは掴んだ位置からの相対移動。
+    // 刻みは表示グリッド準拠（上限=拍）。どちらも隣のマーカーを越えない範囲にクランプ
+    const int unit = snapUnitBeats();
+    const double unitPx = pxPerBar / 4.0 * unit;
+    const int wantedBeats = markerDrag.fromEdge
+                                ? juce::jmax (0, (int) std::llround ((double) e.x / unitPx)) * unit
+                                : markerDrag.origStartBeats
+                                      + (int) std::llround ((double) (e.x - markerDrag.startX) / unitPx) * unit;
+    const int targetBeats = SectionMarkers::clampStartBeats (project->markers, markerDrag.index, wantedBeats);
+
+    auto& marker = project->markers[(size_t) markerDrag.index];
+    if (targetBeats == marker.startBeats)
+        return;
+
+    if (! markerDrag.edited)
+    {
+        if (onWillEditModel)
+            onWillEditModel();
+        markerDrag.edited = true;
+    }
+    marker.startBeats = targetBeats;
+    markerLane->repaint();
+}
+
+void TimelineView::handleMarkerLaneMouseUp (const juce::MouseEvent&)
+{
+    if (project != nullptr && markerDrag.index >= 0
+        && markerDrag.index < (int) project->markers.size())
+    {
+        if (markerDrag.edited)
+        {
+            const auto& moved = project->markers[(size_t) markerDrag.index];
+            Log::info ("marker.move", "index=" + juce::String (markerDrag.index)
+                                          + " bar=" + juce::String (moved.bar())
+                                          + " beat=" + juce::String (moved.beat()));
+            updateContentSize();
+            if (onModelEdited)
+                onModelEdited();
+        }
+        else
+        {
+            // 動かさず離した＝クリック → セクション頭へシーク（「hookの頭からもう一回」の動線）。
+            // 境界クリックも「境界から始まるセクション」の頭へのシークとして扱う。
+            // 録音中のガードはonSeek側（MainComponent）が行う
+            if (onSeek)
+                onSeek (beatStartSample (project->markers[(size_t) markerDrag.index].startBeats));
+        }
+    }
+    markerDrag = {};
+}
+
+void TimelineView::handleMarkerLaneMouseMove (const juce::MouseEvent& e)
+{
+    markerLane->setMouseCursor (hitTestMarkerEdge (e.x) >= 0
+                                    ? juce::MouseCursor::LeftRightResizeCursor
+                                    : juce::MouseCursor::NormalCursor);
+}
+
+void TimelineView::showAddMarkerMenu (int beats)
+{
+    if (project == nullptr || beats < 0)
+        return;
+
+    juce::PopupMenu menu;
+    for (int i = 0; i < (int) std::size (SectionMarkers::allTypes); ++i)
+        menu.addItem (i + 1, SectionMarkers::typeName (SectionMarkers::allTypes[i]));
+
+    // コールバックは後から呼ばれるためSafePointerで寿命を確認する（showItemMenuと同じ方針）
+    juce::Component::SafePointer<TimelineView> safe (this);
+    menu.showMenuAsync (juce::PopupMenu::Options(),
+                        [safe, beats] (int result)
+                        {
+                            if (safe != nullptr && result > 0)
+                                safe->addMarkerAt (beats, SectionMarkers::allTypes[result - 1]);
+                        });
+}
+
+void TimelineView::showMarkerMenu (int markerIndex, int clickedBeats)
+{
+    if (project == nullptr || markerIndex < 0 || markerIndex >= (int) project->markers.size())
+        return;
+
+    const auto currentType = project->markers[(size_t) markerIndex].type;
+    juce::PopupMenu addSub, typeSub;
+    for (int i = 0; i < (int) std::size (SectionMarkers::allTypes); ++i)
+    {
+        const auto name = SectionMarkers::typeName (SectionMarkers::allTypes[i]);
+        addSub.addItem (100 + i, name);
+        typeSub.addItem (200 + i, name, true, SectionMarkers::allTypes[i] == currentType);
+    }
+
+    // 「ここに追加」= クリック位置の小節頭に境界を1本立てる（既存セクションの分割になる）
+    juce::PopupMenu menu;
+    menu.addSubMenu (jp (u8"ここにセクションを追加"), addSub);
+    menu.addSubMenu (jp (u8"種別を変更"), typeSub);
+    menu.addItem (1, jp (u8"削除"));
+
+    juce::Component::SafePointer<TimelineView> safe (this);
+    menu.showMenuAsync (juce::PopupMenu::Options(),
+                        [safe, markerIndex, clickedBeats] (int result)
+                        {
+                            if (safe == nullptr || result == 0)
+                                return;
+                            if (result == 1)
+                                safe->removeMarker (markerIndex);
+                            else if (result >= 200)
+                                safe->changeMarkerType (markerIndex,
+                                                        SectionMarkers::allTypes[result - 200]);
+                            else if (result >= 100)
+                                safe->addMarkerAt (clickedBeats,
+                                                   SectionMarkers::allTypes[result - 100]);
+                        });
+}
+
+void TimelineView::addMarkerAt (int beats, SectionType type)
+{
+    if (project == nullptr || beats < 0)
+        return;
+    // 同一位置への同種別は完全な変化なし → undo履歴を積まない
+    for (const auto& marker : project->markers)
+        if (marker.startBeats == beats && marker.type == type)
+            return;
+
+    if (onWillEditModel)
+        onWillEditModel();
+    SectionMarkers::set (project->markers, beats, type);
+    Log::info ("marker.add", "bar=" + juce::String (beats / 4 + 1)
+                                 + " beat=" + juce::String (beats % 4)
+                                 + " type=" + SectionMarkers::typeName (type));
+    updateContentSize();
+    if (onModelEdited)
+        onModelEdited();
+    markerLane->repaint();
+}
+
+void TimelineView::changeMarkerType (int index, SectionType type)
+{
+    if (project == nullptr || index < 0 || index >= (int) project->markers.size())
+        return;
+    if (project->markers[(size_t) index].type == type)
+        return;
+
+    if (onWillEditModel)
+        onWillEditModel();
+    project->markers[(size_t) index].type = type;
+    Log::info ("marker.type", "index=" + juce::String (index)
+                                  + " type=" + SectionMarkers::typeName (type));
+    if (onModelEdited)
+        onModelEdited();
+    markerLane->repaint();
+}
+
+void TimelineView::removeMarker (int index)
+{
+    if (project == nullptr || index < 0 || index >= (int) project->markers.size())
+        return;
+
+    if (onWillEditModel)
+        onWillEditModel();
+    Log::info ("marker.remove", "index=" + juce::String (index)
+                                    + " bar=" + juce::String (project->markers[(size_t) index].bar())
+                                    + " beat=" + juce::String (project->markers[(size_t) index].beat()));
+    SectionMarkers::removeAt (project->markers, index);
+    updateContentSize();
+    if (onModelEdited)
+        onModelEdited();
+    markerLane->repaint();
 }

@@ -24,6 +24,7 @@ enum class ID
     record,
     seekBeat,
     seekBar,
+    seekSection,
     // 編集
     undo,
     redo,
@@ -100,6 +101,16 @@ inline const Entry table[] = {
           return detail::noCmdCtrlAlt (k)
               && (tc == '<' || tc == '>'
                   || (k.getModifiers().isShiftDown() && (tc == ',' || tc == '.')));
+      } },
+    { ID::seekSection, Category::transport, u8"前/次のセクションへシーク", u8"⌥, / ⌥.",
+      [] (const juce::KeyPress& k)
+      {
+          // ⌥でtextCharacterは記号（US配列で≤/≥等）に化けるためkeyCodeで判定する
+          // （macのkeyCodeはcharactersIgnoringModifiers由来でShift以外の修飾を無視する）
+          return k.getModifiers().isAltDown()
+              && ! k.getModifiers().testFlags (juce::ModifierKeys::commandModifier
+                                               | juce::ModifierKeys::ctrlModifier)
+              && (k.getKeyCode() == ',' || k.getKeyCode() == '.');
       } },
 
     // ---- 編集 ----

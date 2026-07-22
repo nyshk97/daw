@@ -1,6 +1,7 @@
 #include "Project.h"
 
 #include <algorithm>
+#include <limits>
 #include <map>
 
 namespace
@@ -82,6 +83,82 @@ bool splitMidiRegion (const MidiRegion& region, juce::int64 splitPpq, MidiRegion
         }
     }
     return true;
+}
+
+juce::String SectionMarkers::typeName (SectionType type)
+{
+    switch (type)
+    {
+        case SectionType::intro:  return "intro";
+        case SectionType::verse:  return "verse";
+        case SectionType::hook:   return "hook";
+        case SectionType::bridge: return "bridge";
+        case SectionType::outro:  return "outro";
+        case SectionType::other:  return "other";
+    }
+    return "other";
+}
+
+bool SectionMarkers::typeFromName (const juce::String& name, SectionType& out)
+{
+    for (auto type : allTypes)
+    {
+        if (typeName (type) == name)
+        {
+            out = type;
+            return true;
+        }
+    }
+    return false;
+}
+
+void SectionMarkers::set (std::vector<SectionMarker>& markers, int startBeats, SectionType type)
+{
+    if (startBeats < 0)
+        return;
+
+    const auto pos = std::lower_bound (markers.begin(), markers.end(), startBeats,
+                                       [] (const SectionMarker& m, int beats) { return m.startBeats < beats; });
+    if (pos != markers.end() && pos->startBeats == startBeats)
+        pos->type = type; // 同一位置への追加は種別変更として扱う
+    else
+        markers.insert (pos, { startBeats, type });
+}
+
+void SectionMarkers::removeAt (std::vector<SectionMarker>& markers, int index)
+{
+    if (index >= 0 && index < (int) markers.size())
+        markers.erase (markers.begin() + index);
+}
+
+int SectionMarkers::clampStartBeats (const std::vector<SectionMarker>& markers, int index, int newStartBeats)
+{
+    if (index < 0 || index >= (int) markers.size())
+        return newStartBeats;
+
+    const int lo = index > 0 ? markers[(size_t) (index - 1)].startBeats + 1 : 0;
+    const int hi = index + 1 < (int) markers.size() ? markers[(size_t) (index + 1)].startBeats - 1
+                                                    : std::numeric_limits<int>::max();
+    return juce::jlimit (lo, juce::jmax (lo, hi), newStartBeats);
+}
+
+juce::String SectionMarkers::displayName (const std::vector<SectionMarker>& markers, int index)
+{
+    if (index < 0 || index >= (int) markers.size())
+        return {};
+
+    const auto type = markers[(size_t) index].type;
+    int total = 0, ordinal = 0;
+    for (int i = 0; i < (int) markers.size(); ++i)
+    {
+        if (markers[(size_t) i].type != type)
+            continue;
+        ++total;
+        if (i <= index)
+            ++ordinal;
+    }
+    // Logic式: 同種別が1個だけなら番号なし、2個以上で出現順に採番
+    return total >= 2 ? typeName (type) + juce::String (ordinal) : typeName (type);
 }
 
 juce::File Project::projectsRoot()
@@ -173,6 +250,17 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
         tracksArray.add (juce::var (trackObj));
     }
     root->setProperty ("tracks", tracksArray);
+
+    juce::Array<juce::var> markersArray;
+    for (auto& marker : markers)
+    {
+        auto* markerObj = new juce::DynamicObject();
+        markerObj->setProperty ("bar", marker.bar());
+        markerObj->setProperty ("beat", marker.beat());
+        markerObj->setProperty ("type", SectionMarkers::typeName (marker.type));
+        markersArray.add (juce::var (markerObj));
+    }
+    root->setProperty ("markers", markersArray);
 
     const auto jsonFile = directory.getChildFile ("project.json");
     if (! jsonFile.replaceWithText (juce::JSON::toString (juce::var (root))))
@@ -333,6 +421,40 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
                 }
             }
             project->tracks.push_back (std::move (track));
+        }
+    }
+
+    // セクションマーカー。不正値（bar < 1・beat範囲外・未知type・重複位置）は警告付きで捨てる。
+    // barの上限は設けない（後方のマーカーはタイムラインのコンテンツ幅を伸ばして表示する）。
+    // beat は省略可（旧形式=小節頭のみのプロジェクトは beat 0 として読む）
+    if (auto* markersArray = parsed.getProperty ("markers", {}).getArray())
+    {
+        for (auto& markerVar : *markersArray)
+        {
+            if (! markerVar.isObject())
+                continue;
+
+            const int bar = (int) markerVar.getProperty ("bar", 0);
+            const int beat = (int) markerVar.getProperty ("beat", 0);
+            const auto typeStr = markerVar.getProperty ("type", "").toString();
+            SectionType type;
+            if (bar < 1 || beat < 0 || beat > 3 || ! SectionMarkers::typeFromName (typeStr, type))
+            {
+                warnings.add (jp (u8"不正なマーカーをスキップしました: bar=") + juce::String (bar)
+                              + " beat=" + juce::String (beat) + " type=" + typeStr);
+                continue;
+            }
+            const int startBeats = (bar - 1) * 4 + beat;
+            const bool duplicate = std::any_of (project->markers.begin(), project->markers.end(),
+                                                [startBeats] (const SectionMarker& m)
+                                                { return m.startBeats == startBeats; });
+            if (duplicate)
+            {
+                warnings.add (jp (u8"同じ位置のマーカーが重複しているためスキップしました: bar=")
+                              + juce::String (bar) + " beat=" + juce::String (beat));
+                continue;
+            }
+            SectionMarkers::set (project->markers, startBeats, type); // 昇順はsetが保つ
         }
     }
 

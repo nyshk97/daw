@@ -886,6 +886,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         seekByStep (direction, is (SC::seekBar), key.getKeyCode());
         return true;
     }
+    // ⌥,/. = 前/次のセクション頭へシーク（textCharacterは⌥で記号に化けるのでkeyCodeで方向判定）
+    if (is (SC::seekSection))
+    {
+        seekToSection (key.getKeyCode() == ',' ? -1 : 1, key.getKeyCode());
+        return true;
+    }
     if (is (SC::muteTrack))
     {
         toggleMuteSelectedTrack();
@@ -899,12 +905,9 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     return false;
 }
 
-void MainComponent::seekByStep (int direction, bool wholeBar, int keyCode)
+// 再生中のキーシークは一時停止し、キー入力が止まってから自動再開する（シーク戻しと再生進行が同時に走るのを防ぐ）
+void MainComponent::pauseForKeySeek (int keyCode)
 {
-    if (engine.isRecording())
-        return;
-
-    // 再生中のシークは一時停止し、キー入力が止まってから自動再開する（シーク戻しと再生進行が同時に走るのを防ぐ）
     if (transport.isPlaying.load())
     {
         engine.stop();
@@ -920,6 +923,14 @@ void MainComponent::seekByStep (int direction, bool wholeBar, int keyCode)
         if (! known && numSeekKeyCodes < maxSeekKeyCodes)
             seekKeyCodes[numSeekKeyCodes++] = keyCode;
     }
+}
+
+void MainComponent::seekByStep (int direction, bool wholeBar, int keyCode)
+{
+    if (engine.isRecording())
+        return;
+
+    pauseForKeySeek (keyCode);
 
     const double stepLen = timeline.barLengthSamples() / (wholeBar ? 1.0 : 4.0);
     const auto pos = juce::jmax ((juce::int64) 0, transport.playheadSamplePos.load());
@@ -941,6 +952,40 @@ void MainComponent::seekByStep (int direction, bool wholeBar, int keyCode)
     const auto target = (juce::int64) std::llround ((double) step * stepLen);
     transport.seekRequest.store (target);
     playStartSample = target; // シーク先が新しい戻り先になる（自動再開後の停止でもここへ戻る）
+}
+
+void MainComponent::seekToSection (int direction, int keyCode)
+{
+    if (engine.isRecording() || project->markers.empty())
+        return;
+
+    // 前=厳密に前の境界、次=厳密に次の境界。境界ちょうどに居るときも1つ進む/戻る（1拍/1小節シークと同じ流儀）
+    const auto pos = juce::jmax ((juce::int64) 0, transport.playheadSamplePos.load());
+    juce::int64 target = -1;
+    for (const auto& marker : project->markers)
+    {
+        const auto sample = timeline.beatStartSample (marker.startBeats);
+        if (direction > 0)
+        {
+            if (sample > pos)
+            {
+                target = sample;
+                break;
+            }
+        }
+        else
+        {
+            if (sample >= pos)
+                break;
+            target = sample;
+        }
+    }
+    if (target < 0)
+        return; // 前/次のセクションがなければno-op
+
+    pauseForKeySeek (keyCode);
+    transport.seekRequest.store (target);
+    playStartSample = target;
 }
 
 void MainComponent::toggleMuteSelectedTrack()
@@ -1073,7 +1118,7 @@ void MainComponent::resized()
 
     // ＋ボタンの帯はヘッダー列の中だけに置く（全幅に取るとタイムライン下に死にスペースができる）
     auto headerColumn = area.removeFromLeft (TrackHeadersView::preferredWidth);
-    headerColumn.removeFromTop (TimelineView::rulerHeight); // ルーラー分の高さを合わせる
+    headerColumn.removeFromTop (TimelineView::topHeight); // ルーラー＋マーカーレーン分の高さを合わせる
     addTrackButton.setBounds (headerColumn.removeFromBottom (32).reduced (8, 4));
     headers.setBounds (headerColumn);
     timeline.setBounds (area);

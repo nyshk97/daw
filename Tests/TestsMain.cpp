@@ -585,6 +585,114 @@ void testSplitMidiRegion()
     expect (! splitMidiRegion (region, 0, unused1, unused2), "範囲外はno-op");
 }
 
+// ---- セクションマーカー: ヘルパー・保存/読込ラウンドトリップ・不正値除外 ----
+void testSectionMarkers()
+{
+    beginTest ("section markers");
+
+    // set は昇順を保ち、同一位置への追加は種別変更として働く（位置は曲頭からの拍数・4拍=1小節）
+    std::vector<SectionMarker> markers;
+    SectionMarkers::set (markers, 32, SectionType::verse);   // bar 9
+    SectionMarkers::set (markers, 0, SectionType::intro);    // bar 1
+    SectionMarkers::set (markers, 64, SectionType::hook);    // bar 17
+    expect (markers.size() == 3, "3個追加されること");
+    expect (markers[0].startBeats == 0 && markers[1].startBeats == 32 && markers[2].startBeats == 64,
+            "startBeats昇順を保つこと");
+    expect (markers[1].bar() == 9 && markers[1].beat() == 0, "bar/beat換算が正しいこと");
+    SectionMarkers::set (markers, 32, SectionType::bridge);
+    expect (markers.size() == 3 && markers[1].type == SectionType::bridge,
+            "同一位置へのsetは種別変更になること");
+
+    // 自動採番: 1個だけなら番号なし、2個以上で出現順
+    SectionMarkers::set (markers, 32, SectionType::verse); // 戻す
+    SectionMarkers::set (markers, 96, SectionType::verse); // bar 25
+    expect (SectionMarkers::displayName (markers, 0) == "intro", "1個だけの種別は番号なし");
+    expect (SectionMarkers::displayName (markers, 1) == "verse1", "2個以上は出現順に採番(1)");
+    expect (SectionMarkers::displayName (markers, 3) == "verse2", "2個以上は出現順に採番(2)");
+    SectionMarkers::removeAt (markers, 1); // verse1を削除 → 残りが繰り上がる
+    expect (SectionMarkers::displayName (markers, 2) == "verse", "1個に戻ったら番号が消えること");
+
+    // clampStartBeats: 隣のマーカーの手前・>=0にクランプ（適用はしない）
+    // markers = [0:intro, 64:hook, 96:verse]
+    expect (SectionMarkers::clampStartBeats (markers, 1, 120) == 95, "次のマーカーの手前まで");
+    expect (SectionMarkers::clampStartBeats (markers, 1, 0) == 1, "前のマーカーの直後まで");
+    expect (SectionMarkers::clampStartBeats (markers, 0, -5) == 0, "先頭は曲頭まで");
+    expect (SectionMarkers::clampStartBeats (markers, 2, 9999) == 9999, "最後のマーカーは上限なし");
+
+    // 全6種＋拍オフセット付きの保存→読込ラウンドトリップ
+    const auto dir = makeTempDir();
+    juce::String error;
+    auto project = Project::createNew (dir.getChildFile ("proj"), error);
+    expect (project != nullptr, "createNewできること");
+    if (project == nullptr)
+        { dir.deleteRecursively(); return; }
+
+    int beats = 0;
+    for (auto type : SectionMarkers::allTypes)
+        SectionMarkers::set (project->markers, beats += 32, type);
+    SectionMarkers::set (project->markers, 34, SectionType::other); // bar 9 beat 2（拍オフセット）
+    expect (project->save (error), "マーカー付きで保存できること");
+
+    juce::StringArray warnings;
+    auto reloaded = Project::load (project->directory, warnings, error);
+    expect (reloaded != nullptr && warnings.isEmpty(), "警告なく再読込できること");
+    if (reloaded != nullptr)
+    {
+        expect (reloaded->markers.size() == 7, "全6種＋拍オフセットが読み戻せること");
+        for (size_t i = 0; i < reloaded->markers.size(); ++i)
+        {
+            expect (reloaded->markers[i].startBeats == project->markers[i].startBeats,
+                    "startBeats（bar+beat）が維持されること");
+            expect (reloaded->markers[i].type == project->markers[i].type,
+                    "typeが維持されること");
+        }
+    }
+    dir.deleteRecursively();
+}
+
+void testSectionMarkersInvalidLoad()
+{
+    beginTest ("section markers invalid load");
+    const auto dir = makeTempDir();
+
+    // bar 0・beat範囲外・未知type・重複位置 は警告付きで捨てる。
+    // beat省略=0（旧形式）、同barでもbeat違いは別位置、bar 999（上限なし）は残す
+    const char* json = R"({
+        "version": 3, "bpm": 120.0, "sampleRate": 44100.0, "tracks": [],
+        "markers": [
+            { "bar": 0, "type": "intro" },
+            { "bar": 5, "type": "chorus" },
+            { "bar": 9, "type": "verse" },
+            { "bar": 9, "type": "hook" },
+            { "bar": 9, "beat": 2, "type": "bridge" },
+            { "bar": 2, "beat": 4, "type": "intro" },
+            { "bar": 2, "beat": -1, "type": "intro" },
+            { "bar": 999, "type": "outro" }
+        ]
+    })";
+    dir.getChildFile ("project.json").replaceWithText (json);
+
+    juce::StringArray warnings;
+    juce::String error;
+    auto project = Project::load (dir, warnings, error);
+    expect (project != nullptr, "読込自体は成功すること");
+    if (project == nullptr)
+        { dir.deleteRecursively(); return; }
+
+    expect (warnings.size() == 5, "不正マーカー5件の警告が出ること");
+    expect (project->markers.size() == 3, "有効なマーカーだけ残ること");
+    if (project->markers.size() == 3)
+    {
+        expect (project->markers[0].startBeats == 32 && project->markers[0].type == SectionType::verse,
+                "重複位置は先勝ちであること（beat省略=0）");
+        expect (project->markers[1].startBeats == 34 && project->markers[1].type == SectionType::bridge,
+                "同barでもbeat違いは別位置として残ること");
+        expect (project->markers[2].startBeats == 3992 && project->markers[2].type == SectionType::outro,
+                "barの上限がないこと");
+    }
+    dir.deleteRecursively();
+}
+
 // ---- UndoStack: 構造編集の巻き戻し・ミキサー値の非対象・WAV GC保護 ----
 void testUndoStack()
 {
@@ -627,6 +735,37 @@ void testUndoStack()
     undo.undo (project);
     expect (project.tracks.size() == 2, "構造は戻ること");
     expect (project.tracks[0].params->mute.load(), "ミキサー値はundoで巻き戻らないこと");
+
+    // セクションマーカーの追加/種別変更/移動/削除のundo/redo
+    undo.begin (project);
+    SectionMarkers::set (project.markers, 0, SectionType::intro);
+    expect (undo.undo (project) && project.markers.empty(), "マーカー追加をundoできること");
+    expect (undo.redo (project) && project.markers.size() == 1, "マーカー追加をredoできること");
+
+    undo.begin (project);
+    SectionMarkers::set (project.markers, 0, SectionType::verse); // 同一位置 = 種別変更
+    undo.undo (project);
+    expect (project.markers.size() == 1 && project.markers[0].type == SectionType::intro,
+            "種別変更をundoできること");
+
+    undo.begin (project);
+    project.markers[0].startBeats = 18; // 移動（クランプ済みの値を直接書くUI側の操作と同じ）
+    undo.undo (project);
+    expect (project.markers[0].startBeats == 0, "移動をundoできること");
+
+    undo.begin (project);
+    SectionMarkers::removeAt (project.markers, 0);
+    expect (undo.undo (project) && project.markers.size() == 1, "削除をundoできること");
+
+    // マーカーを含むスナップショット化後もトラック編集のundoが維持されること（markersは巻き戻らない）
+    undo.begin (project);
+    Track third;
+    third.id = 4;
+    project.tracks.push_back (std::move (third));
+    undo.undo (project);
+    expect (project.tracks.size() == 2, "トラック編集undoが維持されること");
+    expect (project.markers.size() == 1 && project.markers[0].type == SectionType::intro,
+            "トラック編集undoでマーカーが壊れないこと");
 }
 
 void testSaveGcProtectsUndoWavs()
@@ -1174,6 +1313,8 @@ int main()
     testEngineReadsClipOffsets();
     testSplitClip();
     testSplitMidiRegion();
+    testSectionMarkers();
+    testSectionMarkersInvalidLoad();
     testUndoStack();
     testSaveGcProtectsUndoWavs();
     testBuildSnapshotFlattensNotes();

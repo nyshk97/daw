@@ -33,6 +33,8 @@ public:
     static constexpr double maxPxPerBar = 640.0;  // 1/16音符グリッドが40px間隔になる上限
     static constexpr int trackHeight = 84;        // ヘッダの3行レイアウト（名前/M・S・音量/楽器）に合わせる
     static constexpr int rulerHeight = 26;
+    static constexpr int markerLaneHeight = 18;   // ルーラー直下のセクションマーカー帯
+    static constexpr int topHeight = rulerHeight + markerLaneHeight; // レーン上端（ヘッダ側の高さ合わせ用）
 
     explicit TimelineView (TransportState& transportState);
     ~TimelineView() override;
@@ -78,11 +80,19 @@ public:
     juce::int64 xToPpq (int x) const;
     juce::int64 gridPpq() const;                     // 表示中の最小グリッドのPPQ幅
 
+    // 拍（曲頭から0始まり・4/4固定）⇔ サンプル・ピクセル。セクションマーカーの描画・追加・
+    // シークは必ずここを経由する（1始まり小節との換算を呼び出し側に書かせない）
+    juce::int64 beatStartSample (int beats) const;
+    int beatToX (int beats) const;
+    int snapUnitBeats() const;                       // マーカーのスナップ刻み（表示グリッド準拠・上限=拍）: 4/2/1拍
+    int xToMarkerBeats (int x) const;                // xを含むスナップ枠の頭の拍位置（floor）。>= 0
+
     void resized() override;
     void paint (juce::Graphics& g) override;
 
 private:
     class RulerContent;
+    class MarkerLaneContent;
     class LaneContent;
     class LaneViewport;
 
@@ -100,6 +110,19 @@ private:
     int hitTestRegion (int trackIndex, int x) const; // 見つからなければ-1（重なりは後勝ち）
     int hitTestClip (int trackIndex, int x) const;   // 同上（オーディオトラック用）
     void showItemMenu (int trackIndex, int itemIndex); // 右クリックメニュー（ミュート/複製/削除）
+
+    // セクションマーカー（マーカーレーンの操作。モデル編集は SectionMarkers ヘルパー経由）
+    int hitTestMarker (int x) const;                 // xが属するマーカー区間のindex（最初のマーカーより前は-1）
+    int hitTestMarkerEdge (int x) const;             // 開始境界±4pxのマーカーindex。なければ-1
+    void handleMarkerLaneMouseDown (const juce::MouseEvent& e);
+    void handleMarkerLaneMouseDrag (const juce::MouseEvent& e);
+    void handleMarkerLaneMouseUp (const juce::MouseEvent& e);
+    void handleMarkerLaneMouseMove (const juce::MouseEvent& e);
+    void showAddMarkerMenu (int beats);              // 空白クリック: 6種から選んで追加
+    void showMarkerMenu (int markerIndex, int clickedBeats); // 既存マーカー右クリック: 追加(=分割)/種別変更/削除
+    void addMarkerAt (int beats, SectionType type);
+    void changeMarkerType (int index, SectionType type);
+    void removeMarker (int index);
 
     TransportState& transport;
     Project* project = nullptr;
@@ -123,7 +146,20 @@ private:
     };
     RegionDrag regionDrag;
 
+    // マーカーのドラッグ状態。本体ドラッグ＝開始位置の相対移動、クリック（動かさず離す）＝セクション頭へシーク。
+    // 最初に実際へ動いた時点で onWillEditModel を一度だけ呼ぶ（RegionDragと同じ方針）
+    struct MarkerDrag
+    {
+        int index = -1;
+        int origStartBeats = 0;
+        int startX = 0;
+        bool fromEdge = false;   // 境界を掴んだ（吸着移動。本体は相対移動）
+        bool edited = false;
+    };
+    MarkerDrag markerDrag;
+
     std::unique_ptr<RulerContent> ruler;
+    std::unique_ptr<MarkerLaneContent> markerLane;
     std::unique_ptr<LaneViewport> viewport;
     std::unique_ptr<LaneContent> lanes;
 
