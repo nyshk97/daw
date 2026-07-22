@@ -30,6 +30,8 @@ LaLa（旧名 daw）の更新履歴。形式は [Keep a Changelog](https://keepa
 ---
 
 ## [Unreleased]
+
+## [0.3.0] - 2026-07-22
 ### ✨ Added
 - ミキサーを追加（`X` で表示/非表示。トラックごとの Pan・音量・M/S・send 3種、Reverb A / Reverb B / Delay バスと Master のフェーダー・メーター。FX 本体は今後追加予定で、バスは当面素通しのため send を上げると原音が重なって音量が上がる）
 - WAV 書き出し（バウンス）を追加（`File > 書き出し…` / `⌘B`。聞こえているままをステレオ 24bit WAV へ書き出し）
