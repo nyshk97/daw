@@ -15,12 +15,17 @@ class TrackHeaderComponent : public juce::Component
 public:
     TrackHeaderComponent();
 
-    void bind (Track* trackToBind, bool isSelected); // rebuild/選択変更時に呼ぶ
+    void bind (Track* trackToBind, bool isSelected, bool anySolo); // rebuild/選択変更時に呼ぶ
 
     // 30Hz Timerから。減衰・スライダー再描画を行う。peakLevel の exchange(0) は
     // MainComponent が一元的に行い、読み取り済みの値が渡ってくる
     // （ミキサーと2箇所でexchangeするとピークを取り合うため）
     void updateMeter (float incoming);
+
+    // 30Hz Timerから。ミキサー・キー操作等どの経路のミュート/ソロ変更もpull型で拾い、
+    // M/S点灯とグレーアウト表示を同期する（変化がなければ何もしない）。
+    // anySolo はプロジェクト全体のソロ有無（他トラックのソロで自分が実質ミュートになるため外から渡す）
+    void syncStateVisual (bool anySolo);
 
     std::function<void()> onSelect;
     std::function<void()> onDeleteClicked; // 右クリックメニューの「トラックを削除」
@@ -36,9 +41,11 @@ private:
     static constexpr int iconSlotWidth = 20; // トラック名の左のトラック種別アイコン領域
 
     juce::Rectangle<float> typeIconArea() const;
+    void applyDimVisual (bool dimmed); // 名前・アイコン・音量・楽器を減光（M/Sボタンは操作の主役なので沈めない）
 
     Track* track = nullptr;
     bool selected = false;
+    bool dimmedVisual = false; // グレーアウト表示中か＝聞こえない状態（ミュート or 他トラックのソロ）。paintのアイコン減光にも使う
     float meterDisplay = 0.0f; // メーターの表示値（読み取り値とディケイのmax）
 
     juce::Label nameLabel;
@@ -77,6 +84,7 @@ public:
 
 private:
     void refreshBindings();
+    bool anySoloActive() const; // どれかのトラックがソロ中か（減光判定用）
 
     Project* project = nullptr;
     int selectedTrack = 0;

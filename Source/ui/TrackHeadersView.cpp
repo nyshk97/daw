@@ -47,6 +47,8 @@ TrackHeaderComponent::TrackHeaderComponent()
     muteButton.setColour (juce::TextButton::buttonOnColourId, Theme::muteOn);
     soloButton.setColour (juce::TextButton::buttonOnColourId, Theme::soloOn);
 
+    // 減光表示の更新はここではしない（ソロは他トラックの表示にも効くため、
+    // 全ヘッダ共通の30Hz pull（syncStateVisual）に一本化。遅延は最大1周期で知覚できない）
     muteButton.onClick = [this]
     {
         if (track != nullptr)
@@ -105,17 +107,20 @@ TrackHeaderComponent::TrackHeaderComponent()
     }
 }
 
-void TrackHeaderComponent::bind (Track* trackToBind, bool isSelected)
+void TrackHeaderComponent::bind (Track* trackToBind, bool isSelected, bool anySolo)
 {
     track = trackToBind;
     selected = isSelected;
 
     if (track != nullptr)
     {
+        const bool mute = track->params->mute.load();
+        const bool solo = track->params->solo.load();
         nameLabel.setText (track->name, juce::dontSendNotification);
         nameLabel.setFont (Fonts::forText (Fonts::body(), track->name));
-        muteButton.setToggleState (track->params->mute.load(), juce::dontSendNotification);
-        soloButton.setToggleState (track->params->solo.load(), juce::dontSendNotification);
+        muteButton.setToggleState (mute, juce::dontSendNotification);
+        soloButton.setToggleState (solo, juce::dontSendNotification);
+        applyDimVisual (mute || (anySolo && ! solo));
         volumeSlider.setValue (track->params->gain.load(), juce::dontSendNotification);
 
         instrumentBox.setVisible (track->type == TrackType::midi);
@@ -159,6 +164,33 @@ void TrackHeaderComponent::updateMeter (float incoming)
     volumeSlider.repaint();
 }
 
+void TrackHeaderComponent::applyDimVisual (bool dimmed)
+{
+    dimmedVisual = dimmed;
+    const float alpha = dimmed ? 0.35f : 1.0f;
+    nameLabel.setAlpha (alpha);
+    volumeSlider.setAlpha (alpha);
+    instrumentBox.setAlpha (alpha);
+    repaint(); // 種別アイコン（paintで描く）の減光
+}
+
+void TrackHeaderComponent::syncStateVisual (bool anySolo)
+{
+    if (track == nullptr)
+        return;
+    const bool mute = track->params->mute.load();
+    const bool solo = track->params->solo.load();
+    if (muteButton.getToggleState() != mute)
+        muteButton.setToggleState (mute, juce::dontSendNotification);
+    if (soloButton.getToggleState() != solo)
+        soloButton.setToggleState (solo, juce::dontSendNotification);
+
+    // 減光＝聞こえないトラック（可聴判定は再生エンジンと同じ式）
+    const bool dimmed = mute || (anySolo && ! solo);
+    if (dimmed != dimmedVisual)
+        applyDimVisual (dimmed);
+}
+
 void TrackHeaderComponent::paint (juce::Graphics& g)
 {
     g.fillAll (selected ? Theme::headerSelectedBg : Theme::headerBg);
@@ -172,7 +204,7 @@ void TrackHeaderComponent::paint (juce::Graphics& g)
 
     if (track != nullptr)
     {
-        g.setColour (juce::Colours::white.withAlpha (0.65f));
+        g.setColour (juce::Colours::white.withAlpha (dimmedVisual ? 0.25f : 0.65f));
         if (track->type == TrackType::midi)
             TrackIcons::drawKeyboard (g, typeIconArea());
         else
@@ -276,8 +308,12 @@ void TrackHeadersView::refreshValues()
 
 void TrackHeadersView::updateMeters (const std::vector<float>& peaks)
 {
+    const bool anySolo = anySoloActive();
     for (int i = 0; i < (int) items.size(); ++i)
+    {
         items[(size_t) i]->updateMeter (i < (int) peaks.size() ? peaks[(size_t) i] : 0.0f);
+        items[(size_t) i]->syncStateVisual (anySolo);
+    }
 }
 
 void TrackHeadersView::setSelectedTrack (int index)
@@ -290,8 +326,19 @@ void TrackHeadersView::refreshBindings()
 {
     if (project == nullptr)
         return;
+    const bool anySolo = anySoloActive();
     for (int i = 0; i < (int) items.size() && i < (int) project->tracks.size(); ++i)
-        items[(size_t) i]->bind (&project->tracks[(size_t) i], i == selectedTrack);
+        items[(size_t) i]->bind (&project->tracks[(size_t) i], i == selectedTrack, anySolo);
+}
+
+bool TrackHeadersView::anySoloActive() const
+{
+    if (project == nullptr)
+        return false;
+    for (auto& t : project->tracks)
+        if (t.params->solo.load())
+            return true;
+    return false;
 }
 
 void TrackHeadersView::setViewY (int y)

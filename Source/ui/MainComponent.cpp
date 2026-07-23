@@ -1369,6 +1369,11 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         toggleMuteSelectedTrack();
         return true;
     }
+    if (is (SC::toggleSolo))
+    {
+        toggleSoloTracks();
+        return true;
+    }
     if (is (SC::record))
     {
         toggleRecord();
@@ -1469,6 +1474,58 @@ void MainComponent::toggleMuteSelectedTrack()
     params.mute.store (! params.mute.load());
     headers.refreshValues();
     mixerOverlay.sync (selectedTrack); // ミキサー表示中のmキーでもM点灯を同期する
+    setDirty (true);
+}
+
+void MainComponent::toggleSoloTracks()
+{
+    // Logic準拠のsキー: どれかがソロ中なら全解除（構成をlastSoloIdsに記憶）、
+    // ソロなしなら直近の構成を再適用。記憶が現存トラックに1本も残っていなければ選択トラックをソロにする
+    std::vector<juce::uint64> active;
+    for (auto& track : project->tracks)
+        if (track.params->solo.load())
+            active.push_back (track.id);
+
+    if (! active.empty())
+    {
+        lastSoloIds = active;
+        for (auto& track : project->tracks)
+            track.params->solo.store (false);
+        Log::info ("track.solo_all_off", "remembered=" + juce::String ((int) active.size()));
+    }
+    else
+    {
+        auto isRemembered = [this] (juce::uint64 id)
+        {
+            for (auto rememberedId : lastSoloIds)
+                if (rememberedId == id)
+                    return true;
+            return false;
+        };
+
+        int applied = 0;
+        for (auto& track : project->tracks)
+        {
+            if (isRemembered (track.id))
+            {
+                track.params->solo.store (true);
+                ++applied;
+            }
+        }
+        if (applied == 0)
+        {
+            if (selectedTrack < 0 || selectedTrack >= (int) project->tracks.size())
+                return;
+            auto& track = project->tracks[(size_t) selectedTrack];
+            track.params->solo.store (true);
+            lastSoloIds = { track.id };
+            applied = 1;
+        }
+        Log::info ("track.solo_on", "tracks=" + juce::String (applied));
+    }
+
+    headers.refreshValues();
+    mixerOverlay.sync (selectedTrack); // ミキサー表示中のsキーでもS点灯を同期する（全ストリップ再バインド）
     setDirty (true);
 }
 

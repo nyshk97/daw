@@ -244,6 +244,10 @@ public:
         }
 
         // クリップ（オーディオ）とMIDIリージョン
+        bool anySolo = false;
+        for (auto& t : proj->tracks)
+            anySolo = anySolo || t.params->solo.load();
+
         for (int t = 0; t < numTracks; ++t)
         {
             const int y = t * trackHeight;
@@ -251,12 +255,16 @@ public:
                 continue;
 
             auto& track = proj->tracks[(size_t) t];
+            // 聞こえないトラック（ミュート中・他トラックのソロで実質ミュート）は
+            // リージョン単位のミュートと同じグレー減光で描く（可聴判定は再生エンジンと同じ式）
+            const auto& params = *track.params;
+            const bool trackDimmed = params.mute.load() || (anySolo && ! params.solo.load());
             if (track.type == TrackType::audio)
             {
                 for (int ci = 0; ci < (int) track.clips.size(); ++ci)
                 {
                     const bool isSelected = (owner.selection.track == t && owner.selection.clip == ci);
-                    drawClip (g, track.clips[(size_t) ci], y, isSelected, clip);
+                    drawClip (g, track.clips[(size_t) ci], y, isSelected, clip, trackDimmed);
                 }
             }
             else
@@ -265,7 +273,7 @@ public:
                 {
                     const bool isSelected = (owner.regionSelection.track == t
                                              && owner.regionSelection.region == ri);
-                    drawMidiRegion (g, track.midiRegions[(size_t) ri], y, isSelected, clip);
+                    drawMidiRegion (g, track.midiRegions[(size_t) ri], y, isSelected, clip, trackDimmed);
                 }
             }
         }
@@ -321,7 +329,7 @@ public:
 
 private:
     void drawClip (juce::Graphics& g, const Clip& clip, int y, bool isSelected,
-                   const juce::Rectangle<int>& clipRegion)
+                   const juce::Rectangle<int>& clipRegion, bool trackDimmed)
     {
         const double spp = owner.samplesPerPixel();
         const int x = owner.sampleToX (clip.startSample);
@@ -330,9 +338,10 @@ private:
             return;
 
         const auto rect = juce::Rectangle<int> (x, y + 4, w, trackHeight - 8);
-        // ミュート中はグレー減光（Logic準拠）
-        g.setColour (clip.muted ? (isSelected ? Theme::clipMutedSelected : Theme::clipMuted)
-                                : (isSelected ? Theme::accent : Theme::clipAudio));
+        // ミュート中（リージョン単位 or トラック単位・ソロ含む）はグレー減光（Logic準拠）
+        const bool dimmed = clip.muted || trackDimmed;
+        g.setColour (dimmed ? (isSelected ? Theme::clipMutedSelected : Theme::clipMuted)
+                            : (isSelected ? Theme::accent : Theme::clipAudio));
         g.fillRoundedRectangle (rect.toFloat(), 4.0f);
         // 上端1pxの微かなハイライトで面の上面を作る（Logicのリージョンと同じ。強くしない）
         g.setColour (juce::Colours::white.withAlpha (0.08f));
@@ -344,7 +353,7 @@ private:
         }
 
         // 波形（ロード時に作ったピークキャッシュから描く）
-        g.setColour (juce::Colours::white.withAlpha (clip.muted ? 0.3f : 0.75f));
+        g.setColour (juce::Colours::white.withAlpha (dimmed ? 0.3f : 0.75f));
         const int x0 = juce::jmax (rect.getX(), clipRegion.getX());
         const int x1 = juce::jmin (rect.getRight(), clipRegion.getRight());
         const float midY = (float) rect.getCentreY();
@@ -367,7 +376,7 @@ private:
     }
 
     void drawMidiRegion (juce::Graphics& g, const MidiRegion& region, int y, bool isSelected,
-                         const juce::Rectangle<int>& clipRegion)
+                         const juce::Rectangle<int>& clipRegion, bool trackDimmed)
     {
         const int x = owner.ppqToX (region.startPpq);
         const int w = juce::jmax (2, owner.ppqToX (region.startPpq + region.lengthPpq) - x);
@@ -375,9 +384,10 @@ private:
             return;
 
         const auto rect = juce::Rectangle<int> (x, y + 4, w, trackHeight - 8);
-        // ミュート中はグレー減光（Logic準拠）
-        g.setColour (region.muted ? (isSelected ? Theme::clipMutedSelected : Theme::clipMuted)
-                                  : (isSelected ? Theme::regionMidiSelected : Theme::regionMidi));
+        // ミュート中（リージョン単位 or トラック単位・ソロ含む）はグレー減光（Logic準拠）
+        const bool dimmed = region.muted || trackDimmed;
+        g.setColour (dimmed ? (isSelected ? Theme::clipMutedSelected : Theme::clipMuted)
+                            : (isSelected ? Theme::regionMidiSelected : Theme::regionMidi));
         g.fillRoundedRectangle (rect.toFloat(), 4.0f);
         // 上端1pxの微かなハイライトで面の上面を作る（Logicのリージョンと同じ。強くしない）
         g.setColour (juce::Colours::white.withAlpha (0.08f));
@@ -389,7 +399,7 @@ private:
         }
 
         // ノートのミニチュア（ピッチ範囲 C1..C7 に射影。範囲外はクランプ）
-        g.setColour (juce::Colours::white.withAlpha (region.muted ? 0.3f : 0.8f));
+        g.setColour (juce::Colours::white.withAlpha (dimmed ? 0.3f : 0.8f));
         constexpr int loPitch = 24, hiPitch = 96;
         const auto inner = rect.reduced (1, 3);
         const double tickW = (double) w / (double) juce::jmax ((juce::int64) 1, region.lengthPpq);
@@ -592,10 +602,14 @@ void TimelineView::timerCallback()
 {
     const auto playhead = transport.playheadSamplePos.load();
     const bool active = transport.isPlaying.load() || transport.recordArmed.load();
-    if (playhead == lastPaintedPlayhead && ! active)
+    // トラックの減光表示（ミュート・ソロ）は、ヘッダ・ミキサー・m/sキーの
+    // どの経路で変わってもここで拾う（pull型）
+    const auto dimMask = trackDimMask();
+    if (playhead == lastPaintedPlayhead && dimMask == lastPaintedTrackDimMask && ! active)
         return;
 
     lastPaintedPlayhead = playhead;
+    lastPaintedTrackDimMask = dimMask;
     updateContentSize();
 
     // 再生ヘッドが見切れたら追従スクロール
@@ -610,6 +624,27 @@ void TimelineView::timerCallback()
     lanes->repaint();
     ruler->repaint();
     markerLane->repaint();
+}
+
+juce::uint64 TimelineView::trackDimMask() const
+{
+    // 描画に効く「行の減光状態」（ミュート＋他トラックのソロによる実質ミュート）を
+    // ビット列化する。トラック数は〜50想定（CLAUDE.md）なのでuint64で足りる
+    if (project == nullptr)
+        return 0;
+
+    bool anySolo = false;
+    for (auto& t : project->tracks)
+        anySolo = anySolo || t.params->solo.load();
+
+    juce::uint64 mask = 0;
+    for (size_t i = 0; i < project->tracks.size(); ++i)
+    {
+        const auto& params = *project->tracks[i].params;
+        if (params.mute.load() || (anySolo && ! params.solo.load()))
+            mask |= (juce::uint64) 1 << (i % 64);
+    }
+    return mask;
 }
 
 void TimelineView::updateContentSize()

@@ -97,6 +97,7 @@ private:
     class LaneViewport;
 
     void timerCallback() override;
+    juce::uint64 trackDimMask() const;               // 各トラック行の減光状態（変更検知用。ミュート＋ソロ由来）
     int gridDivisionsPerBar() const;
     void zoomAroundContentX (double factor, int contentX);
     void updateContentSize();
@@ -164,6 +165,7 @@ private:
     std::unique_ptr<LaneContent> lanes;
 
     juce::int64 lastPaintedPlayhead = -1;
+    juce::uint64 lastPaintedTrackDimMask = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TimelineView)
 };

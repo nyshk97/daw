@@ -36,6 +36,7 @@ enum class ID
     addMidiTrack,
     deleteTrack,
     muteTrack,
+    toggleSolo,
     // ピアノロール（表示中のみ有効。有効条件はkeyPressed側が持つ）
     noteSemitone,
     noteOctave,
@@ -168,6 +169,10 @@ inline const Entry table[] = {
     { ID::muteTrack, Category::track, u8"選択トラックをミュート", u8"M",
       [] (const juce::KeyPress& k)
       { return detail::noCmdCtrlAlt (k) && k.getTextCharacter() == 'm'; } },
+    // Logic準拠: ソロ中なら全解除、ソロなしなら直近のソロ構成を再適用（無ければ選択トラック）
+    { ID::toggleSolo, Category::track, u8"ソロを入/切（直近のソロ構成）", u8"S",
+      [] (const juce::KeyPress& k)
+      { return detail::noCmdCtrlAlt (k) && k.getTextCharacter() == 's'; } },
 
     // ---- ピアノロール ----
     { ID::noteSemitone, Category::pianoRoll, u8"ノートを半音上/下", u8"↑ / ↓",

@@ -63,6 +63,7 @@ private:
     void seekToSection (int direction, int keyCode);              // ⌥,/.キー: 前/次のセクション頭へ（厳密に前/次の境界）
     void pauseForKeySeek (int keyCode);  // キーシーク共通: 再生中なら一時停止し、自動再開の監視キーに登録する
     void toggleMuteSelectedTrack();      // mキー
+    void toggleSoloTracks();             // sキー: ソロ中なら全解除、なければ直近のソロ構成を再適用
     void toggleMuteSelectedItem();       // Ctrl+M: 選択中のクリップ/リージョンをミュート
     void splitSelectedItemAtPlayhead();  // ⌘T: 選択中のクリップ/リージョンを再生ヘッド位置で分割
     void requestDeleteSelectedClip();    // 選択を読んで requestDeleteClipAt に渡す薄いラッパー
@@ -155,6 +156,7 @@ private:
 
     int selectedTrack = -1;
     bool dirty = false;
+    std::vector<juce::uint64> lastSoloIds; // sキーで解除したソロ構成（トラックID）。次のsで再適用する。セッション内のみ保持
     bool focusGrabbed = false;
 
     // ミキサーオーバーレイが覆う領域（ヘッダー＋タイムライン。上部バーと下部パネルは覆わない）。
