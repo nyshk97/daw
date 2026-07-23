@@ -80,6 +80,7 @@ private:
     void performUndo();
     void performRedo();
     void afterHistoryRestore();          // undo/redo後のUI・スナップショット同期
+    void resetTrackPeakHolds();          // トラック構造変更時（削除・並び替え・undo等）に呼ぶ
     void openPianoRoll (int trackIndex, int regionIndex);
     void closePianoRoll();
     void toggleFxEditor();               // Iキー（左のFXパネル）
@@ -167,6 +168,12 @@ private:
     // メーター値の配布用（timerCallbackで毎tick詰め直す。peakL/peakRのexchange(0)は
     // ヘッダー・ミキサー・FXパネルで取り合わないようここで一元的に行う）
     std::vector<StereoPeak> meterPeaks;
+    // ミキサー・FXパネルのdB数値表示用の配布（maxSincePlayは再生開始エッジでリセットし蓄積。
+    // 表示側でなくここで蓄積するのは、ミキサー非表示中に鳴った分を取りこぼさないため）
+    std::vector<MeterFeed> meterFeeds;
+    MeterFeed busFeeds[numSendBuses];
+    MeterFeed masterFeed;
+    bool meterWasPlaying = false;
 
     // 再生中の ,/. シークは一時停止し、キーが離れて少し経ってから自動再開する（timerCallbackで判定）。
     // 押下継続の判定は文字でなくkeyPressedで受けたキーコードで行う（非US配列で<>に化けても追跡できるように）。

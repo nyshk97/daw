@@ -22,7 +22,7 @@ public:
     explicit MixerStrip (Kind kindToUse);
 
     void bind (const juce::String& name, std::shared_ptr<TrackParams> paramsToBind, bool isSelected);
-    void updateMeter (StereoPeak incoming); // 30Hz。表示更新（MixerOverlayが集約値を配る。減衰はStereoMeter側）
+    void updateMeter (const MeterFeed& feed); // 30Hz。表示更新（MixerOverlayが集約値を配る。減衰はStereoMeter側）
 
     std::function<void()> onSelect;  // ストリップクリック（トラックのみ配線される）
     std::function<void()> onChanged; // 値変更（dirtyマーク用）
@@ -39,9 +39,11 @@ private:
     juce::String stripName;
     bool selected = false;
     bool panDragging = false;                     // ドラッグ中はラベルをライブ値表示にする
+    float peakMaxDisplay = 0.0f;                  // 再生開始からの最大ピーク（dB数値表示用）
 
     juce::Rectangle<int> nameArea;
     juce::Rectangle<int> panLabelArea;
+    juce::Rectangle<int> readoutArea;             // dB数値ボックスのペア（設定値・ピーク）
 
     SendKnob sendKnobs[numSendBuses] { SendKnob (0), SendKnob (1), SendKnob (2) }; // トラックのみ
     juce::Slider panKnob;                 // トラックのみ
@@ -85,10 +87,10 @@ public:
     // 表示値のみrebind（FXエディタ側でのsend変更を反映する）
     void refreshValues() { sync (selectedTrack); }
 
-    // メーター値の配布（30Hz）。peakL/peakR の exchange(0) は MainComponent が一元的に行い、
-    // ここへは読み取り済みの値が渡ってくる（2箇所でexchangeするとピークを取り合うため）
-    void updateMeters (const std::vector<StereoPeak>& trackPeaks,
-                       const StereoPeak (&busPeaks)[numSendBuses], StereoPeak masterPeak);
+    // メーター値の配布（30Hz）。peakL/peakR の exchange(0) と maxSincePlay の蓄積・リセットは
+    // MainComponent が一元的に行い、ここへは読み取り済みの値が渡ってくる
+    void updateMeters (const std::vector<MeterFeed>& trackFeeds,
+                       const MeterFeed (&busFeeds)[numSendBuses], const MeterFeed& masterFeed);
 
     std::function<void (int)> onSelectTrack;
     std::function<void (int)> onSelectBus; // バスストリップクリック（FXエディタの表示切替）

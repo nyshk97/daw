@@ -307,19 +307,43 @@ void MainComponent::timerCallback()
 
     // メーター消費の一元化: peakL/peakR の exchange(0) はここでだけ行い、読み取った値を
     // ヘッダー・ミキサー・FXパネルへ配る（複数箇所でexchangeするとピークを取り合う）
+    const bool playingNow = transport.isPlaying.load();
+    if (playingNow && ! meterWasPlaying) // 再生開始でピーク保持をリセット（Logicの数値表示と同じ）
+    {
+        for (auto& feed : meterFeeds)
+            feed.maxSincePlay = 0.0f;
+        for (auto& feed : busFeeds)
+            feed.maxSincePlay = 0.0f;
+        masterFeed.maxSincePlay = 0.0f;
+    }
+    meterWasPlaying = playingNow;
+
     meterPeaks.resize (project->tracks.size());
+    meterFeeds.resize (project->tracks.size());
     for (size_t i = 0; i < project->tracks.size(); ++i)
-        meterPeaks[i] = { project->tracks[i].params->peakL.exchange (0.0f),
-                          project->tracks[i].params->peakR.exchange (0.0f) };
-    StereoPeak busPeaks[numSendBuses];
+    {
+        const StereoPeak p { project->tracks[i].params->peakL.exchange (0.0f),
+                             project->tracks[i].params->peakR.exchange (0.0f) };
+        meterPeaks[i] = p;
+        meterFeeds[i].peak = p;
+        meterFeeds[i].maxSincePlay = juce::jmax (meterFeeds[i].maxSincePlay, p[0], p[1]);
+    }
     for (int b = 0; b < numSendBuses; ++b)
-        busPeaks[b] = { project->busParams[b]->peakL.exchange (0.0f),
-                        project->busParams[b]->peakR.exchange (0.0f) };
-    const StereoPeak masterPeak { project->masterParams->peakL.exchange (0.0f),
-                                  project->masterParams->peakR.exchange (0.0f) };
+    {
+        const StereoPeak p { project->busParams[b]->peakL.exchange (0.0f),
+                             project->busParams[b]->peakR.exchange (0.0f) };
+        busFeeds[b].peak = p;
+        busFeeds[b].maxSincePlay = juce::jmax (busFeeds[b].maxSincePlay, p[0], p[1]);
+    }
+    {
+        const StereoPeak p { project->masterParams->peakL.exchange (0.0f),
+                             project->masterParams->peakR.exchange (0.0f) };
+        masterFeed.peak = p;
+        masterFeed.maxSincePlay = juce::jmax (masterFeed.maxSincePlay, p[0], p[1]);
+    }
     headers.updateMeters (meterPeaks);
-    mixerOverlay.updateMeters (meterPeaks, busPeaks, masterPeak);
-    fxEditor.updateMeters (meterPeaks, busPeaks, masterPeak);
+    mixerOverlay.updateMeters (meterFeeds, busFeeds, masterFeed);
+    fxEditor.updateMeters (meterFeeds, busFeeds, masterFeed);
 
     updateLcdTime();
     updateTransportButtons();
@@ -639,6 +663,7 @@ void MainComponent::requestDeleteTrack (int index)
             Log::info ("track.delete", "name=" + project->tracks[(size_t) index].name);
             undoStack.begin (*project);
             project->tracks.erase (project->tracks.begin() + index);
+            resetTrackPeakHolds();
             timeline.clearSelection();
             headers.rebuild();
             selectTrack (juce::jmin (index, (int) project->tracks.size() - 1));
@@ -679,6 +704,7 @@ void MainComponent::reorderTrack (int from, int to)
         std::rotate (tracks.begin() + from, tracks.begin() + from + 1, tracks.begin() + to);
     else
         std::rotate (tracks.begin() + to, tracks.begin() + from, tracks.begin() + from + 1);
+    resetTrackPeakHolds();
 
     const auto indexOfId = [this] (juce::uint64 id) -> int
     {
@@ -783,8 +809,17 @@ void MainComponent::performRedo()
     }
 }
 
+// ピーク保持（dB数値表示）はトラックindexに紐づくため、構造変更（削除・並び替え・undo/redo）で
+// 別トラックの値を引き継いでしまう。表示専用の値なので全リセットが最も単純で安全
+void MainComponent::resetTrackPeakHolds()
+{
+    for (auto& feed : meterFeeds)
+        feed.maxSincePlay = 0.0f;
+}
+
 void MainComponent::afterHistoryRestore()
 {
+    resetTrackPeakHolds();
     timeline.clearSelection();
     headers.rebuild();
     selectTrack (selectedTrack); // 範囲内にクランプし直す

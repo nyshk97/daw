@@ -69,6 +69,10 @@ TrackHeaderComponent::TrackHeaderComponent()
     volumeSlider.setRange (0.0, 1.0);
     volumeSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     volumeSlider.setDoubleClickReturnValue (true, 0.8);
+    // ドラッグ中だけdB値のポップアップを出す（Logicのヘルプタグ相当。ヘッダーに常設の数値は置かない）
+    volumeSlider.textFromValueFunction = [] (double v)
+    { return Meters::dbText ((float) v) + " dB"; };
+    volumeSlider.setPopupDisplayEnabled (true, false, nullptr);
     volumeSlider.onValueChange = [this]
     {
         if (track != nullptr)

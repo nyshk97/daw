@@ -51,6 +51,7 @@ MixerStrip::MixerStrip (Kind kindToUse) : kind (kindToUse)
     {
         if (params != nullptr)
             params->gain.store ((float) fader.getValue());
+        repaint (readoutArea); // 設定値dBの表示を追従させる
         if (onChanged)
             onChanged();
     };
@@ -131,9 +132,14 @@ void MixerStrip::bind (const juce::String& name, std::shared_ptr<TrackParams> pa
     repaint();
 }
 
-void MixerStrip::updateMeter (StereoPeak incoming)
+void MixerStrip::updateMeter (const MeterFeed& feed)
 {
-    meter.update (incoming);
+    meter.update (feed.peak);
+    if (! juce::approximatelyEqual (feed.maxSincePlay, peakMaxDisplay))
+    {
+        peakMaxDisplay = feed.maxSincePlay;
+        repaint (readoutArea);
+    }
 }
 
 void MixerStrip::paint (juce::Graphics& g)
@@ -158,6 +164,10 @@ void MixerStrip::paint (juce::Graphics& g)
         g.setColour (juce::Colours::white.withAlpha (panDragging || amount >= 1 ? 0.8f : 0.45f));
         g.drawText (panText, panLabelArea, juce::Justification::centred);
     }
+
+    // dB数値（左=フェーダー設定値、右=再生開始からのピーク保持）
+    if (params != nullptr && ! readoutArea.isEmpty())
+        Meters::drawDbReadout (g, readoutArea, params->gain.load(), peakMaxDisplay);
 
     // 名前（下端）
     g.setColour (juce::Colours::white.withAlpha (kind == Kind::track ? 0.9f : 0.7f));
@@ -203,6 +213,10 @@ void MixerStrip::resized()
         panLabelArea = area.removeFromTop (12);
         area.removeFromTop (4);
     }
+
+    // dB数値の行（左=設定値、右=ピーク。Logicのストリップと同じくフェーダーの上）
+    readoutArea = area.removeFromTop (16);
+    area.removeFromTop (4);
 
     // フェーダー（目盛り込み）＋L/Rメーター（dB数字込み）。残り全部の高さ。
     // Logicのストリップと同じ分離配置
@@ -289,17 +303,17 @@ void MixerOverlay::rebuildTrackStrips()
     }
 }
 
-void MixerOverlay::updateMeters (const std::vector<StereoPeak>& trackPeaks,
-                                 const StereoPeak (&busPeaks)[numSendBuses], StereoPeak masterPeak)
+void MixerOverlay::updateMeters (const std::vector<MeterFeed>& trackFeeds,
+                                 const MeterFeed (&busFeeds)[numSendBuses], const MeterFeed& masterFeed)
 {
     if (! isVisible())
         return;
     for (int i = 0; i < (int) trackStrips.size(); ++i)
-        trackStrips[(size_t) i]->updateMeter (i < (int) trackPeaks.size() ? trackPeaks[(size_t) i]
-                                                                          : StereoPeak { 0.0f, 0.0f });
+        trackStrips[(size_t) i]->updateMeter (i < (int) trackFeeds.size() ? trackFeeds[(size_t) i]
+                                                                          : MeterFeed());
     for (int b = 0; b < numSendBuses; ++b)
-        busStrips[b].updateMeter (busPeaks[b]);
-    masterStrip.updateMeter (masterPeak);
+        busStrips[b].updateMeter (busFeeds[b]);
+    masterStrip.updateMeter (masterFeed);
 }
 
 juce::Rectangle<int> MixerOverlay::panelBounds() const

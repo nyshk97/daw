@@ -49,10 +49,10 @@ public:
     juce::String targetKey() const;           // "track" / "bus0".."bus2" / "master"（詳細の追従判定用）
     void setActiveSlot (int slot);            // 詳細を開いているスロットのハイライト（-1=なし）
 
-    // メーター値の配布（30Hz）。peakL/peakR の exchange(0) は MainComponent が一元的に行い、
-    // ここへは読み取り済みの値が渡ってくる。表示対象（トラック/バス/Master）のぶんだけ使う
-    void updateMeters (const std::vector<StereoPeak>& trackPeaks,
-                       const StereoPeak (&busPeaks)[numSendBuses], StereoPeak masterPeak);
+    // メーター値の配布（30Hz）。peakL/peakR の exchange(0) と maxSincePlay の蓄積・リセットは
+    // MainComponent が一元的に行う。表示対象（トラック/バス/Master）のぶんだけ使う
+    void updateMeters (const std::vector<MeterFeed>& trackFeeds,
+                       const MeterFeed (&busFeeds)[numSendBuses], const MeterFeed& masterFeed);
 
     std::function<void (int)> onSlotClicked;  // グレーアウト以外のスロットのクリック
     std::function<void()> onCloseRequested;   // ✕ボタン
@@ -89,8 +89,10 @@ private:
         bool grayed = false;
     };
     std::vector<Slot> slots;
-    juce::Rectangle<int> sendsArea;  // Sends区画（見出し＋ノブ。トラックのみ）
-    juce::Rectangle<int> volumeArea; // Volume区画（見出し＋フェーダー/メーター。全チャンネル共通）
+    juce::Rectangle<int> sendsArea;         // Sends区画（見出し＋ノブ。トラックのみ）
+    juce::Rectangle<int> volumeArea;        // Volume区画（見出し＋フェーダー/メーター。全チャンネル共通）
+    juce::Rectangle<int> volumeReadoutArea; // dB数値ボックスのペア（設定値・ピーク）
+    float peakMaxDisplay = 0.0f;            // 再生開始からの最大ピーク（dB数値表示用）
 
     juce::TextButton closeButton { juce::String::fromUTF8 (u8"×") };
     juce::Slider volumeSlider;   // Logicのチャンネルストリップと同じ「フェーダー＋メーター分離」配置

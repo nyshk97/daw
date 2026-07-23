@@ -63,6 +63,7 @@ FxEditorView::FxEditorView()
     {
         if (auto params = targetParams())
             params->gain.store ((float) volumeSlider.getValue());
+        repaint (volumeReadoutArea); // 設定値dBの表示を追従させる
         if (onVolumeChanged)
             onVolumeChanged();
     };
@@ -139,21 +140,29 @@ void FxEditorView::refreshValues()
         volumeSlider.setValue (params->gain.load(), juce::dontSendNotification);
 }
 
-void FxEditorView::updateMeters (const std::vector<StereoPeak>& trackPeaks,
-                                 const StereoPeak (&busPeaks)[numSendBuses], StereoPeak masterPeak)
+void FxEditorView::updateMeters (const std::vector<MeterFeed>& trackFeeds,
+                                 const MeterFeed (&busFeeds)[numSendBuses], const MeterFeed& masterFeed)
 {
     if (! isVisible() || ! meter.isVisible())
         return;
+
+    static const MeterFeed silent;
+    const MeterFeed* feed = &silent;
     switch (target)
     {
         case Target::track:
-            meter.update (targetTrack >= 0 && targetTrack < (int) trackPeaks.size()
-                              ? trackPeaks[(size_t) targetTrack]
-                              : StereoPeak { 0.0f, 0.0f });
+            if (targetTrack >= 0 && targetTrack < (int) trackFeeds.size())
+                feed = &trackFeeds[(size_t) targetTrack];
             break;
-        case Target::bus:    meter.update (busPeaks[targetBus]); break;
-        case Target::master: meter.update (masterPeak); break;
+        case Target::bus:    feed = &busFeeds[targetBus]; break;
+        case Target::master: feed = &masterFeed; break;
         case Target::none:   break;
+    }
+    meter.update (feed->peak);
+    if (! juce::approximatelyEqual (feed->maxSincePlay, peakMaxDisplay))
+    {
+        peakMaxDisplay = feed->maxSincePlay;
+        repaint (volumeReadoutArea);
     }
 }
 
@@ -292,6 +301,9 @@ void FxEditorView::resized()
     volumeArea = area;
     auto volBody = volumeArea.withTrimmedTop (sendsHeaderHeight);
     volBody.removeFromBottom (12);
+    // dB数値の行（左=設定値、右=ピーク。Logicのストリップと同じくフェーダーの上）
+    volumeReadoutArea = volBody.removeFromTop (16).withSizeKeepingCentre (84, 16);
+    volBody.removeFromTop (6);
     const int faderW = 38;
     const int meterW = 26;
     auto pair = volBody.withSizeKeepingCentre (faderW + 2 + meterW, volBody.getHeight());
@@ -343,13 +355,15 @@ void FxEditorView::paint (juce::Graphics& g)
                     juce::Justification::centredLeft);
     }
 
-    // Volume区画の見出し
+    // Volume区画の見出し＋dB数値（左=フェーダー設定値、右=再生開始からのピーク保持）
     if (volumeSlider.isVisible() && ! volumeArea.isEmpty())
     {
         g.setColour (juce::Colours::white.withAlpha (0.45f));
         g.setFont (Fonts::small());
         g.drawText ("VOLUME", volumeArea.withHeight (sendsHeaderHeight).withTrimmedLeft (10),
                     juce::Justification::centredLeft);
+        if (auto params = targetParams())
+            Meters::drawDbReadout (g, volumeReadoutArea, params->gain.load(), peakMaxDisplay);
     }
 }
 

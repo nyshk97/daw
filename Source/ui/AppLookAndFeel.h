@@ -25,6 +25,9 @@ public:
         // メニュー背景は透明にして自前の角丸パネルを描く（非opaqueなウィンドウになり角丸の外が抜ける。
         // juce_PopupMenu.cppのMenuWindowがこの色のisOpaque()でウィンドウの不透明化を決めている）
         setColour (juce::PopupMenu::backgroundColourId, juce::Colours::transparentBlack);
+        // スライダーのドラッグ中ポップアップ（音量のdB表示）はツールチップと同じ配色にする
+        setColour (juce::BubbleComponent::backgroundColourId, Theme::popupBg);
+        setColour (juce::BubbleComponent::outlineColourId, Theme::popupBorder);
     }
 
     // JUCEデフォルトのコントロールフォント（高さ連動で最大16px）はmacOS標準の13pxより
@@ -38,6 +41,7 @@ public:
     }
     juce::Font getComboBoxFont (juce::ComboBox&) override          { return Fonts::body(); }
     juce::Font getPopupMenuFont() override                         { return Fonts::body(); }
+    juce::Font getSliderPopupFont (juce::Slider&) override         { return Fonts::small(); }
 
     // デフォルトのツールチップは13px boldで、日本語（ヒラギノ太字）だと主張が強すぎる。
     // 11px regular（Fonts::small）・PopupMenu系と同じ配色のパネルで控えめに描き直す。

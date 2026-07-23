@@ -25,6 +25,14 @@ inline float norm (float level)
     return juce::jlimit (0.0f, 1.0f, (20.0f * std::log10 (level) + 60.0f) / 60.0f);
 }
 
+// ゲイン・ピーク（リニア振幅）のdB表示文字列（小数1桁。0は-∞）
+inline juce::String dbText (float linear)
+{
+    if (linear <= 0.0001f)
+        return juce::String::fromUTF8 (u8"-∞");
+    return juce::String (20.0f * std::log10 (linear), 1);
+}
+
 // レベル色のグラデーション（lowEnd = -60dB端, hotEnd = 0dBFS端）。
 // スケール位置に固定して張り、レベルが上がると先端の色が緑→黄→赤に変わる
 inline juce::ColourGradient gradient (juce::Point<float> lowEnd, juce::Point<float> hotEnd)
@@ -70,7 +78,36 @@ struct ChannelDisplay
         return changed;
     }
 };
+// dB数値ボックスのペア（左=フェーダー設定値・白、右=再生開始からのピーク保持・緑/クリップは赤）。
+// Logicのチャンネルストリップの数値表示に合わせる。ピークは音が来るまで空欄
+inline void drawDbReadout (juce::Graphics& g, juce::Rectangle<int> area,
+                           float gain, float peakMax)
+{
+    auto gainBox = area.removeFromLeft ((area.getWidth() - 4) / 2);
+    area.removeFromLeft (4);
+    g.setColour (Theme::lcdBg);
+    g.fillRoundedRectangle (gainBox.toFloat(), 3.0f);
+    g.fillRoundedRectangle (area.toFloat(), 3.0f);
+
+    g.setFont (Fonts::small().withHeight (10.0f));
+    g.setColour (juce::Colours::white.withAlpha (0.85f));
+    g.drawText (dbText (gain), gainBox, juce::Justification::centred);
+    if (peakMax > 0.0001f)
+    {
+        g.setColour (peakMax > 1.0f ? Theme::recordRed : Theme::playGreen);
+        g.drawText (dbText (peakMax), area, juce::Justification::centred);
+    }
+}
 } // namespace Meters
+
+// ミキサー・FXパネルへの30Hz配布用: 瞬時ピーク（レーン用）＋再生開始からの最大値（dB数値表示用）。
+// maxSincePlay の蓄積と再生開始エッジでのリセットは MainComponent が一元的に行う
+// （表示側で蓄積すると、非表示中に鳴った分を取りこぼすため）
+struct MeterFeed
+{
+    StereoPeak peak { 0.0f, 0.0f };
+    float maxSincePlay = 0.0f;
+};
 
 // 縦型のL/R 2レーンメーター（Logicのチャンネルストリップのメーター相当）。
 // スケールは下端=-60dB..上端=0dBFSの固定で、フェーダー位置とは独立。
