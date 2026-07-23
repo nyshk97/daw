@@ -5,7 +5,6 @@
 #include <vector>
 #include <juce_gui_basics/juce_gui_basics.h>
 
-#include "SendKnob.h"
 #include "StereoMeter.h"
 #include "../shared/Project.h"
 
@@ -15,11 +14,12 @@
 //   バス     = [Reverb] / [Delay]、Master = [Limiter]（サムネイル・Sends・Panなし）
 // スロットはLogic風のピル（ON=青・OFF=グレー）。hoverで「電源｜エディタ」の2分割に変わり、
 // 電源=ON/OFFトグル・エディタ側クリックで下部詳細（FxDetailView）が開く（Logicのフローティングの代替）。
+// SendsもLogicの行スタイル（バス名ピル＋右に小ノブ。ピルはsend>0で点灯、ノブのドラッグ中はポップアップで送り量0〜100）。
 // トラックヘッダーのさらに左に置かれ、ピアノロール（下部）とは独立。
 class FxEditorView : public juce::Component
 {
 public:
-    static constexpr int preferredWidth = 232;
+    static constexpr int preferredWidth = 156;
 
     FxEditorView();
 
@@ -94,7 +94,8 @@ private:
     };
     std::vector<Slot> slots;
     juce::Rectangle<int> eqThumbArea;       // EQサムネイル（トラックのみ。クリック=EQスロットのエディタを開く）
-    juce::Rectangle<int> sendsArea;         // Sends区画（見出し＋ノブ。トラックのみ）
+    juce::Rectangle<int> sendsArea;         // Sends区画（見出し＋行。トラックのみ）
+    juce::Rectangle<int> sendPills[numSendBuses]; // 各行のバス名ピル（paintが描く。send>0で点灯）
     juce::Rectangle<int> volumeReadoutArea; // dB数値ボックスのペア（設定値・ピーク。Panノブの下）
     float peakMaxDisplay = 0.0f;            // 再生開始からの最大ピーク（dB数値表示用）
 
@@ -110,7 +111,7 @@ private:
     juce::Slider volumeSlider;   // Logicのチャンネルストリップと同じ「フェーダー＋メーター分離」配置
     juce::Slider panKnob;        // トラックのみ（Logic風の物理ノブ描画はAppLookAndFeel::drawLogicPanKnob）
     StereoMeter meter;
-    SendKnob sendKnobs[numSendBuses] { SendKnob (0), SendKnob (1), SendKnob (2) }; // トラックのみ
+    juce::Slider sendKnobs[numSendBuses]; // トラックのみ（行右端の小ノブ。ミキサーのSendKnobとは別UI）
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FxEditorView)
 };

@@ -11,7 +11,9 @@ constexpr int thumbHeight = 44;
 constexpr int slotHeight = 22;
 constexpr int slotGap = 4;
 constexpr int sendsHeaderHeight = 20;
-constexpr int sendsKnobRowHeight = 36 + SendKnob::labelHeight;
+constexpr int sendRowHeight = 22;  // バス名ピル＋小ノブの行（Logicのsendスロット相当）
+constexpr int sendRowGap = 4;
+constexpr int sendKnobSize = 20;
 constexpr int panKnobSize = 46;
 
 // 電源アイコン（円弧＋上の縦線）。areaの中心に描く
@@ -50,10 +52,27 @@ FxEditorView::FxEditorView()
     closeButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white.withAlpha (0.55f));
     closeButton.onClick = [this] { if (onCloseRequested) onCloseRequested(); };
 
-    for (auto& knob : sendKnobs)
+    // Sendsの小ノブ（Logicのsendポット風: 緑の値アーク。ドラッグ中は送り量0〜100のポップアップ）
+    for (int b = 0; b < numSendBuses; ++b)
     {
+        auto& knob = sendKnobs[b];
         addChildComponent (knob);
-        knob.onChanged = [this] { if (onSendOrPanChanged) onSendOrPanChanged(); };
+        knob.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        knob.setRange (0.0, 1.0);
+        knob.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        knob.setDoubleClickReturnValue (true, 0.0);
+        knob.setColour (juce::Slider::rotarySliderFillColourId, Theme::sendArcGreen);
+        knob.setColour (juce::Slider::rotarySliderOutlineColourId, Theme::controlBg);
+        knob.textFromValueFunction = [] (double v) { return juce::String (juce::roundToInt (v * 100.0)); };
+        knob.setPopupDisplayEnabled (true, false, this);
+        knob.onValueChange = [this, b]
+        {
+            if (auto params = targetParams())
+                params->sends[b].store ((float) sendKnobs[b].getValue());
+            repaint (sendsArea); // ピルの点灯（send>0）を追従させる
+            if (onSendOrPanChanged)
+                onSendOrPanChanged();
+        };
     }
 
     // Panノブ（Logicのストリップと同じ「Sendsの下・フェーダーの上」。描画はAppLookAndFeel）
@@ -86,9 +105,10 @@ FxEditorView::FxEditorView()
             onVolumeChanged();
     };
 
-    // Space（再生/停止）を奪わせない（SendKnobは自前で設定済み）
+    // Space（再生/停止）を奪わせない
     for (auto* c : std::initializer_list<juce::Component*> { &closeButton, &panKnob,
-                                                            &volumeSlider })
+                                                            &volumeSlider, &sendKnobs[0],
+                                                            &sendKnobs[1], &sendKnobs[2] })
     {
         c->setWantsKeyboardFocus (false);
         c->setMouseClickGrabsKeyboardFocus (false);
@@ -152,13 +172,14 @@ void FxEditorView::refreshValues()
 {
     if (! isVisible())
         return;
-    for (auto& knob : sendKnobs)
-        knob.refreshValue();
     if (auto params = targetParams())
     {
+        for (int b = 0; b < numSendBuses; ++b)
+            sendKnobs[b].setValue (params->sends[b].load(), juce::dontSendNotification);
         volumeSlider.setValue (params->gain.load(), juce::dontSendNotification);
         panKnob.setValue (params->pan.load(), juce::dontSendNotification);
     }
+    repaint (sendsArea); // ピルの点灯（send>0）もミキサー側の変更に追従させる
 }
 
 void FxEditorView::updateMeters (const std::vector<MeterFeed>& trackFeeds,
@@ -271,8 +292,8 @@ void FxEditorView::rebind()
 
     if (isTrack)
     {
-        for (auto& knob : sendKnobs)
-            knob.bind (params);
+        for (int b = 0; b < numSendBuses; ++b)
+            sendKnobs[b].setValue (params->sends[b].load(), juce::dontSendNotification);
         panKnob.setValue (params->pan.load(), juce::dontSendNotification);
     }
 
@@ -316,14 +337,21 @@ void FxEditorView::resized()
         addSlot ("Comp");
         addSlot ("Ext", true); // スライス6まで操作不可（空きスロット表示）
 
-        // Sends区画（見出し＋ノブ行）
+        // Sends区画（見出し＋「バス名ピル｜小ノブ」の行×3。Logicのsendスロット相当）
         area.removeFromTop (10);
-        sendsArea = area.removeFromTop (sendsHeaderHeight + sendsKnobRowHeight + 10);
-        auto knobRow = sendsArea.withTrimmedTop (sendsHeaderHeight).reduced (8, 0)
-                           .removeFromTop (sendsKnobRowHeight);
-        const int knobW = knobRow.getWidth() / numSendBuses;
-        for (auto& knob : sendKnobs)
-            knob.setBounds (knobRow.removeFromLeft (knobW));
+        sendsArea = area.removeFromTop (sendsHeaderHeight
+                                        + numSendBuses * sendRowHeight
+                                        + (numSendBuses - 1) * sendRowGap + 10);
+        auto rows = sendsArea.withTrimmedTop (sendsHeaderHeight);
+        for (int b = 0; b < numSendBuses; ++b)
+        {
+            auto row = rows.removeFromTop (sendRowHeight);
+            sendKnobs[b].setBounds (row.removeFromRight (sendKnobSize)
+                                        .withSizeKeepingCentre (sendKnobSize, sendKnobSize));
+            row.removeFromRight (6);
+            sendPills[b] = row;
+            rows.removeFromTop (sendRowGap);
+        }
 
         // Panノブ（Logicと同じく外付けの目印は持たない。リング・tickはAppLookAndFeelが描く）
         area.removeFromTop (8);
@@ -454,12 +482,23 @@ void FxEditorView::paint (juce::Graphics& g)
         }
     }
 
-    // Sends区画の見出し
+    // Sends区画（見出し＋バス名ピル。ピルはLogicと同じくsend>0で点灯）
     if (target == Target::track && ! sendsArea.isEmpty())
     {
         g.setColour (juce::Colours::white.withAlpha (0.45f));
         g.setFont (Fonts::small());
         g.drawText ("SENDS", sendsArea.withHeight (sendsHeaderHeight), juce::Justification::centredLeft);
+
+        const auto params = targetParams();
+        for (int b = 0; b < numSendBuses; ++b)
+        {
+            const bool active = params != nullptr && params->sends[b].load() > 0.001f;
+            g.setColour (active ? Theme::accent : Theme::controlBg);
+            g.fillRoundedRectangle (sendPills[b].toFloat(), 5.0f);
+            g.setColour (juce::Colours::white.withAlpha (active ? 0.95f : 0.75f));
+            g.setFont (Fonts::smallStrong());
+            g.drawText (SendBuses::names[b], sendPills[b], juce::Justification::centred);
+        }
     }
 
     // dB数値（左=フェーダー設定値、右=再生開始からのピーク保持）
