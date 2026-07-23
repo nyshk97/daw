@@ -7,7 +7,7 @@ description = 'dev版アプリ（LaLa-dev.app）を停止する'
 run = 'pkill -f "LaLa-dev.app/Contents/MacOS/LaLa-dev" || true'
 
 [tasks.release]
-description = 'いまのHEADをリリースする（バージョン自動bump→CHANGELOG編集→ビルド→notarize→署名→GitHub Release。notarytoolがkeychainを使うためユーザーのTerminalで実行すること）'
+description = 'いまのHEADをリリースする（バージョン自動bump→CHANGELOG自動生成(claude)→ビルド→notarize→署名→GitHub Release。notarytoolがkeychainを使うためユーザーのTerminalで実行すること）'
 usage = 'arg "<version>" default="auto" help="auto(既定)=リリース済みならminor bump / patch|minor|major=刻み指定 / 0.3.0等=明示指定"'
 run = '''
 #!/usr/bin/env bash

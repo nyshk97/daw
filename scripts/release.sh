@@ -98,7 +98,7 @@ if [ ! -x "$SIGN_UPDATE" ]; then
   exit 1
 fi
 
-# === Step 1: changelog edit pause ===
+# === Step 1: changelog (claude headless で自動生成 → レビュー用ポーズ) ===
 if [ ! -f "$CHANGELOG" ]; then
   echo "ERROR: $CHANGELOG が見つかりません"
   exit 1
@@ -110,11 +110,13 @@ fi
 
 # 直前リリースの version を CHANGELOG.md から拾う ([Unreleased] の次の ## [X.Y.Z])
 LAST_VERSION=$(awk '/^## \[Unreleased\]/{f=1; next} f && /^## \[([^]]+)\]/{match($0, /\[([^]]+)\]/); print substr($0, RSTART+1, RLENGTH-2); exit}' "$CHANGELOG")
+RANGE=""
 if [ -n "$LAST_VERSION" ] && git rev-parse "v${LAST_VERSION}" >/dev/null 2>&1; then
+  RANGE="v${LAST_VERSION}..HEAD"
   echo ""
   echo "==> 前回リリース v${LAST_VERSION} 以降の commit:"
   # --max-count で git log 側で打ち切る (| head だと SIGPIPE × pipefail で全体が落ちる)
-  git log "v${LAST_VERSION}..HEAD" --max-count=100 --pretty=format:"  %h %s"
+  git log "$RANGE" --max-count=100 --pretty=format:"  %h %s"
   echo ""
 else
   echo ""
@@ -122,12 +124,36 @@ else
   git log -30 --pretty=format:"  %h %s"
   echo ""
 fi
+
+# [Unreleased] が空なら claude headless で自動生成する（手書き済みならそれを尊重）。
+# 生成失敗・claude 不在・前回タグ不明（リリース途中失敗からの再開時など）は手動編集に倒す。
+# 生成が CHANGELOG 以外に触った場合は直後の DIRTY_AFTER_PAUSE 検査が止める
+UNRELEASED_BODY=$(awk '/^## \[Unreleased\]/{f=1; next} /^## \[/{f=0} f' "$CHANGELOG" | grep -v '^[[:space:]]*$' || true)
+if [ -n "$UNRELEASED_BODY" ]; then
+  echo ""
+  echo "==> [Unreleased] に記入済みの内容があるため自動生成をスキップします"
+elif [ -z "$RANGE" ] || ! command -v claude >/dev/null 2>&1; then
+  echo ""
+  echo "WARN: 自動生成をスキップします (前回リリースタグ不明 or claude CLI なし)。手動で編集してください"
+else
+  echo ""
+  echo "==> claude で [Unreleased] を自動生成しています…"
+  if claude -p "docs/CHANGELOG.md の [Unreleased] セクションを、git の ${RANGE} のコミット内容から埋めてください。ファイル冒頭の『書き方』セクション（フォーマット・カテゴリ・文体）に厳密に従うこと。ユーザー目視で気づく変更だけ書き、内部リファクタ・ドキュメント・ビルド設定の変更は書かないこと。docs/CHANGELOG.md 以外のファイルを変更してはいけない。" \
+      --allowedTools "Read,Grep,Glob,Edit,Bash(git log:*),Bash(git show:*),Bash(git diff:*)"; then
+    echo ""
+    echo "==> 生成結果 (git diff):"
+    git --no-pager diff -- "$CHANGELOG"
+  else
+    echo "WARN: claude の自動生成に失敗しました。手動で編集してください"
+  fi
+fi
+
 echo ""
-echo "↑ これを参考に $CHANGELOG の [Unreleased] セクションを埋めてください:"
+echo "↑ $CHANGELOG の [Unreleased] を確認し、必要なら手直ししてください:"
 echo "    - ユーザー目視で気づく変更だけ書く (内部リファクタ・ドキュメント変更は除く)"
 echo "    - カテゴリは ✨ Added / 📝 Changed / 🐛 Fixed / 🗑️ Removed"
 echo ""
-read -r -p "  編集が終わったら Enter で続行 (Ctrl+C で中断): " _
+read -r -p "  問題なければ Enter で続行 (Ctrl+C で中断): " _
 
 # ポーズ中に CHANGELOG 以外を編集していないか再検査する。ここで混入したソース変更は
 # ビルド（DMG）には入るのに Step 2 の commit（= タグの commit）には入らず乖離するため
