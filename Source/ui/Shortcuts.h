@@ -229,10 +229,13 @@ inline const Entry table[] = {
       [] (const juce::KeyPress& k)
       { return k == juce::KeyPress ('b', juce::ModifierKeys::commandModifier, 0); },
       juce::KeyPress ('b', juce::ModifierKeys::commandModifier, 0) },
-    { ID::openChooser, Category::project, u8"プロジェクトを閉じて選択画面へ", u8"⌘O",
+    { ID::openChooser, Category::project, u8"プロジェクトを閉じて選択画面へ", u8"⌘W / ⌘O",
       [] (const juce::KeyPress& k)
-      { return k == juce::KeyPress ('o', juce::ModifierKeys::commandModifier, 0); },
-      juce::KeyPress ('o', juce::ModifierKeys::commandModifier, 0) },
+      {
+          return k == juce::KeyPress ('w', juce::ModifierKeys::commandModifier, 0)
+              || k == juce::KeyPress ('o', juce::ModifierKeys::commandModifier, 0);
+      },
+      juce::KeyPress ('w', juce::ModifierKeys::commandModifier, 0) },
     { ID::audioSettings, Category::project, u8"オーディオ設定", u8"⌘,",
       [] (const juce::KeyPress& k)
       { return k == juce::KeyPress (',', juce::ModifierKeys::commandModifier, 0); } },

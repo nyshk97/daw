@@ -12,7 +12,7 @@ namespace
 {
 juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
 
-// Fileメニューのコマンド。ネイティブメニューのkeyEquivalent（⌘S/⌘B/⌘O）は
+// Fileメニューのコマンド。ネイティブメニューのkeyEquivalent（⌘S/⌘B/⌘W）は
 // ApplicationCommandManagerのKeyPressMappings経由でしか設定されないため（JUCEの
 // juce_MainMenu_mac.mmの実装）、Shortcuts.hテーブルのmenuKeyをここで橋渡しする。
 // キー押下はNSMenuがMainComponent::keyPressedより先に取り、commandManager→
@@ -258,7 +258,7 @@ private:
         {
             confirmCloseProject (false, [] (MainWindow& w)
             {
-                // keyPressed（⌘O）実行中にMainComponent自身を破棄しないよう遷移を遅延する
+                // keyPressed（⌘W/⌘O）実行中にMainComponent自身を破棄しないよう遷移を遅延する
                 juce::Component::SafePointer<MainWindow> safe (&w);
                 juce::MessageManager::callAsync ([safe]
                 {
