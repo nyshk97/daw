@@ -84,6 +84,13 @@ inline const juce::Colour meterYellow    { 0xffcbc94f };  // -13〜-8dB帯
 inline const juce::Colour meterOrange    { 0xffd98f3e };  // -4dB付近
 inline const juce::Colour meterRed       { 0xffd94a43 };  // 0dBFS直下（recordRedと同値だが役割が別）
 
+// ---- FXパネル ----
+inline const juce::Colour eqThumbCurve { 0xff7a9ede };  // EQサムネイルのカーブ線（暗い地の上で読めるようaccentより明るい青）
+// PanノブはLogicのストリップ準拠: シルバーのノブ本体（knobTop/Bottom）の外周に暗色リングを敷き、
+// センター起点の緑アークをリング上に重ねる。緑はplayGreenより彩度高め（Logicのパンゲージの見え方に合わせる）
+inline const juce::Colour panRing     { 0xff3a3a40 };
+inline const juce::Colour panArcGreen { 0xff55b85c };
+
 // ---- コントロール（ボタン・スライダー・LCD）----
 inline const juce::Colour controlBg     { 0xff3f3f46 };  // M/Sボタン・スライダー溝
 inline const juce::Colour controlTextOn { 0xff1c1c20 };  // ONボタン上の暗色文字

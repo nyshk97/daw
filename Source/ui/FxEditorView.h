@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <vector>
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -9,10 +10,11 @@
 #include "../shared/Project.h"
 
 // 左のFXパネル（Logicのインスペクタ相当・基本常設で I トグル）。
-// 選択チャンネルの固定チェーンを「スロット一覧＋Sendsノブ」の概要として縦に表示する:
-//   トラック = [EQ][Comp][Ext(グレーアウト)] ＋ Sends
-//   バス     = [Reverb] / [Delay]、Master = [Limiter]
-// スロットのクリックで下部に詳細エディタ（FxDetailView）が開く（Logicのフローティングの代替）。
+// 選択チャンネルをLogicのチャンネルストリップ準拠の縦並びで表示する:
+//   トラック = EQサムネイル → スロット [EQ][Comp][Ext(空き)] → Sends → Panノブ＋dB数値 → フェーダー/メーター
+//   バス     = [Reverb] / [Delay]、Master = [Limiter]（サムネイル・Sends・Panなし）
+// スロットはLogic風のピル（ON=青・OFF=グレー）。hoverで「電源｜エディタ」の2分割に変わり、
+// 電源=ON/OFFトグル・エディタ側クリックで下部詳細（FxDetailView）が開く（Logicのフローティングの代替）。
 // トラックヘッダーのさらに左に置かれ、ピアノロール（下部）とは独立。
 class FxEditorView : public juce::Component
 {
@@ -54,17 +56,19 @@ public:
     void updateMeters (const std::vector<MeterFeed>& trackFeeds,
                        const MeterFeed (&busFeeds)[numSendBuses], const MeterFeed& masterFeed);
 
-    std::function<void (int)> onSlotClicked;  // グレーアウト以外のスロットのクリック
+    std::function<void (int)> onSlotClicked;  // 空きスロット以外の「エディタを開く」操作（行クリック・EQサムネイル）
     std::function<void()> onCloseRequested;   // ✕ボタン
-    // sendはミキサーと同じatomicを表示するため相互refreshが要るが、EQ/CompのON/OFFは
+    // send/panはミキサーと同じatomicを表示するため相互refreshが要るが、EQ/CompのON/OFFは
     // ミキサーに表示がないためdirty化のみでよい。呼び出し側の同期範囲が違うので分ける
-    std::function<void()> onSendChanged;
+    std::function<void()> onSendOrPanChanged;
     std::function<void()> onFxEnabledChanged;
     std::function<void()> onVolumeChanged;    // 音量はヘッダー・ミキサーと同じatomicの表示（両方へ反映が要る）
 
     void paint (juce::Graphics& g) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent& e) override;
+    void mouseMove (const juce::MouseEvent& e) override;
+    void mouseExit (const juce::MouseEvent& e) override;
 
 private:
     enum class Target { none, track, bus, master };
@@ -89,16 +93,23 @@ private:
         bool grayed = false;
     };
     std::vector<Slot> slots;
+    juce::Rectangle<int> eqThumbArea;       // EQサムネイル（トラックのみ。クリック=EQスロットのエディタを開く）
     juce::Rectangle<int> sendsArea;         // Sends区画（見出し＋ノブ。トラックのみ）
-    juce::Rectangle<int> volumeArea;        // Volume区画（見出し＋フェーダー/メーター。全チャンネル共通）
-    juce::Rectangle<int> volumeReadoutArea; // dB数値ボックスのペア（設定値・ピーク）
+    juce::Rectangle<int> volumeReadoutArea; // dB数値ボックスのペア（設定値・ピーク。Panノブの下）
     float peakMaxDisplay = 0.0f;            // 再生開始からの最大ピーク（dB数値表示用）
+
+    // hover状態（スロットのピルはhoverで「電源｜エディタ」の2分割表示に変わる）
+    int hoverSlot = -1;
+    bool hoverPower = false;  // hoverSlotの左半分（電源側）に居るか
+    bool hoverThumb = false;
+
+    std::atomic<bool>* slotEnabledAtomic (int slot) const; // EQ/CompのON/OFF atomic（他スロットはnullptr）
+    void updateHover (juce::Point<int> pos);
 
     juce::TextButton closeButton { juce::String::fromUTF8 (u8"×") };
     juce::Slider volumeSlider;   // Logicのチャンネルストリップと同じ「フェーダー＋メーター分離」配置
+    juce::Slider panKnob;        // トラックのみ（Logic風の物理ノブ描画はAppLookAndFeel::drawLogicPanKnob）
     StereoMeter meter;
-    juce::TextButton eqButton { "ON" };   // トラックのみ（EQ行の右端）
-    juce::TextButton compButton { "ON" }; // トラックのみ（Comp行の右端）
     SendKnob sendKnobs[numSendBuses] { SendKnob (0), SendKnob (1), SendKnob (2) }; // トラックのみ
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FxEditorView)

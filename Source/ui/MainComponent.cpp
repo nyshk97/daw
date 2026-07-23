@@ -95,10 +95,10 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     fxEditor.setProject (project.get());
     fxEditor.onCloseRequested = [this] { closeFxEditor(); };
     fxEditor.onSlotClicked = [this] (int slot) { toggleFxDetailSlot (slot); };
-    fxEditor.onSendChanged = [this]
+    fxEditor.onSendOrPanChanged = [this]
     {
         setDirty (true);
-        mixerOverlay.refreshValues(); // sendはミキサーと同じatomicの表示なので反映（非表示時はno-op）
+        mixerOverlay.refreshValues(); // send/panはミキサーと同じatomicの表示なので反映（非表示時はno-op）
     };
     fxEditor.onFxEnabledChanged = [this] { setDirty (true); }; // ON/OFFはミキサーに表示がないのでdirty化のみ
     fxEditor.onVolumeChanged = [this]
