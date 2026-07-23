@@ -1456,6 +1456,129 @@ void testBounceRendererMidiTail()
     dir.deleteRecursively();
 }
 
+// ---- ⌘Eリージョン書き出し: 選択1アイテムのTrackRender組み立て（buildItemRender）----
+void testBuildItemRender()
+{
+    beginTest ("buildItemRender (region export)");
+
+    auto makeAudio = [] (int numSamples, float value)
+    {
+        auto audio = std::make_shared<juce::AudioBuffer<float>> (1, numSamples);
+        for (int i = 0; i < numSamples; ++i)
+            audio->setSample (0, i, value);
+        return audio;
+    };
+
+    // オーディオトラック: 信号値の異なる3クリップ（1枚目はmuted）から2枚目だけを選択
+    Track track;
+    track.type = TrackType::audio;
+    Clip a;
+    a.audio = makeAudio (1000, 0.1f);
+    a.startSample = 0;
+    a.lengthSamples = 1000;
+    a.muted = true;
+    Clip b;
+    b.audio = makeAudio (2000, 0.2f);
+    b.startSample = 5000;
+    b.offsetSamples = 300;
+    b.lengthSamples = 1200;
+    Clip c;
+    c.audio = makeAudio (1000, 0.3f);
+    c.startSample = 9000;
+    c.lengthSamples = 1000;
+    track.clips = { a, b, c };
+    track.params->gain.store (0.6f);
+    track.params->pan.store (-0.25f);
+    track.params->sends[1].store (0.4f);
+    track.params->mute.store (true); // トラックのmute/soloは無視される（明示選択が優先）
+    track.params->solo.store (true);
+
+    BounceRenderer::TrackRender out;
+    juce::int64 rangeStart = -1, rangeEnd = -1;
+    expect (BounceRenderer::buildItemRender (track, 1, 120.0, 44100.0, out, rangeStart, rangeEnd),
+            "クリップを組み立てられること");
+    expect (out.clips.size() == 1, "選択した1クリップだけが入ること");
+    if (out.clips.size() == 1)
+    {
+        expect (out.clips[0].audio == b.audio, "選択クリップのバッファであること（他クリップが混ざらない）");
+        expect (out.clips[0].startSample == 5000 && out.clips[0].offsetSamples == 300
+                    && out.clips[0].lengthSamples == 1200,
+                "位置・オフセット・長さがモデルどおりであること");
+    }
+    expect (out.notes.empty(), "オーディオトラックはノートなし");
+    expect (rangeStart == 5000 && rangeEnd == 6200, "範囲がクリップ区間ちょうどであること");
+    expect (juce::approximatelyEqual (out.gain, 0.6f) && juce::approximatelyEqual (out.pan, -0.25f)
+                && juce::approximatelyEqual (out.sends[1], 0.4f),
+            "gain/pan/sendsが焼き込まれること（mute/soloは無視）");
+
+    expect (BounceRenderer::buildItemRender (track, 0, 120.0, 44100.0, out, rangeStart, rangeEnd)
+                && out.clips.size() == 1,
+            "mutedクリップも書き出せること（明示選択が優先）");
+
+    // offsetSamples/長さのクランプ（buildSnapshotと同じ最終防衛線）。範囲はモデル上の区間のまま
+    Clip overrun;
+    overrun.audio = makeAudio (500, 0.1f);
+    overrun.startSample = 100;
+    overrun.offsetSamples = 200;
+    overrun.lengthSamples = 900; // バッファ残りは300しかない
+    track.clips = { overrun };
+    expect (BounceRenderer::buildItemRender (track, 0, 120.0, 44100.0, out, rangeStart, rangeEnd),
+            "はみ出しクリップも組み立てられること");
+    expect (out.clips.size() == 1 && out.clips[0].lengthSamples == 300,
+            "再生長がバッファ残りへクランプされること");
+    expect (rangeStart == 100 && rangeEnd == 1000, "範囲はモデル上の区間（クランプ分は末尾無音）");
+
+    expect (! BounceRenderer::buildItemRender (track, 1, 120.0, 44100.0, out, rangeStart, rangeEnd),
+            "index範囲外はfalse");
+
+    // MIDIトラック: 2リージョンから1つ目（muted）を選択。他リージョンのノートが混ざらない
+    Track midi;
+    midi.type = TrackType::midi;
+    MidiRegion r1;
+    r1.startPpq = Ppq::ticksPerBar; // 2小節目頭
+    r1.lengthPpq = Ppq::ticksPerBar;
+    r1.muted = true;                // リージョンのmutedも無視される
+    r1.notes.push_back ({ 0, 60, 0, Ppq::ticksPerQuarter, 100 });
+    // リージョン端をはみ出すノート → 境界でマスクされる
+    r1.notes.push_back ({ 0, 64, Ppq::ticksPerBar - Ppq::ticksPerQuarter, Ppq::ticksPerQuarter * 2, 90 });
+    MidiRegion r2;
+    r2.startPpq = Ppq::ticksPerBar * 3;
+    r2.lengthPpq = Ppq::ticksPerBar;
+    r2.notes.push_back ({ 0, 72, 0, Ppq::ticksPerQuarter, 100 });
+    midi.midiRegions = { r1, r2 };
+
+    expect (BounceRenderer::buildItemRender (midi, 0, 120.0, 44100.0, out, rangeStart, rangeEnd),
+            "MIDIリージョンを組み立てられること");
+    expect (out.clips.empty(), "MIDIトラックはクリップなし");
+    expect (out.notes.size() == 2, "選択リージョンのノートだけが入ること（mutedでも書き出す）");
+    if (out.notes.size() == 2)
+    {
+        expect (out.notes[0].startPpq == Ppq::ticksPerBar
+                    && out.notes[0].endPpq == Ppq::ticksPerBar + Ppq::ticksPerQuarter
+                    && out.notes[0].pitch == 60,
+                "ノートが絶対PPQへフラット化されること");
+        expect (out.notes[1].endPpq == Ppq::ticksPerBar * 2,
+                "リージョン端をはみ出すノートは境界でマスクされること");
+    }
+    // 120BPM・44100Hz: 1小節（3840tick）= 2秒 = 88200サンプル
+    expect (rangeStart == 88200 && rangeEnd == 176400,
+            "PPQ→サンプルの厳密長換算（1小節=88200サンプル）");
+
+    midi.drums = true;
+    midi.drumPitch = 36;
+    expect (BounceRenderer::buildItemRender (midi, 1, 120.0, 44100.0, out, rangeStart, rangeEnd)
+                && out.notes.size() == 1 && out.notes[0].pitch == 36,
+            "固定ピッチ打楽器はピッチが置き換わること");
+
+    // ノート空リージョンは notes 空で成功（入口ガードは呼び出し側の責務）
+    MidiRegion emptyRegion;
+    emptyRegion.lengthPpq = Ppq::ticksPerBar;
+    midi.midiRegions = { emptyRegion };
+    expect (BounceRenderer::buildItemRender (midi, 0, 120.0, 44100.0, out, rangeStart, rangeEnd)
+                && out.notes.empty(),
+            "ノート空リージョンはnotes空で成功すること");
+}
+
 // ---- v4: pan/sends/バス/Masterの保存・読込と、v3以前のデフォルト補完 ----
 void testMixerParamsRoundtrip()
 {
@@ -2031,6 +2154,7 @@ int main()
     testBounceRendererBasic();
     testBounceRendererClippingProtection();
     testBounceRendererMidiTail();
+    testBuildItemRender();
     testMixerParamsRoundtrip();
     testEnginePanSendsMaster();
     testEngineOutputChannelRule();

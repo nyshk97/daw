@@ -62,6 +62,7 @@ public:
     std::function<void()> onCycleChanged;            // サイクル範囲の変更（undo対象外。Transport同期・dirty用）
     std::function<void (int, int)> onOpenRegion;     // リージョンをダブルクリック（track, region）
     std::function<void (int, int)> onDeleteItemRequested; // 右クリックメニューの削除（track, クリップorリージョンindex）
+    std::function<void (int, int)> onExportItemRequested; // 右クリックメニューの書き出し（同上）
 
     // リージョン単位の操作。対象は引数で明示する（「現在の選択」を暗黙に読まない）。
     // itemIndex はオーディオトラックなら clips、MIDIトラックなら midiRegions のindex

@@ -1,11 +1,13 @@
 #include "BounceRenderer.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <vector>
 
 #include "../shared/Pan.h"
 #include "../shared/Ppq.h"
+#include "../shared/Project.h"
 
 namespace
 {
@@ -13,6 +15,62 @@ juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
 
 constexpr float silenceThreshold = 0.001f; // -60dB。テールの無音判定
 constexpr int maxScratchChannels = 8;      // DLSは4ch（2バス）。これを超える音源は想定しない
+}
+
+bool BounceRenderer::buildItemRender (const Track& track, int itemIndex, double bpm, double sampleRate,
+                                      TrackRender& out, juce::int64& rangeStart, juce::int64& rangeEnd)
+{
+    out = {};
+    out.gain = track.params->gain.load();
+    out.pan = track.params->pan.load();
+    for (int b = 0; b < numSendBuses; ++b)
+        out.sends[b] = track.params->sends[b].load();
+
+    if (track.type == TrackType::audio)
+    {
+        if (itemIndex < 0 || itemIndex >= (int) track.clips.size())
+            return false;
+        const auto& clip = track.clips[(size_t) itemIndex];
+        if (clip.audio == nullptr)
+            return false;
+
+        // buildSnapshotと同じ範囲クランプ（範囲外読みの最終防衛線）
+        const auto bufferLength = (juce::int64) clip.audio->getNumSamples();
+        const auto offset = juce::jlimit ((juce::int64) 0, bufferLength, clip.offsetSamples);
+        const auto length = juce::jlimit ((juce::int64) 0, bufferLength - offset, clip.lengthSamples);
+        if (length <= 0)
+            return false;
+        out.clips.push_back ({ clip.audio, clip.startSample, offset, length });
+
+        rangeStart = clip.startSample;
+        rangeEnd = clip.startSample + clip.lengthSamples;
+        return true;
+    }
+
+    if (itemIndex < 0 || itemIndex >= (int) track.midiRegions.size())
+        return false;
+    const auto& region = track.midiRegions[(size_t) itemIndex];
+
+    // ノートのフラット化・境界マスク・固定ピッチ置換はbuildSnapshotと同じ規則（対象リージョンのみ）
+    const bool fixedPitch = track.drums && track.drumPitch >= 0;
+    const auto regionEnd = region.startPpq + region.lengthPpq;
+    for (const auto& note : region.notes)
+    {
+        const auto absStart = region.startPpq + note.startPpq;
+        const auto absEnd = juce::jmin (absStart + note.lengthPpq, regionEnd);
+        if (absEnd <= absStart)
+            continue;
+        out.notes.push_back ({ absStart, absEnd,
+                               fixedPitch ? track.drumPitch : note.pitch, note.velocity });
+    }
+    std::stable_sort (out.notes.begin(), out.notes.end(),
+                      [] (const MidiNotePlayback& a, const MidiNotePlayback& b)
+                      { return a.startPpq < b.startPpq; });
+
+    const double tps = Ppq::ticksPerSample (bpm, sampleRate);
+    rangeStart = (juce::int64) std::llround ((double) region.startPpq / tps);
+    rangeEnd = (juce::int64) std::llround ((double) regionEnd / tps);
+    return true;
 }
 
 void BounceRenderer::run()

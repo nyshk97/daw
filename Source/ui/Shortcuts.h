@@ -32,6 +32,7 @@ enum class ID
     split,
     muteRegion,
     deleteItem,
+    exportRegion,
     // トラック
     addAudioTrack,
     addMidiTrack,
@@ -151,6 +152,10 @@ inline const Entry table[] = {
           return detail::isDeleteOrBackspace (k)
               && ! k.getModifiers().testFlags (juce::ModifierKeys::commandModifier);
       } },
+    // Logic準拠: ⌘E = 選択中のリージョン/クリップをオーディオファイルとして書き出す
+    { ID::exportRegion, Category::editing, u8"リージョン/クリップを書き出す", u8"⌘E",
+      [] (const juce::KeyPress& k)
+      { return k == juce::KeyPress ('e', juce::ModifierKeys::commandModifier, 0); } },
 
     // ---- トラック ----
     { ID::addAudioTrack, Category::track, u8"オーディオトラックを追加", u8"⌘⌥A",

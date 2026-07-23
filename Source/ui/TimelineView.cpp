@@ -1136,6 +1136,7 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
                                Shortcuts::ID::muteRegion));
     menu.addItem (2, jp (u8"複製"));
     menu.addItem (itemWithKey (4, jp (u8"再生ヘッド位置で分割"), Shortcuts::ID::split, canSplit));
+    menu.addItem (itemWithKey (5, jp (u8"書き出し…"), Shortcuts::ID::exportRegion));
     menu.addItem (itemWithKey (3, jp (u8"削除"), Shortcuts::ID::deleteItem));
 
     // コールバックは後から呼ばれるためSafePointerで寿命を確認し、右クリック時点の対象を捕捉して渡す。
@@ -1154,6 +1155,8 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
                                 safe->onDeleteItemRequested (trackIndex, itemIndex);
                             else if (result == 4)
                                 safe->splitAtPlayhead (trackIndex, itemIndex);
+                            else if (result == 5 && safe->onExportItemRequested)
+                                safe->onExportItemRequested (trackIndex, itemIndex);
                         });
 }
 

@@ -145,6 +145,8 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         else
             requestDeleteClipAt (trackIndex, itemIndex);
     };
+    timeline.onExportItemRequested = [this] (int trackIndex, int itemIndex)
+    { startRegionExportFlow (trackIndex, itemIndex); };
     pianoRoll.onWillEditModel = [this] { undoStack.begin (*project); };
     pianoRoll.onModelEdited = [this]
     {
@@ -1046,16 +1048,7 @@ void MainComponent::startBounceFlow()
         return;
     }
 
-    // 再生中なら停止してから（状態を単純に保つ）
-    if (transport.isPlaying.load() || seekResumePending)
-    {
-        seekResumePending = false;
-        numSeekKeyCodes = 0;
-        engine.stop();
-        transport.seekRequest.store (playStartSample);
-        updateTransportButtons();
-        Log::info ("transport.stop", "reason=bounce pos=" + juce::String (playStartSample));
-    }
+    stopPlaybackForBounce();
 
     const auto dir = lastBounceDirectory.isDirectory()
                          ? lastBounceDirectory
@@ -1190,10 +1183,30 @@ void MainComponent::beginBounce (const juce::File& target)
                                    + " tracks=" + juce::String ((int) request.tracks.size())
                                    + " tail=" + juce::String ((int) request.wantTail));
 
+    startBounceRequest (std::move (request));
+}
+
+// 書き出し前の再生停止（状態を単純に保つ。⌘B/⌘E共通）
+void MainComponent::stopPlaybackForBounce()
+{
+    if (transport.isPlaying.load() || seekResumePending)
+    {
+        seekResumePending = false;
+        numSeekKeyCodes = 0;
+        engine.stop();
+        transport.seekRequest.store (playStartSample);
+        updateTransportButtons();
+        Log::info ("transport.stop", "reason=bounce pos=" + juce::String (playStartSample));
+    }
+}
+
+// レンダラー起動＋進捗オーバーレイ表示（⌘B/⌘E共通の尻尾）。完了はpollBounce()が拾う
+bool MainComponent::startBounceRequest (BounceRenderer::Request&& request)
+{
     if (! bounceRenderer.start (std::move (request)))
     {
         showAlert (jp (u8"書き出せません"), jp (u8"前回の書き出しが終了していません。"));
-        return;
+        return false;
     }
 
     bounceActive = true;
@@ -1201,6 +1214,134 @@ void MainComponent::beginBounce (const juce::File& target)
     bounceOverlay.setBounds (getLocalBounds());
     bounceOverlay.show();
     refreshMacMenu(); // バウンス中はFileメニューをdisabledにする
+    return true;
+}
+
+void MainComponent::exportSelectedItem()
+{
+    const auto& regionSel = timeline.getRegionSelection();
+    if (regionSel.isValid())
+    {
+        startRegionExportFlow (regionSel.track, regionSel.region);
+        return;
+    }
+    const auto& clipSel = timeline.getSelection();
+    if (clipSel.isValid())
+        startRegionExportFlow (clipSel.track, clipSel.clip);
+}
+
+void MainComponent::startRegionExportFlow (int trackIndex, int itemIndex)
+{
+    if (bounceActive || engine.isRecording())
+        return;
+    if (trackIndex < 0 || trackIndex >= (int) project->tracks.size())
+        return;
+    const auto& track = project->tracks[(size_t) trackIndex];
+    const bool isMidi = track.type == TrackType::midi;
+    if (itemIndex < 0 || itemIndex >= (int) (isMidi ? track.midiRegions.size() : track.clips.size()))
+        return;
+
+    // 中身のないアイテムは入口で弾く（⌘Bの空プロジェクト弾きと同じ流儀）
+    if (isMidi && track.midiRegions[(size_t) itemIndex].notes.empty())
+    {
+        showAlert (jp (u8"書き出せません"), jp (u8"リージョンにノートがありません。"));
+        return;
+    }
+
+    if (project->sampleRate <= 0.0 && transport.sampleRate.load() <= 0.0)
+    {
+        showAlert (jp (u8"書き出せません"), jp (u8"オーディオデバイスが準備できていません。"));
+        return;
+    }
+
+    stopPlaybackForBounce();
+
+    const auto dir = lastBounceDirectory.isDirectory()
+                         ? lastBounceDirectory
+                         : juce::File::getSpecialLocation (juce::File::userDesktopDirectory);
+    const auto defaultName = juce::File::createLegalFileName (project->name() + "-" + track.name + ".wav");
+    bounceChooser = std::make_unique<juce::FileChooser> (
+        jp (u8"リージョンを書き出し"), dir.getChildFile (defaultName), "*.wav");
+
+    const auto flags = juce::FileBrowserComponent::saveMode
+                       | juce::FileBrowserComponent::canSelectFiles
+                       | juce::FileBrowserComponent::warnAboutOverwriting;
+    bounceChooser->launchAsync (flags, [this, trackIndex, itemIndex] (const juce::FileChooser& chooser)
+    {
+        // thisの生存: bounceChooserはthisのメンバーで、this破棄時にダイアログごと片付く。
+        // ダイアログはモーダルで表示中に編集は起きないが、indexの範囲はbeginRegionBounce側でも再検証する
+        const auto chosen = chooser.getResult();
+        if (chosen == juce::File())
+            return; // キャンセル
+        const auto target = chosen.withFileExtension ("wav");
+        lastBounceDirectory = target.getParentDirectory();
+        beginRegionBounce (target, trackIndex, itemIndex);
+    });
+}
+
+void MainComponent::beginRegionBounce (const juce::File& target, int trackIndex, int itemIndex)
+{
+    if (bounceActive || engine.isRecording())
+        return;
+    if (trackIndex < 0 || trackIndex >= (int) project->tracks.size())
+        return;
+    const auto& track = project->tracks[(size_t) trackIndex];
+
+    const double sr = project->sampleRate > 0.0 ? project->sampleRate : transport.sampleRate.load();
+    if (sr <= 0.0)
+    {
+        showAlert (jp (u8"書き出せません"), jp (u8"オーディオデバイスが準備できていません。"));
+        return;
+    }
+
+    BounceRenderer::Request request;
+    request.sampleRate = sr;
+    request.bpm = juce::jlimit (20.0, 400.0, transport.bpm.load());
+    request.targetFile = target;
+    request.wantTail = false; // リージョン厳密長（サイクル範囲書き出しと同じ規則）
+
+    // バス・Masterは⌘Bと同じく開始時の値を焼き込む（=聞こえたままの経路）。
+    // トラックのmute/solo・リージョン自身のmutedは見ない（明示選択が優先）
+    for (int b = 0; b < numSendBuses; ++b)
+    {
+        request.busGain[b] = project->busParams[b]->gain.load();
+        request.busMute[b] = project->busParams[b]->mute.load();
+    }
+    request.masterGain = project->masterParams->gain.load();
+
+    BounceRenderer::TrackRender trackRender;
+    if (! BounceRenderer::buildItemRender (track, itemIndex, request.bpm, sr,
+                                           trackRender, request.startSample, request.endSample)
+        || (track.type == TrackType::midi && trackRender.notes.empty()))
+    {
+        showAlert (jp (u8"書き出せません"), jp (u8"書き出す内容がありません。"));
+        return;
+    }
+
+    if (track.type == TrackType::midi)
+    {
+        // RT側の共有インスタンスとはprocessBlockが並走するため共有不可。専用に生成する
+        trackRender.synth = synthBank.createIndependent (track.gmProgram, track.drums,
+                                                         sr, BounceRenderer::renderBlockSize);
+        if (trackRender.synth == nullptr)
+        {
+            auto errors = synthBank.takeCreateErrors();
+            showAlert (jp (u8"書き出しを中止しました"),
+                       jp (u8"ソフトウェア音源を作成できませんでした。\n")
+                           + errors.joinIntoString ("\n"));
+            return;
+        }
+    }
+    request.tracks.push_back (std::move (trackRender));
+
+    Log::info ("bounce.start", "target=" + target.getFullPathName()
+                                   + " source=region track=" + juce::String (trackIndex)
+                                   + " item=" + juce::String (itemIndex)
+                                   + " sr=" + juce::String (sr, 0)
+                                   + " startSample=" + juce::String (request.startSample)
+                                   + " endSample=" + juce::String (request.endSample));
+
+    startBounceRequest (std::move (request));
 }
 
 void MainComponent::pollBounce()
@@ -1440,6 +1581,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         // 通常はネイティブメニューのkeyEquivalent（⌘B）が先にイベントを取るため、
         // ここはメニューが効かない状況のフォールバック
         startBounceFlow();
+        return true;
+    }
+    // Logic準拠: ⌘E = 選択中のリージョン/クリップをオーディオファイルとして書き出す
+    if (is (SC::exportRegion))
+    {
+        exportSelectedItem();
         return true;
     }
     if (is (SC::openChooser))

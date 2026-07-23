@@ -94,6 +94,11 @@ private:
     void showDeviceSettings();
     void applyBpmText();
     void beginBounce (const juce::File& target); // 保存先確定後: パラメータ固定→専用synth生成→ワーカー開始
+    void exportSelectedItem();                   // ⌘E: 選択中のリージョン/クリップを書き出し（regionSelection優先）
+    void startRegionExportFlow (int trackIndex, int itemIndex);  // リージョン書き出しの入口（保存ダイアログまで）
+    void beginRegionBounce (const juce::File& target, int trackIndex, int itemIndex);
+    void stopPlaybackForBounce();                // 書き出し前の再生停止（⌘B/⌘E共通）
+    bool startBounceRequest (BounceRenderer::Request&& request); // レンダラー起動＋オーバーレイ表示（共通の尻尾）
     void pollBounce();                           // Timerからの完了ポーリング・進捗反映
     static void refreshMacMenu();                // Fileメニューのenable状態を組み直させる
     void pushSnapshot();

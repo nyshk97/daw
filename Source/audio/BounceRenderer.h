@@ -7,6 +7,8 @@
 
 #include "../shared/PlaybackSnapshot.h"
 
+struct Track; // shared/Project.h（buildItemRenderの実装側でinclude）
+
 // オフラインバウンス（書き出し）。オーディオデバイス・リアルタイムスレッドとは無関係で、
 // 専用のバックグラウンドスレッド（juce::Thread）がレンダリングとファイルIOの全てを行う。
 //
@@ -52,6 +54,15 @@ public:
         bool busMute[numSendBuses] { false, false, false };
         float masterGain = 1.0f;
     };
+
+    // 選択された1アイテム（クリップ or MIDIリージョン）だけをレンダリング対象にした
+    // TrackRender とレンダリング範囲を組み立てる（⌘Eのリージョン書き出し用。純粋なモデル→Request変換で
+    // テスト対象）。トラックのmute/solo・アイテム自身のmutedは見ない（明示選択が優先）。
+    // クリップ範囲はモデル上の区間（クランプで再生長が縮んだ分は末尾無音）、MIDIはリージョン境界を
+    // PPQ→サンプル換算した厳密長。synthは呼び出し側が生成して埋める。
+    // index範囲外・クリップの参照WAVなしは false（ノート空のMIDIリージョンは notes 空で true）
+    static bool buildItemRender (const Track& track, int itemIndex, double bpm, double sampleRate,
+                                 TrackRender& out, juce::int64& rangeStart, juce::int64& rangeEnd);
 
     enum class Status { idle, running, success, cancelled, failed };
 
