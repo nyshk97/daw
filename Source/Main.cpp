@@ -291,9 +291,14 @@ private:
                         safe->openPendingProject();
                 });
             };
-            setContentOwned (chooser, true);
+            // フルスクリーン中はリサイズ・センタリングしない（NSWindowはフルスクリーン中の
+            // setFrameを拒否せず、Spaceの中で縮んだウィンドウになってしまう）。
+            // コンテンツを全面に広げ、ProjectChooserComponent側が中央に設計サイズで配置する
+            const bool fullScreen = isFullScreen();
+            setContentOwned (chooser, ! fullScreen);
             setName (DAW_APP_NAME);
-            centreWithSize (getWidth(), getHeight());
+            if (! fullScreen)
+                centreWithSize (getWidth(), getHeight());
 
             // 選択画面ではFileメニューをdisabledにする（enable判定の引き直し）
             if (auto* model = juce::MenuBarModel::getMacMainMenu())
@@ -306,9 +311,12 @@ private:
             component->onTitleChanged = [this] (const juce::String& title) { setName (title); };
             component->onOpenChooserRequested = [this] { closeProjectToChooser(); };
             mainComp = component;
-            setContentOwned (component, true);
+            // フルスクリーン中のリサイズ回避はshowChooserと同じ理由（MainComponentは全面表示でよい）
+            const bool fullScreen = isFullScreen();
+            setContentOwned (component, ! fullScreen);
             setName (component->windowTitle());
-            centreWithSize (getWidth(), getHeight());
+            if (! fullScreen)
+                centreWithSize (getWidth(), getHeight());
             flowPending = false;
 
             // プロジェクトが開いたのでFileメニューをenabledにする

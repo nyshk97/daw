@@ -191,7 +191,7 @@ ProjectChooserComponent::ProjectChooserComponent()
     };
 
     refreshList();
-    setSize (520, 584);
+    setSize (designWidth, designHeight);
 }
 
 void ProjectChooserComponent::applyOverview (const juce::File& dir, ProjectOverview overview)
@@ -650,7 +650,10 @@ void ProjectChooserComponent::paint (juce::Graphics& g)
 
 void ProjectChooserComponent::resized()
 {
-    auto area = getLocalBounds().reduced (24);
+    auto area = getLocalBounds()
+                    .withSizeKeepingCentre (juce::jmin (getWidth(), designWidth),
+                                            juce::jmin (getHeight(), designHeight))
+                    .reduced (24);
 
     titleLabel.setBounds (area.removeFromTop (22).withTrimmedLeft (2));
     area.removeFromTop (10);

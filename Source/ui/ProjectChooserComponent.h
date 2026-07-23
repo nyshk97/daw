@@ -19,6 +19,10 @@ class ProjectChooserComponent : public juce::Component,
 public:
     ProjectChooserComponent();
 
+    // 通常時のウィンドウサイズ。これより大きい領域を与えられたとき（フルスクリーン中の
+    // 遷移や手動でのウィンドウ拡大）は、引き伸ばさず中央にこのサイズで置く
+    static constexpr int designWidth = 520, designHeight = 584;
+
     std::function<void (std::unique_ptr<Project>)> onProjectOpened;
 
     // ~/Music/daw/ を走査し直して一覧を作り直す。選択行は名前で追従、消えていたら先頭へ。
