@@ -55,35 +55,57 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     addChildComponent (addTrackOverlay); // トラック追加メニュー表示中のみ可視
     addChildComponent (shortcutOverlay); // ⌘?表示中のみ可視
     addChildComponent (bounceOverlay);   // バウンス中のみ可視
-    addChildComponent (mixerOverlay);    // X表示中のみ可視（bounceOverlayより背面に置く）
     addAndMakeVisible (lcd);
     addChildComponent (srWarningLabel); // 不一致時のみ表示
 
     timeline.setProject (project.get());
     headers.setProject (project.get());
     pianoRoll.setProject (project.get());
-    mixerOverlay.setProject (project.get());
-    mixerOverlay.onSelectTrack = [this] (int index) { selectTrackFromUser (index); };
-    mixerOverlay.onChanged = [this]
+    mixerWindow.content().setProject (project.get());
+    mixerWindow.content().onSelectTrack = [this] (int index) { selectTrackFromUser (index); };
+    mixerWindow.content().onChanged = [this]
     {
         setDirty (true);
         fxEditor.refreshValues(); // 同じsend/gain atomicを表示するエディタ側へ反映
         headers.refreshValues();  // 音量はヘッダーのスライダーにも表示される
     };
     // バス/Masterストリップのクリック → FXパネルでそのチャンネルのチェーンを表示
-    mixerOverlay.onSelectBus = [this] (int bus)
+    mixerWindow.content().onSelectBus = [this] (int bus)
     {
         openFxEditor();
         fxEditor.showBus (bus);
         syncFxDetail();
     };
-    mixerOverlay.onSelectMaster = [this]
+    mixerWindow.content().onSelectMaster = [this]
     {
         openFxEditor();
         fxEditor.showMaster();
         syncFxDetail();
     };
-    mixerOverlay.onDismissed = [this]
+    // ミキサーのスロット（エディタ側クリック・EQサムネイル）→ チャンネル選択＋下部詳細エディタを開く
+    // （FXパネルのスロットクリックと同じトグル挙動。FXパネルが閉じていても対象を確定してから開く）
+    mixerWindow.content().onOpenTrackSlot = [this] (int index, int slot)
+    {
+        selectTrackFromUser (index);
+        openFxEditor();
+        fxEditor.showTrack (selectedTrack);
+        toggleFxDetailSlot (slot);
+    };
+    mixerWindow.content().onOpenBusSlot = [this] (int bus)
+    {
+        openFxEditor();
+        fxEditor.showBus (bus);
+        toggleFxDetailSlot (0);
+    };
+    mixerWindow.content().onOpenMasterSlot = [this]
+    {
+        openFxEditor();
+        fxEditor.showMaster();
+        toggleFxDetailSlot (0);
+    };
+    // ミキサーウィンドウにフォーカスがあるときのキーは集中ハンドラへ転送（Space再生・X/Esc等がそのまま効く）
+    mixerWindow.content().onKey = [this] (const juce::KeyPress& key) { return keyPressed (key); };
+    mixerWindow.onDismissed = [this]
     {
         if (fxEditor.isOpen())
         {
@@ -98,13 +120,17 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     fxEditor.onSendOrPanChanged = [this]
     {
         setDirty (true);
-        mixerOverlay.refreshValues(); // send/panはミキサーと同じatomicの表示なので反映（非表示時はno-op）
+        mixerWindow.content().refreshValues(); // send/panはミキサーと同じatomicの表示なので反映（非表示時はno-op）
     };
-    fxEditor.onFxEnabledChanged = [this] { setDirty (true); }; // ON/OFFはミキサーに表示がないのでdirty化のみ
+    fxEditor.onFxEnabledChanged = [this]
+    {
+        setDirty (true);
+        mixerWindow.content().refreshValues(); // ミキサーのスロットピルもeqEnabled/compEnabledを表示する（非表示時はno-op）
+    };
     fxEditor.onVolumeChanged = [this]
     {
         setDirty (true);
-        mixerOverlay.refreshValues(); // 音量はミキサーのフェーダーと同じatomicの表示（非表示時はno-op）
+        mixerWindow.content().refreshValues(); // 音量はミキサーのフェーダーと同じatomicの表示（非表示時はno-op）
         headers.refreshValues();      // ヘッダーのスライダーにも表示される
     };
     fxDetail.onCloseRequested = [this] { closeFxDetail(); };
@@ -172,7 +198,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     headers.onChanged = [this]
     {
         setDirty (true);
-        mixerOverlay.refreshValues(); // 音量はミキサーのフェーダーと同じatomicの表示（非表示時はno-op）
+        mixerWindow.content().refreshValues(); // 音量はミキサーのフェーダーと同じatomicの表示（非表示時はno-op）
         if (fxEditor.isOpen())
         {
             fxEditor.refreshFromModel (selectedTrack); // リネームのタイトル反映等
@@ -356,7 +382,7 @@ void MainComponent::timerCallback()
         masterFeed.maxSincePlay = juce::jmax (masterFeed.maxSincePlay, p[0], p[1]);
     }
     headers.updateMeters (meterPeaks);
-    mixerOverlay.updateMeters (meterFeeds, busFeeds, masterFeed);
+    mixerWindow.content().updateMeters (meterFeeds, busFeeds, masterFeed);
     fxEditor.updateMeters (meterFeeds, busFeeds, masterFeed);
 
     updateLcdTime();
@@ -973,7 +999,7 @@ void MainComponent::selectTrack (int index)
         : juce::jlimit (0, (int) project->tracks.size() - 1, index);
     headers.setSelectedTrack (selectedTrack);
     timeline.setSelectedTrack (selectedTrack);
-    mixerOverlay.sync (selectedTrack); // トラック増減・選択変更をストリップに反映（非表示中はno-op）
+    mixerWindow.content().sync (selectedTrack); // トラック増減・選択変更をストリップに反映（非表示中はno-op）
     if (fxEditor.isOpen())
     {
         fxEditor.refreshFromModel (selectedTrack); // バス/Master表示は維持し、対象消滅時だけ追従に戻す
@@ -1496,22 +1522,22 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     // Logic準拠: X = ミキサー。表示中もモーダルにしない（Space再生・シーク等はそのまま効く）
     if (is (SC::toggleMixer))
     {
-        if (mixerOverlay.isVisible())
+        if (mixerWindow.isVisible())
         {
             Log::info ("mixer.close");
-            mixerOverlay.dismiss();
+            mixerWindow.dismiss();
         }
         else
         {
             Log::info ("mixer.open");
-            mixerOverlay.showOver (mixerArea, selectedTrack);
+            mixerWindow.openOver (this, selectedTrack);
         }
         return true;
     }
-    if (mixerOverlay.isVisible() && escape)
+    if (mixerWindow.isVisible() && escape)
     {
         Log::info ("mixer.close", "source=escape");
-        mixerOverlay.dismiss();
+        mixerWindow.dismiss();
         return true;
     }
     // Logic準拠: B = 下部FXエディタ（Smart Controls相当）
@@ -1793,7 +1819,7 @@ void MainComponent::toggleMuteSelectedTrack()
     auto& params = *project->tracks[(size_t) selectedTrack].params;
     params.mute.store (! params.mute.load());
     headers.refreshValues();
-    mixerOverlay.sync (selectedTrack); // ミキサー表示中のmキーでもM点灯を同期する
+    mixerWindow.content().sync (selectedTrack); // ミキサー表示中のmキーでもM点灯を同期する
     setDirty (true);
 }
 
@@ -1845,7 +1871,7 @@ void MainComponent::toggleSoloTracks()
     }
 
     headers.refreshValues();
-    mixerOverlay.sync (selectedTrack); // ミキサー表示中のsキーでもS点灯を同期する（全ストリップ再バインド）
+    mixerWindow.content().sync (selectedTrack); // ミキサー表示中のsキーでもS点灯を同期する（全ストリップ再バインド）
     setDirty (true);
 }
 
@@ -1984,12 +2010,6 @@ void MainComponent::resized()
     // FXパネル（概要）はヘッダー列のさらに左（基本常設）
     if (fxEditor.isOpen())
         fxEditor.setBounds (area.removeFromLeft (FxEditorView::preferredWidth));
-
-    // ミキサーはヘッダー＋タイムライン領域だけを覆う（上部バー・下部・FXパネルは操作可能なまま。
-    // バスストリップをクリックしてFXパネルの表示を切り替える動線を塞がない）
-    mixerArea = area;
-    if (mixerOverlay.isVisible())
-        mixerOverlay.setBounds (mixerArea);
 
     // ＋ボタンの帯はヘッダー列の中だけに置く（全幅に取るとタイムライン下に死にスペースができる）
     auto headerColumn = area.removeFromLeft (TrackHeadersView::preferredWidth);

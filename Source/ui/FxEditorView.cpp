@@ -1,6 +1,7 @@
 #include "FxEditorView.h"
 
 #include "Fonts.h"
+#include "StripParts.h"
 #include "Theme.h"
 
 namespace
@@ -11,37 +12,8 @@ constexpr int thumbHeight = 44;
 constexpr int slotHeight = 22;
 constexpr int slotGap = 4;
 constexpr int sendsHeaderHeight = 20;
-constexpr int sendRowHeight = 22;  // バス名ピル＋小ノブの行（Logicのsendスロット相当）
 constexpr int sendRowGap = 4;
-constexpr int sendKnobSize = 20;
 constexpr int panKnobSize = 46;
-
-// 電源アイコン（円弧＋上の縦線）。areaの中心に描く
-void drawPowerIcon (juce::Graphics& g, juce::Rectangle<float> area)
-{
-    const auto c = area.getCentre();
-    const float r = 4.5f;
-    juce::Path p;
-    p.addCentredArc (c.x, c.y + 1.0f, r, r, 0.0f, 0.7f,
-                     juce::MathConstants<float>::twoPi - 0.7f, true);
-    p.startNewSubPath (c.x, c.y - r - 1.0f);
-    p.lineTo (c.x, c.y - 0.5f);
-    g.strokePath (p, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved,
-                                           juce::PathStrokeType::rounded));
-}
-
-// エディタアイコン（スライダー2本: 横線＋つまみの丸）。areaの中心に描く
-void drawEditIcon (juce::Graphics& g, juce::Rectangle<float> area)
-{
-    const auto c = area.getCentre();
-    for (int i = 0; i < 2; ++i)
-    {
-        const float ly = c.y + (i == 0 ? -3.0f : 3.0f);
-        const float thumbX = c.x + (i == 0 ? -2.0f : 2.0f);
-        g.fillRect (juce::Rectangle<float> (c.x - 5.5f, ly - 0.7f, 11.0f, 1.4f));
-        g.fillEllipse (juce::Rectangle<float> (3.6f, 3.6f).withCentre ({ thumbX, ly }));
-    }
-}
 } // namespace
 
 FxEditorView::FxEditorView()
@@ -52,27 +24,19 @@ FxEditorView::FxEditorView()
     closeButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white.withAlpha (0.55f));
     closeButton.onClick = [this] { if (onCloseRequested) onCloseRequested(); };
 
-    // Sendsの小ノブ（Logicのsendポット風: 緑の値アーク。ドラッグ中は送り量0〜100のポップアップ）
-    for (int b = 0; b < numSendBuses; ++b)
+    // スロットピル（対話込みの実体はSlotPill。ミキサーのストリップと共有部品）
+    for (int i = 0; i < 3; ++i)
     {
-        auto& knob = sendKnobs[b];
-        addChildComponent (knob);
-        knob.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-        knob.setRange (0.0, 1.0);
-        knob.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
-        knob.setDoubleClickReturnValue (true, 0.0);
-        knob.setColour (juce::Slider::rotarySliderFillColourId, Theme::sendArcGreen);
-        knob.setColour (juce::Slider::rotarySliderOutlineColourId, Theme::controlBg);
-        knob.textFromValueFunction = [] (double v) { return juce::String (juce::roundToInt (v * 100.0)); };
-        knob.setPopupDisplayEnabled (true, false, this);
-        knob.onValueChange = [this, b]
-        {
-            if (auto params = targetParams())
-                params->sends[b].store ((float) sendKnobs[b].getValue());
-            repaint (sendsArea); // ピルの点灯（send>0）を追従させる
-            if (onSendOrPanChanged)
-                onSendOrPanChanged();
-        };
+        addChildComponent (slotPills[i]);
+        slotPills[i].onOpenEditor = [this, i] { if (onSlotClicked) onSlotClicked (i); };
+        slotPills[i].onPowerToggled = [this] { if (onFxEnabledChanged) onFxEnabledChanged(); };
+    }
+
+    // Sendsの行（バス名ピル＋小ノブ。部品はミキサーのストリップと共有）
+    for (auto& row : sendRows)
+    {
+        addChildComponent (row);
+        row.onChanged = [this] { if (onSendOrPanChanged) onSendOrPanChanged(); };
     }
 
     // Panノブ（Logicのストリップと同じ「Sendsの下・フェーダーの上」。描画はAppLookAndFeel）
@@ -105,10 +69,9 @@ FxEditorView::FxEditorView()
             onVolumeChanged();
     };
 
-    // Space（再生/停止）を奪わせない
+    // Space（再生/停止）を奪わせない（SendRowは自前で設定済み）
     for (auto* c : std::initializer_list<juce::Component*> { &closeButton, &panKnob,
-                                                            &volumeSlider, &sendKnobs[0],
-                                                            &sendKnobs[1], &sendKnobs[2] })
+                                                            &volumeSlider })
     {
         c->setWantsKeyboardFocus (false);
         c->setMouseClickGrabsKeyboardFocus (false);
@@ -172,14 +135,15 @@ void FxEditorView::refreshValues()
 {
     if (! isVisible())
         return;
+    for (auto& row : sendRows)
+        row.refreshValue();
+    for (auto& pill : slotPills)
+        pill.repaint(); // EQ/CompのON/OFF（ミキサー側での電源トグル）を色に反映
     if (auto params = targetParams())
     {
-        for (int b = 0; b < numSendBuses; ++b)
-            sendKnobs[b].setValue (params->sends[b].load(), juce::dontSendNotification);
         volumeSlider.setValue (params->gain.load(), juce::dontSendNotification);
         panKnob.setValue (params->pan.load(), juce::dontSendNotification);
     }
-    repaint (sendsArea); // ピルの点灯（send>0）もミキサー側の変更に追従させる
 }
 
 void FxEditorView::updateMeters (const std::vector<MeterFeed>& trackFeeds,
@@ -210,8 +174,8 @@ void FxEditorView::updateMeters (const std::vector<MeterFeed>& trackFeeds,
 
 juce::String FxEditorView::slotName (int slot) const
 {
-    if (slot >= 0 && slot < (int) slots.size())
-        return slots[(size_t) slot].name;
+    if (slot >= 0 && slot < slotCount)
+        return slotNames[slot];
     return {};
 }
 
@@ -232,7 +196,8 @@ void FxEditorView::setActiveSlot (int slot)
     if (activeSlot == slot)
         return;
     activeSlot = slot;
-    repaint();
+    for (int i = 0; i < 3; ++i)
+        slotPills[i].setActiveOutline (i == activeSlot);
 }
 
 std::shared_ptr<TrackParams> FxEditorView::targetParams() const
@@ -249,21 +214,6 @@ std::shared_ptr<TrackParams> FxEditorView::targetParams() const
         case Target::master: return project->masterParams;
         case Target::none:   break;
     }
-    return nullptr;
-}
-
-std::atomic<bool>* FxEditorView::slotEnabledAtomic (int slot) const
-{
-    // ON/OFFを持つのはトラックのEQ(0)・Comp(1)のみ（バス/MasterのFXは常在でバイパスなし）
-    if (target != Target::track)
-        return nullptr;
-    auto params = targetParams(); // 実体はTrackが所有しているので返り値の寿命に依存しない
-    if (params == nullptr)
-        return nullptr;
-    if (slot == 0)
-        return &params->eqEnabled;
-    if (slot == 1)
-        return &params->compEnabled;
     return nullptr;
 }
 
@@ -285,15 +235,38 @@ void FxEditorView::rebind()
         case Target::none:   titleName = {}; break;
     }
 
-    for (auto& knob : sendKnobs)
-        knob.setVisible (isTrack);
+    // スロット構成（ON/OFFを持つのはトラックのEQ・Compのみ。バス/MasterのFXは常在でバイパスなし。
+    // enabled atomicの実体はTrackが所有するTrackParams）
+    slotCount = 0;
+    if (isTrack)
+    {
+        slotNames[0] = "EQ";
+        slotNames[1] = "Comp";
+        slotNames[2] = "Ext";
+        slotPills[0].configure ("EQ", &params->eqEnabled, false);
+        slotPills[1].configure ("Comp", &params->compEnabled, false);
+        slotPills[2].configure ("Ext", nullptr, true); // スライス6まで操作不可（空きスロット表示）
+        slotCount = 3;
+    }
+    else if (params != nullptr)
+    {
+        const bool isDelay = target == Target::bus && targetBus == 2;
+        slotNames[0] = target == Target::master ? "Limiter" : (isDelay ? "Delay" : "Reverb");
+        slotPills[0].configure (slotNames[0], nullptr, false);
+        slotCount = 1;
+    }
+    for (int i = 0; i < 3; ++i)
+        slotPills[i].setVisible (i < slotCount);
+
+    for (auto& row : sendRows)
+        row.setVisible (isTrack);
     panKnob.setVisible (isTrack);
     closeButton.setVisible (true);
 
     if (isTrack)
     {
-        for (int b = 0; b < numSendBuses; ++b)
-            sendKnobs[b].setValue (params->sends[b].load(), juce::dontSendNotification);
+        for (auto& row : sendRows)
+            row.bind (params);
         panKnob.setValue (params->pan.load(), juce::dontSendNotification);
     }
 
@@ -315,15 +288,17 @@ void FxEditorView::resized()
     auto title = area.removeFromTop (titleHeight);
     closeButton.setBounds (title.removeFromRight (30).withSizeKeepingCentre (22, 20));
 
-    slots.clear();
     eqThumbArea = {};
     sendsArea = {};
     area = area.reduced (pad, 0);
 
-    auto addSlot = [this, &area] (const juce::String& name, bool grayed = false)
+    auto placeSlots = [this, &area] (int count)
     {
-        slots.push_back ({ area.removeFromTop (slotHeight), name, grayed });
-        area.removeFromTop (slotGap);
+        for (int i = 0; i < count; ++i)
+        {
+            slotPills[i].setBounds (area.removeFromTop (slotHeight));
+            area.removeFromTop (slotGap);
+        }
     };
 
     if (target == Target::track)
@@ -333,23 +308,17 @@ void FxEditorView::resized()
         eqThumbArea = area.removeFromTop (thumbHeight);
         area.removeFromTop (10);
 
-        addSlot ("EQ");
-        addSlot ("Comp");
-        addSlot ("Ext", true); // スライス6まで操作不可（空きスロット表示）
+        placeSlots (3);
 
         // Sends区画（見出し＋「バス名ピル｜小ノブ」の行×3。Logicのsendスロット相当）
         area.removeFromTop (10);
         sendsArea = area.removeFromTop (sendsHeaderHeight
-                                        + numSendBuses * sendRowHeight
+                                        + numSendBuses * SendRow::preferredHeight
                                         + (numSendBuses - 1) * sendRowGap + 10);
         auto rows = sendsArea.withTrimmedTop (sendsHeaderHeight);
-        for (int b = 0; b < numSendBuses; ++b)
+        for (auto& row : sendRows)
         {
-            auto row = rows.removeFromTop (sendRowHeight);
-            sendKnobs[b].setBounds (row.removeFromRight (sendKnobSize)
-                                        .withSizeKeepingCentre (sendKnobSize, sendKnobSize));
-            row.removeFromRight (6);
-            sendPills[b] = row;
+            row.setBounds (rows.removeFromTop (SendRow::preferredHeight));
             rows.removeFromTop (sendRowGap);
         }
 
@@ -361,8 +330,7 @@ void FxEditorView::resized()
     else if (target == Target::bus || target == Target::master)
     {
         area.removeFromTop (10);
-        const bool isDelay = target == Target::bus && targetBus == 2;
-        addSlot (target == Target::master ? "Limiter" : (isDelay ? "Delay" : "Reverb"));
+        placeSlots (1);
     }
 
     // dB数値ボックス（左=設定値、右=ピーク。LogicのストリップどおりPanノブの下・フェーダーの上）
@@ -396,109 +364,23 @@ void FxEditorView::paint (juce::Graphics& g)
     g.setFont (Fonts::forText (Fonts::body(), titleName));
     g.drawText (titleName, 38, 0, getWidth() - 74, titleHeight, juce::Justification::centredLeft);
 
-    // EQサムネイル（EQ DSP実装まではフラットカーブのプレースホルダ）
+    // EQサムネイル（描画はミキサーと共有のStripParts）
     if (! eqThumbArea.isEmpty())
     {
-        const auto thumb = eqThumbArea.toFloat();
-        g.setColour (Theme::faderSlotBg);
-        g.fillRoundedRectangle (thumb, 4.0f);
-        {
-            juce::Graphics::ScopedSaveState save (g);
-            juce::Path clip;
-            clip.addRoundedRectangle (thumb, 4.0f);
-            g.reduceClipRegion (clip);
-
-            const float curveY = thumb.getY() + thumb.getHeight() * 0.55f;
-            g.setColour (Theme::eqThumbCurve.withAlpha (0.14f)); // カーブ下の淡い塗り
-            g.fillRect (thumb.withTop (curveY));
-            g.setColour (Theme::eqThumbCurve);
-            g.fillRect (juce::Rectangle<float> (thumb.getX(), curveY - 0.9f,
-                                                thumb.getWidth(), 1.8f));
-        }
+        StripParts::drawEqThumbnail (g, eqThumbArea.toFloat());
         if (hoverThumb)
         {
             g.setColour (Theme::accent.brighter (0.4f).withAlpha (0.7f));
-            g.drawRoundedRectangle (thumb.reduced (0.5f), 4.0f, 1.0f);
+            g.drawRoundedRectangle (eqThumbArea.toFloat().reduced (0.5f), 4.0f, 1.0f);
         }
     }
 
-    // スロット（Logic風ピル。ON=青・OFF=グレー・空き=暗い枠。
-    // hover中の行は「電源｜エディタ」の2分割コントロールに変わる）
-    for (int i = 0; i < (int) slots.size(); ++i)
-    {
-        const auto& slot = slots[(size_t) i];
-        const auto bounds = slot.bounds.toFloat();
-
-        if (slot.grayed)
-        {
-            g.setColour (Theme::faderSlotBg);
-            g.fillRoundedRectangle (bounds, 5.0f);
-            g.setColour (juce::Colours::white.withAlpha (0.25f));
-            g.setFont (Fonts::small());
-            g.drawText (slot.name, slot.bounds, juce::Justification::centred);
-            continue;
-        }
-
-        auto* enabled = slotEnabledAtomic (i);
-        const bool isOn = enabled == nullptr || enabled->load();
-        const auto base = isOn ? Theme::accent : Theme::controlBg;
-        const bool hovered = i == hoverSlot;
-
-        if (enabled != nullptr && hovered)
-        {
-            // 2分割（Logicの電源｜エディタ｜差し替え矢印から、固定スロットに不要な矢印を除いた形）
-            juce::Graphics::ScopedSaveState save (g);
-            juce::Path clip;
-            clip.addRoundedRectangle (bounds, 5.0f);
-            g.reduceClipRegion (clip);
-
-            auto left = bounds;
-            const auto right = left.removeFromRight (bounds.getWidth() * 0.5f);
-            g.setColour (hoverPower ? base.brighter (0.18f) : base);
-            g.fillRect (left);
-            g.setColour (hoverPower ? base : base.brighter (0.18f));
-            g.fillRect (right);
-            g.setColour (juce::Colours::black.withAlpha (0.35f)); // 分割線
-            g.fillRect (juce::Rectangle<float> (right.getX() - 0.5f, bounds.getY(),
-                                                1.0f, bounds.getHeight()));
-
-            g.setColour (juce::Colours::white.withAlpha (0.95f));
-            drawPowerIcon (g, left);
-            drawEditIcon (g, right);
-        }
-        else
-        {
-            g.setColour (hovered ? base.brighter (0.1f) : base);
-            g.fillRoundedRectangle (bounds, 5.0f);
-            g.setColour (juce::Colours::white.withAlpha (isOn ? 0.95f : 0.75f));
-            g.setFont (Fonts::smallStrong());
-            g.drawText (slot.name, slot.bounds, juce::Justification::centred);
-        }
-
-        if (i == activeSlot) // 下部エディタで開いている行（Logicのリンク枠相当）
-        {
-            g.setColour (juce::Colours::white.withAlpha (0.85f));
-            g.drawRoundedRectangle (bounds.reduced (0.75f), 5.0f, 1.5f);
-        }
-    }
-
-    // Sends区画（見出し＋バス名ピル。ピルはLogicと同じくsend>0で点灯）
+    // Sends区画の見出し（スロット・Sendsの行本体はSlotPill/SendRowが描く）
     if (target == Target::track && ! sendsArea.isEmpty())
     {
         g.setColour (juce::Colours::white.withAlpha (0.45f));
         g.setFont (Fonts::small());
         g.drawText ("SENDS", sendsArea.withHeight (sendsHeaderHeight), juce::Justification::centredLeft);
-
-        const auto params = targetParams();
-        for (int b = 0; b < numSendBuses; ++b)
-        {
-            const bool active = params != nullptr && params->sends[b].load() > 0.001f;
-            g.setColour (active ? Theme::accent : Theme::controlBg);
-            g.fillRoundedRectangle (sendPills[b].toFloat(), 5.0f);
-            g.setColour (juce::Colours::white.withAlpha (active ? 0.95f : 0.75f));
-            g.setFont (Fonts::smallStrong());
-            g.drawText (SendBuses::names[b], sendPills[b], juce::Justification::centred);
-        }
     }
 
     // dB数値（左=フェーダー設定値、右=再生開始からのピーク保持）
@@ -510,30 +392,8 @@ void FxEditorView::paint (juce::Graphics& g)
 void FxEditorView::mouseDown (const juce::MouseEvent& e)
 {
     if (! eqThumbArea.isEmpty() && eqThumbArea.contains (e.getPosition()))
-    {
         if (onSlotClicked)
             onSlotClicked (0); // トラックのスロット0=EQ
-        return;
-    }
-
-    for (int i = 0; i < (int) slots.size(); ++i)
-    {
-        const auto& slot = slots[(size_t) i];
-        if (slot.grayed || ! slot.bounds.contains (e.getPosition()))
-            continue;
-        if (auto* enabled = slotEnabledAtomic (i); enabled != nullptr
-                                                   && e.x < slot.bounds.getCentreX())
-        {
-            enabled->store (! enabled->load()); // 左半分=電源トグル
-            repaint();
-            if (onFxEnabledChanged)
-                onFxEnabledChanged();
-            return;
-        }
-        if (onSlotClicked)
-            onSlotClicked (i);
-        return;
-    }
 }
 
 void FxEditorView::mouseMove (const juce::MouseEvent& e)
@@ -548,25 +408,10 @@ void FxEditorView::mouseExit (const juce::MouseEvent&)
 
 void FxEditorView::updateHover (juce::Point<int> pos)
 {
-    int newSlot = -1;
-    bool newPower = false;
     const bool newThumb = ! eqThumbArea.isEmpty() && eqThumbArea.contains (pos);
-
-    for (int i = 0; i < (int) slots.size(); ++i)
+    if (newThumb != hoverThumb)
     {
-        const auto& slot = slots[(size_t) i];
-        if (slot.grayed || ! slot.bounds.contains (pos))
-            continue;
-        newSlot = i;
-        newPower = slotEnabledAtomic (i) != nullptr && pos.x < slot.bounds.getCentreX();
-        break;
-    }
-
-    if (newSlot != hoverSlot || newPower != hoverPower || newThumb != hoverThumb)
-    {
-        hoverSlot = newSlot;
-        hoverPower = newPower;
         hoverThumb = newThumb;
-        repaint();
+        repaint (eqThumbArea);
     }
 }

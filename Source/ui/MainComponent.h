@@ -8,7 +8,7 @@
 #include "FxDetailView.h"
 #include "FxEditorView.h"
 #include "IconButton.h"
-#include "MixerOverlay.h"
+#include "MixerWindow.h"
 #include "PianoRollView.h"
 #include "ShortcutListOverlay.h"
 #include "TimelineView.h"
@@ -156,7 +156,7 @@ private:
     AddTrackOverlay addTrackOverlay;
     ShortcutListOverlay shortcutOverlay; // ⌘?のショートカット一覧（表示中のみ可視）
     BounceOverlay bounceOverlay;         // バウンス進捗（表示中のみ可視・モーダル）
-    MixerOverlay mixerOverlay;           // Xのミキサー（表示中のみ可視・キーは奪わない）
+    MixerWindow mixerWindow;             // Xのミキサー（独立ウィンドウ。移動・リサイズ自由）
     TransportLcd lcd; // BPM・小節位置・時間のLCD風パネル（バー中央に置く）
     juce::Label srWarningLabel;
     juce::TooltipWindow tooltipWindow { this }; // アイコンのみのボタン（歯車等）のホバー説明用
@@ -167,10 +167,6 @@ private:
     bool dirty = false;
     std::vector<juce::uint64> lastSoloIds; // sキーで解除したソロ構成（トラックID）。次のsで再適用する。セッション内のみ保持
     bool focusGrabbed = false;
-
-    // ミキサーオーバーレイが覆う領域（ヘッダー＋タイムライン。上部バーと下部パネルは覆わない）。
-    // resizedで更新し、Xで開くときに使う
-    juce::Rectangle<int> mixerArea;
 
     // メーター値の配布用（timerCallbackで毎tick詰め直す。peakL/peakRのexchange(0)は
     // ヘッダー・ミキサー・FXパネルで取り合わないようここで一元的に行う）

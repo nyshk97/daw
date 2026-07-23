@@ -5,6 +5,8 @@
 #include <vector>
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "SendRow.h"
+#include "SlotPill.h"
 #include "StereoMeter.h"
 #include "../shared/Project.h"
 
@@ -45,7 +47,7 @@ public:
     void remapTrack (int newIndex);
 
     // ---- 下部詳細エディタとの連携（状態管理はMainComponent側）----
-    int numSlots() const { return (int) slots.size(); }
+    int numSlots() const { return slotCount; }
     juce::String slotName (int slot) const;   // "EQ" / "Comp" / "Reverb" 等（範囲外は空）
     juce::String channelName() const { return titleName; }
     juce::String targetKey() const;           // "track" / "bus0".."bus2" / "master"（詳細の追従判定用）
@@ -58,8 +60,8 @@ public:
 
     std::function<void (int)> onSlotClicked;  // 空きスロット以外の「エディタを開く」操作（行クリック・EQサムネイル）
     std::function<void()> onCloseRequested;   // ✕ボタン
-    // send/panはミキサーと同じatomicを表示するため相互refreshが要るが、EQ/CompのON/OFFは
-    // ミキサーに表示がないためdirty化のみでよい。呼び出し側の同期範囲が違うので分ける
+    // send/pan/EQ・CompのON/OFFはいずれもミキサーと同じatomicの表示なので相互refreshが要る。
+    // 呼び出し側の同期範囲が違う（音量はヘッダーにも出る）ためコールバックを分けている
     std::function<void()> onSendOrPanChanged;
     std::function<void()> onFxEnabledChanged;
     std::function<void()> onVolumeChanged;    // 音量はヘッダー・ミキサーと同じatomicの表示（両方へ反映が要る）
@@ -85,33 +87,23 @@ private:
 
     juce::String titleName;
 
-    // スロット行（resizedで構築、paint/mouseDownで使用）
-    struct Slot
-    {
-        juce::Rectangle<int> bounds;
-        juce::String name;
-        bool grayed = false;
-    };
-    std::vector<Slot> slots;
+    // スロット（対話込みの実体はSlotPill。名前はfxDetail連携用にここでも持つ。rebindで構成する）
+    SlotPill slotPills[3];
+    juce::String slotNames[3];
+    int slotCount = 0;
     juce::Rectangle<int> eqThumbArea;       // EQサムネイル（トラックのみ。クリック=EQスロットのエディタを開く）
     juce::Rectangle<int> sendsArea;         // Sends区画（見出し＋行。トラックのみ）
-    juce::Rectangle<int> sendPills[numSendBuses]; // 各行のバス名ピル（paintが描く。send>0で点灯）
     juce::Rectangle<int> volumeReadoutArea; // dB数値ボックスのペア（設定値・ピーク。Panノブの下）
     float peakMaxDisplay = 0.0f;            // 再生開始からの最大ピーク（dB数値表示用）
 
-    // hover状態（スロットのピルはhoverで「電源｜エディタ」の2分割表示に変わる）
-    int hoverSlot = -1;
-    bool hoverPower = false;  // hoverSlotの左半分（電源側）に居るか
     bool hoverThumb = false;
-
-    std::atomic<bool>* slotEnabledAtomic (int slot) const; // EQ/CompのON/OFF atomic（他スロットはnullptr）
     void updateHover (juce::Point<int> pos);
 
     juce::TextButton closeButton { juce::String::fromUTF8 (u8"×") };
     juce::Slider volumeSlider;   // Logicのチャンネルストリップと同じ「フェーダー＋メーター分離」配置
     juce::Slider panKnob;        // トラックのみ（Logic風の物理ノブ描画はAppLookAndFeel::drawLogicPanKnob）
     StereoMeter meter;
-    juce::Slider sendKnobs[numSendBuses]; // トラックのみ（行右端の小ノブ。ミキサーのSendKnobとは別UI）
+    SendRow sendRows[numSendBuses] { SendRow (0), SendRow (1), SendRow (2) }; // トラックのみ（ミキサーと共有部品）
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FxEditorView)
 };

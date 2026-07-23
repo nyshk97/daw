@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "Fonts.h"
+#include "StripParts.h"
 #include "Theme.h"
 
 namespace
@@ -10,35 +11,39 @@ namespace
 constexpr int stripGap = 1;       // ストリップ間の区切り（背景色が見える隙間）
 constexpr int sectionGap = 10;    // トラック群とバス群の間
 constexpr int panelPad = 12;
-constexpr int titleBarHeight = 30; // MIXERタイトル＝ドラッグハンドル
-constexpr int panelMaxHeight = 490;
-constexpr int panelMinHeight = 340;
 } // namespace
 
 // ---- MixerStrip -----------------------------------------------------------
 
-MixerStrip::MixerStrip (Kind kindToUse) : kind (kindToUse)
+MixerStrip::MixerStrip (Kind kindToUse, juce::String fxSlotNameToUse)
+    : kind (kindToUse), fxSlotName (std::move (fxSlotNameToUse))
 {
     const bool isTrack = kind == Kind::track;
 
+    // スロットピル（トラック=3・バス/Master=1。中身の構成はbindで行う）
+    for (int i = 0; i < (isTrack ? 3 : 1); ++i)
+    {
+        addAndMakeVisible (slotPills[i]);
+        slotPills[i].onOpenEditor = [this, i] { if (onOpenSlot) onOpenSlot (i); };
+        slotPills[i].onPowerToggled = [this] { if (onChanged) onChanged(); };
+    }
+
     if (isTrack)
     {
-        for (auto& knob : sendKnobs)
+        for (auto& row : sendRows)
         {
-            addAndMakeVisible (knob);
-            knob.onChanged = [this] { if (onChanged) onChanged(); };
+            addAndMakeVisible (row);
+            row.onChanged = [this] { if (onChanged) onChanged(); };
         }
         setupKnob (panKnob, -1.0, 1.0, 0.0);
+        panKnob.getProperties().set ("logicKnob", true); // FXパネルと同じLogic風ノブ（値はノブ中央に出る）
         panKnob.onValueChange = [this]
         {
             if (params != nullptr)
                 params->pan.store ((float) panKnob.getValue());
-            repaint (panLabelArea); // ラベルの値表示を追従させる
             if (onChanged)
                 onChanged();
         };
-        panKnob.onDragStart = [this] { panDragging = true; repaint (panLabelArea); };
-        panKnob.onDragEnd = [this] { panDragging = false; repaint (panLabelArea); };
     }
 
     addAndMakeVisible (fader);
@@ -91,7 +96,7 @@ MixerStrip::MixerStrip (Kind kindToUse) : kind (kindToUse)
         };
     }
 
-    // Space（再生/停止）を奪わせない（SendKnobは自前で設定済み）
+    // Space（再生/停止）を奪わせない（SendRowは自前で設定済み）
     for (auto* c : std::initializer_list<juce::Component*> {
              &fader, &panKnob, &muteButton, &soloButton })
     {
@@ -125,10 +130,21 @@ void MixerStrip::bind (const juce::String& name, std::shared_ptr<TrackParams> pa
         if (kind == Kind::track)
         {
             panKnob.setValue (params->pan.load(), juce::dontSendNotification);
-            for (auto& knob : sendKnobs)
-                knob.bind (params);
+            for (auto& row : sendRows)
+                row.bind (params);
         }
     }
+
+    // スロットピルの構成（enabled atomicの実体はTrackが所有するTrackParams。bindのたびに差し替える）
+    if (kind == Kind::track)
+    {
+        slotPills[0].configure ("EQ", params != nullptr ? &params->eqEnabled : nullptr, false);
+        slotPills[1].configure ("Comp", params != nullptr ? &params->compEnabled : nullptr, false);
+        slotPills[2].configure ("Ext", nullptr, true);
+    }
+    else
+        slotPills[0].configure (fxSlotName, nullptr, false);
+
     repaint();
 }
 
@@ -151,19 +167,9 @@ void MixerStrip::paint (juce::Graphics& g)
         g.fillRect (0, 0, getWidth(), 2);
     }
 
-    // Panラベル（センターはPAN・振っているときはL35/R35、ドラッグ中はセンターでもC）。
-    // sendノブのラベルは SendKnob 自身が描く
-    if (kind == Kind::track && params != nullptr)
-    {
-        g.setFont (Fonts::small());
-        const float pan = params->pan.load();
-        const int amount = juce::roundToInt (std::abs (pan) * 100.0f);
-        const auto panValue = (pan < 0.0f ? "L" : "R") + juce::String (amount);
-        const auto panText = amount < 1 ? (panDragging ? juce::String ("C") : juce::String ("PAN"))
-                                        : panValue;
-        g.setColour (juce::Colours::white.withAlpha (panDragging || amount >= 1 ? 0.8f : 0.45f));
-        g.drawText (panText, panLabelArea, juce::Justification::centred);
-    }
+    // EQサムネイル（スロットピルは子コンポーネントのSlotPillが描く）
+    if (! eqThumbArea.isEmpty())
+        StripParts::drawEqThumbnail (g, eqThumbArea.toFloat());
 
     // dB数値（左=フェーダー設定値、右=再生開始からのピーク保持）
     if (params != nullptr && ! readoutArea.isEmpty())
@@ -199,19 +205,31 @@ void MixerStrip::resized()
         area.removeFromBottom (6);
     }
 
+    // FXパネルと同じ縦並び（サムネイル→スロット→Sends行→Panノブ）
     if (kind == Kind::track)
     {
-        // sendノブ3個（上端の横並び。ノブ＋豆ラベルはSendKnobが内包）
-        auto sendRow = area.removeFromTop (28 + SendKnob::labelHeight);
-        const int knobW = sendRow.getWidth() / numSendBuses;
-        for (auto& knob : sendKnobs)
-            knob.setBounds (sendRow.removeFromLeft (knobW));
+        eqThumbArea = area.removeFromTop (30);
         area.removeFromTop (6);
-
-        // Panノブ（send より一回り大きく・PANラベル付き）
-        panKnob.setBounds (area.removeFromTop (40).withSizeKeepingCentre (38, 38));
-        panLabelArea = area.removeFromTop (12);
+        for (auto& pill : slotPills)
+        {
+            pill.setBounds (area.removeFromTop (20));
+            area.removeFromTop (3);
+        }
+        area.removeFromTop (3);
+        for (auto& row : sendRows)
+        {
+            row.setBounds (area.removeFromTop (SendRow::preferredHeight));
+            area.removeFromTop (3);
+        }
+        area.removeFromTop (3);
+        panKnob.setBounds (area.removeFromTop (42).withSizeKeepingCentre (42, 42));
         area.removeFromTop (4);
+    }
+    else
+    {
+        eqThumbArea = {};
+        slotPills[0].setBounds (area.removeFromTop (20));
+        area.removeFromTop (6);
     }
 
     // dB数値の行（左=設定値、右=ピーク。Logicのストリップと同じくフェーダーの上）
@@ -230,8 +248,14 @@ void MixerStrip::resized()
     meter.setBounds (faderArea.withWidth (meterW));
 }
 
-void MixerStrip::mouseDown (const juce::MouseEvent&)
+void MixerStrip::mouseDown (const juce::MouseEvent& e)
 {
+    if (kind == Kind::track && ! eqThumbArea.isEmpty() && eqThumbArea.contains (e.getPosition()))
+    {
+        if (onOpenSlot)
+            onOpenSlot (0); // サムネイル=EQエディタを開く（FXパネルと同じショートカット）
+        return;
+    }
     if (onSelect)
         onSelect();
 }
@@ -240,8 +264,8 @@ void MixerStrip::mouseDown (const juce::MouseEvent&)
 
 MixerOverlay::MixerOverlay()
 {
-    setWantsKeyboardFocus (false);
-    setMouseClickGrabsKeyboardFocus (false);
+    // ウィンドウ内で自分がフォーカスを受け、キーをonKey（MainComponentの集中ハンドラ）へ転送する
+    setWantsKeyboardFocus (true);
 
     addAndMakeVisible (viewport);
     viewport.setViewedComponent (&stripRow, false);
@@ -252,9 +276,13 @@ MixerOverlay::MixerOverlay()
     {
         addAndMakeVisible (busStrips[b]);
         busStrips[b].onSelect = [this, b] { if (onSelectBus) onSelectBus (b); };
+        busStrips[b].onOpenSlot = [this, b] (int) { if (onOpenBusSlot) onOpenBusSlot (b); };
+        busStrips[b].onChanged = [this] { if (onChanged) onChanged(); }; // 電源トグルのdirty化（バスは常時ONだが将来用）
     }
     addAndMakeVisible (masterStrip);
     masterStrip.onSelect = [this] { if (onSelectMaster) onSelectMaster(); };
+    masterStrip.onOpenSlot = [this] (int) { if (onOpenMasterSlot) onOpenMasterSlot(); };
+    masterStrip.onChanged = [this] { if (onChanged) onChanged(); };
 }
 
 void MixerOverlay::setProject (Project* p)
@@ -262,18 +290,10 @@ void MixerOverlay::setProject (Project* p)
     project = p;
 }
 
-void MixerOverlay::showOver (juce::Rectangle<int> areaToCover, int newSelectedTrack)
-{
-    setBounds (areaToCover);
-    setVisible (true);
-    toFront (false);
-    sync (newSelectedTrack);
-}
-
 void MixerOverlay::sync (int newSelectedTrack)
 {
     selectedTrack = newSelectedTrack;
-    if (! isVisible() || project == nullptr)
+    if (! isShowing() || project == nullptr) // isVisibleでなくisShowing（ウィンドウごと非表示を含めて判定）
         return;
 
     if ((int) trackStrips.size() != (int) project->tracks.size())
@@ -298,6 +318,7 @@ void MixerOverlay::rebuildTrackStrips()
         auto strip = std::make_unique<MixerStrip> (MixerStrip::Kind::track);
         strip->onSelect = [this, i] { if (onSelectTrack) onSelectTrack (i); };
         strip->onChanged = [this] { if (onChanged) onChanged(); };
+        strip->onOpenSlot = [this, i] (int slot) { if (onOpenTrackSlot) onOpenTrackSlot (i, slot); };
         stripRow.addAndMakeVisible (*strip);
         trackStrips.push_back (std::move (strip));
     }
@@ -306,7 +327,7 @@ void MixerOverlay::rebuildTrackStrips()
 void MixerOverlay::updateMeters (const std::vector<MeterFeed>& trackFeeds,
                                  const MeterFeed (&busFeeds)[numSendBuses], const MeterFeed& masterFeed)
 {
-    if (! isVisible())
+    if (! isShowing())
         return;
     for (int i = 0; i < (int) trackStrips.size(); ++i)
         trackStrips[(size_t) i]->updateMeter (i < (int) trackFeeds.size() ? trackFeeds[(size_t) i]
@@ -316,90 +337,43 @@ void MixerOverlay::updateMeters (const std::vector<MeterFeed>& trackFeeds,
     masterStrip.updateMeter (masterFeed);
 }
 
-juce::Rectangle<int> MixerOverlay::panelBounds() const
-{
-    // 固定部（バス3＋Master）＋トラック部（最大でトラック数分、最低2本分は確保）
-    const int stripW = MixerStrip::preferredWidth + stripGap;
-    const int fixedW = stripW * (numSendBuses + 1);
-    const int wantTracksW = stripW * juce::jmax (2, (int) trackStrips.size());
-    const auto available = getLocalBounds().reduced (20);
-
-    const int w = juce::jmin (available.getWidth(),
-                              panelPad * 2 + wantTracksW + sectionGap + fixedW);
-    const int h = juce::jlimit (juce::jmin (panelMinHeight, available.getHeight()),
-                                panelMaxHeight, available.getHeight());
-    // ドラッグ移動のoffsetを効かせつつ、必ず領域内に収める
-    return juce::Rectangle<int> (w, h)
-        .withCentre (available.getCentre() + panelOffset)
-        .constrainedWithin (available);
-}
-
 void MixerOverlay::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colours::black.withAlpha (0.45f)); // 背後を暗くしてミキサーに集中させる
-
-    const auto panel = panelBounds();
-    g.setColour (Theme::popupBg);
-    g.fillRoundedRectangle (panel.toFloat(), 8.0f);
-    g.setColour (Theme::popupBorder);
-    g.drawRoundedRectangle (panel.toFloat().reduced (0.5f), 8.0f, 1.0f);
-
-    // タイトルバー（＝ドラッグハンドル）。選択画面のPROJECTS見出しと同じトーン
-    g.setColour (juce::Colours::white.withAlpha (0.45f));
-    g.setFont (Fonts::bodyStrong());
-    g.drawText ("MIXER", panel.withHeight (titleBarHeight).withTrimmedLeft (14),
-                juce::Justification::centredLeft);
+    g.fillAll (Theme::windowBg);
 
     // トラック群とバス群の区切り線
     const int sepX = masterStrip.getX() - (MixerStrip::preferredWidth + stripGap) * numSendBuses
                      - sectionGap / 2 - stripGap;
     g.setColour (Theme::popupBorder);
-    g.drawVerticalLine (sepX, (float) panel.getY() + 10.0f, (float) panel.getBottom() - 10.0f);
+    g.drawVerticalLine (sepX, 10.0f, (float) getHeight() - 10.0f);
 }
 
 void MixerOverlay::resized()
 {
-    auto panel = panelBounds().withTrimmedTop (titleBarHeight).reduced (panelPad, 0);
-    panel.removeFromBottom (panelPad);
+    auto area = getLocalBounds().reduced (panelPad);
 
     const int stripW = MixerStrip::preferredWidth;
-    const int stripH = panel.getHeight();
+    const int stripH = area.getHeight();
 
     // 右端から Master → バス3本（固定表示）
-    masterStrip.setBounds (panel.removeFromRight (stripW));
+    masterStrip.setBounds (area.removeFromRight (stripW));
     for (int b = numSendBuses - 1; b >= 0; --b)
     {
-        panel.removeFromRight (stripGap);
-        busStrips[b].setBounds (panel.removeFromRight (stripW));
+        area.removeFromRight (stripGap);
+        busStrips[b].setBounds (area.removeFromRight (stripW));
     }
-    panel.removeFromRight (sectionGap);
+    area.removeFromRight (sectionGap);
 
     // 残りがトラック群（横スクロール）
-    viewport.setBounds (panel);
-    const int rowW = juce::jmax (panel.getWidth(),
+    viewport.setBounds (area);
+    const int rowW = juce::jmax (area.getWidth(),
                                  (int) trackStrips.size() * (stripW + stripGap));
     stripRow.setSize (rowW, stripH);
     for (int i = 0; i < (int) trackStrips.size(); ++i)
         trackStrips[(size_t) i]->setBounds (i * (stripW + stripGap), 0, stripW, stripH);
 }
 
-void MixerOverlay::mouseDown (const juce::MouseEvent& e)
+bool MixerOverlay::keyPressed (const juce::KeyPress& key)
 {
-    if (! panelBounds().contains (e.getPosition()))
-    {
-        dismiss();
-        return;
-    }
-    // パネル内の地の部分（タイトルバー・隙間。子コンポーネント上のクリックはここへ来ない）はドラッグ開始
-    draggingPanel = true;
-    dragAnchor = e.getPosition() - panelOffset;
-}
-
-void MixerOverlay::mouseDrag (const juce::MouseEvent& e)
-{
-    if (! draggingPanel)
-        return;
-    panelOffset = e.getPosition() - dragAnchor;
-    resized(); // 子のレイアウトをパネルに追従させる（panelBoundsがクランプする）
-    repaint();
+    return onKey ? onKey (key) : false;
 }
