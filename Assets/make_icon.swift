@@ -27,73 +27,40 @@ func rgb(_ hex: UInt32, _ alpha: CGFloat = 1.0) -> NSColor {
 
 let W = CGFloat(size), H = CGFloat(size)
 
-// 背景: 上から下へわずかに明→暗のダークグラデーション（UIの 0x2c2c30 系に合わせる）
-let bg = NSGradient(colors: [rgb(0x2e2e34), rgb(0x1a1a1e)])!
-bg.draw(in: NSRect(x: 0, y: 0, width: W, height: H), angle: -90)
+// 背景: 左上ブルー → 右下バイオレットの対角グラデーション
+let bg = NSGradient(colorsAndLocations:
+    (rgb(0x3fa9f6), 0.0), (rgb(0x5b6df3), 0.5), (rgb(0x6a45ee), 1.0))!
+bg.draw(in: NSRect(x: 0, y: 0, width: W, height: H), angle: -45)
 
-// うっすら中央にブルーの光だまり（ビネットの逆）で奥行きを出す
-let glow = NSGradient(colors: [rgb(0x4a6ea9, 0.18), rgb(0x4a6ea9, 0.0)])!
-glow.draw(fromCenter: NSPoint(x: W * 0.5, y: H * 0.52), radius: 0,
-          toCenter: NSPoint(x: W * 0.5, y: H * 0.52), radius: W * 0.62,
+// 左上寄りにうっすら白の光だまり
+let glow = NSGradient(colors: [rgb(0xffffff, 0.15), rgb(0xffffff, 0.0)])!
+glow.draw(fromCenter: NSPoint(x: W * 0.35, y: H * 0.80), radius: 0,
+          toCenter: NSPoint(x: W * 0.35, y: H * 0.80), radius: W * 0.80,
           options: [])
 
-// 波形バー: 中央線対称の縦バー15本
-let heights: [CGFloat] = [0.16, 0.34, 0.55, 0.80, 0.62, 0.92, 0.70, 0.44,
-                          0.66, 0.88, 0.56, 0.38, 0.52, 0.28, 0.15]
-let n = heights.count
-let margin: CGFloat = 96          // 左右余白（フルブリードでも波形自体は少し内側に）
-let gapRatio: CGFloat = 0.62      // バー幅に対する間隔
-let slot = (W - margin * 2) / CGFloat(n)
-let barW = slot / (1 + gapRatio)
-let maxHalf: CGFloat = 330
-let midY = H * 0.52
-
-// 再生ヘッドは 9本目と10本目の間
-let playheadX = margin + slot * 9.0 - (slot - barW) / 2
+// ドット波形: 8列、列ごとの粒数が波形の高さ。
+// 各列に上端イエロー → オレンジ → 下端マゼンタのグラデを列単位で張る
+let heights: [CGFloat] = [0.28, 0.60, 1.00, 0.68, 0.88, 0.50, 0.74, 0.32]
+let margin: CGFloat = 128
+let slot = (W - margin * 2) / CGFloat(heights.count)
+let dotR: CGFloat = 43
+let spacing: CGFloat = 106
+let midY = H * 0.5
+let warm = NSGradient(colorsAndLocations:
+    (rgb(0xffd23f), 0.0), (rgb(0xff7a2e), 0.48), (rgb(0xe02fb0), 1.0))!
 
 for (i, h) in heights.enumerated() {
-    let x = margin + slot * CGFloat(i) + (slot - barW) / 2
-    let half = maxHalf * h
-    let bar = NSBezierPath(
-        roundedRect: NSRect(x: x, y: midY - half, width: barW, height: half * 2),
-        xRadius: barW / 2, yRadius: barW / 2)
-    let played = (x + barW / 2) < playheadX
-    if played {
-        // 再生済み: ブルーの縦グラデーション（下を少し濃く）
-        let g = NSGradient(colors: [rgb(0x6f9bd6), rgb(0x4a6ea9)])!
-        g.draw(in: bar, angle: 90)
-    } else {
-        // 未再生: くすんだグレーブルー
-        rgb(0x54565e).setFill()
-        bar.fill()
+    let x = margin + slot * CGFloat(i) + slot / 2
+    let count = max(1, Int((h * 5).rounded()))
+    let column = NSBezierPath()
+    for k in 0..<count {
+        let off = (CGFloat(k) - CGFloat(count - 1) / 2) * spacing
+        column.appendOval(in: NSRect(x: x - dotR, y: midY + off - dotR,
+                                     width: dotR * 2, height: dotR * 2))
     }
+    // 列のドット群をまとめて塗る＝グラデが列全体（上端→下端）に一枚で架かる
+    warm.draw(in: column, angle: -90)
 }
-
-// 再生ヘッド: 赤い縦ライン＋グロー＋上部の下向き三角
-let phTop = H * 0.10, phBottom = H * 0.94
-for (radius, alpha) in [(CGFloat(26), 0.10), (16, 0.20), (9, 0.35)] {
-    rgb(0xff5a4d, alpha).setFill()
-    NSBezierPath(
-        roundedRect: NSRect(x: playheadX - radius, y: H - phBottom,
-                            width: radius * 2, height: phBottom - phTop),
-        xRadius: radius, yRadius: radius).fill()
-}
-rgb(0xff5a4d).setFill()
-NSBezierPath(
-    roundedRect: NSRect(x: playheadX - 5, y: H - phBottom,
-                        width: 10, height: phBottom - phTop),
-    xRadius: 5, yRadius: 5).fill()
-
-// 三角マーカー（ルーラーの再生ヘッド風・上端）
-let triW: CGFloat = 88, triH: CGFloat = 74
-let triTopY = H - phTop + 8
-let tri = NSBezierPath()
-tri.move(to: NSPoint(x: playheadX - triW / 2, y: triTopY))
-tri.line(to: NSPoint(x: playheadX + triW / 2, y: triTopY))
-tri.line(to: NSPoint(x: playheadX, y: triTopY - triH))
-tri.close()
-rgb(0xff5a4d).setFill()
-tri.fill()
 
 // dev 版: 右下コーナーを横切るアンバーのリボン＋「DEV」
 // システムの角丸マスクはコーナーから対角に約90px削るだけなので、

@@ -52,6 +52,7 @@ open build/daw_artefacts/Debug/LaLa-dev.app
 
 - **Debug = dev版**（`LaLa-dev.app`・bundle id `local.d0ne1s.daw.dev`・DEVリボン付きアイコン）、**Release = 常用版**（`LaLa.app`・`cmake -B build-release -DCMAKE_BUILD_TYPE=Release`）。名前・bundle id・アイコンはCMakeLists.txtで切り替え。開発中の動作確認はdev版で行う
 - アプリアイコンは `Assets/make_icon.swift` で生成（`swiftc` でビルドして実行。dev版は `--dev` フラグ。生成済みPNGは `Assets/` にコミット済み）
+- アイコンPNG（`Assets/icon*.png`）を差し替えたら `cmake -B build ...` の**configureを再実行**する。`Icon.icns` はビルド時でなくconfigure時にjuceaideが生成するため、`cmake --build` だけでは古いアイコンのまま（生成済みicnsを手で消すと `No rule to make target` で落ちる）。反映確認は `sips -s format png <app>/Contents/Resources/Icon.icns --out /tmp/x.png` で展開して目視
 
 - JUCEは`CMakeLists.txt`で **8.0.9 に pin** 済み。GOTCHAS.mdの`createWriterFor`（`AudioFormatWriterOptions`版）が実在することは`build/_deps/juce-src/modules/juce_audio_formats/format/juce_AudioFormat.h`で照合済み。**バージョンを上げるときは再照合すること**
 - プロジェクトの置き場所: `~/Music/daw/<プロジェクト名>/`（project.json＋`clip-NNN.wav`）
