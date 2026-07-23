@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 # VERSION がアプリバージョンの唯一の真実の源（Info.plist の CFBundleVersion と
 # アプリ内表示の両方に流れる。Sparkle は CFBundleVersion で新旧を比較する）。
 # リリース時は scripts/release.sh がこの値とタグの整合を検査する
-project(daw VERSION 0.5.0 LANGUAGES C CXX)
+project(daw VERSION 0.6.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
