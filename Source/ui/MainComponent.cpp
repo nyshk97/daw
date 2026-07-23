@@ -67,7 +67,8 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     mixerOverlay.onChanged = [this]
     {
         setDirty (true);
-        fxEditor.refreshValues(); // 同じsend atomicを表示するエディタ側へ反映
+        fxEditor.refreshValues(); // 同じsend/gain atomicを表示するエディタ側へ反映
+        headers.refreshValues();  // 音量はヘッダーのスライダーにも表示される
     };
     // バス/Masterストリップのクリック → FXパネルでそのチャンネルのチェーンを表示
     mixerOverlay.onSelectBus = [this] (int bus)
@@ -100,6 +101,12 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         mixerOverlay.refreshValues(); // sendはミキサーと同じatomicの表示なので反映（非表示時はno-op）
     };
     fxEditor.onFxEnabledChanged = [this] { setDirty (true); }; // ON/OFFはミキサーに表示がないのでdirty化のみ
+    fxEditor.onVolumeChanged = [this]
+    {
+        setDirty (true);
+        mixerOverlay.refreshValues(); // 音量はミキサーのフェーダーと同じatomicの表示（非表示時はno-op）
+        headers.refreshValues();      // ヘッダーのスライダーにも表示される
+    };
     fxDetail.onCloseRequested = [this] { closeFxDetail(); };
 
     // ---- タイムライン・ヘッダの連携 ----
@@ -156,6 +163,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     headers.onChanged = [this]
     {
         setDirty (true);
+        mixerOverlay.refreshValues(); // 音量はミキサーのフェーダーと同じatomicの表示（非表示時はno-op）
         if (fxEditor.isOpen())
         {
             fxEditor.refreshFromModel (selectedTrack); // リネームのタイトル反映等
@@ -297,17 +305,21 @@ void MainComponent::timerCallback()
 
     pollBounce();
 
-    // メーター消費の一元化: peakLevel の exchange(0) はここでだけ行い、
-    // 読み取った値をヘッダーとミキサーの両方へ配る（2箇所でexchangeするとピークを取り合う）
+    // メーター消費の一元化: peakL/peakR の exchange(0) はここでだけ行い、読み取った値を
+    // ヘッダー・ミキサー・FXパネルへ配る（複数箇所でexchangeするとピークを取り合う）
     meterPeaks.resize (project->tracks.size());
     for (size_t i = 0; i < project->tracks.size(); ++i)
-        meterPeaks[i] = project->tracks[i].params->peakLevel.exchange (0.0f);
-    float busPeaks[numSendBuses];
+        meterPeaks[i] = { project->tracks[i].params->peakL.exchange (0.0f),
+                          project->tracks[i].params->peakR.exchange (0.0f) };
+    StereoPeak busPeaks[numSendBuses];
     for (int b = 0; b < numSendBuses; ++b)
-        busPeaks[b] = project->busParams[b]->peakLevel.exchange (0.0f);
-    const float masterPeak = project->masterParams->peakLevel.exchange (0.0f);
+        busPeaks[b] = { project->busParams[b]->peakL.exchange (0.0f),
+                        project->busParams[b]->peakR.exchange (0.0f) };
+    const StereoPeak masterPeak { project->masterParams->peakL.exchange (0.0f),
+                                  project->masterParams->peakR.exchange (0.0f) };
     headers.updateMeters (meterPeaks);
     mixerOverlay.updateMeters (meterPeaks, busPeaks, masterPeak);
+    fxEditor.updateMeters (meterPeaks, busPeaks, masterPeak);
 
     updateLcdTime();
     updateTransportButtons();

@@ -13,15 +13,6 @@ constexpr int panelPad = 12;
 constexpr int titleBarHeight = 30; // MIXERタイトル＝ドラッグハンドル
 constexpr int panelMaxHeight = 490;
 constexpr int panelMinHeight = 340;
-
-// メーターの表示値: -60dB..0dB を 0..1 に写す（ヘッダーのメーターと同じスケール）
-float meterNorm (float level)
-{
-    if (level <= 0.001f)
-        return 0.0f;
-    const float db = 20.0f * std::log10 (level);
-    return juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 60.0f);
-}
 } // namespace
 
 // ---- MixerStrip -----------------------------------------------------------
@@ -51,6 +42,7 @@ MixerStrip::MixerStrip (Kind kindToUse) : kind (kindToUse)
     }
 
     addAndMakeVisible (fader);
+    addAndMakeVisible (meter);
     fader.setSliderStyle (juce::Slider::LinearVertical);
     fader.setRange (0.0, 1.0);
     fader.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
@@ -139,23 +131,9 @@ void MixerStrip::bind (const juce::String& name, std::shared_ptr<TrackParams> pa
     repaint();
 }
 
-void MixerStrip::updateMeter (float incoming)
+void MixerStrip::updateMeter (StereoPeak incoming)
 {
-    // 表示は「新しい値」か「前回の減衰」の大きい方（ヘッダーのメーターと同じ流儀）
-    const float next = juce::jmax (incoming, meterDisplay * 0.8f);
-    if (next < 0.005f)
-    {
-        if (meterDisplay > 0.0f)
-        {
-            meterDisplay = 0.0f;
-            repaint (meterArea);
-        }
-        return;
-    }
-    if (juce::approximatelyEqual (next, meterDisplay))
-        return;
-    meterDisplay = next;
-    repaint (meterArea);
+    meter.update (incoming);
 }
 
 void MixerStrip::paint (juce::Graphics& g)
@@ -179,18 +157,6 @@ void MixerStrip::paint (juce::Graphics& g)
                                         : panValue;
         g.setColour (juce::Colours::white.withAlpha (panDragging || amount >= 1 ? 0.8f : 0.45f));
         g.drawText (panText, panLabelArea, juce::Justification::centred);
-    }
-
-    // メーター（縦バー。dBスケール・0.9超は赤）
-    g.setColour (Theme::controlBg);
-    g.fillRoundedRectangle (meterArea.toFloat(), 2.0f);
-    const float norm = meterNorm (meterDisplay);
-    if (norm > 0.0f)
-    {
-        auto bar = meterArea.toFloat();
-        bar = bar.withTop (bar.getBottom() - bar.getHeight() * norm);
-        g.setColour (meterDisplay > 0.9f ? Theme::recordRed : Theme::playGreen);
-        g.fillRoundedRectangle (bar, 2.0f);
     }
 
     // 名前（下端）
@@ -238,14 +204,16 @@ void MixerStrip::resized()
         area.removeFromTop (4);
     }
 
-    // フェーダー＋メーター（残り全部の高さ）
-    const int faderW = 24;
-    const int meterW = 6;
-    const int totalW = faderW + 4 + meterW;
+    // フェーダー（目盛り込み）＋L/Rメーター（dB数字込み）。残り全部の高さ。
+    // Logicのストリップと同じ分離配置
+    const int faderW = 38;
+    const int meterW = 26;
+    const int totalW = faderW + 2 + meterW;
     auto faderArea = area.withSizeKeepingCentre (totalW, area.getHeight());
     fader.setBounds (faderArea.removeFromLeft (faderW));
-    faderArea.removeFromLeft (4);
-    meterArea = faderArea.withWidth (meterW).reduced (0, 6);
+    faderArea.removeFromLeft (2);
+    // フェーダーと同じ高さで置く（井戸の上下揃えはStereoMeter::wellInsetYが行う）
+    meter.setBounds (faderArea.withWidth (meterW));
 }
 
 void MixerStrip::mouseDown (const juce::MouseEvent&)
@@ -321,13 +289,14 @@ void MixerOverlay::rebuildTrackStrips()
     }
 }
 
-void MixerOverlay::updateMeters (const std::vector<float>& trackPeaks,
-                                 const float (&busPeaks)[numSendBuses], float masterPeak)
+void MixerOverlay::updateMeters (const std::vector<StereoPeak>& trackPeaks,
+                                 const StereoPeak (&busPeaks)[numSendBuses], StereoPeak masterPeak)
 {
     if (! isVisible())
         return;
     for (int i = 0; i < (int) trackStrips.size(); ++i)
-        trackStrips[(size_t) i]->updateMeter (i < (int) trackPeaks.size() ? trackPeaks[(size_t) i] : 0.0f);
+        trackStrips[(size_t) i]->updateMeter (i < (int) trackPeaks.size() ? trackPeaks[(size_t) i]
+                                                                          : StereoPeak { 0.0f, 0.0f });
     for (int b = 0; b < numSendBuses; ++b)
         busStrips[b].updateMeter (busPeaks[b]);
     masterStrip.updateMeter (masterPeak);

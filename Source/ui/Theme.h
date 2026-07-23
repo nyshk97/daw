@@ -64,6 +64,21 @@ inline const juce::Colour sectionBridge { 0xff5e88b8 };  // 青
 inline const juce::Colour sectionOutro  { 0xffb86a60 };  // 赤茶
 inline const juce::Colour sectionOther  { 0xff85858c };  // グレー
 
+// ---- 音量バー・メーター（AppLookAndFeel::drawLinearSlider / StereoMeter。Logicのストリップ準拠）----
+inline const juce::Colour faderSlotBg    { 0xff141417 };  // カプセル・フェーダー溝・メーター井戸の地
+inline const juce::Colour knobTop        { 0xffa6a9af };  // 縦フェーダーキャップのグラデーション上端（マット気味）
+inline const juce::Colour knobBottom     { 0xff8b8e94 };  // 同・下端
+inline const juce::Colour knobBall       { 0xff9a9da3 };  // ヘッダーの球つまみ（フラット単色）
+inline const juce::Colour faderRulerTick { 0xff4a4a50 };  // 縦フェーダー左の目盛り
+inline const juce::Colour meterScaleText { 0xff7f7f88 };  // 縦メーターのdB数字
+// メーターのレベル色。スケール位置に固定した緑→黄→赤（Logicと同じ読み方。
+// グラデーションの組み立ては StereoMeter.h の Meters::gradient）
+inline const juce::Colour meterGreenDeep { 0xff35935a };  // 根元（-60dB側）
+inline const juce::Colour meterGreen     { 0xff4db06a };  // 〜-20dB帯
+inline const juce::Colour meterYellow    { 0xffcbc94f };  // -13〜-8dB帯
+inline const juce::Colour meterOrange    { 0xffd98f3e };  // -4dB付近
+inline const juce::Colour meterRed       { 0xffd94a43 };  // 0dBFS直下（recordRedと同値だが役割が別）
+
 // ---- コントロール（ボタン・スライダー・LCD）----
 inline const juce::Colour controlBg     { 0xff3f3f46 };  // M/Sボタン・スライダー溝
 inline const juce::Colour controlTextOn { 0xff1c1c20 };  // ONボタン上の暗色文字

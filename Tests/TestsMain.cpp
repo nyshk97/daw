@@ -1082,8 +1082,10 @@ void testTrackLevelMeter()
     }
     engine.stop();
 
-    const float peak0 = project.tracks[0].params->peakLevel.exchange (0.0f);
-    const float peak1 = project.tracks[1].params->peakLevel.exchange (0.0f);
+    const float peak0 = juce::jmax (project.tracks[0].params->peakL.exchange (0.0f),
+                                    project.tracks[0].params->peakR.exchange (0.0f));
+    const float peak1 = juce::jmax (project.tracks[1].params->peakL.exchange (0.0f),
+                                    project.tracks[1].params->peakR.exchange (0.0f));
     expect (peak0 > 0.9f, "重なったクリップは合算後ピークで測ること（0.6+0.6 > 0.9）");
     expect (peak0 > 1.15f && peak0 < 1.25f, "合算後ピークが約1.2であること");
     expect (peak1 > 0.25f && peak1 < 0.35f, "他トラックの音が混入しないこと（clear漏れ検知）");
@@ -1586,18 +1588,21 @@ void testEnginePanSendsMaster()
             "panセンターは両ch等量（0.5）");
 
     // pan右振り切り: 左ほぼ0・右は+3dB（0.5×√2≈0.707）
+    params.peakL.exchange (0.0f); // センター測定の蓄積ピーク（CAS max）をリセット
+    params.peakR.exchange (0.0f);
     params.pan.store (1.0f);
     measure (left, right);
     expect (left < 0.001f, "pan右振り切りで左chは無音");
     expect (std::abs (right - 0.7071f) < 0.005f, "pan右振り切りで右chは+3dB（約0.707）");
-    expect (params.peakLevel.exchange (0.0f) > 0.7f, "トラックメーターはpost-panピーク（約0.707）");
+    expect (params.peakR.exchange (0.0f) > 0.7f, "Rメーターはpost-panピーク（約0.707）");
+    expect (params.peakL.exchange (0.0f) < 0.001f, "pan右振り切りでLメーターは振れないこと");
 
     // send（素通しバス）: pan中央・send100% → 原音と二重加算で1.0
     params.pan.store (0.0f);
     params.sends[0].store (1.0f);
     measure (left, right);
     expect (std::abs (left - 1.0f) < 0.002f, "send100%は素通しバスで二重加算（1.0）");
-    expect (project.busParams[0]->peakLevel.exchange (0.0f) > 0.45f, "バスメーターが振れること");
+    expect (project.busParams[0]->peakL.exchange (0.0f) > 0.45f, "バスメーターが振れること");
 
     // バスミュートでsend分が消える
     project.busParams[0]->mute.store (true);
@@ -1613,10 +1618,11 @@ void testEnginePanSendsMaster()
 
     // Masterゲイン（全体 1.0 → 0.5）とMasterメーター
     project.masterParams->gain.store (0.5f);
-    project.masterParams->peakLevel.exchange (0.0f); // 前シナリオの蓄積ピーク（CAS max）をリセット
+    project.masterParams->peakL.exchange (0.0f); // 前シナリオの蓄積ピーク（CAS max）をリセット
+    project.masterParams->peakR.exchange (0.0f);
     measure (left, right);
     expect (std::abs (left - 0.5f) < 0.002f, "Masterゲインで全体が半減すること");
-    expect (std::abs (project.masterParams->peakLevel.exchange (0.0f) - 0.5f) < 0.01f,
+    expect (std::abs (project.masterParams->peakL.exchange (0.0f) - 0.5f) < 0.01f,
             "Masterメーターはpost-masterピーク");
 
     snapshots.deleteRetired();

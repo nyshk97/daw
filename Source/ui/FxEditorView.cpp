@@ -53,8 +53,23 @@ FxEditorView::FxEditorView()
         knob.onChanged = [this] { if (onSendChanged) onSendChanged(); };
     }
 
+    // 音量フェーダー＋L/Rメーター（Logicのチャンネルストリップと同じ分離配置。全チャンネル共通）
+    addChildComponent (volumeSlider);
+    addChildComponent (meter);
+    volumeSlider.setSliderStyle (juce::Slider::LinearVertical);
+    volumeSlider.setRange (0.0, 1.0);
+    volumeSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    volumeSlider.onValueChange = [this]
+    {
+        if (auto params = targetParams())
+            params->gain.store ((float) volumeSlider.getValue());
+        if (onVolumeChanged)
+            onVolumeChanged();
+    };
+
     // Space（再生/停止）を奪わせない（SendKnobは自前で設定済み）
-    for (auto* c : std::initializer_list<juce::Component*> { &closeButton, &eqButton, &compButton })
+    for (auto* c : std::initializer_list<juce::Component*> { &closeButton, &eqButton, &compButton,
+                                                            &volumeSlider })
     {
         c->setWantsKeyboardFocus (false);
         c->setMouseClickGrabsKeyboardFocus (false);
@@ -120,6 +135,26 @@ void FxEditorView::refreshValues()
         return;
     for (auto& knob : sendKnobs)
         knob.refreshValue();
+    if (auto params = targetParams())
+        volumeSlider.setValue (params->gain.load(), juce::dontSendNotification);
+}
+
+void FxEditorView::updateMeters (const std::vector<StereoPeak>& trackPeaks,
+                                 const StereoPeak (&busPeaks)[numSendBuses], StereoPeak masterPeak)
+{
+    if (! isVisible() || ! meter.isVisible())
+        return;
+    switch (target)
+    {
+        case Target::track:
+            meter.update (targetTrack >= 0 && targetTrack < (int) trackPeaks.size()
+                              ? trackPeaks[(size_t) targetTrack]
+                              : StereoPeak { 0.0f, 0.0f });
+            break;
+        case Target::bus:    meter.update (busPeaks[targetBus]); break;
+        case Target::master: meter.update (masterPeak); break;
+        case Target::none:   break;
+    }
 }
 
 juce::String FxEditorView::slotName (int slot) const
@@ -198,6 +233,14 @@ void FxEditorView::rebind()
             knob.bind (params);
     }
 
+    volumeSlider.setVisible (params != nullptr);
+    meter.setVisible (params != nullptr);
+    if (params != nullptr)
+    {
+        volumeSlider.setDoubleClickReturnValue (true, isTrack ? 0.8 : 1.0); // バス/Masterの既定はユニティ
+        volumeSlider.setValue (params->gain.load(), juce::dontSendNotification);
+    }
+
     resized();
     repaint();
 }
@@ -242,6 +285,20 @@ void FxEditorView::resized()
         const bool isDelay = target == Target::bus && targetBus == 2;
         addSlot (target == Target::master ? "Limiter" : (isDelay ? "Delay" : "Reverb"));
     }
+
+    // Volume区画（見出し＋フェーダー/メーター。残り全部の高さ）。
+    // フェーダーは目盛り込み・メーターはdB数字込みの幅（Logicのストリップと同じ分離配置）
+    area.removeFromTop (8);
+    volumeArea = area;
+    auto volBody = volumeArea.withTrimmedTop (sendsHeaderHeight);
+    volBody.removeFromBottom (12);
+    const int faderW = 38;
+    const int meterW = 26;
+    auto pair = volBody.withSizeKeepingCentre (faderW + 2 + meterW, volBody.getHeight());
+    volumeSlider.setBounds (pair.removeFromLeft (faderW));
+    pair.removeFromLeft (2);
+    // フェーダーと同じ高さで置く（井戸の上下揃えはStereoMeter::wellInsetYが行う）
+    meter.setBounds (pair.withWidth (meterW));
 }
 
 void FxEditorView::paint (juce::Graphics& g)
@@ -283,6 +340,15 @@ void FxEditorView::paint (juce::Graphics& g)
         g.setColour (juce::Colours::white.withAlpha (0.45f));
         g.setFont (Fonts::small());
         g.drawText ("SENDS", sendsArea.withHeight (sendsHeaderHeight).withTrimmedLeft (10),
+                    juce::Justification::centredLeft);
+    }
+
+    // Volume区画の見出し
+    if (volumeSlider.isVisible() && ! volumeArea.isEmpty())
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.45f));
+        g.setFont (Fonts::small());
+        g.drawText ("VOLUME", volumeArea.withHeight (sendsHeaderHeight).withTrimmedLeft (10),
                     juce::Justification::centredLeft);
     }
 }

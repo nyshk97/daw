@@ -4,6 +4,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "Fonts.h"
+#include "StereoMeter.h"
 #include "Theme.h"
 
 // アプリ全体のLookAndFeel。デフォルトsans-serifをmacOSのシステムUIフォント
@@ -21,9 +22,6 @@ public:
         setDefaultSansSerifTypefaceName (".AppleSystemUIFont");
         // V4デフォルトの青みグレー(0xff323e44)は他パネルの無彩色系から浮くため差し替える
         setColour (juce::ResizableWindow::backgroundColourId, Theme::windowBg);
-        // 水平スライダー（音量・ベロシティ）: 溝は背景より一段明るく、値部分はアクセント青で塗る
-        setColour (juce::Slider::backgroundColourId, Theme::controlBg);
-        setColour (juce::Slider::trackColourId, Theme::accent);
         // メニュー背景は透明にして自前の角丸パネルを描く（非opaqueなウィンドウになり角丸の外が抜ける。
         // juce_PopupMenu.cppのMenuWindowがこの色のisOpaque()でウィンドウの不透明化を決めている）
         setColour (juce::PopupMenu::backgroundColourId, juce::Colours::transparentBlack);
@@ -118,50 +116,141 @@ public:
         g.fillRoundedRectangle (button.getLocalBounds().toFloat(), 4.0f);
     }
 
-    // 水平スライダーはデフォルトだと溝が背景に溶けて値も読めないため、
-    // 「丸端の溝＋左端からつまみまでの値塗り＋つまみ」で描き直す
+    // 音量スライダーのつまみ半径（可動域の端の詰め幅）。水平=球（d14）、垂直=キャップ（h34）に合わせる
+    int getSliderThumbRadius (juce::Slider& slider) override
+    {
+        return slider.isHorizontal() ? 8 : 14;
+    }
+
+    // 音量バー（Logicのストリップ準拠）:
+    // 水平（トラックヘッダー・ベロシティ）= 暗いカプセル＋グレーの球つまみ。音量スライダーは
+    //   カプセル内にL/R 2レーンのメーター＋ピークホールドの目印が乗る（meterL/R・holdL/Rプロパティ。
+    //   スケールはカプセル全体=-60dB..0dBFS固定で、つまみ位置とは独立＝大きい信号は球を追い越す）
+    // 垂直（ミキサー・FXパネルのフェーダー）= 左に目盛り＋細い溝＋シルバーの刻み入りキャップ。
+    //   メーターは持たない（隣のStereoMeterが担当）
     void drawLinearSlider (juce::Graphics& g, int x, int y, int width, int height,
                            float sliderPos, float minSliderPos, float maxSliderPos,
                            juce::Slider::SliderStyle style, juce::Slider& slider) override
     {
-        if (style != juce::Slider::LinearHorizontal)
+        if (style == juce::Slider::LinearHorizontal)
         {
-            juce::LookAndFeel_V4::drawLinearSlider (g, x, y, width, height, sliderPos,
-                                                    minSliderPos, maxSliderPos, style, slider);
+            drawHorizontalVolumeBar (g, x, y, width, height, sliderPos, slider);
             return;
         }
-
-        const float trackH = 4.0f;
-        const float cy = (float) y + (float) height * 0.5f;
-        const auto track = juce::Rectangle<float> ((float) x, cy - trackH * 0.5f,
-                                                   (float) width, trackH);
-
-        g.setColour (slider.findColour (juce::Slider::backgroundColourId));
-        g.fillRoundedRectangle (track, trackH * 0.5f);
-
-        g.setColour (slider.findColour (juce::Slider::trackColourId));
-        g.fillRoundedRectangle (track.withRight (sliderPos), trackH * 0.5f);
-
-        // レベルメーター（音量スライダーのみ。TrackHeaderComponentがmeterLevelプロパティで渡す）。
-        // 描画順は 溝 → 値塗り → メーター → つまみ で固定。
-        // 値はリニア振幅のままだと実用レベル（-20dB前後）がほぼ見えないため、
-        // -60dB..0dB を 0..1 に写すdBスケールで表示する（実DAWのメーターと同じ）
-        const float meter = (float) (double) slider.getProperties()
-                                                   .getWithDefault ("meterLevel", 0.0);
-        if (meter > 0.001f) // -60dB未満は表示しない
+        if (style == juce::Slider::LinearVertical)
         {
-            const float db = 20.0f * std::log10 (meter);
-            const float norm = juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 60.0f);
-            const float meterH = 2.0f;
-            const auto meterBar = juce::Rectangle<float> (
-                (float) x, cy - meterH * 0.5f, norm * (float) width, meterH);
-            g.setColour (meter > 0.9f ? Theme::recordRed : Theme::playGreen);
-            g.fillRoundedRectangle (meterBar, meterH * 0.5f);
+            drawVerticalFader (g, x, y, width, height, sliderPos);
+            return;
+        }
+        juce::LookAndFeel_V4::drawLinearSlider (g, x, y, width, height, sliderPos,
+                                                minSliderPos, maxSliderPos, style, slider);
+    }
+
+    void drawHorizontalVolumeBar (juce::Graphics& g, int x, int y, int width, int height,
+                                  float sliderPos, juce::Slider& slider)
+    {
+        const float pillH = juce::jmin (16.0f, (float) height - 2.0f);
+        const float cy = (float) y + (float) height * 0.5f;
+        const auto pill = juce::Rectangle<float> ((float) x, cy - pillH * 0.5f,
+                                                  (float) width, pillH);
+        const float r = pillH * 0.5f;
+
+        g.setColour (Theme::faderSlotBg);
+        g.fillRoundedRectangle (pill, r);
+
+        {
+            // レーン塗りは矩形のまま、カプセルの角丸パスでクリップ
+            juce::Graphics::ScopedSaveState save (g);
+            juce::Path pillPath;
+            pillPath.addRoundedRectangle (pill, r);
+            g.reduceClipRegion (pillPath);
+
+            g.setGradientFill (Meters::gradient ({ pill.getX(), 0.0f },
+                                                 { pill.getRight(), 0.0f }));
+            const float laneH = 3.0f; // 細い2本レーン（カプセルの中央に寄せる。Logicのヘッダーと同じ）
+            static const juce::Identifier levelProps[2] { "meterL", "meterR" };
+            static const juce::Identifier holdProps[2] { "holdL", "holdR" };
+            for (int lane = 0; lane < 2; ++lane)
+            {
+                const float laneY = cy + (lane == 0 ? -(laneH + 1.0f) : 1.0f);
+                const float w = Meters::norm ((float) (double) slider.getProperties()
+                                                                    .getWithDefault (levelProps[lane], 0.0))
+                                * pill.getWidth();
+                if (w > 0.0f)
+                    g.fillRect (juce::Rectangle<float> (pill.getX(), laneY, w, laneH));
+
+                const float holdNorm = Meters::norm ((float) (double) slider.getProperties()
+                                                                           .getWithDefault (holdProps[lane], 0.0));
+                if (holdNorm > 0.0f) // ピークホールドの目印
+                    g.fillRect (juce::Rectangle<float> (
+                        pill.getX() + holdNorm * pill.getWidth() - 2.0f, laneY, 2.0f, laneH));
+            }
         }
 
-        const float thumbD = 12.0f;
-        g.setColour (slider.findColour (juce::Slider::thumbColourId));
-        g.fillEllipse (juce::Rectangle<float> (thumbD, thumbD).withCentre ({ sliderPos, cy }));
+        g.setColour (juce::Colours::black.withAlpha (0.4f));
+        g.drawRoundedRectangle (pill.reduced (0.5f), r, 1.0f);
+
+        // 球つまみ（フラット単色。立体感は付けない）
+        const float d = pillH - 2.0f;
+        const auto ball = juce::Rectangle<float> (d, d).withCentre ({ sliderPos, cy });
+        g.setColour (Theme::knobBall);
+        g.fillEllipse (ball);
+        g.setColour (juce::Colours::black.withAlpha (0.25f));
+        g.drawEllipse (ball.reduced (0.5f), 1.0f);
+    }
+
+    void drawVerticalFader (juce::Graphics& g, int x, int y, int width, int height,
+                            float sliderPos)
+    {
+        // 幅に余裕があれば左に目盛り列（装飾。Logicのフェーダー脇のルーラー相当）
+        const float rulerW = width >= 30 ? 10.0f : 0.0f;
+        const float cx = (float) x + rulerW + ((float) width - rulerW) * 0.5f;
+        const float travelTop = (float) y + 14.0f; // getSliderThumbRadiusと同じ詰め幅
+        const float travelBottom = (float) y + (float) height - 14.0f;
+
+        if (rulerW > 0.0f)
+        {
+            g.setColour (Theme::faderRulerTick);
+            constexpr int numTicks = 21;
+            for (int i = 0; i < numTicks; ++i)
+            {
+                const float ty = travelTop + (travelBottom - travelTop) * (float) i / (numTicks - 1);
+                const float len = i % 5 == 0 ? 6.0f : 3.0f;
+                g.fillRect (juce::Rectangle<float> ((float) x + rulerW - 2.0f - len, ty - 0.5f,
+                                                    len, 1.0f));
+            }
+        }
+
+        // 溝（細い暗色チャンネル）
+        const auto slot = juce::Rectangle<float> (cx - 2.5f, (float) y, 5.0f, (float) height);
+        g.setColour (Theme::faderSlotBg);
+        g.fillRoundedRectangle (slot, 2.5f);
+        g.setColour (juce::Colours::black.withAlpha (0.4f));
+        g.drawRoundedRectangle (slot.reduced (0.5f), 2.5f, 1.0f);
+
+        // シルバーの刻み入りキャップ（Logicのハードウェア風フェーダーキャップ）
+        const float capW = juce::jmin (20.0f, (float) width - rulerW);
+        const float capH = juce::jmin (28.0f, (float) height * 0.4f);
+        const auto cap = juce::Rectangle<float> (capW, capH).withCentre ({ cx, sliderPos });
+        g.setColour (juce::Colours::black.withAlpha (0.3f));
+        g.fillRoundedRectangle (cap.translated (0.0f, 1.0f), 3.0f);
+        g.setGradientFill (juce::ColourGradient (Theme::knobTop, 0.0f, cap.getY(),
+                                                 Theme::knobBottom, 0.0f, cap.getBottom(), false));
+        g.fillRoundedRectangle (cap, 3.0f);
+
+        g.setColour (juce::Colours::black.withAlpha (0.15f)); // 上下の細い刻み線
+        for (int i = -3; i <= 3; ++i)
+        {
+            if (i == 0)
+                continue;
+            const float ly = cap.getCentreY() + (float) i * capH * 0.11f;
+            g.fillRect (juce::Rectangle<float> (cap.getX() + 3.0f, ly - 0.5f, capW - 6.0f, 1.0f));
+        }
+        g.setColour (juce::Colours::black.withAlpha (0.35f)); // 中央の溝線
+        g.fillRect (juce::Rectangle<float> (cap.getX() + 1.5f, cap.getCentreY() - 0.75f,
+                                            capW - 3.0f, 1.5f));
+        g.setColour (juce::Colours::black.withAlpha (0.3f));
+        g.drawRoundedRectangle (cap.reduced (0.5f), 3.0f, 1.0f);
     }
 
     // 小径ノブ（ミキサーのPan・send）用のロータリー描画。V4デフォルト（塗り円＋点サム）は

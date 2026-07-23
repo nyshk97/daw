@@ -5,6 +5,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "SendKnob.h"
+#include "StereoMeter.h"
 #include "../shared/Project.h"
 
 // 左のFXパネル（Logicのインスペクタ相当・基本常設で I トグル）。
@@ -48,12 +49,18 @@ public:
     juce::String targetKey() const;           // "track" / "bus0".."bus2" / "master"（詳細の追従判定用）
     void setActiveSlot (int slot);            // 詳細を開いているスロットのハイライト（-1=なし）
 
+    // メーター値の配布（30Hz）。peakL/peakR の exchange(0) は MainComponent が一元的に行い、
+    // ここへは読み取り済みの値が渡ってくる。表示対象（トラック/バス/Master）のぶんだけ使う
+    void updateMeters (const std::vector<StereoPeak>& trackPeaks,
+                       const StereoPeak (&busPeaks)[numSendBuses], StereoPeak masterPeak);
+
     std::function<void (int)> onSlotClicked;  // グレーアウト以外のスロットのクリック
     std::function<void()> onCloseRequested;   // ✕ボタン
     // sendはミキサーと同じatomicを表示するため相互refreshが要るが、EQ/CompのON/OFFは
     // ミキサーに表示がないためdirty化のみでよい。呼び出し側の同期範囲が違うので分ける
     std::function<void()> onSendChanged;
     std::function<void()> onFxEnabledChanged;
+    std::function<void()> onVolumeChanged;    // 音量はヘッダー・ミキサーと同じatomicの表示（両方へ反映が要る）
 
     void paint (juce::Graphics& g) override;
     void resized() override;
@@ -82,9 +89,12 @@ private:
         bool grayed = false;
     };
     std::vector<Slot> slots;
-    juce::Rectangle<int> sendsArea; // Sends区画（見出し＋ノブ。トラックのみ）
+    juce::Rectangle<int> sendsArea;  // Sends区画（見出し＋ノブ。トラックのみ）
+    juce::Rectangle<int> volumeArea; // Volume区画（見出し＋フェーダー/メーター。全チャンネル共通）
 
     juce::TextButton closeButton { juce::String::fromUTF8 (u8"×") };
+    juce::Slider volumeSlider;   // Logicのチャンネルストリップと同じ「フェーダー＋メーター分離」配置
+    StereoMeter meter;
     juce::TextButton eqButton { "ON" };   // トラックのみ（EQ行の右端）
     juce::TextButton compButton { "ON" }; // トラックのみ（Comp行の右端）
     SendKnob sendKnobs[numSendBuses] { SendKnob (0), SendKnob (1), SendKnob (2) }; // トラックのみ

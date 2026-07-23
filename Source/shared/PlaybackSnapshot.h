@@ -30,10 +30,11 @@ struct TrackParams
     std::atomic<bool> eqEnabled { true };
     std::atomic<bool> compEnabled { true };
 
-    // トラック出力のピークレベル（UIメーター用）。オーディオスレッドはCASでmax更新し、
+    // トラック出力のL/Rピークレベル（UIメーター用）。オーディオスレッドはCASでmax更新し、
     // UI（30Hz Timer）は exchange(0) で読み取りリセットする。1UIフレームに複数ブロックが
     // 走っても最大値が渡る（storeだと最後のブロックしか見えず瞬発音を取りこぼす）
-    std::atomic<float> peakLevel { 0.0f };
+    std::atomic<float> peakL { 0.0f };
+    std::atomic<float> peakR { 0.0f };
 
     static_assert (std::atomic<float>::is_always_lock_free);
     static_assert (std::atomic<bool>::is_always_lock_free);
@@ -119,7 +120,7 @@ struct PlaybackSnapshot
 {
     std::vector<TrackPlayback> tracks;
 
-    // send用固定バス（gain=リターン量・mute・peakLevelを使用）とMaster（gain・peakLevelを使用）。
+    // send用固定バス（gain=リターン量・mute・peakL/peakRを使用）とMaster（gain・peakL/peakRを使用）。
     // Project が所有する実体を shared_ptr で共有する（トラックの params と同じ寿命規則）
     std::shared_ptr<TrackParams> busParams[numSendBuses];
     std::shared_ptr<TrackParams> masterParams;

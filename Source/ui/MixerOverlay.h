@@ -6,6 +6,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "SendKnob.h"
+#include "StereoMeter.h"
 #include "../shared/Project.h"
 
 // ミキサーの1本分のストリップ。トラック（sendノブ3・Pan・フェーダー・メーター・M/S・名前）、
@@ -21,7 +22,7 @@ public:
     explicit MixerStrip (Kind kindToUse);
 
     void bind (const juce::String& name, std::shared_ptr<TrackParams> paramsToBind, bool isSelected);
-    void updateMeter (float incoming); // 30Hz。減衰込みの表示更新（MixerOverlayが集約値を配る）
+    void updateMeter (StereoPeak incoming); // 30Hz。表示更新（MixerOverlayが集約値を配る。減衰はStereoMeter側）
 
     std::function<void()> onSelect;  // ストリップクリック（トラックのみ配線される）
     std::function<void()> onChanged; // 値変更（dirtyマーク用）
@@ -37,16 +38,15 @@ private:
     std::shared_ptr<TrackParams> params;
     juce::String stripName;
     bool selected = false;
-    float meterDisplay = 0.0f;
     bool panDragging = false;                     // ドラッグ中はラベルをライブ値表示にする
 
-    juce::Rectangle<int> meterArea; // resizedで確定、paintで描く
     juce::Rectangle<int> nameArea;
     juce::Rectangle<int> panLabelArea;
 
     SendKnob sendKnobs[numSendBuses] { SendKnob (0), SendKnob (1), SendKnob (2) }; // トラックのみ
     juce::Slider panKnob;                 // トラックのみ
     juce::Slider fader;
+    StereoMeter meter;                    // フェーダー右のL/Rメーター（Logicのストリップと同じ分離配置）
     juce::TextButton muteButton { "M" };  // トラック・バス
     juce::TextButton soloButton { "S" };  // トラックのみ
 
@@ -85,10 +85,10 @@ public:
     // 表示値のみrebind（FXエディタ側でのsend変更を反映する）
     void refreshValues() { sync (selectedTrack); }
 
-    // メーター値の配布（30Hz）。peakLevel の exchange(0) は MainComponent が一元的に行い、
+    // メーター値の配布（30Hz）。peakL/peakR の exchange(0) は MainComponent が一元的に行い、
     // ここへは読み取り済みの値が渡ってくる（2箇所でexchangeするとピークを取り合うため）
-    void updateMeters (const std::vector<float>& trackPeaks,
-                       const float (&busPeaks)[numSendBuses], float masterPeak);
+    void updateMeters (const std::vector<StereoPeak>& trackPeaks,
+                       const StereoPeak (&busPeaks)[numSendBuses], StereoPeak masterPeak);
 
     std::function<void (int)> onSelectTrack;
     std::function<void (int)> onSelectBus; // バスストリップクリック（FXエディタの表示切替）

@@ -6,6 +6,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "../shared/Project.h"
+#include "StereoMeter.h"
 
 // トラック1本分のヘッダ（名前・M/S・音量。MIDIトラックは楽器ドロップダウンも）。
 // トラック削除は右クリックメニュー（または⌘Delete。MainComponent側で処理）。
@@ -17,10 +18,10 @@ public:
 
     void bind (Track* trackToBind, bool isSelected, bool anySolo); // rebuild/選択変更時に呼ぶ
 
-    // 30Hz Timerから。減衰・スライダー再描画を行う。peakLevel の exchange(0) は
+    // 30Hz Timerから。減衰・スライダー再描画を行う。peakL/peakR の exchange(0) は
     // MainComponent が一元的に行い、読み取り済みの値が渡ってくる
     // （ミキサーと2箇所でexchangeするとピークを取り合うため）
-    void updateMeter (float incoming);
+    void updateMeter (StereoPeak incoming);
 
     // 30Hz Timerから。ミキサー・キー操作等どの経路のミュート/ソロ変更もpull型で拾い、
     // M/S点灯とグレーアウト表示を同期する（変化がなければ何もしない）。
@@ -55,7 +56,7 @@ private:
     bool selected = false;
     bool reorderDragging = false; // 並び替えドラッグ中（閾値超え＋canReorder通過後）
     bool dimmedVisual = false; // グレーアウト表示中か＝聞こえない状態（ミュート or 他トラックのソロ）。paintのアイコン減光にも使う
-    float meterDisplay = 0.0f; // メーターの表示値（読み取り値とディケイのmax）
+    Meters::ChannelDisplay meterDisplay[2]; // メーターのL/R表示状態（減衰＋ピークホールド）
 
     juce::Label nameLabel;
     juce::TextButton muteButton { "M" };
@@ -78,7 +79,7 @@ public:
     void setProject (Project* p);
     void rebuild(); // トラックの追加・削除後に呼ぶ
     void refreshValues(); // モデル側の値変更（キー操作でのミュート等）を表示に反映する
-    void updateMeters (const std::vector<float>& peaks); // 30Hz Timerから（各ヘッダへの転送のみ）
+    void updateMeters (const std::vector<StereoPeak>& peaks); // 30Hz Timerから（各ヘッダへの転送のみ）
     void setSelectedTrack (int index);
     void setViewY (int y);
 

@@ -137,31 +137,26 @@ void TrackHeaderComponent::bind (Track* trackToBind, bool isSelected, bool anySo
     repaint();
 }
 
-void TrackHeaderComponent::updateMeter (float incoming)
+void TrackHeaderComponent::updateMeter (StereoPeak incoming)
 {
     if (track == nullptr)
         return;
 
-    // 表示は「新しい値」か「前回の減衰」の大きい方
-    const float next = juce::jmax (incoming, meterDisplay * 0.8f);
-
-    if (next < 0.005f)
+    // 減衰・ピークホールドの計算は Meters::ChannelDisplay（ミキサー等のStereoMeterと同じ挙動）。
+    // 描画はLookAndFeel側なので、値はプロパティで渡す
+    bool changed = false;
+    static const juce::Identifier levelProps[2] { "meterL", "meterR" };
+    static const juce::Identifier holdProps[2] { "holdL", "holdR" };
+    for (size_t ch = 0; ch < 2; ++ch)
     {
-        if (meterDisplay > 0.0f) // 消える瞬間だけ描画し、無音トラックは再描画しない
-        {
-            meterDisplay = 0.0f;
-            volumeSlider.getProperties().set ("meterLevel", 0.0);
-            volumeSlider.repaint();
-        }
-        return;
+        if (! meterDisplay[ch].step (incoming[ch]))
+            continue;
+        volumeSlider.getProperties().set (levelProps[ch], (double) meterDisplay[ch].level);
+        volumeSlider.getProperties().set (holdProps[ch], (double) meterDisplay[ch].hold);
+        changed = true;
     }
-
-    if (juce::approximatelyEqual (next, meterDisplay))
-        return; // 定常値（一定音量の持続音等）では再描画しない
-
-    meterDisplay = next;
-    volumeSlider.getProperties().set ("meterLevel", (double) meterDisplay);
-    volumeSlider.repaint();
+    if (changed) // 定常値（一定音量の持続音等）では再描画しない
+        volumeSlider.repaint();
 }
 
 void TrackHeaderComponent::applyDimVisual (bool dimmed)
@@ -337,12 +332,13 @@ void TrackHeadersView::refreshValues()
     refreshBindings();
 }
 
-void TrackHeadersView::updateMeters (const std::vector<float>& peaks)
+void TrackHeadersView::updateMeters (const std::vector<StereoPeak>& peaks)
 {
     const bool anySolo = anySoloActive();
     for (int i = 0; i < (int) items.size(); ++i)
     {
-        items[(size_t) i]->updateMeter (i < (int) peaks.size() ? peaks[(size_t) i] : 0.0f);
+        items[(size_t) i]->updateMeter (i < (int) peaks.size() ? peaks[(size_t) i]
+                                                               : StereoPeak { 0.0f, 0.0f });
         items[(size_t) i]->syncStateVisual (anySolo);
     }
 }

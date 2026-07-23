@@ -6,7 +6,7 @@
 
 namespace
 {
-// メーター用ピークのCAS max更新（UI側の exchange(0) と組。TrackParams::peakLevel のコメント参照）
+// メーター用ピークのCAS max更新（UI側の exchange(0) と組。TrackParams::peakL/peakR のコメント参照）
 void storePeakMax (std::atomic<float>& target, float value)
 {
     float current = target.load();
@@ -189,8 +189,10 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
 
             if (canProcess && anyOverlap)
             {
-                storePeakMax (track.params->peakLevel,
-                              trackScratch.getMagnitude (0, 0, numSamples) * juce::jmax (panL, panR));
+                // メーター: モノソース×pan分配なので L/R = 合算ピーク×panL/panR
+                const float mag = trackScratch.getMagnitude (0, 0, numSamples);
+                storePeakMax (track.params->peakL, mag * panL);
+                storePeakMax (track.params->peakR, mag * panR);
                 mixScratch.addFrom (0, 0, trackScratch, 0, 0, numSamples, panL);
                 mixScratch.addFrom (1, 0, trackScratch, 0, 0, numSamples, panR);
 
@@ -248,17 +250,19 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
             if (busGain <= 0.0f)
                 continue;
 
-            storePeakMax (busParams->peakLevel,
-                          juce::jmax (busScratch[b].getMagnitude (0, 0, numSamples),
-                                      busScratch[b].getMagnitude (1, 0, numSamples)) * busGain);
+            storePeakMax (busParams->peakL, busScratch[b].getMagnitude (0, 0, numSamples) * busGain);
+            storePeakMax (busParams->peakR, busScratch[b].getMagnitude (1, 0, numSamples) * busGain);
             mixScratch.addFrom (0, 0, busScratch[b], 0, 0, numSamples, busGain);
             mixScratch.addFrom (1, 0, busScratch[b], 1, 0, numSamples, busGain);
         }
 
         if (snapshot->masterParams != nullptr)
-            storePeakMax (snapshot->masterParams->peakLevel,
-                          juce::jmax (mixScratch.getMagnitude (0, 0, numSamples),
-                                      mixScratch.getMagnitude (1, 0, numSamples)) * masterGain);
+        {
+            storePeakMax (snapshot->masterParams->peakL,
+                          mixScratch.getMagnitude (0, 0, numSamples) * masterGain);
+            storePeakMax (snapshot->masterParams->peakR,
+                          mixScratch.getMagnitude (1, 0, numSamples) * masterGain);
+        }
 
         if (buffer.getNumChannels() >= 2)
         {
@@ -528,10 +532,8 @@ void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, int numSample
                 busScratch[b].addFrom (1, 0, block, srcR, 0, numSamples, gainR * send);
             }
 
-            // メーター: 1本メーターにはL/Rのピークの大きい方を採用する
-            storePeakMax (track.params->peakLevel,
-                          juce::jmax (block.getMagnitude (0, 0, numSamples) * gainL,
-                                      block.getMagnitude (srcR, 0, numSamples) * gainR));
+            storePeakMax (track.params->peakL, block.getMagnitude (0, 0, numSamples) * gainL);
+            storePeakMax (track.params->peakR, block.getMagnitude (srcR, 0, numSamples) * gainR);
         }
     }
 }
