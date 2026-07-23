@@ -19,6 +19,10 @@ if [ -z "$current" ]; then
   exit 1
 fi
 
+# 「未リリースかどうか」はリモートの実タグで判定する（別クローンからリリースされていると
+# ローカルにタグが無く、リリース済みバージョンを未リリースと誤判定する）
+git fetch origin --tags --quiet
+
 case "$v" in
 auto|major|minor|patch)
   if [ "$v" = "auto" ] && ! git rev-parse "v$current" >/dev/null 2>&1; then

@@ -46,6 +46,11 @@ if ! gh auth status >/dev/null 2>&1; then
   echo "ERROR: gh が未認証です。gh auth login を実行してください"
   exit 1
 fi
+# タグの検査はリモートの実状態に対して行う（別クローンからリリースされているとローカルの
+# タグが古いまま preflight を通過し、Step 8 の gh release create で初めて衝突する）。
+# fetch 失敗＝ネットワーク不通もここで止める
+echo "==> preflight: fetching tags from origin..."
+git fetch origin --tags --quiet
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 if [ "$BRANCH" != "main" ]; then
   echo "ERROR: カレントブランチが main ではありません ($BRANCH)"
@@ -84,13 +89,17 @@ if ! gh repo view "$RELEASES_REPO" >/dev/null 2>&1; then
   echo "       gh repo create $RELEASES_REPO --public で作成してください（README 1 commit が必要）"
   exit 1
 fi
-# 配信 repo 側の Release 再実行ガード
-if gh release view "$TAG" --repo "$RELEASES_REPO" >/dev/null 2>&1; then
+# 配信 repo 側の Release 再実行ガード。gh の失敗が「Release が無い」なのか「ネットワーク
+# エラー」なのかを区別する（エラーを握りつぶすと既存 Release を見逃して続行してしまう）
+if RELEASE_VIEW_ERR=$(gh release view "$TAG" --repo "$RELEASES_REPO" 2>&1 >/dev/null); then
   echo "ERROR: $RELEASES_REPO に Release $TAG が既に存在します（前回の中途失敗の可能性）"
   echo "       内容を確認して、作り直すなら:"
   echo "         gh release delete $TAG --repo $RELEASES_REPO --cleanup-tag"
   echo "       asset 差し替えだけなら:"
   echo "         gh release upload $TAG <files> --repo $RELEASES_REPO --clobber"
+  exit 1
+elif ! grep -qi "not found" <<< "$RELEASE_VIEW_ERR"; then
+  echo "ERROR: Release $TAG の存在確認に失敗しました（ネットワーク?）: $RELEASE_VIEW_ERR"
   exit 1
 fi
 if [ ! -x "$SIGN_UPDATE" ]; then
