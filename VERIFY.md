@@ -182,6 +182,17 @@ EOF
 - 保存後の `python3 -m json.tool project.json` で markers が bar/beat 昇順・番号なし（採番は表示専用）であること。`"beat"` 省略の旧形式は beat 0 として読める
 - モデル層（ヘルパー・不正値除外・undo）は ctest の `section markers` / `UndoStack` テストが網羅する
 
+## サイクル（ループ範囲）の確認
+
+ループ・書き出し範囲・永続化のロジックはCTest（`cycle range roundtrip and v4 defaults` / `PlaybackEngine cycle loop` / `BounceRenderer cycle range`）が担う。アプリ統合の確認:
+
+- **範囲の作成**: ルーラー（上26px帯）を左右にドラッグ → 黄色の帯が出て自動でON。動かさず離すと従来どおりシーク（シーク発火はmouseUp時）。CGEvent合成ドラッグでも可（down→drag→up。座標目安はMIDIセクションの表記参照。ルーラー中心 = ウィンドウY+28+54+13）
+- **裏取りはログ**: ドラッグ確定で `cycle.range start=<16分音符単位> end=<同> enabled=1`、幅ゼロに潰すと `cycle.clear`、Cキーで `cycle.toggle`。保存後は `python3 -m json.tool project.json` の `cycle` キー（16分音符単位・`[start, end)`）
+- **ループ再生**: 再生ヘッドが範囲末尾で頭に戻る（スクショ2枚を数秒空けて撮り、ヘッドが帯の内側に留まることで判定）。範囲外から再生すると `transport.play pos=` が範囲頭のサンプル位置になる
+- **端のリサイズ**: 帯の端±4pxでリサイズカーソルに変わる。ドラッグで伸縮・帯の内側ドラッグで移動
+- **⌘B連動**: サイクルON時の `bounce.start` に `startSample=`（範囲頭）が出て、`bounce.done samples=` が範囲サンプル長と一致（テールなし）
+- 旧プロジェクト（v4以前）は cycle キーなし → 範囲なし・OFFで開ける（保存するとv5になる）
+
 ## トラックレベルメーターの確認
 
 再生中にトラックヘッダの音量バー（カプセル）内へL/R 2本の緑レーン（固定dBスケール・緑→黄→赤・ピークホールド付き）が点灯する。**再生ヘッドがリージョン/クリップを通過中にしか点灯しない**ので、`click button "再生"` の直後 0.5〜1.5 秒でスクショを撮る。リージョン通過後・停止後に消灯すること、クリップの無いトラックに出ないことも同じ流れで確認できる。FXパネル（VOLUME区画）とミキサーのdB数値ボックス右側（ピーク保持）は**停止後も値が残る**のが正しい（次の再生開始でリセット）。

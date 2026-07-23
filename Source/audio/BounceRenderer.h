@@ -42,7 +42,7 @@ public:
         std::vector<TrackRender> tracks;
         double sampleRate = 0.0;
         double bpm = 120.0;
-        juce::int64 startSample = 0; // レンダリング範囲（将来サイクル区間が入る。現状は常に 0〜曲末）
+        juce::int64 startSample = 0; // レンダリング範囲。通常は 0〜曲末、サイクルON時はその範囲
         juce::int64 endSample = 0;
         bool wantTail = false;       // 可聴なMIDIトラックがあるときだけ余韻テールを付ける
         juce::File targetFile;

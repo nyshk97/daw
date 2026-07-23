@@ -135,14 +135,22 @@ class Project
 {
 public:
     // v2: MIDIトラック・ID追加 / v3: クリップのoffsetSamples・lengthSamples /
-    // v4: pan・sends・固定バス3本・Master
-    static constexpr int currentVersion = 4;
+    // v4: pan・sends・固定バス3本・Master / v5: サイクル（ループ範囲）
+    static constexpr int currentVersion = 5;
 
     juce::File directory;
     double bpm = 120.0;
     double sampleRate = 0.0; // 0 = 未確定（最初の録音時にデバイスレートで確定）
     std::vector<Track> tracks;
     std::vector<SectionMarker> markers; // 常にstartBar昇順・同一barなし（SectionMarkersヘルパーで編集する）
+
+    // サイクル（ループ）範囲。16分音符単位・0始まり（タイムラインの最小グリッド1/16と一致。
+    // BPM変更後も音楽的位置を維持する）。範囲が有効なのは start < end のときだけ。
+    // 音量・ミュートと同じくundo対象外（Logicもサイクル操作はundoしない）
+    int cycleStartSixteenths = 0;
+    int cycleEndSixteenths = 0;
+    bool cycleEnabled = false;
+    bool hasCycleRange() const { return cycleStartSixteenths < cycleEndSixteenths; }
 
     // send用固定バス3本（gain=リターン量・mute使用）とMaster（gain使用）。
     // gainの既定はトラック（0.8）と違いユニティ1.0（unityParams()が保証。

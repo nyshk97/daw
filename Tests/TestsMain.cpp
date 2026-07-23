@@ -1508,7 +1508,8 @@ void testMixerParamsRoundtrip()
     expect (project->save (error), "v4で保存できること");
 
     const auto parsed = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
-    expect ((int) parsed.getProperty ("version", 0) == 4, "version=4で保存されること");
+    expect ((int) parsed.getProperty ("version", 0) == Project::currentVersion,
+            "現行バージョンで保存されること");
 
     auto reloaded = Project::load (dir, warnings, error);
     expect (reloaded != nullptr && reloaded->tracks.size() == 1, "v4を再読込できること");
@@ -1757,6 +1758,248 @@ void testPreviewThroughMaster()
     snapshots.deleteRetired();
 }
 
+// ---- v5: サイクル範囲の保存・読込と、v4以前のデフォルト補完・不正値の防御 ----
+void testCycleRoundtrip()
+{
+    beginTest ("cycle range roundtrip and v4 defaults");
+
+    // v4形式（cycleキーなし）の読込 → 既定値: 範囲なし・OFF
+    auto dir = makeTempDir();
+    dir.getChildFile ("project.json").replaceWithText (R"({
+        "version": 4, "bpm": 120.0, "sampleRate": 0.0, "nextId": 2,
+        "tracks": [ { "id": 1, "type": "audio", "name": "t",
+                      "mute": false, "solo": false, "volume": 0.5, "clips": [] } ]
+    })");
+    juce::StringArray warnings;
+    juce::String error;
+    auto project = Project::load (dir, warnings, error);
+    expect (project != nullptr, "v4を読込めること");
+    if (project == nullptr)
+    {
+        dir.deleteRecursively();
+        return;
+    }
+    expect (! project->hasCycleRange() && ! project->cycleEnabled, "v4読込: サイクルは範囲なし・OFF");
+
+    // 値を入れて保存 → v5になり、再読込で維持される
+    project->cycleStartSixteenths = 16; // 2小節目頭
+    project->cycleEndSixteenths = 48;   // 4小節目頭
+    project->cycleEnabled = true;
+    expect (project->save (error), "保存できること");
+    auto reloaded = Project::load (dir, warnings, error);
+    expect (reloaded != nullptr, "再読込できること");
+    if (reloaded != nullptr)
+    {
+        expect (reloaded->cycleStartSixteenths == 16 && reloaded->cycleEndSixteenths == 48,
+                "サイクル範囲が維持されること");
+        expect (reloaded->cycleEnabled, "enabledが維持されること");
+    }
+    dir.deleteRecursively();
+
+    // 不正な範囲（start >= end）は範囲なしへ落とし、enabledも立てない
+    dir = makeTempDir();
+    dir.getChildFile ("project.json").replaceWithText (R"({
+        "version": 5, "bpm": 120.0, "sampleRate": 0.0, "nextId": 1, "tracks": [],
+        "cycle": { "start": 32, "end": 32, "enabled": true }
+    })");
+    auto invalid = Project::load (dir, warnings, error);
+    expect (invalid != nullptr, "不正cycle付きでも読込めること");
+    if (invalid != nullptr)
+        expect (! invalid->hasCycleRange() && ! invalid->cycleEnabled,
+                "start>=endは範囲なし・OFFに落ちること");
+    dir.deleteRecursively();
+
+    // packCycle/unpackの整合（32bit超のクランプ含む）
+    const auto packed = TransportState::packCycle (12345, 678901);
+    expect (TransportState::cycleStartOf (packed) == 12345
+                && TransportState::cycleEndOf (packed) == 678901,
+            "pack/unpackが往復すること");
+    expect (TransportState::cycleEndOf (TransportState::packCycle (0, (juce::int64) 1 << 40)) == 0xffffffff,
+            "32bit超はクランプされること");
+}
+
+// ---- エンジン: サイクルのループ再生（ブロック跨ぎ・等号境界・範囲長<blockSizeの複数回ラップ）----
+void testPlaybackEngineCycleLoop()
+{
+    beginTest ("PlaybackEngine cycle loop");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+    constexpr int totalSamples = 4096;
+
+    TransportState transport;
+    SnapshotExchange snapshots;
+    PreviewFifo previewFifo;
+    PlaybackEngine engine (transport, snapshots, previewFifo);
+    engine.prepareToPlay (blockSize, sr);
+
+    // ランプ波（サンプル値=位置に比例）で読み出し位置のズレを1サンプル単位で検出する
+    auto source = std::make_shared<juce::AudioBuffer<float>> (1, totalSamples);
+    for (int i = 0; i < totalSamples; ++i)
+        source->setSample (0, i, (float) i / (float) totalSamples);
+
+    Project project;
+    Track track;
+    track.id = 1;
+    track.params->gain.store (1.0f);
+    Clip clip;
+    clip.startSample = 0;
+    clip.offsetSamples = 0;
+    clip.lengthSamples = totalSamples;
+    clip.audio = source;
+    track.clips.push_back (std::move (clip));
+    project.tracks.push_back (std::move (track));
+    snapshots.push (project.buildSnapshot());
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    const auto processBlock = [&]
+    {
+        buffer.clear();
+        juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+        engine.process (info);
+    };
+    const auto expectRamp = [&] (int bufOffset, int count, int srcStart, const char* description)
+    {
+        int mismatches = 0;
+        for (int i = 0; i < count; ++i)
+            if (std::abs (buffer.getSample (0, bufOffset + i)
+                          - source->getSample (0, srcStart + i)) > 1.0e-6f)
+                ++mismatches;
+        expect (mismatches == 0, description);
+    };
+
+    // ---- ブロック途中でラップ: サイクル[200, 1000)・位置200から ----
+    transport.cycleRange.store (TransportState::packCycle (200, 1000));
+    transport.cycleEnabled.store (true);
+    transport.seekRequest.store (200);
+    engine.play();
+
+    processBlock(); // 200..712
+    expectRamp (0, blockSize, 200, "1ブロック目: 範囲内をそのまま再生");
+    expect (transport.playheadSamplePos.load() == 712, "1ブロック目の最終位置");
+
+    processBlock(); // 712..1000（288）＋ラップして 200..424（224）
+    expectRamp (0, 288, 712, "境界前セグメントが正しい内容");
+    expectRamp (288, 224, 200, "ラップ後セグメントがバッファ後半の正しい位置に正しい内容");
+    expect (transport.playheadSamplePos.load() == 424, "ラップ後の最終位置");
+    engine.stop();
+    processBlock(); // 停止エッジを消化
+
+    // ---- 等号境界: ブロックが終端ちょうどで終わる → 次の再生位置は範囲頭（終端排他）----
+    transport.cycleRange.store (TransportState::packCycle (200, 712)); // 範囲長=blockSize
+    transport.seekRequest.store (200);
+    engine.play();
+    processBlock(); // 200..712 = 終端ちょうど
+    expectRamp (0, blockSize, 200, "等号境界ブロックの内容");
+    expect (transport.playheadSamplePos.load() == 200, "終端ちょうどで終わっても範囲頭へ戻ること");
+    processBlock();
+    expectRamp (0, blockSize, 200, "次ブロックは範囲頭から再生されること");
+    engine.stop();
+    processBlock();
+
+    // ---- 範囲長 < blockSize: 1コールバックで複数回ラップ ----
+    transport.cycleRange.store (TransportState::packCycle (0, 128));
+    transport.seekRequest.store (0);
+    engine.play();
+    processBlock(); // 0..128 を4周
+    for (int rep = 0; rep < 4; ++rep)
+        expectRamp (rep * 128, 128, 0, "範囲長<blockSize: 各セグメントが正しい位置・内容で書かれること");
+    expect (transport.playheadSamplePos.load() == 0, "複数回ラップ後の最終位置が範囲頭に戻ること");
+    engine.stop();
+    processBlock();
+
+    snapshots.deleteRetired();
+}
+
+// ---- バウンス: サイクル範囲の書き出し（開始位置・厳密なサンプル長・MIDIありテールなし）----
+void testBounceCycleRange()
+{
+    beginTest ("BounceRenderer cycle range");
+
+    // クリップのみ: 範囲[500, 1500)を書き出すと出力先頭=ソース位置500・長さ1000ちょうど
+    {
+        const auto dir = makeTempDir();
+        const auto target = dir.getChildFile ("bounce.wav");
+
+        auto audio = std::make_shared<juce::AudioBuffer<float>> (1, 2000);
+        for (int i = 0; i < 2000; ++i)
+            audio->setSample (0, i, 0.4f * (float) i / 2000.0f); // ランプ波
+
+        BounceRenderer::Request request;
+        request.sampleRate = 44100.0;
+        request.bpm = 120.0;
+        request.startSample = 500;
+        request.endSample = 1500;
+        request.wantTail = false;
+        request.targetFile = target;
+        BounceRenderer::TrackRender track;
+        track.gain = 1.0f;
+        track.clips.push_back ({ audio, 0, 0, 2000 });
+        request.tracks.push_back (std::move (track));
+
+        BounceRenderer renderer;
+        expect (renderer.start (std::move (request)), "startできること");
+        expect (waitForBounce (renderer), "タイムアウトせず完了すること");
+        const auto result = renderer.takeResult();
+        expect (result.status == BounceRenderer::Status::success, "successで終わること");
+        expect (result.writtenSamples == 1000, "出力長=範囲サンプル長ちょうど");
+
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatReader> reader (
+            wav.createReaderFor (new juce::FileInputStream (target), true));
+        expect (reader != nullptr, "書き出したWAVを読めること");
+        if (reader != nullptr)
+        {
+            expect (reader->lengthInSamples == 1000, "WAVの長さ=範囲サンプル長");
+            juce::AudioBuffer<float> readBack (2, 1000);
+            reader->read (&readBack, 0, 1000, 0, true, true);
+            int mismatches = 0;
+            for (int i = 0; i < 1000; ++i)
+                if (std::abs (readBack.getSample (0, i) - audio->getSample (0, 500 + i)) > 1.0e-4f)
+                    ++mismatches;
+            expect (mismatches == 0, "出力内容がソースの範囲[500,1500)と一致すること");
+        }
+        dir.deleteRecursively();
+    }
+
+    // MIDIあり: 範囲頭を跨ぐ持続ノートが範囲頭から鳴り、テールなしで厳密長になること
+    {
+        const auto dir = makeTempDir();
+        const auto target = dir.getChildFile ("bounce.wav");
+
+        SynthBank bank;
+        auto synth = bank.createIndependent (48, false, 44100.0, BounceRenderer::renderBlockSize); // Strings（持続音）
+        expect (synth != nullptr, "バウンス専用DLSインスタンスを作れること");
+        if (synth == nullptr)
+        {
+            dir.deleteRecursively();
+            return;
+        }
+
+        BounceRenderer::Request request;
+        request.sampleRate = 44100.0;
+        request.bpm = 120.0;
+        request.startSample = 500;
+        request.endSample = 500 + 22050; // 0.5秒
+        request.wantTail = false; // サイクル書き出しはMIDIがあってもテールなし
+        request.targetFile = target;
+        BounceRenderer::TrackRender track;
+        track.gain = 0.8f;
+        track.synth = synth;
+        track.notes.push_back ({ 0, Ppq::ticksPerQuarter * 4, 60, 100 }); // 範囲頭より前に始まり範囲全体を跨ぐ
+        request.tracks.push_back (std::move (track));
+
+        BounceRenderer renderer;
+        expect (renderer.start (std::move (request)), "startできること");
+        expect (waitForBounce (renderer), "タイムアウトせず完了すること");
+        const auto result = renderer.takeResult();
+        expect (result.status == BounceRenderer::Status::success, "successで終わること");
+        expect (result.writtenSamples == 22050, "MIDIありでもテールなし＝範囲サンプル長ちょうど");
+        expect (result.peak > 0.001f, "範囲頭を跨ぐノートが範囲内で鳴っていること");
+        dir.deleteRecursively();
+    }
+}
+
 } // namespace
 
 int main()
@@ -1792,6 +2035,9 @@ int main()
     testEnginePanSendsMaster();
     testEngineOutputChannelRule();
     testPreviewThroughMaster();
+    testCycleRoundtrip();
+    testPlaybackEngineCycleLoop();
+    testBounceCycleRange();
 
     if (failureCount > 0)
     {

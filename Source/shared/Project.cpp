@@ -278,6 +278,13 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
     }
     root->setProperty ("markers", markersArray);
 
+    // サイクル（ループ）範囲。16分音符単位・[start, end)
+    auto* cycleObj = new juce::DynamicObject();
+    cycleObj->setProperty ("start", cycleStartSixteenths);
+    cycleObj->setProperty ("end", cycleEndSixteenths);
+    cycleObj->setProperty ("enabled", cycleEnabled);
+    root->setProperty ("cycle", juce::var (cycleObj));
+
     // 固定バス3本（並びは SendBuses::names と対応）とMaster
     juce::Array<juce::var> busesArray;
     for (int b = 0; b < numSendBuses; ++b)
@@ -498,6 +505,20 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
                 continue;
             }
             SectionMarkers::set (project->markers, startBeats, type); // 昇順はsetが保つ
+        }
+    }
+
+    // サイクル範囲（v4以前は無い → 既定値: 範囲なし・OFF）。
+    // 不正値（start >= end で範囲が成立しない等）は範囲なしへ落とし、enabledも立てない
+    if (const auto cycleVar = parsed.getProperty ("cycle", {}); cycleVar.isObject())
+    {
+        const int start = juce::jmax (0, (int) cycleVar.getProperty ("start", 0));
+        const int end = juce::jmax (0, (int) cycleVar.getProperty ("end", 0));
+        if (start < end)
+        {
+            project->cycleStartSixteenths = start;
+            project->cycleEndSixteenths = end;
+            project->cycleEnabled = (bool) cycleVar.getProperty ("enabled", false);
         }
     }
 

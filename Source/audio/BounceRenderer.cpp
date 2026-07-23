@@ -127,8 +127,9 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
     midiScratch.ensureSize (4096);
 
     cursors.assign (request.tracks.size(), {});
-    // 範囲開始より前に鳴り終わるノートの読み飛ばし（現状 rangeStart==0 なので実質no-op。
-    // startPpq昇順の並びなので先頭からの連続分だけ飛ばす）
+    // 範囲開始より前に鳴り終わるノートの読み飛ばし（サイクル範囲書き出しで rangeStart > 0 になる。
+    // startPpq昇順の並びなので先頭からの連続分だけ飛ばす）。範囲頭を跨いで鳴っているノートは
+    // 読み飛ばされず、scheduleBlockMidi のオンオフセットのクランプ（jlimit 0..）で範囲頭から発音される
     const double rangeStartPpq = (double) rangeStart * tps;
     for (size_t i = 0; i < request.tracks.size(); ++i)
         while (cursors[i].nextNote < request.tracks[i].notes.size()

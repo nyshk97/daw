@@ -52,6 +52,16 @@ private:
                            bool playing, bool silenceTransport, bool silenceAll, bool resound,
                            double sr, double bpm, bool anySolo);
 
+    // 1セグメント分の出力（クリップ・MIDI・バス/Master・クリック）。オーディオスレッド専用。
+    // サイクル（ループ範囲）で1コールバックが複数セグメントに分割されるため、process() から
+    // セグメントごとに呼ばれる。outOffset = デバイスバッファ内の書き込み開始位置
+    // （スクラッチバッファは常にオフセット0から segLen 分を使い、最終出力だけずらす）
+    void processSegment (juce::AudioBuffer<float>& buffer, int outOffset, int segLen, juce::int64 segPos,
+                         bool playing, bool armed, juce::int64 punchIn,
+                         PlaybackSnapshot* snapshot, bool anySolo, bool canProcess, float masterGain,
+                         double sr, double bpm, double beatLen,
+                         bool silenceTransport, bool silenceAll, bool resound);
+
     TransportState& transport;
     SnapshotExchange& snapshots;
     PreviewFifo& previewFifo;
@@ -91,6 +101,10 @@ private:
     int numPreviewCommands = 0;
 
     bool prevPlaying = false;
+
+    // サイクル境界でラップした直後を「内部シーク」として次セグメント（コールバック跨ぎ含む）へ
+    // 伝えるフラグ。立っているセグメントは消音＋跨ぎノート再発音＋クリック拍リセットを行う
+    bool cycleWrapPending = false;
 
     // 再生中のノート編集（スナップショット差し替え）検出用。差し替え時は消音→跨ぎノート再発音で
     // 「削除されたノートのオフが新スナップショットに存在せず鳴りっぱなし」になるのを防ぐ。

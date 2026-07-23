@@ -97,6 +97,25 @@ public:
             }
         }
 
+        // サイクル帯（Logicのルック準拠: ON=黄・OFF=グレーで範囲を保持表示。
+        // 小節番号の上・プレイヘッドの下に重ねる = プレイヘッド > サイクル帯 > 小節番号 の強弱）
+        if (auto* proj = owner.project; proj != nullptr && proj->hasCycleRange())
+        {
+            const int x0 = owner.sixteenthToX (proj->cycleStartSixteenths);
+            const int x1 = owner.sixteenthToX (proj->cycleEndSixteenths);
+            if (x1 > clip.getX() && x0 < clip.getRight())
+            {
+                const bool on = proj->cycleEnabled;
+                const auto colour = on ? Theme::cycleOn : Theme::cycleOff;
+                g.setColour (colour.withAlpha (on ? 0.20f : 0.12f));
+                g.fillRect (x0, 0, x1 - x0, getHeight());
+                g.setColour (colour.withAlpha (on ? 0.95f : 0.55f));
+                g.fillRect (x0, 0, x1 - x0, 4);       // 上端の帯（Logicのサイクルストリップ）
+                g.fillRect (x0, 0, 2, getHeight());   // 両端の縦線（リサイズの掴み所の手掛かり）
+                g.fillRect (x1 - 2, 0, 2, getHeight());
+            }
+        }
+
         const int playheadX = owner.sampleToX (owner.transport.playheadSamplePos.load());
         g.setColour (Theme::playhead);
         g.drawVerticalLine (playheadX, 0.0f, (float) getHeight());
@@ -109,10 +128,10 @@ public:
         g.fillPath (head.createPathWithRoundedCorners (1.5f));
     }
 
-    void mouseDown (const juce::MouseEvent& e) override
-    {
-        owner.seekFromX (e.x);
-    }
+    void mouseDown (const juce::MouseEvent& e) override { owner.handleRulerMouseDown (e); }
+    void mouseDrag (const juce::MouseEvent& e) override { owner.handleRulerMouseDrag (e); }
+    void mouseUp (const juce::MouseEvent& e) override { owner.handleRulerMouseUp (e); }
+    void mouseMove (const juce::MouseEvent& e) override { owner.handleRulerMouseMove (e); }
 
     void mouseMagnify (const juce::MouseEvent& e, float scaleFactor) override
     {
@@ -605,6 +624,25 @@ int TimelineView::xToMarkerBeats (int x) const
     return juce::jmax (0, (int) std::floor ((double) x / unitPx)) * unit;
 }
 
+juce::int64 TimelineView::sixteenthStartSample (int sixteenths) const
+{
+    return (juce::int64) std::llround ((double) juce::jmax (0, sixteenths) * barLengthSamples() / 16.0);
+}
+
+int TimelineView::sixteenthToX (int sixteenths) const
+{
+    return (int) std::llround ((double) sixteenths * pxPerBar / 16.0);
+}
+
+int TimelineView::xToCycleSixteenths (int x) const
+{
+    // シークと同じ「表示中の最小グリッド」（1/16上限）へ、最近傍の線に吸着させる。
+    // snapUnitBeats()（最小1拍・マーカー用）は使わない
+    const int unit = 16 / gridDivisionsPerBar(); // 表示グリッド1マス分の16分音符数
+    const double unitPx = pxPerBar / 16.0 * unit;
+    return juce::jmax (0, (int) std::llround ((double) x / unitPx)) * unit;
+}
+
 void TimelineView::resized()
 {
     viewport->setBounds (0, topHeight, getWidth(), getHeight() - topHeight);
@@ -686,6 +724,9 @@ void TimelineView::updateContentSize()
         if (! project->markers.empty())
             maxSample = juce::jmax (maxSample,
                                     beatStartSample (project->markers.back().startBeats + 4));
+        // サイクル範囲も同様（素材より先に範囲を描いたときに見切れない）
+        if (project->hasCycleRange())
+            maxSample = juce::jmax (maxSample, sixteenthStartSample (project->cycleEndSixteenths));
     }
     if (transport.recordArmed.load())
         maxSample = juce::jmax (maxSample,
@@ -1244,6 +1285,150 @@ void TimelineView::seekFromX (int x)
     const auto gridIndex = (juce::int64) std::floor ((double) samplePos / gridLen);
     if (onSeek)
         onSeek ((juce::int64) std::llround ((double) gridIndex * gridLen));
+}
+
+// ---- サイクル範囲（ルーラーの操作） -------------------------------------
+
+int TimelineView::hitTestCycleEdge (int x) const
+{
+    if (project == nullptr || ! project->hasCycleRange())
+        return -1;
+
+    const int d0 = std::abs (x - sixteenthToX (project->cycleStartSixteenths));
+    const int d1 = std::abs (x - sixteenthToX (project->cycleEndSixteenths));
+    if (d0 <= 4 && d0 <= d1)
+        return 0;
+    if (d1 <= 4)
+        return 1;
+    return -1;
+}
+
+void TimelineView::handleRulerMouseDown (const juce::MouseEvent& e)
+{
+    cycleDrag = {};
+    if (project == nullptr || e.mods.isPopupMenu())
+        return; // ルーラーの右クリックは未割り当て
+
+    cycleDrag.startX = e.x;
+    cycleDrag.origStart = project->cycleStartSixteenths;
+    cycleDrag.origEnd = project->cycleEndSixteenths;
+
+    // 端±4px = リサイズ、既存範囲の内側 = 移動、それ以外 = 新規作成。
+    // どれもドラッグが動くまで何もせず、動かさず離したらシーク（mouseUpで判定）
+    const int edge = hitTestCycleEdge (e.x);
+    if (edge == 0)
+    {
+        cycleDrag.mode = CycleDrag::Mode::resizeStart;
+    }
+    else if (edge == 1)
+    {
+        cycleDrag.mode = CycleDrag::Mode::resizeEnd;
+    }
+    else if (project->hasCycleRange()
+             && e.x > sixteenthToX (project->cycleStartSixteenths)
+             && e.x < sixteenthToX (project->cycleEndSixteenths))
+    {
+        cycleDrag.mode = CycleDrag::Mode::moveRange;
+    }
+    else
+    {
+        cycleDrag.mode = CycleDrag::Mode::create;
+        cycleDrag.anchorSixteenths = xToCycleSixteenths (e.x);
+    }
+}
+
+void TimelineView::handleRulerMouseDrag (const juce::MouseEvent& e)
+{
+    if (project == nullptr || cycleDrag.mode == CycleDrag::Mode::none)
+        return;
+    if (! cycleDrag.edited && e.getDistanceFromDragStart() < 4)
+        return;
+
+    int newStart = cycleDrag.origStart;
+    int newEnd = cycleDrag.origEnd;
+    switch (cycleDrag.mode)
+    {
+        case CycleDrag::Mode::create:
+        {
+            const int at = xToCycleSixteenths (e.x);
+            newStart = juce::jmin (cycleDrag.anchorSixteenths, at);
+            newEnd = juce::jmax (cycleDrag.anchorSixteenths, at);
+            break;
+        }
+        case CycleDrag::Mode::moveRange:
+        {
+            const int unit = 16 / gridDivisionsPerBar();
+            const double unitPx = pxPerBar / 16.0 * unit;
+            const int delta = (int) std::llround ((double) (e.x - cycleDrag.startX) / unitPx) * unit;
+            newStart = juce::jmax (0, cycleDrag.origStart + delta);
+            newEnd = newStart + (cycleDrag.origEnd - cycleDrag.origStart); // 左端クランプ後も長さ維持
+            break;
+        }
+        case CycleDrag::Mode::resizeStart:
+            newStart = juce::jmin (xToCycleSixteenths (e.x), cycleDrag.origEnd);
+            break;
+        case CycleDrag::Mode::resizeEnd:
+            newEnd = juce::jmax (xToCycleSixteenths (e.x), cycleDrag.origStart);
+            break;
+        case CycleDrag::Mode::none:
+            return;
+    }
+
+    if (newStart == project->cycleStartSixteenths && newEnd == project->cycleEndSixteenths)
+        return;
+
+    cycleDrag.edited = true;
+    project->cycleStartSixteenths = newStart;
+    project->cycleEndSixteenths = newEnd;
+    if (cycleDrag.mode == CycleDrag::Mode::create && project->hasCycleRange())
+        project->cycleEnabled = true; // 範囲を描いたら自動でON（Logicと同じ）
+
+    ruler->repaint();
+    if (onCycleChanged)
+        onCycleChanged(); // ドラッグ中も即時反映（再生中ならループ範囲がライブで変わる）
+}
+
+void TimelineView::handleRulerMouseUp (const juce::MouseEvent& e)
+{
+    if (project == nullptr)
+    {
+        cycleDrag = {};
+        return;
+    }
+
+    if (cycleDrag.mode != CycleDrag::Mode::none && cycleDrag.edited)
+    {
+        if (! project->hasCycleRange())
+        {
+            // 幅ゼロまで潰した＝範囲削除（OFFへ戻す）
+            project->cycleStartSixteenths = 0;
+            project->cycleEndSixteenths = 0;
+            project->cycleEnabled = false;
+            Log::info ("cycle.clear");
+        }
+        else
+        {
+            Log::info ("cycle.range", "start=" + juce::String (project->cycleStartSixteenths)
+                                          + " end=" + juce::String (project->cycleEndSixteenths)
+                                          + " enabled=" + juce::String ((int) project->cycleEnabled));
+        }
+        updateContentSize();
+        ruler->repaint();
+        if (onCycleChanged)
+            onCycleChanged();
+    }
+    else if (cycleDrag.mode != CycleDrag::Mode::none)
+    {
+        seekFromX (e.x); // 動かさず離した＝クリック → 従来どおりシーク
+    }
+    cycleDrag = {};
+}
+
+void TimelineView::handleRulerMouseMove (const juce::MouseEvent& e)
+{
+    ruler->setMouseCursor (hitTestCycleEdge (e.x) >= 0
+                               ? juce::MouseCursor::LeftRightResizeCursor
+                               : juce::MouseCursor::NormalCursor);
 }
 
 // ---- セクションマーカー -------------------------------------------------

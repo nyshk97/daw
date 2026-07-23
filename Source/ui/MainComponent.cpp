@@ -128,6 +128,13 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         setDirty (true);
         timeline.refresh();
     };
+    // サイクル範囲はundo対象外（音量・ミュートと同じ扱い。Logicもサイクル操作はundoしない）なので
+    // onWillEditModel/onModelEdited でなく専用コールバックで Transport同期とdirty化だけ行う
+    timeline.onCycleChanged = [this]
+    {
+        syncCycleToTransport();
+        setDirty (true);
+    };
     timeline.onOpenRegion = [this] (int trackIndex, int regionIndex) { openPianoRoll (trackIndex, regionIndex); };
     timeline.onDeleteItemRequested = [this] (int trackIndex, int itemIndex)
     {
@@ -231,6 +238,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     fxEditor.showTrack (selectedTrack);
 
     pushSnapshot();
+    syncCycleToTransport(); // 保存済みサイクルを読み込んだ時点で反映（SR確定後はTimerが再同期する）
     updateTransportButtons();
 
     setWantsKeyboardFocus (true);
@@ -304,6 +312,10 @@ void MainComponent::timerCallback()
     }
 
     pollBounce();
+
+    // サイクル範囲のサンプル換算はBPM・サンプルレートに依存するため毎tick同期する
+    // （BPM編集・デバイスSR確定・デバイス変更のどの経路でも取りこぼさない。atomic2本のstoreのみで安価）
+    syncCycleToTransport();
 
     // メーター消費の一元化: peakL/peakR の exchange(0) はここでだけ行い、読み取った値を
     // ヘッダー・ミキサー・FXパネルへ配る（複数箇所でexchangeするとピークを取り合う）
@@ -469,6 +481,18 @@ void MainComponent::togglePlay()
         playStartSample = pendingSeek != TransportState::kNoSeek
                               ? pendingSeek
                               : juce::jmax ((juce::int64) 0, transport.playheadSamplePos.load());
+
+        // サイクルON時に範囲外（終端ちょうど含む）から再生を始めるときは範囲頭へジャンプ（Logic準拠）
+        if (project->cycleEnabled && project->hasCycleRange())
+        {
+            const auto cycleStart = timeline.sixteenthStartSample (project->cycleStartSixteenths);
+            const auto cycleEnd = timeline.sixteenthStartSample (project->cycleEndSixteenths);
+            if (playStartSample < cycleStart || playStartSample >= cycleEnd)
+            {
+                playStartSample = cycleStart;
+                transport.seekRequest.store (cycleStart);
+            }
+        }
         Log::info ("transport.play", "pos=" + juce::String (playStartSample));
         engine.play();
     }
@@ -1149,9 +1173,20 @@ void MainComponent::beginBounce (const juce::File& target)
     }
     request.endSample = endSample;
 
+    // サイクルON時はその範囲を書き出す（Logicのサイクル書き出しと同じ）。
+    // ループ素材用途なのでMIDIがあってもテールを付けず、出力長＝範囲サンプル長ちょうどにする
+    if (project->cycleEnabled && project->hasCycleRange())
+    {
+        const double sixteenthLen = sr * 60.0 / request.bpm / 4.0;
+        request.startSample = (juce::int64) std::llround ((double) project->cycleStartSixteenths * sixteenthLen);
+        request.endSample = (juce::int64) std::llround ((double) project->cycleEndSixteenths * sixteenthLen);
+        request.wantTail = false;
+    }
+
     Log::info ("bounce.start", "target=" + target.getFullPathName()
                                    + " sr=" + juce::String (sr, 0)
-                                   + " endSample=" + juce::String (endSample)
+                                   + " startSample=" + juce::String (request.startSample)
+                                   + " endSample=" + juce::String (request.endSample)
                                    + " tracks=" + juce::String ((int) request.tracks.size())
                                    + " tail=" + juce::String ((int) request.wantTail));
 
@@ -1479,6 +1514,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         toggleRecord();
         return true;
     }
+    // Logic準拠: C = サイクル（ループ範囲）の入/切
+    if (is (SC::toggleCycle))
+    {
+        toggleCycle();
+        return true;
+    }
     return false;
 }
 
@@ -1563,6 +1604,38 @@ void MainComponent::seekToSection (int direction, int keyCode)
     pauseForKeySeek (keyCode);
     transport.seekRequest.store (target);
     playStartSample = target;
+}
+
+void MainComponent::toggleCycle()
+{
+    if (! project->hasCycleRange())
+        return; // トグルする範囲がない（範囲はルーラーのドラッグで作る）
+
+    project->cycleEnabled = ! project->cycleEnabled;
+    Log::info ("cycle.toggle", "enabled=" + juce::String ((int) project->cycleEnabled)
+                                   + " start=" + juce::String (project->cycleStartSixteenths)
+                                   + " end=" + juce::String (project->cycleEndSixteenths));
+    syncCycleToTransport();
+    setDirty (true);
+    timeline.refresh(); // 帯の黄/グレー切り替え
+}
+
+void MainComponent::syncCycleToTransport()
+{
+    if (project->hasCycleRange())
+    {
+        // 順序が重要: 範囲を書いてから enabled を立てる（有効化の瞬間に不整合な範囲を読ませない）
+        transport.cycleRange.store (TransportState::packCycle (
+            timeline.sixteenthStartSample (project->cycleStartSixteenths),
+            timeline.sixteenthStartSample (project->cycleEndSixteenths)));
+        transport.cycleEnabled.store (project->cycleEnabled);
+    }
+    else
+    {
+        // 逆順: 先に無効化してから範囲を消す
+        transport.cycleEnabled.store (false);
+        transport.cycleRange.store (0);
+    }
 }
 
 void MainComponent::toggleMuteSelectedTrack()

@@ -22,6 +22,7 @@ enum class ID
     // トランスポート
     playStop,
     record,
+    toggleCycle,
     seekBeat,
     seekBar,
     seekSection,
@@ -97,6 +98,10 @@ inline const Entry table[] = {
     { ID::record, Category::transport, u8"録音", u8"R",
       [] (const juce::KeyPress& k)
       { return detail::noCmdCtrlAlt (k) && k.getTextCharacter() == 'r'; } },
+    // Logic準拠: C = サイクル（ループ範囲）の入/切。範囲はルーラーのドラッグで作る
+    { ID::toggleCycle, Category::transport, u8"サイクル（ループ範囲）入/切", u8"C",
+      [] (const juce::KeyPress& k)
+      { return detail::noCmdCtrlAlt (k) && k.getTextCharacter() == 'c'; } },
     { ID::seekBeat, Category::transport, u8"1拍シーク", u8", / .",
       [] (const juce::KeyPress& k)
       {

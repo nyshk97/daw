@@ -114,24 +114,109 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
             if (track.params->solo.load())
                 { anySolo = true; break; }
 
-    // ステレオミックス（mixScratch）とsendバスの準備。全信号は
-    // 「トラック（gain・pan）→ mixScratch/busScratch → バス素通し加算 → Masterゲイン → 出力ch0/1」
-    // の順で流れる。想定外の巨大ブロックが来たときだけこの経路を諦めて
-    // クリップの直接加算にフォールバックする（音を落とさないことを最優先。send・メーターは失う）
+    // 想定外の巨大ブロックが来たときだけミックス経路を諦めてクリップの直接加算に
+    // フォールバックする（音を落とさないことを最優先。send・メーターは失う）
     const bool canProcess = numSamples <= mixScratch.getNumSamples();
-    if (canProcess)
-    {
-        for (int ch = 0; ch < 2; ++ch)
-        {
-            mixScratch.clear (ch, 0, numSamples);
-            for (auto& bus : busScratch)
-                bus.clear (ch, 0, numSamples);
-        }
-    }
 
     const float masterGain = (snapshot != nullptr && snapshot->masterParams != nullptr)
                                  ? snapshot->masterParams->gain.load()
                                  : 1.0f;
+
+    // ---- プレビューコマンドの取り込み（コールバックごとに1回。処理する分だけ固定配列へ）----
+    numPreviewCommands = 0;
+    {
+        PreviewFifo::Command command;
+        while (numPreviewCommands < maxPreviewCommandsPerBlock && previewFifo.pop (command))
+        {
+            // 再生中のプレビュー発音は破棄（UI側でも抑止しているが防御的に）
+            if (command.type == PreviewFifo::Command::Type::noteOn && playing)
+                continue;
+            previewCommands[numPreviewCommands++] = command;
+        }
+    }
+
+    // 再生開始・シーク・停止時はプレビュー中ノートを打ち切る（オフはsilenceFirstが送る）
+    if (startedOrSeeked || stoppedNow)
+        numPreviewNotes = 0;
+
+    // ---- サイクル（ループ範囲）。区間は [start, end) で終端は排他的。録音中は無効 ----
+    const auto cyclePacked = transport.cycleRange.load();
+    const auto cycleStart = TransportState::cycleStartOf (cyclePacked);
+    const auto cycleEnd = TransportState::cycleEndOf (cyclePacked);
+    const bool cycleActive = playing && ! armed && cycleStart < cycleEnd
+                             && transport.cycleEnabled.load();
+    if (! playing)
+        cycleWrapPending = false; // 停止で持ち越さない（再開時はstartedOrSeekedが消音・再発音する）
+
+    juce::int64 segPos = pos;
+    if (cycleActive && segPos >= cycleEnd)
+    {
+        // 範囲外（終端ちょうど含む）から始まるブロックは先に範囲頭へ正規化する
+        segPos = cycleStart;
+        cycleWrapPending = true;
+    }
+
+    // サイクル境界をまたぐブロックはセグメントに分割し、残サンプルが0になるまで繰り返す
+    // （範囲長 < ブロック長だと1コールバックで複数回ラップする）。サイクル無効時は1周で抜ける
+    int done = 0;
+    bool firstSegment = true;
+    while (done < numSamples)
+    {
+        const bool wrapSeek = cycleWrapPending;
+        cycleWrapPending = false;
+        if (wrapSeek)
+        {
+            // ラップ＝内部シーク: クリックの拍トラッキングもシークと同じ流儀でリセット
+            lastBeatIndex = (juce::int64) std::floor ((double) (segPos - 1) / beatLen);
+            clickSamplesLeft = 0;
+        }
+
+        int segLen = numSamples - done;
+        if (cycleActive)
+            segLen = (int) juce::jmin ((juce::int64) segLen, cycleEnd - segPos);
+
+        processSegment (buffer, startSample + done, segLen, segPos,
+                        playing, armed, punchIn, snapshot, anySolo, canProcess, masterGain,
+                        sr, bpm, beatLen,
+                        (firstSegment && (startedOrSeeked || stoppedNow || snapshotChanged)) || wrapSeek,
+                        (firstSegment && (startedOrSeeked || stoppedNow)) || wrapSeek,
+                        (firstSegment && playing && (startedOrSeeked || snapshotChanged)) || wrapSeek);
+
+        segPos += segLen;
+        done += segLen;
+        firstSegment = false;
+
+        if (cycleActive && segPos >= cycleEnd)
+        {
+            segPos = cycleStart; // 終端は排他的: ちょうど終端で終わるブロックも次は範囲頭から
+            cycleWrapPending = true; // 次セグメント（無ければ次コールバック先頭）で内部シーク処理
+        }
+    }
+
+    if (playing)
+        transport.playheadSamplePos.store (segPos);
+}
+
+// オーディオスレッド専用。スクラッチバッファは常にオフセット0から segLen 分を使い、
+// デバイスバッファへの最終出力だけ outOffset へずらす（サイクル分割の後半セグメント対応）
+void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOffset, int segLen,
+                                     juce::int64 segPos, bool playing, bool armed, juce::int64 punchIn,
+                                     PlaybackSnapshot* snapshot, bool anySolo, bool canProcess,
+                                     float masterGain, double sr, double bpm, double beatLen,
+                                     bool silenceTransport, bool silenceAll, bool resound)
+{
+    // ステレオミックス（mixScratch）とsendバスの準備。全信号は
+    // 「トラック（gain・pan）→ mixScratch/busScratch → バス素通し加算 → Masterゲイン → 出力ch0/1」
+    // の順で流れる
+    if (canProcess)
+    {
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            mixScratch.clear (ch, 0, segLen);
+            for (auto& bus : busScratch)
+                bus.clear (ch, 0, segLen);
+        }
+    }
 
     if (playing && snapshot != nullptr)
     {
@@ -150,19 +235,19 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
             Pan::monoGains (track.params->pan.load(), panL, panR);
 
             if (canProcess)
-                trackScratch.clear (0, 0, numSamples); // 全トラックで再利用するため毎回必ずclear
+                trackScratch.clear (0, 0, segLen); // 全トラックで再利用するため毎回必ずclear
 
             bool anyOverlap = false;
             for (auto& clip : track.clips)
             {
                 const auto clipLen = clip.lengthSamples;
-                const auto overlapStart = juce::jmax (pos, clip.startSample);
-                const auto overlapEnd = juce::jmin (pos + numSamples, clip.startSample + clipLen);
+                const auto overlapStart = juce::jmax (segPos, clip.startSample);
+                const auto overlapEnd = juce::jmin (segPos + segLen, clip.startSample + clipLen);
                 if (overlapEnd <= overlapStart)
                     continue;
                 anyOverlap = true;
 
-                const int destOffset = (int) (overlapStart - pos);
+                const int destOffset = (int) (overlapStart - segPos);
                 const int srcOffset = (int) (clip.offsetSamples + (overlapStart - clip.startSample));
                 const int count = (int) (overlapEnd - overlapStart);
                 const float* src = clip.audio->getReadPointer (0, srcOffset);
@@ -177,12 +262,12 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
                 {
                     // フォールバックの縮退はsend/メーターのみ。出力ルール（ch0/1・1chダウンミックス）と
                     // pan・Masterは本編と揃える
-                    buffer.addFrom (0, startSample + destOffset, src, count, gain * panL * masterGain);
-                    buffer.addFrom (1, startSample + destOffset, src, count, gain * panR * masterGain);
+                    buffer.addFrom (0, outOffset + destOffset, src, count, gain * panL * masterGain);
+                    buffer.addFrom (1, outOffset + destOffset, src, count, gain * panR * masterGain);
                 }
                 else
                 {
-                    buffer.addFrom (0, startSample + destOffset, src, count,
+                    buffer.addFrom (0, outOffset + destOffset, src, count,
                                     gain * 0.5f * (panL + panR) * masterGain);
                 }
             }
@@ -190,11 +275,11 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
             if (canProcess && anyOverlap)
             {
                 // メーター: モノソース×pan分配なので L/R = 合算ピーク×panL/panR
-                const float mag = trackScratch.getMagnitude (0, 0, numSamples);
+                const float mag = trackScratch.getMagnitude (0, 0, segLen);
                 storePeakMax (track.params->peakL, mag * panL);
                 storePeakMax (track.params->peakR, mag * panR);
-                mixScratch.addFrom (0, 0, trackScratch, 0, 0, numSamples, panL);
-                mixScratch.addFrom (1, 0, trackScratch, 0, 0, numSamples, panR);
+                mixScratch.addFrom (0, 0, trackScratch, 0, 0, segLen, panL);
+                mixScratch.addFrom (1, 0, trackScratch, 0, 0, segLen, panR);
 
                 // post-fader send（gain・pan適用後のコピーをバスへ）
                 for (int b = 0; b < numSendBuses; ++b)
@@ -202,39 +287,19 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
                     const float send = track.params->sends[b].load();
                     if (send <= 0.0f)
                         continue;
-                    busScratch[b].addFrom (0, 0, trackScratch, 0, 0, numSamples, panL * send);
-                    busScratch[b].addFrom (1, 0, trackScratch, 0, 0, numSamples, panR * send);
+                    busScratch[b].addFrom (0, 0, trackScratch, 0, 0, segLen, panL * send);
+                    busScratch[b].addFrom (1, 0, trackScratch, 0, 0, segLen, panR * send);
                 }
             }
         }
     }
 
-    // ---- プレビューコマンドの取り込み（このブロックで処理する分だけ固定配列へ）----
-    numPreviewCommands = 0;
-    {
-        PreviewFifo::Command command;
-        while (numPreviewCommands < maxPreviewCommandsPerBlock && previewFifo.pop (command))
-        {
-            // 再生中のプレビュー発音は破棄（UI側でも抑止しているが防御的に）
-            if (command.type == PreviewFifo::Command::Type::noteOn && playing)
-                continue;
-            previewCommands[numPreviewCommands++] = command;
-        }
-    }
-
-    // 再生開始・シーク・停止時はプレビュー中ノートを打ち切る（オフはsilenceFirstが送る）
-    if (startedOrSeeked || stoppedNow)
-        numPreviewNotes = 0;
-
     // ---- MIDIトラック（ミュート/ソロでもイベント送信・レンダリングは止めず、ミックスゲインだけ0にする）----
     // 出力は mixScratch / busScratch へ（プレビュー発音もこの経路 = pan/send/Masterを通る）。
     // canProcessでない巨大ブロックでは各シンセのサイズガードが働いて書き込みは起きない
     if (snapshot != nullptr)
-        renderMidiTracks (*snapshot, numSamples, pos,
-                          playing,
-                          startedOrSeeked || stoppedNow || snapshotChanged,   // silenceTransport
-                          startedOrSeeked || stoppedNow,                      // silenceAll
-                          playing && (startedOrSeeked || snapshotChanged),    // resound
+        renderMidiTracks (*snapshot, segLen, segPos,
+                          playing, silenceTransport, silenceAll, resound,
                           sr, bpm, anySolo);
 
     // ---- sendバス（当面FXは無く素通し）→ ミックス、Masterゲイン → 出力バッファ ----
@@ -250,29 +315,29 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
             if (busGain <= 0.0f)
                 continue;
 
-            storePeakMax (busParams->peakL, busScratch[b].getMagnitude (0, 0, numSamples) * busGain);
-            storePeakMax (busParams->peakR, busScratch[b].getMagnitude (1, 0, numSamples) * busGain);
-            mixScratch.addFrom (0, 0, busScratch[b], 0, 0, numSamples, busGain);
-            mixScratch.addFrom (1, 0, busScratch[b], 1, 0, numSamples, busGain);
+            storePeakMax (busParams->peakL, busScratch[b].getMagnitude (0, 0, segLen) * busGain);
+            storePeakMax (busParams->peakR, busScratch[b].getMagnitude (1, 0, segLen) * busGain);
+            mixScratch.addFrom (0, 0, busScratch[b], 0, 0, segLen, busGain);
+            mixScratch.addFrom (1, 0, busScratch[b], 1, 0, segLen, busGain);
         }
 
         if (snapshot->masterParams != nullptr)
         {
             storePeakMax (snapshot->masterParams->peakL,
-                          mixScratch.getMagnitude (0, 0, numSamples) * masterGain);
+                          mixScratch.getMagnitude (0, 0, segLen) * masterGain);
             storePeakMax (snapshot->masterParams->peakR,
-                          mixScratch.getMagnitude (1, 0, numSamples) * masterGain);
+                          mixScratch.getMagnitude (1, 0, segLen) * masterGain);
         }
 
         if (buffer.getNumChannels() >= 2)
         {
-            buffer.addFrom (0, startSample, mixScratch, 0, 0, numSamples, masterGain);
-            buffer.addFrom (1, startSample, mixScratch, 1, 0, numSamples, masterGain);
+            buffer.addFrom (0, outOffset, mixScratch, 0, 0, segLen, masterGain);
+            buffer.addFrom (1, outOffset, mixScratch, 1, 0, segLen, masterGain);
         }
         else
         {
-            buffer.addFrom (0, startSample, mixScratch, 0, 0, numSamples, 0.5f * masterGain);
-            buffer.addFrom (0, startSample, mixScratch, 1, 0, numSamples, 0.5f * masterGain);
+            buffer.addFrom (0, outOffset, mixScratch, 0, 0, segLen, 0.5f * masterGain);
+            buffer.addFrom (0, outOffset, mixScratch, 1, 0, segLen, 0.5f * masterGain);
         }
     }
 
@@ -283,9 +348,9 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
         const bool clickOn = transport.clickEnabled.load();
         const int clickLen = (int) (sr * 0.045);
 
-        for (int i = 0; i < numSamples; ++i)
+        for (int i = 0; i < segLen; ++i)
         {
-            const juce::int64 p = pos + i;
+            const juce::int64 p = segPos + i;
             const auto beatIndex = (juce::int64) std::floor ((double) p / beatLen);
 
             if (beatIndex != lastBeatIndex)
@@ -312,11 +377,9 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
 
                 // 出力ルールは本編と同じ（ch0/1のみ。余剰chへ漏らさない）
                 for (int ch = 0; ch < juce::jmin (2, buffer.getNumChannels()); ++ch)
-                    buffer.addSample (ch, startSample + i, sample);
+                    buffer.addSample (ch, outOffset + i, sample);
             }
         }
-
-        transport.playheadSamplePos.store (pos + numSamples);
     }
 }
 

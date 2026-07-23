@@ -59,6 +59,7 @@ public:
     // リージョン/クリップ編集（作成・移動・トラック跨ぎ・リサイズ・複製はTimelineViewがモデルを直接書く）
     std::function<void()> onWillEditModel;           // 編集の直前（undoスナップショット用）
     std::function<void()> onModelEdited;             // 編集の確定後（pushSnapshot・dirty用）
+    std::function<void()> onCycleChanged;            // サイクル範囲の変更（undo対象外。Transport同期・dirty用）
     std::function<void (int, int)> onOpenRegion;     // リージョンをダブルクリック（track, region）
     std::function<void (int, int)> onDeleteItemRequested; // 右クリックメニューの削除（track, クリップorリージョンindex）
 
@@ -91,6 +92,10 @@ public:
     int snapUnitBeats() const;                       // マーカーのスナップ刻み（表示グリッド準拠・上限=拍）: 4/2/1拍
     int xToMarkerBeats (int x) const;                // xを含むスナップ枠の頭の拍位置（floor）。>= 0
 
+    // 16分音符（曲頭から0始まり・サイクル範囲の単位）⇔ サンプル。
+    // MainComponentのTransport同期・再生開始ジャンプからも使う
+    juce::int64 sixteenthStartSample (int sixteenths) const;
+
     void resized() override;
     void paint (juce::Graphics& g) override;
 
@@ -115,6 +120,15 @@ private:
     int hitTestRegion (int trackIndex, int x) const; // 見つからなければ-1（重なりは後勝ち）
     int hitTestClip (int trackIndex, int x) const;   // 同上（オーディオトラック用）
     void showItemMenu (int trackIndex, int itemIndex); // 右クリックメニュー（ミュート/複製/削除）
+
+    // サイクル範囲（ルーラーの操作。クリック=シークは維持し、ドラッグだけが範囲を作る）
+    int sixteenthToX (int sixteenths) const;
+    int xToCycleSixteenths (int x) const;            // 最近傍の表示グリッド線へスナップ（1/16上限）。>= 0
+    int hitTestCycleEdge (int x) const;              // 端±4px。0=開始端・1=終了端・-1=なし
+    void handleRulerMouseDown (const juce::MouseEvent& e);
+    void handleRulerMouseDrag (const juce::MouseEvent& e);
+    void handleRulerMouseUp (const juce::MouseEvent& e);
+    void handleRulerMouseMove (const juce::MouseEvent& e);
 
     // セクションマーカー（マーカーレーンの操作。モデル編集は SectionMarkers ヘルパー経由）
     int hitTestMarker (int x) const;                 // xが属するマーカー区間のindex（最初のマーカーより前は-1）
@@ -164,6 +178,20 @@ private:
         bool edited = false;
     };
     MarkerDrag markerDrag;
+
+    // サイクル範囲のドラッグ状態。ルーラー上のドラッグで作成（create）、既存範囲の端で
+    // リサイズ、内側で移動。動かさず離したときだけシーク（マーカーレーンと同じ mouseUp 判定）。
+    // サイクルはundo対象外なので onWillEditModel は呼ばず、確定時に onCycleChanged を呼ぶ
+    struct CycleDrag
+    {
+        enum class Mode { none, create, moveRange, resizeStart, resizeEnd };
+        Mode mode = Mode::none;
+        int startX = 0;
+        int anchorSixteenths = 0; // create: ドラッグ開始点のスナップ位置
+        int origStart = 0, origEnd = 0;
+        bool edited = false;      // 実際に値が変わった時点でtrue（クリック判定と repaint 抑制用）
+    };
+    CycleDrag cycleDrag;
 
     std::unique_ptr<RulerContent> ruler;
     std::unique_ptr<MarkerLaneContent> markerLane;
