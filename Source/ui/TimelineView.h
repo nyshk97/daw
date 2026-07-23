@@ -47,12 +47,16 @@ public:
     const RegionSelection& getRegionSelection() const { return regionSelection; }
     void clearSelection();
 
+    // トラック並び替え後の選択の引き直し（並び替えでクリップ/リージョンのindexは変わらないため
+    // トラックindexだけ差し替える。-1 = 対象トラックが見つからない → その選択を解除）
+    void remapSelectionTracks (int newClipTrack, int newRegionTrack);
+
     std::function<void()> onSelectionChanged;
     std::function<void (int)> onTrackSelected;       // レーンクリックでトラック選択
     std::function<void (juce::int64)> onSeek;        // 表示グリッドにスナップ済みのサンプル位置
     std::function<void (int)> onVerticalScroll;      // ヘッダ同期用（viewYを渡す）
 
-    // MIDIリージョン編集（作成・移動・リサイズ・複製はTimelineViewがモデルを直接書く）
+    // リージョン/クリップ編集（作成・移動・トラック跨ぎ・リサイズ・複製はTimelineViewがモデルを直接書く）
     std::function<void()> onWillEditModel;           // 編集の直前（undoスナップショット用）
     std::function<void()> onModelEdited;             // 編集の確定後（pushSnapshot・dirty用）
     std::function<void (int, int)> onOpenRegion;     // リージョンをダブルクリック（track, region）
@@ -132,18 +136,20 @@ private:
     RegionSelection regionSelection;
     int selectedTrack = 0;
 
-    // MIDIリージョンのドラッグ状態（移動 or 右端リサイズ）。
+    // リージョン/クリップのドラッグ状態（移動・同種トラックへの跨ぎ移動・MIDIのみ右端リサイズ）。
     // ⌥ドラッグの複製は「実際にドラッグが動いた時点」で行う（mouseDownで作ると、
     // クリックしただけで元と完全に重なった見えない複製が残る事故になるため）
     struct RegionDrag
     {
         enum class Mode { none, move, resize };
         Mode mode = Mode::none;
-        int track = -1, region = -1;
-        juce::int64 origStartPpq = 0, origLengthPpq = 0;
+        bool isMidi = false;        // true = midiRegions / false = clips を対象にする
+        int track = -1, item = -1;  // item は clips or midiRegions のindex
+        juce::int64 origStartPpq = 0, origLengthPpq = 0; // MIDI用
+        juce::int64 origStartSample = 0;                 // オーディオ用
         int startX = 0;
         bool duplicateOnDrag = false; // ⌥ドラッグ: 最初の移動時に複製してから動かす
-        bool edited = false;          // 最初に動いた時点で onWillEditModel を一度だけ呼ぶ
+        bool edited = false;          // 実際に動いた時点で onWillEditModel を一度だけ呼ぶ
     };
     RegionDrag regionDrag;
 

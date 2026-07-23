@@ -97,6 +97,14 @@ void FxEditorView::showMaster()
     rebind();
 }
 
+void FxEditorView::remapTrack (int newIndex)
+{
+    // 表示対象は同じトラックのままindexだけ引き直す（並び替えでは名前・paramsは変わらないので
+    // rebind不要。newIndex < 0 = 対象が見つからない場合は refreshFromModel の防御に任せる）
+    if (target == Target::track && newIndex >= 0)
+        targetTrack = newIndex;
+}
+
 void FxEditorView::refreshFromModel (int selectedTrack)
 {
     // 表示対象トラックが消えていたら選択トラック追従へ戻す（リネームはrebindで名前が更新される）

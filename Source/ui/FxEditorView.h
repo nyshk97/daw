@@ -36,6 +36,11 @@ public:
     void refreshFromModel (int selectedTrack);
     void refreshValues();
 
+    // トラック並び替え時のindex引き直し用。shownTrackは表示中のトラックindex（バス/Master表示は-1）、
+    // remapTrackは表示対象のトラック自体を変えずにindexだけ差し替える（バス/Master表示はno-op）
+    int shownTrack() const { return target == Target::track ? targetTrack : -1; }
+    void remapTrack (int newIndex);
+
     // ---- 下部詳細エディタとの連携（状態管理はMainComponent側）----
     int numSlots() const { return (int) slots.size(); }
     juce::String slotName (int slot) const;   // "EQ" / "Comp" / "Reverb" 等（範囲外は空）

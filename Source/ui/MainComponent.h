@@ -71,6 +71,7 @@ private:
     void requestDeleteClipAt (int trackIndex, int clipIndex);   // 確認ダイアログあり
     void deleteRegionAt (int trackIndex, int regionIndex);      // MIDIリージョンは確認なしで削除（undo可能なので）
     void requestDeleteTrack (int index);
+    void reorderTrack (int from, int to); // ヘッダのドラッグ並び替え（to = 挿入先の隙間番号 0..tracks.size()）
     void showAddTrackMenu();
     void addTrack (TrackType type);
     void selectTrack (int index);         // 内部同期用（削除後の詰め直し・undo復元等）。FXエディタの表示対象は変えない

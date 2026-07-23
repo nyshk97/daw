@@ -1,5 +1,6 @@
 #include "MainComponent.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "../shared/Log.h"
@@ -169,6 +170,8 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         setDirty (true);
     };
     headers.onWheel = [this] (float deltaY) { timeline.scrollVertically (deltaY); };
+    headers.canReorder = [this] { return ! engine.isRecording(); }; // 録音中は並び替え不可
+    headers.onReorderRequested = [this] (int from, int to) { reorderTrack (from, to); };
 
     // ---- トランスポートバー ----
     playButton.onClick = [this] { togglePlay(); };
@@ -631,6 +634,56 @@ void MainComponent::requestDeleteTrack (int index)
             setDirty (true);
             timeline.refresh();
         });
+}
+
+// ヘッダのドラッグ＆ドロップ並び替え。to は挿入先の隙間番号（0..tracks.size()）。
+// vector順 = 表示順・保存順・再生順なので入れ替えるだけでよいが、index保持の参照
+// （選択トラック・Timelineの両選択・FXパネル・ミキサー）はIDで退避して引き直す
+void MainComponent::reorderTrack (int from, int to)
+{
+    if (engine.isRecording())
+        return;
+    const int numTracks = (int) project->tracks.size();
+    if (from < 0 || from >= numTracks || to < 0 || to > numTracks || to == from || to == from + 1)
+        return;
+
+    const auto trackIdAt = [this] (int index) -> juce::uint64
+    {
+        return index >= 0 && index < (int) project->tracks.size()
+                   ? project->tracks[(size_t) index].id
+                   : 0;
+    };
+    const auto selectedId = trackIdAt (selectedTrack);
+    const auto clipSelId = trackIdAt (timeline.getSelection().track);
+    const auto regionSelId = trackIdAt (timeline.getRegionSelection().track);
+    const auto fxTrackId = trackIdAt (fxEditor.shownTrack());
+
+    Log::info ("track.reorder", "from=" + juce::String (from) + " to=" + juce::String (to)
+                                    + " name=" + project->tracks[(size_t) from].name);
+    undoStack.begin (*project);
+
+    auto& tracks = project->tracks;
+    if (to > from)
+        std::rotate (tracks.begin() + from, tracks.begin() + from + 1, tracks.begin() + to);
+    else
+        std::rotate (tracks.begin() + to, tracks.begin() + from, tracks.begin() + from + 1);
+
+    const auto indexOfId = [this] (juce::uint64 id) -> int
+    {
+        if (id != 0)
+            for (int i = 0; i < (int) project->tracks.size(); ++i)
+                if (project->tracks[(size_t) i].id == id)
+                    return i;
+        return -1;
+    };
+
+    headers.rebuild();
+    timeline.remapSelectionTracks (indexOfId (clipSelId), indexOfId (regionSelId));
+    fxEditor.remapTrack (indexOfId (fxTrackId));
+    selectTrack (indexOfId (selectedId)); // ヘッダ・タイムライン・ミキサー・FXパネルの選択表示も同期
+    pushSnapshot();
+    setDirty (true);
+    timeline.refresh();
 }
 
 void MainComponent::showAddTrackMenu()

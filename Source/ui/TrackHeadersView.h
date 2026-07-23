@@ -33,9 +33,17 @@ public:
     std::function<void()> onWillChangeStructure; // リネーム・楽器変更の直前（undoスナップショット用）
     std::function<void()> onInstrumentChanged;   // 楽器変更の確定後（pushSnapshotで音源差し替え）
 
+    // ドラッグ並び替え。開始できるのはヘッダ背景＋種別アイコン領域のみ（nameLabel・M/S・
+    // 音量・楽器の上からは開始しない）。Yは親（container）座標
+    std::function<bool()> canReorder;        // 録音中はfalseが返る（判定はMainComponent）
+    std::function<void (int)> onReorderDrag; // 並び替えドラッグ中（挿入インジケータ更新用）
+    std::function<void (int)> onReorderDrop; // ドロップ（並び替えの確定要求）
+
     void paint (juce::Graphics& g) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent& e) override;
+    void mouseDrag (const juce::MouseEvent& e) override;
+    void mouseUp (const juce::MouseEvent& e) override;
 
 private:
     static constexpr int iconSlotWidth = 20; // トラック名の左のトラック種別アイコン領域
@@ -45,6 +53,7 @@ private:
 
     Track* track = nullptr;
     bool selected = false;
+    bool reorderDragging = false; // 並び替えドラッグ中（閾値超え＋canReorder通過後）
     bool dimmedVisual = false; // グレーアウト表示中か＝聞こえない状態（ミュート or 他トラックのソロ）。paintのアイコン減光にも使う
     float meterDisplay = 0.0f; // メーターの表示値（読み取り値とディケイのmax）
 
@@ -80,14 +89,23 @@ public:
     std::function<void()> onInstrumentChanged;   // 楽器変更の確定後
     std::function<void (float)> onWheel;
 
+    // ドラッグ並び替え
+    std::function<bool()> canReorder;                  // 録音中はfalse（判定はMainComponent）
+    std::function<void (int, int)> onReorderRequested; // (from, 挿入先の隙間番号 0..tracks.size())
+
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
+    void paintOverChildren (juce::Graphics& g) override; // 挿入位置インジケータ
 
 private:
     void refreshBindings();
     bool anySoloActive() const; // どれかのトラックがソロ中か（減光判定用）
+    int gapForY (int containerY) const;            // container座標Y → 挿入先の隙間番号（クランプ済み）
+    void updateReorderIndicator (int containerY);  // ドラッグ中のインジケータ更新
+    void finishReorder (int from, int containerY); // ドロップ確定（no-op位置なら何もしない）
 
     Project* project = nullptr;
     int selectedTrack = 0;
+    int reorderGap = -1; // 並び替えドラッグ中の挿入位置インジケータ（-1 = 非表示）
 
     juce::Component container;
     std::vector<std::unique_ptr<TrackHeaderComponent>> items;

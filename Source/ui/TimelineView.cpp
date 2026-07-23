@@ -473,6 +473,25 @@ void TimelineView::clearSelection()
     lanes->repaint();
 }
 
+void TimelineView::remapSelectionTracks (int newClipTrack, int newRegionTrack)
+{
+    if (selection.isValid())
+    {
+        if (newClipTrack >= 0)
+            selection.track = newClipTrack;
+        else
+            selection.clear();
+    }
+    if (regionSelection.isValid())
+    {
+        if (newRegionTrack >= 0)
+            regionSelection.track = newRegionTrack;
+        else
+            regionSelection.clear();
+    }
+    lanes->repaint();
+}
+
 double TimelineView::effectiveSampleRate() const
 {
     if (project != nullptr && project->sampleRate > 0.0)
@@ -760,8 +779,9 @@ void TimelineView::handleLaneMouseDown (const juce::MouseEvent& e)
                 regionDrag.mode = (! e.mods.isAltDown() && e.x >= rightX - 8)
                                       ? RegionDrag::Mode::resize
                                       : RegionDrag::Mode::move;
+                regionDrag.isMidi = true;
                 regionDrag.track = row;
-                regionDrag.region = ri;
+                regionDrag.item = ri;
                 regionDrag.origStartPpq = region.startPpq;
                 regionDrag.origLengthPpq = region.lengthPpq;
                 regionDrag.startX = e.x;
@@ -780,6 +800,16 @@ void TimelineView::handleLaneMouseDown (const juce::MouseEvent& e)
             {
                 selection = { row, ci };
                 regionSelection.clear();
+
+                // オーディオは移動のみ（リサイズ＝トリムはTier 1スコープ外）。⌥ドラッグで複製
+                regionDrag.mode = RegionDrag::Mode::move;
+                regionDrag.isMidi = false;
+                regionDrag.track = row;
+                regionDrag.item = ci;
+                regionDrag.origStartSample = track.clips[(size_t) ci].startSample;
+                regionDrag.startX = e.x;
+                regionDrag.duplicateOnDrag = e.mods.isAltDown();
+
                 if (onSelectionChanged)
                     onSelectionChanged();
                 lanes->repaint();
@@ -805,50 +835,125 @@ void TimelineView::handleLaneMouseDrag (const juce::MouseEvent& e)
 {
     if (regionDrag.mode == RegionDrag::Mode::none || project == nullptr)
         return;
-    if (regionDrag.track >= (int) project->tracks.size())
+    if (regionDrag.track < 0 || regionDrag.track >= (int) project->tracks.size())
         return;
-    auto& track = project->tracks[(size_t) regionDrag.track];
-    if (regionDrag.region >= (int) track.midiRegions.size())
+    auto& sourceTrack = project->tracks[(size_t) regionDrag.track];
+    const int itemCount = (int) (regionDrag.isMidi ? sourceTrack.midiRegions.size()
+                                                   : sourceTrack.clips.size());
+    if (regionDrag.item < 0 || regionDrag.item >= itemCount)
         return;
 
-    const auto deltaPpq = xToPpq (e.x) - xToPpq (regionDrag.startX);
+    // スナップ後の時間位置・長さを先に計算する（編集開始の「実際に値が変わるか」の判定にも使う）
+    juce::int64 snappedStart = 0, snappedLength = 0;
+    if (regionDrag.isMidi)
+    {
+        const auto grid = juce::jmax ((juce::int64) 1, gridPpq());
+        const auto deltaPpq = xToPpq (e.x) - xToPpq (regionDrag.startX);
+        snappedStart = juce::jmax ((juce::int64) 0,
+                                   (juce::int64) std::llround ((double) (regionDrag.origStartPpq + deltaPpq)
+                                                               / (double) grid) * grid);
+        snappedLength = juce::jmax (grid,
+                                    (juce::int64) std::llround ((double) (regionDrag.origLengthPpq + deltaPpq)
+                                                                / (double) grid) * grid);
+    }
+    else
+    {
+        const double gridSamples = barLengthSamples() / gridDivisionsPerBar();
+        const auto deltaSamples = xToSample (e.x) - xToSample (regionDrag.startX);
+        const auto gridIndex = std::llround ((double) (regionDrag.origStartSample + deltaSamples) / gridSamples);
+        snappedStart = juce::jmax ((juce::int64) 0,
+                                   (juce::int64) std::llround ((double) gridIndex * gridSamples));
+    }
+    const bool timeChanged = regionDrag.mode == RegionDrag::Mode::resize
+                                 ? snappedLength != regionDrag.origLengthPpq
+                                 : snappedStart != (regionDrag.isMidi ? regionDrag.origStartPpq
+                                                                      : regionDrag.origStartSample);
+
+    // ドロップ先トラック: 同種トラックのレーンだけ有効。無効な位置（異種トラック・レーン外の余白・
+    // 上端より上）では最後に有効だったトラック（= 現在の所属）に留める。リサイズはトラック跨ぎなし
+    int targetRow = regionDrag.track;
+    if (regionDrag.mode == RegionDrag::Mode::move)
+    {
+        const int row = e.y < 0 ? -1 : e.y / trackHeight;
+        if (row >= 0 && row < (int) project->tracks.size()
+            && project->tracks[(size_t) row].type == sourceTrack.type)
+            targetRow = row;
+    }
+    const bool trackChanged = targetRow != regionDrag.track;
+
     if (! regionDrag.edited)
     {
-        if (deltaPpq == 0)
+        // 編集開始 = ドラッグ閾値超え かつ モデルが実際に変わる操作（スナップ後の時間 or 所属トラック
+        // の変化）。同一レーン内の縦ぶれ・スナップに満たない横ぶれでは undo登録も⌥複製もしない
+        if (e.getDistanceFromDragStart() < 4 || (! timeChanged && ! trackChanged))
             return;
         if (onWillEditModel)
             onWillEditModel();
         regionDrag.edited = true;
 
         // ⌥ドラッグ: 動き始めた今、複製を作ってドラッグ対象を差し替える
-        if (regionDrag.duplicateOnDrag && project != nullptr)
+        if (regionDrag.duplicateOnDrag)
         {
-            MidiRegion copy = track.midiRegions[(size_t) regionDrag.region];
-            copy.id = project->allocateId();
-            for (auto& note : copy.notes)
-                note.id = project->allocateId();
-            track.midiRegions.push_back (std::move (copy));
-            regionDrag.region = (int) track.midiRegions.size() - 1;
-            regionSelection = { regionDrag.track, regionDrag.region };
+            if (regionDrag.isMidi)
+            {
+                MidiRegion copy = sourceTrack.midiRegions[(size_t) regionDrag.item];
+                copy.id = project->allocateId();
+                for (auto& note : copy.notes)
+                    note.id = project->allocateId();
+                sourceTrack.midiRegions.push_back (std::move (copy));
+                regionDrag.item = (int) sourceTrack.midiRegions.size() - 1;
+                regionSelection = { regionDrag.track, regionDrag.item };
+            }
+            else
+            {
+                Clip copy = sourceTrack.clips[(size_t) regionDrag.item]; // fileName/audioは共有参照
+                sourceTrack.clips.push_back (std::move (copy));
+                regionDrag.item = (int) sourceTrack.clips.size() - 1;
+                selection = { regionDrag.track, regionDrag.item };
+            }
             if (onSelectionChanged)
                 onSelectionChanged();
         }
     }
 
-    auto& region = track.midiRegions[(size_t) regionDrag.region];
-    const auto grid = juce::jmax ((juce::int64) 1, gridPpq());
-
-    if (regionDrag.mode == RegionDrag::Mode::move)
+    // トラック跨ぎ: 有効なレーンに入った時点でvector間を実移動する（描画・選択はモデルに追従。
+    // 再生への反映はドロップ時のonModelEditedまで行われない）
+    if (trackChanged)
     {
-        const auto snapped = (juce::int64) std::llround ((double) (regionDrag.origStartPpq + deltaPpq)
-                                                         / (double) grid) * grid;
-        region.startPpq = juce::jmax ((juce::int64) 0, snapped);
+        auto& dest = project->tracks[(size_t) targetRow];
+        if (regionDrag.isMidi)
+        {
+            MidiRegion moving = std::move (sourceTrack.midiRegions[(size_t) regionDrag.item]);
+            sourceTrack.midiRegions.erase (sourceTrack.midiRegions.begin() + regionDrag.item);
+            dest.midiRegions.push_back (std::move (moving));
+            regionDrag.item = (int) dest.midiRegions.size() - 1;
+            regionSelection = { targetRow, regionDrag.item };
+        }
+        else
+        {
+            Clip moving = std::move (sourceTrack.clips[(size_t) regionDrag.item]);
+            sourceTrack.clips.erase (sourceTrack.clips.begin() + regionDrag.item);
+            dest.clips.push_back (std::move (moving));
+            regionDrag.item = (int) dest.clips.size() - 1;
+            selection = { targetRow, regionDrag.item };
+        }
+        regionDrag.track = targetRow;
+        if (onSelectionChanged)
+            onSelectionChanged();
+    }
+
+    auto& track = project->tracks[(size_t) regionDrag.track];
+    if (regionDrag.isMidi)
+    {
+        auto& region = track.midiRegions[(size_t) regionDrag.item];
+        if (regionDrag.mode == RegionDrag::Mode::move)
+            region.startPpq = snappedStart;
+        else
+            region.lengthPpq = snappedLength;
     }
     else
     {
-        const auto snapped = (juce::int64) std::llround ((double) (regionDrag.origLengthPpq + deltaPpq)
-                                                         / (double) grid) * grid;
-        region.lengthPpq = juce::jmax (grid, snapped);
+        track.clips[(size_t) regionDrag.item].startSample = snappedStart;
     }
     lanes->repaint();
 }
@@ -857,6 +962,12 @@ void TimelineView::handleLaneMouseUp (const juce::MouseEvent&)
 {
     if (regionDrag.mode != RegionDrag::Mode::none && regionDrag.edited)
     {
+        Log::info ("region.drag", juce::String (regionDrag.isMidi ? "type=midi" : "type=audio")
+                                      + (regionDrag.mode == RegionDrag::Mode::resize ? " mode=resize"
+                                                                                     : " mode=move")
+                                      + " track=" + juce::String (regionDrag.track)
+                                      + " item=" + juce::String (regionDrag.item)
+                                      + (regionDrag.duplicateOnDrag ? " dup=1" : ""));
         updateContentSize();
         if (onModelEdited)
             onModelEdited();

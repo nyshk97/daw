@@ -239,6 +239,34 @@ void TrackHeaderComponent::resized()
     instrumentBox.setBounds (area.removeFromTop (22)); // MIDIトラックのみ表示（3行目）
 }
 
+void TrackHeaderComponent::mouseDrag (const juce::MouseEvent& e)
+{
+    // 並び替えドラッグはヘッダ背景・種別アイコン領域から開始したときだけ。
+    // nameLabelから転送されたイベント（addMouseListener経由）は originalComponent で除外し、
+    // M/S・スライダー・楽器の上は子コンポーネントがイベントを取るのでそもそも届かない
+    if (e.originalComponent != this || e.mods.isPopupMenu())
+        return;
+    if (! reorderDragging)
+    {
+        if (e.getDistanceFromDragStart() < 5)
+            return;
+        if (canReorder != nullptr && ! canReorder())
+            return;
+        reorderDragging = true;
+    }
+    if (onReorderDrag != nullptr && getParentComponent() != nullptr)
+        onReorderDrag (e.getEventRelativeTo (getParentComponent()).y);
+}
+
+void TrackHeaderComponent::mouseUp (const juce::MouseEvent& e)
+{
+    if (! reorderDragging)
+        return;
+    reorderDragging = false;
+    if (onReorderDrop != nullptr && getParentComponent() != nullptr)
+        onReorderDrop (e.getEventRelativeTo (getParentComponent()).y);
+}
+
 void TrackHeaderComponent::mouseDown (const juce::MouseEvent& e)
 {
     if (onSelect)
@@ -289,6 +317,9 @@ void TrackHeadersView::rebuild()
             header->onChanged = [this] { if (onChanged) onChanged(); };
             header->onWillChangeStructure = [this] { if (onWillChangeStructure) onWillChangeStructure(); };
             header->onInstrumentChanged = [this] { if (onInstrumentChanged) onInstrumentChanged(); };
+            header->canReorder = [this] { return canReorder == nullptr || canReorder(); };
+            header->onReorderDrag = [this] (int y) { updateReorderIndicator (y); };
+            header->onReorderDrop = [this, i] (int y) { finishReorder (i, y); };
             header->setBounds (0, i * TimelineView::trackHeight,
                                preferredWidth, TimelineView::trackHeight);
             container.addAndMakeVisible (*header);
@@ -344,6 +375,45 @@ bool TrackHeadersView::anySoloActive() const
 void TrackHeadersView::setViewY (int y)
 {
     container.setTopLeftPosition (0, -y);
+}
+
+// ---- ドラッグ並び替え ----
+
+int TrackHeadersView::gapForY (int containerY) const
+{
+    // ヘッダ境界（隙間）のうちYに最も近いもの。0 = 先頭の前、items.size() = 末尾の後
+    return juce::jlimit (0, (int) items.size(),
+                         juce::roundToInt ((float) containerY / (float) TimelineView::trackHeight));
+}
+
+void TrackHeadersView::updateReorderIndicator (int containerY)
+{
+    const int gap = gapForY (containerY);
+    if (gap == reorderGap)
+        return;
+    reorderGap = gap;
+    repaint();
+}
+
+void TrackHeadersView::finishReorder (int from, int containerY)
+{
+    const int gap = gapForY (containerY);
+    reorderGap = -1;
+    repaint();
+    if (gap == from || gap == from + 1) // 自分の前後の隙間 = 順序が変わらない
+        return;
+    if (onReorderRequested)
+        onReorderRequested (from, gap);
+}
+
+void TrackHeadersView::paintOverChildren (juce::Graphics& g)
+{
+    if (reorderGap < 0)
+        return;
+    // 挿入位置インジケータ（ヘッダ境界の横線）。containerのスクロール位置を足してビュー座標へ
+    const int y = container.getY() + reorderGap * TimelineView::trackHeight;
+    g.setColour (Theme::accent);
+    g.fillRect (0, juce::jlimit (0, getHeight() - 3, y - 1), getWidth(), 3);
 }
 
 void TrackHeadersView::mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& wheel)
