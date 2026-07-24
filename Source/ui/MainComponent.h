@@ -14,6 +14,7 @@
 #include "TimelineView.h"
 #include "TrackHeadersView.h"
 #include "TransportLcd.h"
+#include "../audio/AudioImporter.h"
 #include "../audio/BounceRenderer.h"
 #include "../audio/PlaybackEngine.h"
 #include "../shared/PreviewFifo.h"
@@ -48,6 +49,11 @@ public:
     void startBounceFlow();
     bool isBouncing() const { return bounceActive; }
     void cancelBounceForClose(); // バウンス中ならキャンセル→ワーカーjoin→一時ファイル削除まで待つ
+
+    // オーディオファイルの取り込み。メニューから呼ばれる入口と、閉じる/終了フロー用の中断API
+    void startImportFlow();
+    bool isImporting() const { return importActive; }
+    void cancelImportForClose(); // 取り込み中ならキャンセル→ワーカーjoin→一時ファイル削除まで待つ
     juce::String windowTitle() const;
     std::function<void (const juce::String&)> onTitleChanged;
     std::function<void()> onOpenChooserRequested; // ⌘O: プロジェクトを閉じて選択画面へ（未保存確認はMainWindow側）
@@ -100,6 +106,12 @@ private:
     void stopPlaybackForBounce();                // 書き出し前の再生停止（⌘B/⌘E共通）
     bool startBounceRequest (BounceRenderer::Request&& request); // レンダラー起動＋オーバーレイ表示（共通の尻尾）
     void pollBounce();                           // Timerからの完了ポーリング・進捗反映
+    // 取り込みの実体。targetTrack = -1 で新規オーディオトラックを作成して配置。
+    // othersSkipped = 複数ドロップの先頭のみ処理したとき（完了表示の文言に反映）
+    void startImport (const juce::File& source, int targetTrack, juce::int64 startSample,
+                      bool othersSkipped = false);
+    void pollImport();                                    // Timerからの完了ポーリング・進捗反映
+    void finishImport (const AudioImporter::Result& result); // 成功時: リネーム→クリップ/トラック追加→保存
     static void refreshMacMenu();                // Fileメニューのenable状態を組み直させる
     void pushSnapshot();
     void setDirty (bool nowDirty);
@@ -213,6 +225,20 @@ private:
     std::unique_ptr<juce::FileChooser> bounceChooser; // 非同期ダイアログの生存保持
     bool bounceActive = false;   // running中のみtrue（完了表示中はfalse）
     int bounceDoneTicks = 0;     // 完了表示の自動クローズ用カウントダウン（30Hz Timer）
+
+    // オーディオファイルの取り込み（変換コピー）。実行中は importOverlay がモーダルに塞ぎ、
+    // 開始時に保持した配置先（トラック・位置）が完了まで有効であることを保証する。
+    // ワーカーは一時ファイルにのみ書き、最終名へのリネームとモデル反映は finishImport が
+    // メッセージスレッドで一続きに行う
+    AudioImporter audioImporter;
+    BounceOverlay importOverlay; // 取り込み進捗（BounceOverlayを文言差し替えで流用・モーダル）
+    bool importActive = false;
+    int importDoneTicks = 0;
+    juce::File importTempFile;
+    juce::String importDisplayName; // 元ファイル名（拡張子なし）。クリップ表示名・新規トラック名に使う
+    int importTargetTrack = -1;     // -1 = 新規トラックを作成
+    juce::int64 importStartSample = 0;
+    std::unique_ptr<juce::FileChooser> importChooser; // 非同期ダイアログの生存保持
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };

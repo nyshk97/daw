@@ -55,6 +55,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     addChildComponent (addTrackOverlay); // トラック追加メニュー表示中のみ可視
     addChildComponent (shortcutOverlay); // ⌘?表示中のみ可視
     addChildComponent (bounceOverlay);   // バウンス中のみ可視
+    addChildComponent (importOverlay);   // 取り込み中のみ可視
     addAndMakeVisible (lcd);
     addChildComponent (srWarningLabel); // 不一致時のみ表示
 
@@ -173,6 +174,12 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     };
     timeline.onExportItemRequested = [this] (int trackIndex, int itemIndex)
     { startRegionExportFlow (trackIndex, itemIndex); };
+    timeline.onImportFilesDropped = [this] (const juce::StringArray& files, int trackIndex,
+                                            juce::int64 startSample)
+    {
+        // 複数ファイルは先頭のみ処理（残りは完了表示の文言で知らせる）
+        startImport (juce::File (files[0]), trackIndex, startSample, files.size() > 1);
+    };
     pianoRoll.onWillEditModel = [this] { undoStack.begin (*project); };
     pianoRoll.onModelEdited = [this]
     {
@@ -237,6 +244,13 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     {
         Log::info ("bounce.cancel_requested", "source=overlay");
         bounceRenderer.cancel(); // 非同期。完了はpollBounce()が拾う
+    };
+
+    importOverlay.setLabels (jp (u8"取り込み中…"), jp (u8"取り込みが完了しました"));
+    importOverlay.onCancel = [this]
+    {
+        Log::info ("import.cancel_requested", "source=overlay");
+        audioImporter.cancel(); // 非同期。完了はpollImport()が拾う
     };
 
     clickButton.setClickingTogglesState (true); // ONで点灯（Logicのメトロノームボタン風）
@@ -340,6 +354,7 @@ void MainComponent::timerCallback()
     }
 
     pollBounce();
+    pollImport();
 
     // サイクル範囲のサンプル換算はBPM・サンプルレートに依存するため毎tick同期する
     // （BPM編集・デバイスSR確定・デバイス変更のどの経路でも取りこぼさない。atomic2本のstoreのみで安価）
@@ -617,7 +632,7 @@ void MainComponent::finishRecording()
         Clip clip;
         clip.fileName = pendingRecordFile.getFileName();
         clip.startSample = pendingPunchIn;
-        clip.audio = Project::loadWavMono (pendingRecordFile);
+        clip.audio = Project::loadWav (pendingRecordFile);
         if (clip.audio != nullptr)
             clip.lengthSamples = clip.audio->getNumSamples(); // 録音直後はWAV全長を参照
 
@@ -1423,6 +1438,194 @@ void MainComponent::cancelBounceForClose()
     Log::info ("bounce.cancelled", "reason=close");
 }
 
+// ---- オーディオファイルの取り込み ----
+
+void MainComponent::startImportFlow()
+{
+    if (importActive || bounceActive || engine.isRecording())
+        return;
+
+    importChooser = std::make_unique<juce::FileChooser> (
+        jp (u8"オーディオを読み込む"),
+        juce::File::getSpecialLocation (juce::File::userHomeDirectory).getChildFile ("Downloads"),
+        "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.m4a");
+
+    const auto flags = juce::FileBrowserComponent::openMode
+                       | juce::FileBrowserComponent::canSelectFiles;
+    importChooser->launchAsync (flags, [this] (const juce::FileChooser& chooser)
+    {
+        // thisの生存: importChooserはthisのメンバーで、this破棄時にダイアログごと片付く
+        const auto chosen = chooser.getResult();
+        if (chosen == juce::File())
+            return; // キャンセル
+        startImport (chosen, -1, 0); // メニュー経由は常に新規トラックの小節1（曲頭）へ
+    });
+}
+
+void MainComponent::startImport (const juce::File& source, int targetTrack, juce::int64 startSample,
+                                 bool othersSkipped)
+{
+    if (importActive || bounceActive || engine.isRecording())
+        return;
+
+    // プロジェクトSRの確定（最初の録音「または取り込み」時にデバイスレートで確定。
+    // SR確定はundo対象外 — UndoStackが戻すのはtracks/markersのみで、録音による確定と同じ扱い）
+    double targetRate = project->sampleRate;
+    if (targetRate <= 0.0)
+    {
+        const double deviceRate = transport.sampleRate.load();
+        if (deviceRate <= 0.0)
+        {
+            showAlert (jp (u8"取り込めません"), jp (u8"オーディオデバイスが準備できていません。"));
+            return;
+        }
+        project->sampleRate = deviceRate;
+        setDirty (true);
+        targetRate = deviceRate;
+    }
+
+    // 一時名はGCパターン（clip-*.wav）に掛からない名前。最終名の採番はfinishImportのリネーム時
+    // に行う（nextClipFile()は予約できないため、録音完了との採番競合を構造的に防ぐ）
+    importTempFile = project->directory.getChildFile (".import-" + juce::Uuid().toString() + ".wav.tmp");
+    importDisplayName = source.getFileNameWithoutExtension();
+    importTargetTrack = targetTrack;
+    importStartSample = juce::jmax ((juce::int64) 0, startSample);
+
+    AudioImporter::Request request;
+    request.sourceFile = source;
+    request.tempFile = importTempFile;
+    request.targetSampleRate = targetRate;
+    if (! audioImporter.start (std::move (request)))
+    {
+        showAlert (jp (u8"取り込めません"), jp (u8"前回の取り込みが終了していません。"));
+        return;
+    }
+
+    Log::info ("import.start", "source=" + source.getFullPathName()
+                                   + " track=" + juce::String (targetTrack)
+                                   + " startSample=" + juce::String (importStartSample)
+                                   + " sr=" + juce::String (targetRate, 0));
+    importActive = true;
+    importDoneTicks = 0;
+    importOverlay.setLabels (jp (u8"取り込み中…"),
+                             othersSkipped ? jp (u8"先頭の1ファイルのみ取り込みました")
+                                           : jp (u8"取り込みが完了しました"));
+    importOverlay.setBounds (getLocalBounds());
+    importOverlay.show();
+    refreshMacMenu(); // 取り込み中はFileメニューをdisabledにする
+}
+
+void MainComponent::pollImport()
+{
+    // 完了表示の自動クローズ
+    if (importDoneTicks > 0 && --importDoneTicks == 0)
+        importOverlay.dismiss();
+
+    if (! importActive)
+        return;
+
+    importOverlay.setProgress (audioImporter.progress());
+    if (audioImporter.status() == AudioImporter::Status::running)
+        return;
+
+    importActive = false;
+    const auto result = audioImporter.takeResult();
+    switch (result.status)
+    {
+        case AudioImporter::Status::success:
+            finishImport (result);
+            break;
+
+        case AudioImporter::Status::cancelled:
+            Log::info ("import.cancelled");
+            importOverlay.dismiss();
+            break;
+
+        default:
+            Log::error ("import.failed", "message=" + result.errorMessage.replace ("\n", " / "));
+            importOverlay.dismiss();
+            showAlert (jp (u8"取り込みに失敗しました"), result.errorMessage);
+            break;
+    }
+    refreshMacMenu();
+}
+
+// 成功時の確定処理。リネーム→モデル反映→undo登録→保存までメッセージスレッドで一続きに行う
+// （モーダル排他により、開始時に保持した配置先はこの時点でも有効）
+void MainComponent::finishImport (const AudioImporter::Result& result)
+{
+    const auto finalFile = project->nextClipFile();
+    if (! importTempFile.moveFileTo (finalFile))
+    {
+        importOverlay.dismiss();
+        importTempFile.deleteFile();
+        Log::error ("import.failed", "message=rename_failed target=" + finalFile.getFileName());
+        showAlert (jp (u8"取り込みに失敗しました"), jp (u8"変換結果の配置に失敗しました。"));
+        return;
+    }
+
+    Clip clip;
+    clip.fileName = finalFile.getFileName();
+    clip.name = importDisplayName;
+    clip.startSample = importStartSample;
+    clip.audio = Project::loadWav (finalFile);
+    if (clip.audio == nullptr)
+    {
+        importOverlay.dismiss();
+        finalFile.deleteFile();
+        Log::error ("import.failed", "message=readback_failed file=" + finalFile.getFileName());
+        showAlert (jp (u8"取り込みに失敗しました"), jp (u8"変換結果の読み込みに失敗しました。"));
+        return;
+    }
+    clip.lengthSamples = clip.audio->getNumSamples();
+    clip.buildPeakCache();
+
+    undoStack.begin (*project); // 取り込み＝クリップ/トラック追加もundo対象（SR確定は対象外）
+
+    int trackIndex = importTargetTrack;
+    if (trackIndex < 0 || trackIndex >= (int) project->tracks.size()
+        || project->tracks[(size_t) trackIndex].type != TrackType::audio)
+    {
+        Track track;
+        track.id = project->allocateId();
+        track.type = TrackType::audio;
+        track.name = importDisplayName; // 新規トラック名 = 元ファイル名（拡張子なし）
+        project->tracks.push_back (std::move (track));
+        trackIndex = (int) project->tracks.size() - 1;
+        headers.rebuild();
+    }
+    project->tracks[(size_t) trackIndex].clips.push_back (std::move (clip));
+
+    selectTrackFromUser (trackIndex); // 取り込んだリージョンのトラックを選択状態にする
+    pushSnapshot();
+    setDirty (true);
+    trySave(); // 確定処理の一部として保存まで行う（クリップWAVがGC対象から即座に外れる）
+    timeline.refresh();
+
+    Log::info ("import.done", "file=" + finalFile.getFileName()
+                                  + " name=" + importDisplayName
+                                  + " track=" + juce::String (trackIndex)
+                                  + " frames=" + juce::String (result.outputFrames)
+                                  + " ch=" + juce::String (result.numChannels)
+                                  + " sourceSr=" + juce::String (result.sourceSampleRate, 0));
+    importOverlay.showDone();
+    importDoneTicks = 40; // 30Hz × 40 ≈ 1.3秒表示して自動で消える
+}
+
+void MainComponent::cancelImportForClose()
+{
+    if (! importActive)
+        return;
+
+    Log::info ("import.cancel_requested", "source=close");
+    audioImporter.cancelAndWait(); // ワーカーが一時ファイルを削除してから戻る
+    importActive = false;
+    (void) audioImporter.takeResult();
+    importOverlay.dismiss();
+    refreshMacMenu();
+    Log::info ("import.cancelled", "reason=close");
+}
+
 void MainComponent::refreshMacMenu()
 {
     // Fileメニューのenable状態はメニュー再構築時にgetCommandInfoから引き直される（Main.cpp側）
@@ -1498,6 +1701,18 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         {
             Log::info ("bounce.cancel_requested", "source=escape");
             bounceRenderer.cancel(); // 非同期。完了はpollBounce()が拾う
+        }
+        return true;
+    }
+
+    // 取り込み中もモーダル: ショートカット経由の編集（トラック削除等）を塞ぎ、
+    // 開始時に保持した配置先が完了まで有効であることを保証する
+    if (importActive)
+    {
+        if (escape)
+        {
+            Log::info ("import.cancel_requested", "source=escape");
+            audioImporter.cancel(); // 非同期。完了はpollImport()が拾う
         }
         return true;
     }
@@ -1607,6 +1822,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         // 通常はネイティブメニューのkeyEquivalent（⌘B）が先にイベントを取るため、
         // ここはメニューが効かない状況のフォールバック
         startBounceFlow();
+        return true;
+    }
+    // Logic準拠: ⇧⌘I = オーディオファイルを読み込む（⌘Bと同じくメニューのフォールバック）
+    if (is (SC::importAudio))
+    {
+        startImportFlow();
         return true;
     }
     // Logic準拠: ⌘E = 選択中のリージョン/クリップをオーディオファイルとして書き出す
@@ -2029,4 +2250,6 @@ void MainComponent::resized()
 
     if (bounceOverlay.isVisible())
         bounceOverlay.setBounds (getLocalBounds());
+    if (importOverlay.isVisible())
+        importOverlay.setBounds (getLocalBounds());
 }

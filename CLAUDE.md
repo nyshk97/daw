@@ -70,6 +70,7 @@ daw/
 │   ├── ui/               # UIコンポーネント（メッセージスレッド側のコード）
 │   └── shared/           # スレッド間で受け渡すデータ構造（FIFO・atomic等）
 ├── docs/plans/           # 実装計画（/plot で生成）
+├── docs/design/          # 複数planにまたがる設計判断（例: リージョン設定UIの方針）
 ├── GOTCHAS.md            # JUCE・リアルタイムオーディオの落とし穴集
 └── VERIFY.md             # 動作確認手順
 ```

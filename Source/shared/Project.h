@@ -19,12 +19,13 @@ struct Clip
     static constexpr int samplesPerPeak = 512; // 描画用ピークキャッシュの集約単位
 
     juce::String fileName;      // プロジェクトフォルダ相対（例: clip-001.wav）
+    juce::String name;          // 表示名。取り込みクリップのみ元ファイル名が入る（録音クリップは空=無ラベル）
     juce::int64 startSample = 0;
     juce::int64 offsetSamples = 0;  // ソースWAV内の読み出し開始位置
     juce::int64 lengthSamples = 0;  // 再生長（サンプル）
     bool muted = false;         // リージョン単位のミュート（再生スナップショットから除外）
-    std::shared_ptr<juce::AudioBuffer<float>> audio; // モノラル・メモリ常駐
-    std::vector<float> peakCache;                    // samplesPerPeak ごとの絶対値ピーク（参照範囲のみ）
+    std::shared_ptr<juce::AudioBuffer<float>> audio; // 1ch=モノ（録音）/ 2ch=ステレオ（取り込み）。メモリ常駐
+    std::vector<float> peakCache;                    // samplesPerPeak ごとの絶対値ピーク（参照範囲のみ。ステレオはL/Rのmax合成）
 
     void buildPeakCache();
 };
@@ -135,8 +136,9 @@ class Project
 {
 public:
     // v2: MIDIトラック・ID追加 / v3: クリップのoffsetSamples・lengthSamples /
-    // v4: pan・sends・固定バス3本・Master / v5: サイクル（ループ範囲）
-    static constexpr int currentVersion = 5;
+    // v4: pan・sends・固定バス3本・Master / v5: サイクル（ループ範囲）/
+    // v6: ステレオクリップ（ch数はJSONに持たずWAV自体から判定）・クリップ表示名（取り込み用）
+    static constexpr int currentVersion = 6;
 
     juce::File directory;
     double bpm = 120.0;
@@ -176,7 +178,9 @@ public:
     std::unique_ptr<PlaybackSnapshot> buildSnapshot() const;
 
     static juce::File projectsRoot(); // ~/Music/daw
-    static std::shared_ptr<juce::AudioBuffer<float>> loadWavMono (const juce::File& file);
+
+    // 1chはモノ、2ch以上は先頭2chをL/Rとして読む（3ch以上の余剰chは捨てる）
+    static std::shared_ptr<juce::AudioBuffer<float>> loadWav (const juce::File& file);
 
 private:
     juce::uint64 nextId = 1; // 永続化される採番カウンタ

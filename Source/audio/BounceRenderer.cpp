@@ -214,10 +214,13 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
         {
             auto& track = request.tracks[ti];
 
-            // クリップ: 重なりは加算再生・モノラルソースを等パワー補正型panで両chへ
-            // （RTのprocessと同じ規則・同じ法則）。sendはpost-fader（gain・pan適用後）
+            // クリップ: 重なりは加算再生・クリップ単位でpan分配してL/Rへ（RTのprocessと同じ法則。
+            // モノは等パワー補正型・ステレオはバランス型）。sendはpost-fader（gain・pan適用後）。
+            // モノクリップの演算式・順序は変えないこと（既存プロジェクトの書き出しとのビット一致を保つ）
             float panL = 1.0f, panR = 1.0f;
             Pan::monoGains (track.pan, panL, panR);
+            float balL = 1.0f, balR = 1.0f;
+            Pan::stereoGains (track.pan, balL, balR);
             for (auto& clip : track.clips)
             {
                 const auto overlapStart = juce::jmax (pos, clip.startSample);
@@ -228,10 +231,12 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
                 const int destOffset = (int) (overlapStart - pos);
                 const int srcOffset = (int) (clip.offsetSamples + (overlapStart - clip.startSample));
                 const int count = (int) (overlapEnd - overlapStart);
-                const float* src = clip.audio->getReadPointer (0, srcOffset);
+                const bool stereo = clip.audio->getNumChannels() >= 2;
                 for (int ch = 0; ch < 2; ++ch)
                 {
-                    const float gain = track.gain * (ch == 0 ? panL : panR);
+                    const float* src = clip.audio->getReadPointer (stereo ? ch : 0, srcOffset);
+                    const float gain = track.gain * (stereo ? (ch == 0 ? balL : balR)
+                                                            : (ch == 0 ? panL : panR));
                     mix.addFrom (ch, destOffset, src, count, gain);
                     for (int b = 0; b < numSendBuses; ++b)
                         if (track.sends[b] > 0.0f)

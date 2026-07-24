@@ -32,7 +32,7 @@ void PlaybackEngine::prepareToPlay (int samplesPerBlockExpected, double sampleRa
     // SynthBank側のAUも同じ基準（max(4096, expected)）で prepareToPlay される
     const int maxBlock = juce::jmax (4096, samplesPerBlockExpected);
     synthScratch.setSize (maxSynthChannels, maxBlock);
-    trackScratch.setSize (1, maxBlock);
+    trackScratch.setSize (2, maxBlock); // モノ経路はch0のみ使用・ステレオ経路はch0/1（post-pan）
     mixScratch.setSize (2, maxBlock);
     for (auto& bus : busScratch)
         bus.setSize (2, maxBlock);
@@ -234,62 +234,139 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
             float panL = 1.0f, panR = 1.0f;
             Pan::monoGains (track.params->pan.load(), panL, panR);
 
-            if (canProcess)
-                trackScratch.clear (0, 0, segLen); // 全トラックで再利用するため毎回必ずclear
-
-            bool anyOverlap = false;
-            for (auto& clip : track.clips)
+            if (! track.hasStereoClip)
             {
-                const auto clipLen = clip.lengthSamples;
-                const auto overlapStart = juce::jmax (segPos, clip.startSample);
-                const auto overlapEnd = juce::jmin (segPos + segLen, clip.startSample + clipLen);
-                if (overlapEnd <= overlapStart)
-                    continue;
-                anyOverlap = true;
-
-                const int destOffset = (int) (overlapStart - segPos);
-                const int srcOffset = (int) (clip.offsetSamples + (overlapStart - clip.startSample));
-                const int count = (int) (overlapEnd - overlapStart);
-                const float* src = clip.audio->getReadPointer (0, srcOffset);
-
-                // 重なったクリップは加算再生（メーターは加算後ピークを測る必要があるため
-                // 一旦モノスクラッチへ合算し、pan分配は後でまとめて行う）
+                // ---- モノのみトラック（現行経路）----
+                // このブロックは演算順序を含め一切変えないこと。クリップ単位のpan分配へ寄せると
+                // 重なりクリップの加算順序・sendの乗算順序が変わり、既存プロジェクトの出力との
+                // ビット一致が崩れる（回帰確認は testMonoRenderRegressionHash のハッシュ比較）
                 if (canProcess)
+                    trackScratch.clear (0, 0, segLen); // 全トラックで再利用するため毎回必ずclear
+
+                bool anyOverlap = false;
+                for (auto& clip : track.clips)
                 {
-                    trackScratch.addFrom (0, destOffset, src, count, gain);
+                    const auto clipLen = clip.lengthSamples;
+                    const auto overlapStart = juce::jmax (segPos, clip.startSample);
+                    const auto overlapEnd = juce::jmin (segPos + segLen, clip.startSample + clipLen);
+                    if (overlapEnd <= overlapStart)
+                        continue;
+                    anyOverlap = true;
+
+                    const int destOffset = (int) (overlapStart - segPos);
+                    const int srcOffset = (int) (clip.offsetSamples + (overlapStart - clip.startSample));
+                    const int count = (int) (overlapEnd - overlapStart);
+                    const float* src = clip.audio->getReadPointer (0, srcOffset);
+
+                    // 重なったクリップは加算再生（メーターは加算後ピークを測る必要があるため
+                    // 一旦モノスクラッチへ合算し、pan分配は後でまとめて行う）
+                    if (canProcess)
+                    {
+                        trackScratch.addFrom (0, destOffset, src, count, gain);
+                    }
+                    else if (buffer.getNumChannels() >= 2)
+                    {
+                        // フォールバックの縮退はsend/メーターのみ。出力ルール（ch0/1・1chダウンミックス）と
+                        // pan・Masterは本編と揃える
+                        buffer.addFrom (0, outOffset + destOffset, src, count, gain * panL * masterGain);
+                        buffer.addFrom (1, outOffset + destOffset, src, count, gain * panR * masterGain);
+                    }
+                    else
+                    {
+                        buffer.addFrom (0, outOffset + destOffset, src, count,
+                                        gain * 0.5f * (panL + panR) * masterGain);
+                    }
                 }
-                else if (buffer.getNumChannels() >= 2)
+
+                if (canProcess && anyOverlap)
                 {
-                    // フォールバックの縮退はsend/メーターのみ。出力ルール（ch0/1・1chダウンミックス）と
-                    // pan・Masterは本編と揃える
-                    buffer.addFrom (0, outOffset + destOffset, src, count, gain * panL * masterGain);
-                    buffer.addFrom (1, outOffset + destOffset, src, count, gain * panR * masterGain);
-                }
-                else
-                {
-                    buffer.addFrom (0, outOffset + destOffset, src, count,
-                                    gain * 0.5f * (panL + panR) * masterGain);
+                    // メーター: モノソース×pan分配なので L/R = 合算ピーク×panL/panR
+                    const float mag = trackScratch.getMagnitude (0, 0, segLen);
+                    storePeakMax (track.params->peakL, mag * panL);
+                    storePeakMax (track.params->peakR, mag * panR);
+                    mixScratch.addFrom (0, 0, trackScratch, 0, 0, segLen, panL);
+                    mixScratch.addFrom (1, 0, trackScratch, 0, 0, segLen, panR);
+
+                    // post-fader send（gain・pan適用後のコピーをバスへ）
+                    for (int b = 0; b < numSendBuses; ++b)
+                    {
+                        const float send = track.params->sends[b].load();
+                        if (send <= 0.0f)
+                            continue;
+                        busScratch[b].addFrom (0, 0, trackScratch, 0, 0, segLen, panL * send);
+                        busScratch[b].addFrom (1, 0, trackScratch, 0, 0, segLen, panR * send);
+                    }
                 }
             }
-
-            if (canProcess && anyOverlap)
+            else
             {
-                // メーター: モノソース×pan分配なので L/R = 合算ピーク×panL/panR
-                const float mag = trackScratch.getMagnitude (0, 0, segLen);
-                storePeakMax (track.params->peakL, mag * panL);
-                storePeakMax (track.params->peakR, mag * panR);
-                mixScratch.addFrom (0, 0, trackScratch, 0, 0, segLen, panL);
-                mixScratch.addFrom (1, 0, trackScratch, 0, 0, segLen, panR);
+                // ---- ステレオクリップを含むトラック（新経路）----
+                // クリップごとにpan込みでL/Rへ分配する（BounceRendererのクリップミックスと同じ規則）。
+                // モノクリップは等パワー補正型（モノのみトラックと同じ法則）、ステレオクリップは
+                // バランス型（MIDIシンセのステレオ出力と同じ法則）。trackScratchはpost-panの2chになるので
+                // メーターは真のL/R別ピーク、send・ミックスへの合流はch対応のコピーになる
+                float balL = 1.0f, balR = 1.0f;
+                Pan::stereoGains (track.params->pan.load(), balL, balR);
 
-                // post-fader send（gain・pan適用後のコピーをバスへ）
-                for (int b = 0; b < numSendBuses; ++b)
+                if (canProcess)
                 {
-                    const float send = track.params->sends[b].load();
-                    if (send <= 0.0f)
-                        continue;
-                    busScratch[b].addFrom (0, 0, trackScratch, 0, 0, segLen, panL * send);
-                    busScratch[b].addFrom (1, 0, trackScratch, 0, 0, segLen, panR * send);
+                    trackScratch.clear (0, 0, segLen);
+                    trackScratch.clear (1, 0, segLen);
                 }
+
+                bool anyOverlap = false;
+                for (auto& clip : track.clips)
+                {
+                    const auto clipLen = clip.lengthSamples;
+                    const auto overlapStart = juce::jmax (segPos, clip.startSample);
+                    const auto overlapEnd = juce::jmin (segPos + segLen, clip.startSample + clipLen);
+                    if (overlapEnd <= overlapStart)
+                        continue;
+                    anyOverlap = true;
+
+                    const int destOffset = (int) (overlapStart - segPos);
+                    const int srcOffset = (int) (clip.offsetSamples + (overlapStart - clip.startSample));
+                    const int count = (int) (overlapEnd - overlapStart);
+                    const bool stereo = clip.audio->getNumChannels() >= 2;
+                    const float* srcL = clip.audio->getReadPointer (0, srcOffset);
+                    const float* srcR = clip.audio->getReadPointer (stereo ? 1 : 0, srcOffset);
+                    const float gainL = gain * (stereo ? balL : panL);
+                    const float gainR = gain * (stereo ? balR : panR);
+
+                    if (canProcess)
+                    {
+                        trackScratch.addFrom (0, destOffset, srcL, count, gainL);
+                        trackScratch.addFrom (1, destOffset, srcR, count, gainR);
+                    }
+                    else if (buffer.getNumChannels() >= 2)
+                    {
+                        buffer.addFrom (0, outOffset + destOffset, srcL, count, gainL * masterGain);
+                        buffer.addFrom (1, outOffset + destOffset, srcR, count, gainR * masterGain);
+                    }
+                    else
+                    {
+                        buffer.addFrom (0, outOffset + destOffset, srcL, count, gainL * 0.5f * masterGain);
+                        buffer.addFrom (0, outOffset + destOffset, srcR, count, gainR * 0.5f * masterGain);
+                    }
+                }
+
+                if (canProcess && anyOverlap)
+                {
+                    storePeakMax (track.params->peakL, trackScratch.getMagnitude (0, 0, segLen));
+                    storePeakMax (track.params->peakR, trackScratch.getMagnitude (1, 0, segLen));
+                    mixScratch.addFrom (0, 0, trackScratch, 0, 0, segLen);
+                    mixScratch.addFrom (1, 0, trackScratch, 1, 0, segLen);
+
+                    // post-fader send（trackScratchは既にgain・pan適用済み）
+                    for (int b = 0; b < numSendBuses; ++b)
+                    {
+                        const float send = track.params->sends[b].load();
+                        if (send <= 0.0f)
+                            continue;
+                        busScratch[b].addFrom (0, 0, trackScratch, 0, 0, segLen, send);
+                        busScratch[b].addFrom (1, 0, trackScratch, 1, 0, segLen, send);
+                    }
+            }
             }
         }
     }

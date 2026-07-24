@@ -5,11 +5,11 @@
 #include "Fonts.h"
 #include "Theme.h"
 
-// バウンス（書き出し）中の進捗オーバーレイ。ShortcutListOverlayと同じ
+// バウンス（書き出し）・取り込みなど長い処理の進捗オーバーレイ。ShortcutListOverlayと同じ
 // 「親全面を覆いパネルを自前描画」方式。表示中はモーダル
 // （キー処理は MainComponent::keyPressed 側で消費し、Escでキャンセル。
 //  ただしネイティブメニューは覆えないため、メニュー側のdisable化は別途行う）。
-// 完了後は短時間「書き出し完了」を表示して自動で消える（この間はクリックを素通しする）
+// 完了後は短時間「完了」を表示して自動で消える（この間はクリックを素通しする）
 class BounceOverlay : public juce::Component
 {
 public:
@@ -19,6 +19,13 @@ public:
     {
         setWantsKeyboardFocus (false);
         setMouseClickGrabsKeyboardFocus (false);
+    }
+
+    // 進捗中/完了時の表示文言（既定はバウンス用。取り込み等の流用時に差し替える）
+    void setLabels (const juce::String& busy, const juce::String& done)
+    {
+        busyText = busy;
+        doneText = done;
     }
 
     void show()
@@ -60,7 +67,7 @@ public:
 
         g.setColour (juce::Colours::white.withAlpha (0.95f));
         g.setFont (Fonts::title());
-        g.drawText (juce::String::fromUTF8 (doneMode ? u8"書き出しが完了しました" : u8"書き出し中…"),
+        g.drawText (doneMode ? doneText : busyText,
                     panel.withHeight (titleHeight).withTrimmedTop (padY),
                     juce::Justification::centred);
 
@@ -135,6 +142,8 @@ private:
     }
 
     float progress = 0.0f;
+    juce::String busyText { juce::String::fromUTF8 (u8"書き出し中…") };
+    juce::String doneText { juce::String::fromUTF8 (u8"書き出しが完了しました") };
     bool doneMode = false;
     bool cancelHovered = false;
 

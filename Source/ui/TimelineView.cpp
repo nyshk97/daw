@@ -215,10 +215,42 @@ private:
     TimelineView& owner;
 };
 
-class TimelineView::LaneContent : public juce::Component
+class TimelineView::LaneContent : public juce::Component,
+                                  public juce::FileDragAndDropTarget
 {
 public:
     explicit LaneContent (TimelineView& o) : owner (o) {}
+
+    // ---- オーディオファイルのD&D取り込み（コンテンツ空間の座標で受ける）----
+    bool isInterestedInFileDrag (const juce::StringArray& files) override
+    {
+        if (owner.project == nullptr || owner.onImportFilesDropped == nullptr)
+            return false;
+        for (const auto& file : files)
+            if (TimelineView::isImportableAudioFile (file))
+                return true;
+        return false;
+    }
+
+    void fileDragEnter (const juce::StringArray&, int x, int y) override { owner.updateFileDrop (x, y); }
+    void fileDragMove (const juce::StringArray&, int x, int y) override { owner.updateFileDrop (x, y); }
+    void fileDragExit (const juce::StringArray&) override { owner.clearFileDrop(); }
+
+    void filesDropped (const juce::StringArray& files, int x, int y) override
+    {
+        owner.updateFileDrop (x, y);
+        const auto drop = owner.fileDrop;
+        owner.clearFileDrop();
+        if (! drop.active || drop.rejected)
+            return; // MIDIトラック上は不受理（インジケータで示済み）
+
+        juce::StringArray audioFiles;
+        for (const auto& file : files)
+            if (TimelineView::isImportableAudioFile (file))
+                audioFiles.add (file);
+        if (! audioFiles.isEmpty() && owner.onImportFilesDropped != nullptr)
+            owner.onImportFilesDropped (audioFiles, drop.track, drop.startSample);
+    }
 
     void paint (juce::Graphics& g) override
     {
@@ -319,6 +351,34 @@ public:
             g.setColour (Theme::playhead.withAlpha (0.8f));
             g.drawVerticalLine (playheadX, (float) clip.getY(), (float) clip.getBottom());
         }
+
+        // オーディオファイルD&Dのドロップインジケータ（対象レーンのハイライト＋挿入位置ライン）
+        if (owner.fileDrop.active)
+        {
+            const int laneY = (owner.fileDrop.track >= 0 ? owner.fileDrop.track : numTracks) * trackHeight;
+            const auto laneRect = juce::Rectangle<int> (clip.getX(), laneY, clip.getWidth(), trackHeight);
+
+            if (owner.fileDrop.rejected)
+            {
+                // MIDIトラック: 不受理（減光で「置けない」を示す。挿入ラインは出さない）
+                g.setColour (juce::Colours::black.withAlpha (0.3f));
+                g.fillRect (laneRect);
+            }
+            else
+            {
+                g.setColour (Theme::accent.withAlpha (0.08f));
+                g.fillRect (laneRect);
+                const int x = owner.sampleToX (owner.fileDrop.startSample);
+                g.setColour (Theme::accent);
+                g.fillRect (x - 1, laneY, 2, trackHeight);
+                if (owner.fileDrop.track < 0) // 空白ゾーン = 新規トラック
+                {
+                    g.setColour (Theme::accent.withAlpha (0.8f));
+                    g.setFont (Fonts::small());
+                    g.drawText ("New Track", x + 8, laneY + 6, 80, 14, juce::Justification::centredLeft);
+                }
+            }
+        }
     }
 
     void mouseDown (const juce::MouseEvent& e) override
@@ -391,6 +451,16 @@ private:
 
             const float h = juce::jlimit (1.0f, halfH, peak * halfH * 1.4f);
             g.drawVerticalLine (px, midY - h, midY + h);
+        }
+
+        // 表示名（取り込みクリップのみ。録音クリップは空=無ラベル）。
+        // 強弱方針: リージョン本体より控えめ（波形と同程度のアルファ）
+        if (clip.name.isNotEmpty() && rect.getWidth() >= 40)
+        {
+            g.setColour (juce::Colours::white.withAlpha (dimmed ? 0.35f : 0.7f));
+            g.setFont (Fonts::forText (Fonts::small(), clip.name));
+            g.drawText (clip.name, rect.getX() + 6, rect.getY() + 3, rect.getWidth() - 12, 12,
+                        juce::Justification::centredLeft);
         }
     }
 
@@ -577,6 +647,53 @@ int TimelineView::sampleToX (juce::int64 samplePos) const
 juce::int64 TimelineView::xToSample (int x) const
 {
     return (juce::int64) std::llround ((double) x * samplesPerPixel());
+}
+
+juce::int64 TimelineView::snapSampleToGrid (juce::int64 sample) const
+{
+    const double gridSamples = barLengthSamples() / gridDivisionsPerBar();
+    const auto gridIndex = std::llround ((double) sample / gridSamples);
+    return juce::jmax ((juce::int64) 0, (juce::int64) std::llround ((double) gridIndex * gridSamples));
+}
+
+bool TimelineView::isImportableAudioFile (const juce::String& path)
+{
+    // AudioImporter側の対応形式（registerBasicFormats＋CoreAudio）と揃える
+    return juce::File (path).hasFileExtension ("wav;aif;aiff;flac;mp3;m4a");
+}
+
+void TimelineView::updateFileDrop (int contentX, int contentY)
+{
+    FileDropState next;
+    next.active = true;
+    next.startSample = snapSampleToGrid (juce::jmax ((juce::int64) 0, xToSample (contentX)));
+
+    const int numTracks = project != nullptr ? (int) project->tracks.size() : 0;
+    const int row = contentY / trackHeight;
+    if (row >= 0 && row < numTracks)
+    {
+        next.track = row;
+        next.rejected = project->tracks[(size_t) row].type != TrackType::audio; // MIDIトラックは不受理
+    }
+    else
+    {
+        next.track = -1; // 空白ゾーン = 新規トラックを作成して配置
+    }
+
+    if (! (next == fileDrop))
+    {
+        fileDrop = next;
+        lanes->repaint();
+    }
+}
+
+void TimelineView::clearFileDrop()
+{
+    if (fileDrop.active)
+    {
+        fileDrop = {};
+        lanes->repaint();
+    }
 }
 
 double TimelineView::samplesPerTick() const
@@ -899,11 +1016,8 @@ void TimelineView::handleLaneMouseDrag (const juce::MouseEvent& e)
     }
     else
     {
-        const double gridSamples = barLengthSamples() / gridDivisionsPerBar();
         const auto deltaSamples = xToSample (e.x) - xToSample (regionDrag.startX);
-        const auto gridIndex = std::llround ((double) (regionDrag.origStartSample + deltaSamples) / gridSamples);
-        snappedStart = juce::jmax ((juce::int64) 0,
-                                   (juce::int64) std::llround ((double) gridIndex * gridSamples));
+        snappedStart = snapSampleToGrid (regionDrag.origStartSample + deltaSamples);
     }
     const bool timeChanged = regionDrag.mode == RegionDrag::Mode::resize
                                  ? snappedLength != regionDrag.origLengthPpq

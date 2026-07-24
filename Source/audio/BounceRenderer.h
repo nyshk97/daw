@@ -35,7 +35,7 @@ public:
         std::vector<MidiNotePlayback> notes;  // MIDIトラックのみ。startPpq昇順（buildSnapshotが保証）
         std::shared_ptr<SynthInstance> synth; // MIDIトラックのみ。バウンス専用インスタンス
         float gain = 1.0f;                    // 開始時に固定済み（非可聴トラックはRequestに入れない）
-        float pan = 0.0f;                     // -1..+1（クリップは等パワー補正型・シンセはバランス型。RTと同じ法則）
+        float pan = 0.0f;                     // -1..+1（モノクリップは等パワー補正型・ステレオクリップとシンセはバランス型。RTと同じ法則）
         float sends[numSendBuses] { 0.0f, 0.0f, 0.0f }; // post-fader send量
     };
 

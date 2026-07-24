@@ -51,6 +51,7 @@ enum class ID
     shortcutList,
     // プロジェクト
     save,
+    importAudio,
     bounce,
     openChooser,
     audioSettings,
@@ -235,6 +236,14 @@ inline const Entry table[] = {
       [] (const juce::KeyPress& k)
       { return k == juce::KeyPress ('s', juce::ModifierKeys::commandModifier, 0); },
       juce::KeyPress ('s', juce::ModifierKeys::commandModifier, 0) },
+    // Logic準拠: ⇧⌘I = オーディオファイルを読み込む
+    { ID::importAudio, Category::project, u8"オーディオを読み込む", u8"⇧⌘I",
+      [] (const juce::KeyPress& k)
+      {
+          return k == juce::KeyPress ('i', juce::ModifierKeys::commandModifier
+                                               | juce::ModifierKeys::shiftModifier, 0);
+      },
+      juce::KeyPress ('i', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0) },
     { ID::bounce, Category::project, u8"書き出し", u8"⌘B",
       [] (const juce::KeyPress& k)
       { return k == juce::KeyPress ('b', juce::ModifierKeys::commandModifier, 0); },

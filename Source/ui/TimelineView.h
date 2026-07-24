@@ -64,6 +64,12 @@ public:
     std::function<void (int, int)> onDeleteItemRequested; // 右クリックメニューの削除（track, クリップorリージョンindex）
     std::function<void (int, int)> onExportItemRequested; // 右クリックメニューの書き出し（同上）
 
+    // オーディオファイルのD&D取り込み。対応拡張子のファイルだけを渡す（先頭のみ処理するかは受け手が決める）。
+    // trackIndex = -1 は空白ゾーンへのドロップ（新規トラックを作成して配置）。
+    // startSampleは表示グリッドへスナップ済み。MIDIトラック上の不受理はTimelineView側で弾く
+    std::function<void (const juce::StringArray&, int, juce::int64)> onImportFilesDropped;
+    static bool isImportableAudioFile (const juce::String& path); // 拡張子判定（D&D受理と共用）
+
     // リージョン単位の操作。対象は引数で明示する（「現在の選択」を暗黙に読まない）。
     // itemIndex はオーディオトラックなら clips、MIDIトラックなら midiRegions のindex
     void toggleMuteAt (int trackIndex, int itemIndex);
@@ -118,6 +124,7 @@ private:
     void handleLaneDoubleClick (const juce::MouseEvent& e);
     void seekFromX (int x);
     juce::int64 playheadPpq() const;                 // 再生ヘッド位置をPPQへ換算（最近傍tickへ丸め）
+    juce::int64 snapSampleToGrid (juce::int64 sample) const; // 表示中の最小グリッドの最近傍へ（リージョン移動と同じ規則）
     int hitTestRegion (int trackIndex, int x) const; // 見つからなければ-1（重なりは後勝ち）
     int hitTestClip (int trackIndex, int x) const;   // 同上（オーディオトラック用）
     void showItemMenu (int trackIndex, int itemIndex); // 右クリックメニュー（ミュート/複製/削除）
@@ -193,6 +200,25 @@ private:
         bool edited = false;      // 実際に値が変わった時点でtrue（クリック判定と repaint 抑制用）
     };
     CycleDrag cycleDrag;
+
+    // オーディオファイルD&Dのドロップ先状態（LaneContentがインジケータを描く）。
+    // 座標はLaneContentのコンテンツ空間で受ける（スクロール換算不要）
+    struct FileDropState
+    {
+        bool active = false;
+        bool rejected = false;      // MIDIトラック上（不受理）
+        int track = -1;             // -1 = 空白ゾーン（新規トラック）
+        juce::int64 startSample = 0;
+
+        bool operator== (const FileDropState& other) const
+        {
+            return active == other.active && rejected == other.rejected
+                && track == other.track && startSample == other.startSample;
+        }
+    };
+    FileDropState fileDrop;
+    void updateFileDrop (int contentX, int contentY);
+    void clearFileDrop();
 
     std::unique_ptr<RulerContent> ruler;
     std::unique_ptr<MarkerLaneContent> markerLane;

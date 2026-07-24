@@ -44,7 +44,7 @@ struct TrackParams
 // shared_ptr の参照カウント操作（コピー・破棄）はメッセージスレッドでのみ起きる。
 struct ClipPlayback
 {
-    std::shared_ptr<const juce::AudioBuffer<float>> audio; // モノラル・メモリ常駐。生存保証のため所有を共有
+    std::shared_ptr<const juce::AudioBuffer<float>> audio; // 1ch=モノ / 2ch=ステレオ。メモリ常駐。生存保証のため所有を共有
     juce::int64 startSample = 0;
     juce::int64 offsetSamples = 0;  // ソースバッファ内の読み出し開始位置（buildSnapshotでバッファ範囲内を保証済み）
     juce::int64 lengthSamples = 0;  // 再生長
@@ -112,6 +112,7 @@ struct TrackPlayback
     juce::uint64 trackId = 0;                   // プレビューコマンドの宛先解決に使う
     std::shared_ptr<TrackParams> params;
     std::vector<ClipPlayback> clips;            // オーディオトラックのみ
+    bool hasStereoClip = false;                 // true=エンジンはステレオ経路（モノのみトラックは現行経路を素通し）
     std::shared_ptr<SynthInstance> synth;       // MIDIトラックのみ（未生成ならnullptr）
     std::vector<MidiNotePlayback> notes;        // MIDIトラックのみ
 };

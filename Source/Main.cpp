@@ -19,11 +19,12 @@ juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
 // DawApplication::perform経由で実行される（keyPressed側の同判定はフォールバック）
 namespace MenuCommands
 {
-    enum : juce::CommandID { save = 1, bounce, closeProject };
+    enum : juce::CommandID { save = 1, importAudio, bounce, closeProject };
 
     struct Item { juce::CommandID command; Shortcuts::ID shortcut; };
     inline constexpr Item items[] = {
         { save, Shortcuts::ID::save },
+        { importAudio, Shortcuts::ID::importAudio },
         { bounce, Shortcuts::ID::bounce },
         { closeProject, Shortcuts::ID::openChooser },
     };
@@ -45,6 +46,7 @@ public:
         if (name == "File")
         {
             menu.addCommandItem (&commandManager, MenuCommands::save);
+            menu.addCommandItem (&commandManager, MenuCommands::importAudio);
             menu.addCommandItem (&commandManager, MenuCommands::bounce);
             menu.addSeparator();
             menu.addCommandItem (&commandManager, MenuCommands::closeProject);
@@ -138,12 +140,16 @@ public:
     void getCommandInfo (juce::CommandID id, juce::ApplicationCommandInfo& info) override
     {
         auto* mainComp = mainWindow != nullptr ? mainWindow->currentMainComponent() : nullptr;
-        const bool ready = mainComp != nullptr && ! mainComp->isBouncing();
+        const bool ready = mainComp != nullptr && ! mainComp->isBouncing() && ! mainComp->isImporting();
 
         switch (id)
         {
             case MenuCommands::save:
                 info.setInfo (Shortcuts::name (Shortcuts::ID::save), {}, "File", 0);
+                info.setActive (ready);
+                return;
+            case MenuCommands::importAudio:
+                info.setInfo (Shortcuts::name (Shortcuts::ID::importAudio) + jp (u8"…"), {}, "File", 0);
                 info.setActive (ready);
                 return;
             case MenuCommands::bounce:
@@ -164,13 +170,17 @@ public:
     {
         // メニューのenable状態はNSMenu構築時のもので古いことがあるため、ここでも必ずガードする
         auto* mainComp = mainWindow != nullptr ? mainWindow->currentMainComponent() : nullptr;
-        const bool ready = mainComp != nullptr && ! mainComp->isBouncing();
+        const bool ready = mainComp != nullptr && ! mainComp->isBouncing() && ! mainComp->isImporting();
 
         switch (info.commandID)
         {
             case MenuCommands::save:
                 if (ready)
                     mainComp->trySave();
+                return true;
+            case MenuCommands::importAudio:
+                if (ready)
+                    mainComp->startImportFlow();
                 return true;
             case MenuCommands::bounce:
                 if (ready)
@@ -334,9 +344,10 @@ private:
                 return;
             flowPending = true;
 
-            // バウンス中の閉じる/終了（バツボタン・⌘Q。メニューはdisabled）は
+            // バウンス・取り込み中の閉じる/終了（バツボタン・⌘Q。メニューはdisabled）は
             // キャンセル→ワーカーjoin→一時ファイル削除を待ってから進める
             mainComp->cancelBounceForClose();
+            mainComp->cancelImportForClose();
             mainComp->finishRecordingForClose();
 
             if (! mainComp->hasUnsavedChanges())

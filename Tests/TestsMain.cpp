@@ -5,6 +5,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include "audio/AudioImporter.h"
 #include "audio/BounceRenderer.h"
 #include "audio/PlaybackEngine.h"
 #include "shared/Project.h"
@@ -786,7 +787,7 @@ void testSaveGcProtectsUndoWavs()
 
     Clip clip;
     clip.fileName = "clip-001.wav";
-    clip.audio = Project::loadWavMono (wavFile);
+    clip.audio = Project::loadWav (wavFile);
     clip.lengthSamples = clip.audio != nullptr ? clip.audio->getNumSamples() : 0;
     project->tracks[0].clips.push_back (std::move (clip));
 
@@ -2123,6 +2124,649 @@ void testBounceCycleRange()
     }
 }
 
+// ---- ステレオ: loadWavのch規則（1ch=モノ・2ch以上=先頭2ch）とv6の表示名ラウンドトリップ ----
+void testStereoClipLoadAndV6()
+{
+    beginTest ("stereo clip load and v6 name roundtrip");
+    const auto dir = makeTempDir();
+
+    // 任意ch数のテストWAV（ch番号で値を変える: ch0=0.1, ch1=0.2, ch2=0.3...）
+    auto writeWav = [&] (const char* fileName, int numChannels, int numSamples)
+    {
+        juce::WavAudioFormat wavFormat;
+        std::unique_ptr<juce::OutputStream> stream (dir.getChildFile (fileName).createOutputStream());
+        if (stream == nullptr)
+            return false;
+        using Opts = juce::AudioFormatWriterOptions;
+        auto writer = wavFormat.createWriterFor (stream,
+            Opts{}.withSampleRate (44100.0).withNumChannels (numChannels).withBitsPerSample (16));
+        if (writer == nullptr)
+            return false;
+        juce::AudioBuffer<float> buffer (numChannels, numSamples);
+        for (int ch = 0; ch < numChannels; ++ch)
+            for (int i = 0; i < numSamples; ++i)
+                buffer.setSample (ch, i, 0.1f * (float) (ch + 1));
+        return writer->writeFromAudioSampleBuffer (buffer, 0, numSamples);
+    };
+
+    expect (writeWav ("clip-001.wav", 2, 2000), "ステレオWAVを書けること");
+    expect (writeWav ("clip-002.wav", 4, 2000), "4chWAVを書けること");
+    expect (writeWav ("clip-003.wav", 1, 2000), "モノWAVを書けること");
+
+    // loadWavのch規則
+    const auto stereo = Project::loadWav (dir.getChildFile ("clip-001.wav"));
+    const auto multi = Project::loadWav (dir.getChildFile ("clip-002.wav"));
+    const auto mono = Project::loadWav (dir.getChildFile ("clip-003.wav"));
+    expect (stereo != nullptr && stereo->getNumChannels() == 2, "2chはステレオで読むこと");
+    expect (multi != nullptr && multi->getNumChannels() == 2, "3ch以上は先頭2chだけ読むこと");
+    expect (mono != nullptr && mono->getNumChannels() == 1, "1chはモノのまま読むこと");
+    if (stereo != nullptr && stereo->getNumChannels() == 2)
+    {
+        expect (std::abs (stereo->getSample (0, 100) - 0.1f) < 0.001f, "L=ソースch0");
+        expect (std::abs (stereo->getSample (1, 100) - 0.2f) < 0.001f, "R=ソースch1");
+    }
+    if (multi != nullptr && multi->getNumChannels() == 2)
+        expect (std::abs (multi->getSample (1, 100) - 0.2f) < 0.001f, "4chでも先頭2ch目=ソースch1");
+
+    // ステレオのピークキャッシュ: L/Rのmax合成（L=0.1, R=0.2 → 0.2）
+    {
+        Clip clip;
+        clip.audio = stereo;
+        clip.lengthSamples = 2000;
+        clip.buildPeakCache();
+        expect (! clip.peakCache.empty(), "ピークキャッシュが作られること");
+        bool allMax = true;
+        for (float peak : clip.peakCache)
+            if (std::abs (peak - 0.2f) > 0.001f)
+                allMax = false;
+        expect (allMax, "ステレオのピークはL/Rのmax（0.2）");
+    }
+
+    // ステレオクリップの分割: audio共有・ピークキャッシュ再構築
+    {
+        Clip clip;
+        clip.audio = stereo;
+        clip.startSample = 0;
+        clip.lengthSamples = 2000;
+        clip.buildPeakCache();
+        Clip left, right;
+        expect (splitClip (clip, 800, left, right), "ステレオクリップを分割できること");
+        expect (left.audio.get() == right.audio.get() && left.audio.get() == stereo.get(),
+                "分割後も同じステレオバッファを共有すること");
+        expect (right.offsetSamples == 800 && right.lengthSamples == 1200, "右側の参照範囲");
+    }
+
+    // v6: 表示名の保存・読込ラウンドトリップ（録音クリップ=空は書かない）
+    {
+        Project project;
+        project.directory = dir;
+        Track track;
+        track.id = 1;
+        Clip imported;
+        imported.fileName = "clip-001.wav";
+        imported.name = "dark-trap-140";
+        imported.audio = stereo;
+        imported.lengthSamples = 2000;
+        Clip recorded;
+        recorded.fileName = "clip-003.wav";
+        recorded.audio = mono;
+        recorded.lengthSamples = 2000;
+        track.clips.push_back (std::move (imported));
+        track.clips.push_back (std::move (recorded));
+        project.tracks.push_back (std::move (track));
+
+        // 取り込み中の一時ファイル（clip-*.wavのGCパターン外）が保存時のGCに消されないこと
+        const auto importTemp = dir.getChildFile (".import-abc.wav.tmp");
+        importTemp.replaceWithText ("partial data");
+        // 参照されていないclip-*.wavはGCされること（対照群）
+        const auto orphan = dir.getChildFile ("clip-099.wav");
+        orphan.replaceWithText ("orphan");
+
+        juce::String error;
+        expect (project.save (error), "保存できること");
+        expect (importTemp.existsAsFile(), "取り込み一時ファイルは保存時GCに消されないこと");
+        expect (! orphan.existsAsFile(), "未参照のclip-*.wavはGCされること（対照群）");
+        importTemp.deleteFile();
+
+        const auto json = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
+        expect ((int) json.getProperty ("version", 0) == 6, "v6で保存されること");
+
+        juce::StringArray warnings;
+        auto loaded = Project::load (dir, warnings, error);
+        expect (loaded != nullptr, "読込できること");
+        if (loaded != nullptr && ! loaded->tracks.empty() && loaded->tracks[0].clips.size() == 2)
+        {
+            expect (loaded->tracks[0].clips[0].name == "dark-trap-140", "取り込みクリップの表示名が復元されること");
+            expect (loaded->tracks[0].clips[0].audio->getNumChannels() == 2, "ステレオで読み戻されること");
+            expect (loaded->tracks[0].clips[1].name.isEmpty(), "録音クリップは無名のままなこと");
+        }
+
+        // buildSnapshotのhasStereoClip判定
+        auto snapshot = loaded != nullptr ? loaded->buildSnapshot() : nullptr;
+        expect (snapshot != nullptr && ! snapshot->tracks.empty() && snapshot->tracks[0].hasStereoClip,
+                "ステレオクリップを含むトラックはhasStereoClipが立つこと");
+    }
+
+    dir.deleteRecursively();
+}
+
+// ---- エンジン: ステレオクリップのpan（バランス型）・モノとの同トラック混在・send・メーター ----
+void testEngineStereoPan()
+{
+    beginTest ("engine stereo clip pan and mono mix");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+
+    TransportState transport;
+    SnapshotExchange snapshots;
+    PreviewFifo previewFifo;
+    PlaybackEngine engine (transport, snapshots, previewFifo);
+    engine.prepareToPlay (blockSize, sr);
+
+    // Lだけに信号があるステレオクリップ（L=0.5, R=0.0）
+    Project project;
+    Track track;
+    track.id = 1;
+    track.params->gain.store (1.0f);
+    Clip stereoClip;
+    stereoClip.audio = std::make_shared<juce::AudioBuffer<float>> (2, blockSize * 4);
+    stereoClip.audio->clear();
+    for (int i = 0; i < stereoClip.audio->getNumSamples(); ++i)
+        stereoClip.audio->setSample (0, i, 0.5f);
+    stereoClip.lengthSamples = blockSize * 4;
+    track.clips.push_back (std::move (stereoClip));
+    project.tracks.push_back (std::move (track));
+    auto& params = *project.tracks[0].params;
+    snapshots.push (project.buildSnapshot());
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    auto measure = [&] (float& left, float& right)
+    {
+        transport.seekRequest.store (0);
+        engine.play();
+        buffer.clear();
+        juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+        engine.process (info);
+        left = buffer.getMagnitude (0, 0, blockSize);
+        right = buffer.getMagnitude (1, 0, blockSize);
+        engine.stop();
+        buffer.clear();
+        engine.process (info); // 停止エッジの消化
+    };
+
+    float left = 0.0f, right = 0.0f;
+
+    // panセンター: バランス型はセンター0dB → L=0.5, R=0（ソースがLのみ）
+    measure (left, right);
+    expect (std::abs (left - 0.5f) < 0.001f && right < 0.001f,
+            "ステレオクリップはセンターで素通し（L=0.5, R=0）");
+    expect (params.peakL.exchange (0.0f) > 0.45f, "Lメーターは真のLピーク");
+    expect (params.peakR.exchange (0.0f) < 0.001f, "Rメーターはソース通り無音");
+
+    // pan左振り切り: balL=1, balR=0 → L=0.5のまま（バランス型は増幅しない）
+    params.pan.store (-1.0f);
+    measure (left, right);
+    expect (std::abs (left - 0.5f) < 0.001f && right < 0.001f,
+            "左振り切りでもLは0.5のまま（バランス型・+3dBしない）");
+
+    // pan右振り切り: balL=0 → L側ソースが消え、R側ソースは元々無音 → 両ch無音
+    params.pan.store (1.0f);
+    measure (left, right);
+    expect (left < 0.001f && right < 0.001f, "右振り切りでLのみソースは無音になること");
+
+    // モノクリップ（0.25）を同トラックへ重ねる: モノは等パワー型・ステレオはバランス型で共存
+    params.pan.store (0.0f);
+    {
+        Clip monoClip;
+        monoClip.audio = std::make_shared<juce::AudioBuffer<float>> (1, blockSize * 4);
+        for (int i = 0; i < monoClip.audio->getNumSamples(); ++i)
+            monoClip.audio->setSample (0, i, 0.25f);
+        monoClip.lengthSamples = blockSize * 4;
+        project.tracks[0].clips.push_back (std::move (monoClip));
+    }
+    snapshots.push (project.buildSnapshot());
+    measure (left, right);
+    expect (std::abs (left - 0.75f) < 0.001f, "混在トラックのL=ステレオL+モノ（0.5+0.25）");
+    expect (std::abs (right - 0.25f) < 0.001f, "混在トラックのR=モノのみ（0.25）");
+
+    // send: post-fader（gain・pan適用後）を素通しバス経由で二重加算
+    params.sends[0].store (1.0f);
+    measure (left, right);
+    expect (std::abs (left - 1.5f) < 0.002f, "send100%でLが二重加算（1.5）");
+    expect (std::abs (right - 0.5f) < 0.002f, "send100%でRが二重加算（0.5）");
+
+    snapshots.deleteRetired();
+}
+
+// ---- エンジンとバウンスの一致: 同一のモノ＋ステレオ混在構成でL/Rサンプルが一致すること ----
+void testEngineBounceStereoConsistency()
+{
+    beginTest ("engine vs bounce stereo consistency");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+    constexpr int numBlocks = 8;
+    constexpr int totalSamples = blockSize * numBlocks;
+
+    auto makeAudio = [] (int channels, int len, float scale)
+    {
+        auto buffer = std::make_shared<juce::AudioBuffer<float>> (channels, len);
+        for (int ch = 0; ch < channels; ++ch)
+            for (int i = 0; i < len; ++i)
+                buffer->setSample (ch, i, std::sin ((float) i * 0.07f + (float) ch * 1.5f) * scale);
+        return buffer;
+    };
+
+    Project project;
+    {
+        Track track; // ステレオクリップ・pan右寄り・send
+        track.id = 1;
+        track.params->gain.store (0.8f);
+        track.params->pan.store (0.4f);
+        track.params->sends[1].store (0.3f);
+        Clip clip;
+        clip.audio = makeAudio (2, totalSamples, 0.4f);
+        clip.lengthSamples = totalSamples;
+        track.clips.push_back (std::move (clip));
+        project.tracks.push_back (std::move (track));
+    }
+    {
+        Track track; // モノクリップ・pan左寄り
+        track.id = 2;
+        track.params->gain.store (0.7f);
+        track.params->pan.store (-0.6f);
+        Clip clip;
+        clip.audio = makeAudio (1, totalSamples, 0.3f);
+        clip.startSample = 1000;
+        clip.lengthSamples = totalSamples - 1000;
+        track.clips.push_back (std::move (clip));
+        project.tracks.push_back (std::move (track));
+    }
+    project.busParams[1]->gain.store (0.9f);
+    project.masterParams->gain.store (0.85f);
+
+    // エンジン側レンダリング
+    juce::AudioBuffer<float> engineOut (2, totalSamples);
+    {
+        TransportState transport;
+        SnapshotExchange snapshots;
+        PreviewFifo previewFifo;
+        PlaybackEngine engine (transport, snapshots, previewFifo);
+        engine.prepareToPlay (blockSize, sr);
+        snapshots.push (project.buildSnapshot());
+        transport.seekRequest.store (0);
+        engine.play();
+
+        juce::AudioBuffer<float> buffer (2, blockSize);
+        for (int blockIndex = 0; blockIndex < numBlocks; ++blockIndex)
+        {
+            buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+            engine.process (info);
+            for (int ch = 0; ch < 2; ++ch)
+                engineOut.copyFrom (ch, blockIndex * blockSize, buffer, ch, 0, blockSize);
+        }
+        engine.stop();
+        snapshots.deleteRetired();
+    }
+
+    // バウンス側レンダリング
+    const auto dir = makeTempDir();
+    const auto target = dir.getChildFile ("bounce.wav");
+    {
+        BounceRenderer::Request request;
+        request.sampleRate = sr;
+        request.bpm = 120.0;
+        request.endSample = totalSamples;
+        request.targetFile = target;
+        request.busGain[1] = 0.9f;
+        request.masterGain = 0.85f;
+        for (auto& track : project.tracks)
+        {
+            BounceRenderer::TrackRender render;
+            render.gain = track.params->gain.load();
+            render.pan = track.params->pan.load();
+            for (int busIndex = 0; busIndex < numSendBuses; ++busIndex)
+                render.sends[busIndex] = track.params->sends[busIndex].load();
+            for (auto& clip : track.clips)
+                render.clips.push_back ({ clip.audio, clip.startSample, clip.offsetSamples, clip.lengthSamples });
+            request.tracks.push_back (std::move (render));
+        }
+        BounceRenderer renderer;
+        expect (renderer.start (std::move (request)), "startできること");
+        expect (waitForBounce (renderer), "タイムアウトせず完了すること");
+        expect (renderer.takeResult().status == BounceRenderer::Status::success, "successで終わること");
+    }
+
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatReader> reader (
+        wav.createReaderFor (new juce::FileInputStream (target), true));
+    expect (reader != nullptr && reader->lengthInSamples == totalSamples, "バウンス出力を読めること");
+    if (reader != nullptr && reader->lengthInSamples == totalSamples)
+    {
+        juce::AudioBuffer<float> bounceOut (2, totalSamples);
+        reader->read (&bounceOut, 0, totalSamples, 0, true, true);
+        float maxDiff = 0.0f;
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < totalSamples; ++i)
+                maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (ch, i)
+                                                         - bounceOut.getSample (ch, i)));
+        // 24bit量子化＋浮動小数点の積和順序差ぶんの許容誤差
+        expect (maxDiff < 1.0e-4f, "エンジンとバウンスのL/Rがサンプル一致（許容誤差内）すること");
+    }
+    reader.reset();
+    dir.deleteRecursively();
+}
+
+// ---- AudioImporter: 変換コピーの仕様（ch規則・出力長・末尾・SR一致バイパス・失敗系）----
+bool waitForImport (AudioImporter& importer)
+{
+    for (int i = 0; i < 600; ++i) // 最大60秒
+    {
+        if (importer.status() != AudioImporter::Status::running)
+            return true;
+        juce::Thread::sleep (100);
+    }
+    return false;
+}
+
+void testAudioImporter()
+{
+    beginTest ("AudioImporter conversion rules");
+    const auto dir = makeTempDir();
+
+    // サンプル値を自由に埋められるテストWAVライター（32bit floatで書き量子化誤差を避ける）
+    auto writeWav = [&] (const char* fileName, const juce::AudioBuffer<float>& buffer, double sampleRate)
+    {
+        juce::WavAudioFormat wavFormat;
+        std::unique_ptr<juce::OutputStream> stream (dir.getChildFile (fileName).createOutputStream());
+        if (stream == nullptr)
+            return false;
+        using Opts = juce::AudioFormatWriterOptions;
+        auto writer = wavFormat.createWriterFor (stream,
+            Opts{}.withSampleRate (sampleRate).withNumChannels (buffer.getNumChannels())
+                  .withBitsPerSample (32));
+        return writer != nullptr && writer->writeFromAudioSampleBuffer (buffer, 0, buffer.getNumSamples());
+    };
+
+    auto runImport = [&] (const char* sourceName, const char* tempName, double targetRate)
+    {
+        AudioImporter importer;
+        AudioImporter::Request request;
+        request.sourceFile = dir.getChildFile (sourceName);
+        request.tempFile = dir.getChildFile (tempName);
+        request.targetSampleRate = targetRate;
+        expect (importer.start (std::move (request)), "startできること");
+        expect (waitForImport (importer), "タイムアウトせず完了すること");
+        return importer.takeResult();
+    };
+
+    auto readWav = [&] (const char* fileName, juce::AudioBuffer<float>& out, double& sampleRate)
+    {
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatReader> reader (
+            wav.createReaderFor (new juce::FileInputStream (dir.getChildFile (fileName)), true));
+        if (reader == nullptr)
+            return false;
+        sampleRate = reader->sampleRate;
+        out.setSize ((int) reader->numChannels, (int) reader->lengthInSamples);
+        return reader->read (&out, 0, (int) reader->lengthInSamples, 0, true, reader->numChannels >= 2);
+    };
+
+    // ---- SR一致: リサンプルバイパス・内容がそのまま（24bit量子化誤差のみ）----
+    {
+        juce::AudioBuffer<float> source (2, 5000);
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < 5000; ++i)
+                source.setSample (ch, i, std::sin ((float) i * 0.05f + (float) ch) * 0.6f);
+        expect (writeWav ("same-sr.wav", source, 44100.0), "ソースWAVを書けること");
+
+        const auto result = runImport ("same-sr.wav", "same-sr-out.tmp", 44100.0);
+        expect (result.status == AudioImporter::Status::success, "SR一致で成功すること");
+        expect (result.outputFrames == 5000, "SR一致は入力と同じ長さ");
+        expect (result.numChannels == 2, "ステレオ維持");
+
+        juce::AudioBuffer<float> out;
+        double outRate = 0.0;
+        expect (readWav ("same-sr-out.tmp", out, outRate), "出力を読めること");
+        expect (juce::approximatelyEqual (outRate, 44100.0), "出力SR=ターゲット");
+        float maxDiff = 0.0f;
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < 5000; ++i)
+                maxDiff = juce::jmax (maxDiff, std::abs (out.getSample (ch, i) - source.getSample (ch, i)));
+        expect (maxDiff < 1.0e-4f, "SR一致は内容がそのまま（24bit量子化誤差のみ）");
+    }
+
+    // ---- SR変換: 出力長 = llround(in × target / source)・L/Rの内容が独立していること ----
+    {
+        constexpr int inputFrames = 44100;
+        juce::AudioBuffer<float> source (2, inputFrames);
+        for (int i = 0; i < inputFrames; ++i)
+        {
+            source.setSample (0, i, std::sin ((float) i * 0.02f) * 0.5f); // L: 低めの周波数
+            source.setSample (1, i, 0.0f);                                // R: 無音（ch独立の検証）
+        }
+        expect (writeWav ("resample.wav", source, 44100.0), "ソースWAVを書けること");
+
+        const auto result = runImport ("resample.wav", "resample-out.tmp", 48000.0);
+        expect (result.status == AudioImporter::Status::success, "SR変換で成功すること");
+        const auto expectedFrames = (juce::int64) std::llround ((double) inputFrames * 48000.0 / 44100.0);
+        expect (result.outputFrames == expectedFrames, "出力長=llround(in×48000/44100)");
+
+        juce::AudioBuffer<float> out;
+        double outRate = 0.0;
+        expect (readWav ("resample-out.tmp", out, outRate), "出力を読めること");
+        expect (out.getNumSamples() == (int) expectedFrames, "WAVの長さも一致");
+        expect (out.getMagnitude (0, 1000, 40000) > 0.4f, "Lに信号があること");
+        expect (out.getMagnitude (1, 0, out.getNumSamples()) < 1.0e-3f,
+                "Rは無音のまま（chごとに独立した補間器）");
+    }
+
+    // ---- パルス位置: 末尾パルスの残存（ゼロ埋め欠落防止）と中間パルスの位置（レイテンシ補償）----
+    {
+        constexpr int inputFrames = 44100;
+        constexpr int midPulseIn = 22050;
+        juce::AudioBuffer<float> source (1, inputFrames);
+        source.clear();
+        source.setSample (0, midPulseIn, 0.5f);
+        source.setSample (0, inputFrames - 1, 0.8f);
+        expect (writeWav ("tail-pulse.wav", source, 44100.0), "ソースWAVを書けること");
+
+        const auto result = runImport ("tail-pulse.wav", "tail-pulse-out.tmp", 48000.0);
+        expect (result.status == AudioImporter::Status::success, "成功すること");
+
+        juce::AudioBuffer<float> out;
+        double outRate = 0.0;
+        expect (readWav ("tail-pulse-out.tmp", out, outRate), "出力を読めること");
+        const int outLen = out.getNumSamples();
+
+        // 末尾: 入力最終サンプルのパルスが出力末尾付近に残ること
+        const float tailPeak = out.getMagnitude (0, juce::jmax (0, outLen - 100),
+                                                 juce::jmin (100, outLen));
+        expect (tailPeak > 0.3f, "末尾パルスが出力末尾付近に残ること（無音化・欠落なし）");
+
+        // 中間: パルスの出力位置が換算位置±2サンプルにあること（補間器のレイテンシが補償されている）
+        const int expectedPos = (int) std::llround ((double) midPulseIn * 48000.0 / 44100.0);
+        int peakPos = 0;
+        float peakValue = 0.0f;
+        for (int i = juce::jmax (0, expectedPos - 300); i < juce::jmin (outLen, expectedPos + 300); ++i)
+        {
+            const float value = std::abs (out.getSample (0, i));
+            if (value > peakValue)
+            {
+                peakValue = value;
+                peakPos = i;
+            }
+        }
+        expect (std::abs (peakPos - expectedPos) <= 2,
+                "中間パルスが換算位置±2サンプルに出ること（全体シフトなし）");
+    }
+
+    // ---- 4ch → 先頭2chのみ ----
+    {
+        juce::AudioBuffer<float> source (4, 2000);
+        for (int ch = 0; ch < 4; ++ch)
+            for (int i = 0; i < 2000; ++i)
+                source.setSample (ch, i, 0.1f * (float) (ch + 1));
+        expect (writeWav ("multi.wav", source, 44100.0), "4chソースを書けること");
+
+        const auto result = runImport ("multi.wav", "multi-out.tmp", 44100.0);
+        expect (result.status == AudioImporter::Status::success, "成功すること");
+        expect (result.numChannels == 2, "4chは先頭2chだけ採用");
+
+        juce::AudioBuffer<float> out;
+        double outRate = 0.0;
+        expect (readWav ("multi-out.tmp", out, outRate), "出力を読めること");
+        expect (out.getNumChannels() == 2, "出力WAVは2ch");
+        expect (std::abs (out.getSample (1, 500) - 0.2f) < 0.001f, "2ch目=ソースch1");
+    }
+
+    // ---- 失敗系: 存在しない・壊れたファイル ----
+    {
+        auto result = runImport ("missing.wav", "missing-out.tmp", 44100.0);
+        expect (result.status == AudioImporter::Status::failed, "存在しないファイルはfailed");
+        expect (result.errorMessage.isNotEmpty(), "エラーメッセージがあること");
+
+        dir.getChildFile ("broken.wav").replaceWithText ("not a wav file");
+        result = runImport ("broken.wav", "broken-out.tmp", 44100.0);
+        expect (result.status == AudioImporter::Status::failed, "壊れたファイルはfailed");
+        expect (! dir.getChildFile ("broken-out.tmp").existsAsFile(), "失敗時は一時ファイルが残らないこと");
+    }
+
+    dir.deleteRecursively();
+}
+
+// ---- 回帰ハッシュ: モノのみ構成の決定的レンダリング結果のMD5をstdoutへ出す ----
+// ステレオ対応リファクタの前後で「モノのみトラックの出力がビット一致で不変」であることを、
+// このハッシュの目視比較で確認する。期待値はハードコードしない（浮動小数点の積和順序は
+// コンパイラ・環境で変わりうるため、同一環境での変更前後比較にのみ使う）。
+// 重なりクリップ×pan×send×Masterの全経路を通し、積和順序の変化を検出できる構成にする
+void testMonoRenderRegressionHash()
+{
+    beginTest ("mono render regression hash");
+
+    // FNV-1a 64bit（juce_cryptographyを増やさないための自前ハッシュ。比較用途には十分）
+    auto fnv1a = [] (const void* data, size_t size)
+    {
+        const auto* bytes = static_cast<const juce::uint8*> (data);
+        juce::uint64 hash = 0xcbf29ce484222325ULL;
+        for (size_t i = 0; i < size; ++i)
+            hash = (hash ^ bytes[i]) * 0x100000001b3ULL;
+        return juce::String::toHexString ((juce::int64) hash);
+    };
+
+    auto makeAudio = [] (int len, float scale, float phase)
+    {
+        auto buffer = std::make_shared<juce::AudioBuffer<float>> (1, len);
+        for (int i = 0; i < len; ++i)
+            buffer->setSample (0, i, std::sin ((float) i * 0.13f + phase) * scale);
+        return buffer;
+    };
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+    constexpr int numBlocks = 32;
+
+    // トラック1: 重なりクリップ2つ・pan左・send2本 / トラック2: pan右
+    Project project;
+    {
+        Track track;
+        track.id = 1;
+        track.params->gain.store (0.7f);
+        track.params->pan.store (-0.3f);
+        track.params->sends[0].store (0.5f);
+        track.params->sends[2].store (0.25f);
+        Clip a;
+        a.audio = makeAudio (8000, 0.5f, 0.0f);
+        a.startSample = 0;
+        a.lengthSamples = 8000;
+        Clip b;
+        b.audio = makeAudio (8000, 0.4f, 1.0f);
+        b.startSample = 4000;
+        b.lengthSamples = 8000;
+        track.clips.push_back (std::move (a));
+        track.clips.push_back (std::move (b));
+        project.tracks.push_back (std::move (track));
+    }
+    {
+        Track track;
+        track.id = 2;
+        track.params->gain.store (0.9f);
+        track.params->pan.store (0.5f);
+        Clip c;
+        c.audio = makeAudio (8000, 0.3f, 2.0f);
+        c.startSample = 2000;
+        c.lengthSamples = 8000;
+        track.clips.push_back (std::move (c));
+        project.tracks.push_back (std::move (track));
+    }
+    project.busParams[0]->gain.store (0.8f);
+    project.masterParams->gain.store (0.9f);
+
+    // エンジン経路
+    {
+        TransportState transport;
+        SnapshotExchange snapshots;
+        PreviewFifo previewFifo;
+        PlaybackEngine engine (transport, snapshots, previewFifo);
+        engine.prepareToPlay (blockSize, sr);
+        snapshots.push (project.buildSnapshot());
+
+        transport.seekRequest.store (0);
+        engine.play();
+
+        juce::AudioBuffer<float> buffer (2, blockSize);
+        juce::MemoryBlock rendered;
+        for (int blockIndex = 0; blockIndex < numBlocks; ++blockIndex)
+        {
+            buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+            engine.process (info);
+            for (int ch = 0; ch < 2; ++ch)
+                rendered.append (buffer.getReadPointer (ch), sizeof (float) * (size_t) blockSize);
+        }
+        engine.stop();
+        std::cout << "hash-engine: " << fnv1a (rendered.getData(), rendered.getSize()) << std::endl;
+        snapshots.deleteRetired();
+    }
+
+    // バウンス経路（gain/pan/sendはRequestへ焼き込み）
+    {
+        const auto dir = makeTempDir();
+        const auto target = dir.getChildFile ("bounce.wav");
+
+        BounceRenderer::Request request;
+        request.sampleRate = sr;
+        request.bpm = 120.0;
+        request.endSample = blockSize * numBlocks;
+        request.targetFile = target;
+        request.busGain[0] = 0.8f;
+        request.masterGain = 0.9f;
+        for (auto& track : project.tracks)
+        {
+            BounceRenderer::TrackRender render;
+            render.gain = track.params->gain.load();
+            render.pan = track.params->pan.load();
+            for (int busIndex = 0; busIndex < numSendBuses; ++busIndex)
+                render.sends[busIndex] = track.params->sends[busIndex].load();
+            for (auto& clip : track.clips)
+                render.clips.push_back ({ clip.audio, clip.startSample, clip.offsetSamples, clip.lengthSamples });
+            request.tracks.push_back (std::move (render));
+        }
+
+        BounceRenderer renderer;
+        expect (renderer.start (std::move (request)), "startできること");
+        expect (waitForBounce (renderer), "タイムアウトせず完了すること");
+        expect (renderer.takeResult().status == BounceRenderer::Status::success, "successで終わること");
+
+        juce::MemoryBlock fileData;
+        expect (target.loadFileAsData (fileData), "書き出したWAVを読めること");
+        std::cout << "hash-bounce: " << fnv1a (fileData.getData(), fileData.getSize()) << std::endl;
+        dir.deleteRecursively();
+    }
+}
+
 } // namespace
 
 int main()
@@ -2162,6 +2806,11 @@ int main()
     testCycleRoundtrip();
     testPlaybackEngineCycleLoop();
     testBounceCycleRange();
+    testStereoClipLoadAndV6();
+    testEngineStereoPan();
+    testEngineBounceStereoConsistency();
+    testAudioImporter();
+    testMonoRenderRegressionHash();
 
     if (failureCount > 0)
     {

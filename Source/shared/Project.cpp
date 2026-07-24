@@ -16,19 +16,24 @@ void Clip::buildPeakCache()
         return;
 
     // 参照範囲 [offsetSamples, offsetSamples + lengthSamples) のみをキャッシュする
-    // （index 0 = クリップ先頭。描画側はクリップ相対位置でそのまま引ける）
+    // （index 0 = クリップ先頭。描画側はクリップ相対位置でそのまま引ける）。
+    // ステレオはL/Rのmaxを取って1本にする（波形表示は1本のまま）
     const int numSamples = (int) juce::jlimit ((juce::int64) 0,
                                                (juce::int64) audio->getNumSamples() - offsetSamples,
                                                lengthSamples);
-    const float* data = audio->getReadPointer (0, (int) offsetSamples);
+    const int numChannels = juce::jmin (2, audio->getNumChannels());
     peakCache.reserve ((size_t) (numSamples / samplesPerPeak + 1));
 
     for (int i = 0; i < numSamples; i += samplesPerPeak)
     {
         const int count = juce::jmin (samplesPerPeak, numSamples - i);
         float peak = 0.0f;
-        for (int j = 0; j < count; ++j)
-            peak = juce::jmax (peak, std::abs (data[i + j]));
+        for (int ch = 0; ch < numChannels; ++ch)
+        {
+            const float* data = audio->getReadPointer (ch, (int) offsetSamples);
+            for (int j = 0; j < count; ++j)
+                peak = juce::jmax (peak, std::abs (data[i + j]));
+        }
         peakCache.push_back (peak);
     }
 }
@@ -166,7 +171,7 @@ juce::File Project::projectsRoot()
     return juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("daw");
 }
 
-std::shared_ptr<juce::AudioBuffer<float>> Project::loadWavMono (const juce::File& file)
+std::shared_ptr<juce::AudioBuffer<float>> Project::loadWav (const juce::File& file)
 {
     juce::AudioFormatManager formatManager;
     formatManager.registerBasicFormats();
@@ -175,8 +180,10 @@ std::shared_ptr<juce::AudioBuffer<float>> Project::loadWavMono (const juce::File
     if (reader == nullptr || reader->lengthInSamples <= 0)
         return nullptr;
 
-    auto buffer = std::make_shared<juce::AudioBuffer<float>> (1, (int) reader->lengthInSamples);
-    reader->read (buffer.get(), 0, (int) reader->lengthInSamples, 0, true, false); // ch0のみ使用
+    // 1chはモノ、2ch以上は先頭2chのみ（バッファのch数がreadの読み取りch数を決める）
+    const int numChannels = reader->numChannels >= 2 ? 2 : 1;
+    auto buffer = std::make_shared<juce::AudioBuffer<float>> (numChannels, (int) reader->lengthInSamples);
+    reader->read (buffer.get(), 0, (int) reader->lengthInSamples, 0, true, numChannels >= 2);
     return buffer;
 }
 
@@ -224,6 +231,8 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
             {
                 auto* clipObj = new juce::DynamicObject();
                 clipObj->setProperty ("file", clip.fileName);
+                if (clip.name.isNotEmpty()) // 表示名は取り込みクリップのみ（録音クリップのJSONを汚さない）
+                    clipObj->setProperty ("name", clip.name);
                 clipObj->setProperty ("startSample", clip.startSample);
                 clipObj->setProperty ("offsetSamples", clip.offsetSamples);
                 clipObj->setProperty ("lengthSamples", clip.lengthSamples);
@@ -391,6 +400,7 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
 
                         Clip clip;
                         clip.fileName = clipVar.getProperty ("file", "").toString();
+                        clip.name = clipVar.getProperty ("name", "").toString(); // v5以前は無い（空=無ラベル）
                         clip.startSample = (juce::int64) clipVar.getProperty ("startSample", 0);
                         clip.muted = (bool) clipVar.getProperty ("muted", false);
 
@@ -398,7 +408,7 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
                         if (cached != wavCache.end())
                             clip.audio = cached->second;
                         else
-                            wavCache[clip.fileName] = clip.audio = loadWavMono (dir.getChildFile (clip.fileName));
+                            wavCache[clip.fileName] = clip.audio = loadWav (dir.getChildFile (clip.fileName));
 
                         if (clip.audio == nullptr)
                         {
@@ -647,6 +657,8 @@ std::unique_ptr<PlaybackSnapshot> Project::buildSnapshot() const
                 const auto length = juce::jlimit ((juce::int64) 0, bufferLength - offset, clip.lengthSamples);
                 if (length <= 0)
                     continue;
+                if (clip.audio->getNumChannels() >= 2)
+                    trackPlayback.hasStereoClip = true; // エンジンのトラック経路選択（モノのみ=現行経路）
                 trackPlayback.clips.push_back ({ clip.audio, clip.startSample, offset, length });
             }
         }

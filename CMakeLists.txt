@@ -86,6 +86,7 @@ juce_add_gui_app(daw
 target_sources(daw PRIVATE
     Source/Main.cpp
     Source/mac/SparkleBridge.mm
+    Source/audio/AudioImporter.cpp
     Source/audio/BounceRenderer.cpp
     Source/audio/PlaybackEngine.cpp
     Source/audio/Recorder.cpp
@@ -207,6 +208,7 @@ juce_add_console_app(daw_tests PRODUCT_NAME "daw_tests")
 
 target_sources(daw_tests PRIVATE
     Tests/TestsMain.cpp
+    Source/audio/AudioImporter.cpp
     Source/audio/BounceRenderer.cpp
     Source/audio/PlaybackEngine.cpp
     Source/audio/Recorder.cpp
