@@ -132,6 +132,34 @@ cmake --build build --target daw_tests && ctest --test-dir build --output-on-fai
   再生エンジン（MIDI再生・シーク再発音・停止消音・ミュート時のイベント継続・プレビュー経路）をGUIなしで検証する
 - テストは一時ディレクトリのみ使用（`~/Music/daw` には触れない）
 
+## エンジン/バウンスの数値回帰確認（ビット一致）
+
+```sh
+# 変更前に: テスト追加だけの状態でハッシュを採取
+cmake --build build --target daw_tests && build/daw_tests_artefacts/Debug/daw_tests | grep hash-
+# → hash-engine / hash-bounce を控える。エンジン変更後に再実行して一致を確認
+```
+
+- testMonoRenderRegressionHash が「重なりクリップ×pan×send×Master」の決定的レンダリングをFNV-1aで出力する
+- ハッシュの期待値はテストにハードコードしない（浮動小数点の積和順序がコンパイラ・環境依存。同一環境の変更前後比較にのみ使う）
+- 不一致＝モノのみトラック経路の演算順序が変わった兆候（PlaybackEngine/BounceRendererの2経路構造のコメント参照）
+
+## オーディオ取り込みの確認
+
+```sh
+# L=440Hz/R=880Hzのステレオ素材（左右で違う音が鳴る=ステレオ再生の耳確認用）
+python3 -c "
+import wave, struct, math
+w = wave.open('/tmp/beat.wav', 'w'); w.setnchannels(2); w.setsampwidth(2); w.setframerate(44100)
+w.writeframes(b''.join(struct.pack('<hh', int(16000*math.sin(2*math.pi*440*i/44100)), int(16000*math.sin(2*math.pi*880*i/44100))) for i in range(44100*4)))"
+afconvert -f m4af -d aac /tmp/beat.wav /tmp/beat.m4a   # CoreAudio経路（m4a）の確認用
+```
+
+- 導線: Fileメニュー「オーディオを読み込む…」（⇧⌘I）＝新規トラック小節1 / FinderからタイムラインへD&D＝ドロップ位置（空白は新規トラック・MIDIトラックは不受理）
+- 取り込み後の裏取り: アプリログの `import.start` / `import.done`（frames・ch・sourceSr）/ `import.fail`
+- 成果物: project.json が version 6・クリップに `name`・SR未確定プロジェクトなら `sampleRate` が確定済み。`afinfo <project>/clip-NNN.wav` で 2ch・プロジェクトSR・24bit
+- 変換仕様（SR変換長・末尾パルス・ch規則・GC安全性）はCTestの testAudioImporter / testStereoClipLoadAndV6 が自動で固定している
+
 ## MIDI機能の半自動確認
 
 ```sh

@@ -79,9 +79,13 @@ MainWindowのコンストラクタは `setContentOwned`（→ `parentHierarchyCh
 
 ① `paintListBoxItem` にはhover状態が渡ってこない → ListBoxに `addMouseListener (this, true)` してmouseMoveで `getRowContainingPosition` → 行indexを自前保持し `repaintRow` で更新（ProjectChooserComponent参照）② 行高は `setRowHeight` の全行共通のみ。可変高の行（ヒーローカード等）はListBoxの外に別Componentとして置く ③ ListBoxがフォーカスを持つと↑↓Returnは素のListBox処理に奪われる。リスト外の要素を含む選択遷移を作るなら `listBox.setWantsKeyboardFocus (false)` にして親の `keyPressed` で処理する。
 
-### ネイティブメニューバー（setMacMainMenu）の3つの罠
+### ネイティブメニューバー（setMacMainMenu）の4つの罠
 
-① **keyEquivalent（⌘S等の表記）は `ApplicationCommandManager` 経由でのみ設定される**。`PopupMenu::Item::shortcutKeyDescription` はNSMenu変換で無視される（`juce_MainMenu_mac.mm` の `addMenuItem` 参照）。コマンド登録＋`commandManager.getKeyMappings()->addKeyPress()` が必須 ② **NSMenuのkeyEquivalentは `keyPressed` より先にイベントを取る**。メニューに載せたキーの実処理は `ApplicationCommandTarget::perform` に一本化する（keyPressed側の同判定はデッドパス化するがフォールバックとして無害）③ **メニューのenabled状態はNSMenu構築時のスナップショット**で古くなる（disabled表示のままでもキー押下は素通りし得る）。`perform` 側でも必ず状態ガードし、enable条件が変わったら `MenuBarModel::getMacMainMenu()->menuItemsChanged()` で組み直す（Main.cpp / MainComponent::refreshMacMenu 参照）。
+① **keyEquivalent（⌘S等の表記）は `ApplicationCommandManager` 経由でのみ設定される**。`PopupMenu::Item::shortcutKeyDescription` はNSMenu変換で無視される（`juce_MainMenu_mac.mm` の `addMenuItem` 参照）。コマンド登録＋`commandManager.getKeyMappings()->addKeyPress()` が必須 ② **NSMenuのkeyEquivalentは `keyPressed` より先にイベントを取る**。メニューに載せたキーの実処理は `ApplicationCommandTarget::perform` に一本化する（keyPressed側の同判定はデッドパス化するがフォールバックとして無害）③ **メニューのenabled状態はNSMenu構築時のスナップショット**で古くなる（disabled表示のままでもキー押下は素通りし得る）。`perform` 側でも必ず状態ガードし、enable条件が変わったら `MenuBarModel::getMacMainMenu()->menuItemsChanged()` で組み直す（Main.cpp / MainComponent::refreshMacMenu 参照）④ **メニュー項目の追加は4点セット**。コマンドenum・`getCommandInfo`・`perform` を揃えても、`AppMenuModel::getMenuForIndex` に `addCommandItem` を足さないと項目自体が現れない（ショートカットだけ効く中途半端な状態になり、ビルドは通るので気づきにくい）。
+
+### WindowedSincInterpolatorはレイテンシ補償と終端ゼロパディングが必須
+
+① 入力100サンプルのアルゴリズム遅延を持つ（`WindowedSincTraits::algorithmicLatency`）。補償しないと出力全体が100入力サンプル分後ろへずれ、末尾が同じ分欠落する。「先頭の遅延分を捨て、その分余計に生成」で補償する（AudioImporter参照）② `process(available, wrapAround=0)` は「入力が尽きたらゼロを供給」に見えるが、**available==0でも境界判定より先に入力ポインタを1サンプル読む**（`interpolateImpl` が `input[numUsed++]` を先に実行）ため境界外読みになる。ソースバッファ末尾にゼロパディングを確保し、渡すポインタとavailable（≥1）を常にバッファ実体内に収める ③ 検証は「末尾1サンプルのパルスが出力末尾に残るか」＋「中間パルスが換算位置±2サンプルに出るか」のテストで固定する（testAudioImporter参照）
 
 ## オーディオコールバック内の禁止事項
 
