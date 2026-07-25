@@ -5,6 +5,7 @@
 
 #include "AddTrackOverlay.h"
 #include "BounceOverlay.h"
+#include "DeviceSettingsWindow.h"
 #include "FxDetailView.h"
 #include "FxEditorView.h"
 #include "IconButton.h"
@@ -102,7 +103,8 @@ private:
     void syncFxDetail();                 // FXパネルの表示対象変更に下部詳細を追従（不整合なら閉じる）
     void toggleRightPanel (RightPanel::Mode mode);
     void closeRightPanel();
-    void showDeviceSettings();
+    void toggleDeviceSettings (const char* source); // 歯車ボタン／⌘,（開いていれば閉じる。sourceはログ用）
+    void closeDeviceSettings();
     void applyBpmText();
     void beginBounce (const juce::File& target); // 保存先確定後: パラメータ固定→専用synth生成→ワーカー開始
     void exportSelectedItem();                   // ⌘E: 選択中のリージョン/クリップを書き出し（regionSelection優先）
@@ -199,6 +201,8 @@ private:
     ShortcutListOverlay shortcutOverlay; // ⌘?のショートカット一覧（表示中のみ可視）
     BounceOverlay bounceOverlay;         // バウンス進捗（表示中のみ可視・モーダル）
     MixerWindow mixerWindow;             // Xのミキサー（独立ウィンドウ。移動・リサイズ自由）
+    // 歯車ボタン／⌘,のデバイス設定（開いている間だけ生存。入力レベル測定を常駐させないため閉じたら破棄）
+    std::unique_ptr<DeviceSettingsWindow> deviceSettingsWindow;
     TransportLcd lcd; // BPM・小節位置・時間のLCD風パネル（バー中央に置く）
     juce::Label srWarningLabel;
     juce::TooltipWindow tooltipWindow { this }; // アイコンのみのボタン（歯車等）のホバー説明用

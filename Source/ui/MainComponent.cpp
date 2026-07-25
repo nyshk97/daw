@@ -268,8 +268,10 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     addTrackButton.setTooltip (jp (u8"トラックを追加"));
     addTrackOverlay.onPick = [this] (TrackType type) { addTrack (type); };
 
-    settingsButton.onClick = [this] { showDeviceSettings(); };
+    settingsButton.onClick = [this] { toggleDeviceSettings ("button"); };
     settingsButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::audioSettings));
+    settingsButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
+    settingsButton.setToggleIconColour (Theme::panelToggleOn);
     settingsButton.setBorderless (true);
 
     notesButton.onClick = [this] { toggleRightPanel (RightPanel::Mode::notes); };
@@ -664,6 +666,7 @@ void MainComponent::startRecordingFlow()
                                    + " track=" + juce::String (selectedTrack)
                                    + " punchIn=" + juce::String (punchIn)
                                    + " sr=" + juce::String (deviceRate, 0));
+    closeDeviceSettings(); // デバイス設定は非モーダルなので、録音中に触られないよう閉じる
     updateTransportButtons();
 }
 
@@ -1129,23 +1132,40 @@ void MainComponent::selectTrackFromUser (int index)
     }
 }
 
-void MainComponent::showDeviceSettings()
+void MainComponent::toggleDeviceSettings (const char* source)
 {
+    if (deviceSettingsWindow != nullptr)
+    {
+        Log::info ("settings.close", juce::String ("source=") + source);
+        closeDeviceSettings();
+        return;
+    }
+
     if (engine.isRecording())
         return;
 
-    auto selector = std::make_unique<juce::AudioDeviceSelectorComponent> (
-        deviceManager, 1, 2, 2, 2, false, false, true, false);
-    selector->setSize (500, 400);
+    Log::info ("settings.open", juce::String ("source=") + source);
+    auto window = std::make_unique<DeviceSettingsWindow> (deviceManager);
+    // Esc/クローズボタンからの通知はウィンドウ自身のコールスタック上で来るので、破棄は次のメッセージへ回す
+    window->onDismissed = [safe = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safe]
+        {
+            if (safe != nullptr)
+                safe->closeDeviceSettings();
+        });
+    };
+    window->openOver (getTopLevelComponent());
+    deviceSettingsWindow = std::move (window);
+    settingsButton.setToggleState (true, juce::dontSendNotification);
+}
 
-    juce::DialogWindow::LaunchOptions options;
-    options.content.setOwned (selector.release());
-    options.dialogTitle = jp (u8"オーディオデバイス設定");
-    options.dialogBackgroundColour = getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId);
-    options.escapeKeyTriggersCloseButton = true;
-    options.useNativeTitleBar = true;
-    options.resizable = false;
-    options.launchAsync();
+void MainComponent::closeDeviceSettings()
+{
+    if (deviceSettingsWindow == nullptr)
+        return;
+    deviceSettingsWindow.reset();
+    settingsButton.setToggleState (false, juce::dontSendNotification);
 }
 
 void MainComponent::applyBpmText()
@@ -1969,7 +1989,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     }
     if (is (SC::audioSettings))
     {
-        showDeviceSettings();
+        toggleDeviceSettings ("shortcut");
         return true;
     }
     // Logic準拠: Ctrl+M = 選択中のリージョン/クリップをミュート/ミュート解除
