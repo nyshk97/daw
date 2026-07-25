@@ -169,8 +169,19 @@ afconvert -f m4af -d aac /tmp/beat.wav /tmp/beat.m4a   # CoreAudio経路（m4a�
 
 - プロジェクト画面では `button "プロジェクトメモ"` / `button "オーディオファイル"` をAXPressできる。選択中のボタンを再度AXPressすると閉じ、他方を押すと開いたまま内容が切り替わる
 - 背面のまま見た目を確認する場合は、CGWindowListでLaLaのタイトル付きwindow IDを取得し、`screencapture -x -l <windowID> /tmp/lala-right-panel.png` で撮る。初期幅300px、上部バー直下から下端まで、下部エディタが開いてもパネル下へ潜らないことを見る
-- ファイルパネルの初期パスは `~/Downloads`。一覧はフォルダ＋WAV/AIF/AIFF/FLAC/MP3/M4Aのみで、フォルダが先、単一選択。下部に選択名・長さ・再生/停止が出る
+- ファイルパネルの初期パスは `~/Downloads`。一覧はフォルダ＋WAV/AIF/AIFF/FLAC/MP3/M4Aのみで、名前順（フォルダも混在）・単一選択。下部に選択名・長さ・状態（読み込み中・エラー）が出る
+- **試聴は「選択＝即試聴」**（オートプレビュー）。行を選ぶと200ms後に鳴る。行の左端アイコンは 通常`♫` / ホバー`▶` / 試聴中`■`（loading含む）で、クリックでその行の再生・停止をトグルする。フォルダ行は常に `▸` でクリック領域も持たない。パンくず行右端のスピーカーがオート試聴のON/OFF（セッション内のみ・起動時ON）
+- パネルを閉じる・メモへ切り替える・取り込みを始めると、予約中のオート試聴ごと畳まれる（閉じた直後に鳴り出さないこと）。試聴の失敗表示は、別のファイルやフォルダを選んだ時点で消える
+- オート試聴まわりの状態遷移はログ（`file_preview.start` / `file_preview.stop`）で裏取りする。`↑↓`連打で最後の1件だけstartが出る（デバウンス200ms）／オート試聴中にSpaceを押すとstopが出る／走行中は選択してもstartが出ないが行`▶`なら出る／予約中・loading中・playing中のどれでトグルOFFにしても止まる／手動`▶`由来の試聴はSpaceでもトグルOFFでも止まらない
+- 試聴の判定ロジック（auto/manual・予約・トランスポート・トグル・自然終了での解除）は自動テスト `preview policy` が固定している。UIを触らずに回帰を見られる
 - パス欄はパンくず（`/ › Users › d0ne1s › Downloads`）。祖先クリックでその階層へ移動、幅が足りないときは左から `…` に畳まれる（`…` クリックで畳まれた祖先のポップアップ。親と現在フォルダは必ず残る）。履歴の戻る/進むは ⌘[ / ⌘]（ファイルパネルを開いているときだけ効く）
+- **ブラウザの操作挙動（オート試聴・ホバー・行アイコン）はアプリを起動せずに実挙動として検証できる**。実機が使えないとき（別Space・画面収録権限なし・ユーザーが作業中）の主力手段:
+  1. `CMakeLists.txt` の `daw_tests` に `Source/ui/AudioFileBrowserView.cpp` と `JUCE_MODAL_LOOPS_PERMITTED=1` を一時追加（`runDispatchLoopUntil` はこの定義がないとコンパイルが通らない）
+  2. `AudioFileBrowserView` の `final` を外し、`navigate` を public へ、`probeListBox()` / `probeToggle()` / `probeHoveredRow()` / `probeIsActive()` の一時アクセサを足す
+  3. テストで一時ディレクトリにWAVを並べて `navigate` → `runDispatchLoopUntil` でスキャン完了を待ち、`ListBox::selectRow` と `juce::MouseEvent` を組んだ `mouseDown` / `mouseMove` で操作する。デバウンスやTimerも `runDispatchLoopUntil` で進む
+  4. 「アイコン以外は下の行に通る（＝選択・D&Dが生きている）」は `rowComponent->getComponentAt (x, y) == nullptr` で機械判定できる
+  5. 確認後は1〜2を戻し、`git diff CMakeLists.txt Source/ui/AudioFileBrowserView.h` に一時変更が残っていないことを見る
+  - **行の並びはフォルダが先ではなく名前順**（`DirectoryContentsList` の順）。行番号とファイルの対応を思い込みで書くと、実装は正しいのにテストだけ落ちる
 - パンくずの畳み・省略はアプリを起動せずに検証できる: JUCEのコンソールアプリを1本足して `BreadcrumbBar` を任意の幅・パスで `setBounds`→`paintEntireComponent`し、`PNGImageFormat` で1枚のシートに並べて目視する（ホバーは `MouseEvent` を組んで `mouseMove` に渡す）。ユーザーが実機を使用中でUIを触れないときでもレイアウト回帰を機械的に見られる
 - 自動テスト `Audio file browser filter and preview` が、対応拡張子、22.05kHz→44.1kHz線形補間、ステレオ維持、ブロック境界をまたぐ位置、停止後無音を固定している
 

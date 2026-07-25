@@ -96,9 +96,9 @@ LookAndFeelで `drawPopupMenuBackground` を角丸にしても、`PopupMenu::bac
 
 MainWindowのコンストラクタは `setContentOwned`（→ `parentHierarchyChanged` 発火）→ `setVisible(true)` の順で走るため、初回表示時のフックで `isShowing()` を条件にしたフォーカス取得は実行されない。`MessageManager::callAsync`＋SafePointerでコールスタックを抜けてから再試行する（画面遷移で戻ってきた場合はウィンドウ表示済みなので即時パスが通る）。
 
-### ListBoxのカスタムUI化で先に知っておく3つの制約
+### ListBoxのカスタムUI化で先に知っておく5つの制約
 
-① `paintListBoxItem` にはhover状態が渡ってこない → ListBoxに `addMouseListener (this, true)` してmouseMoveで `getRowContainingPosition` → 行indexを自前保持し `repaintRow` で更新（ProjectChooserComponent参照）② 行高は `setRowHeight` の全行共通のみ。可変高の行（ヒーローカード等）はListBoxの外に別Componentとして置く ③ ListBoxがフォーカスを持つと↑↓Returnは素のListBox処理に奪われる。リスト外の要素を含む選択遷移を作るなら `listBox.setWantsKeyboardFocus (false)` にして親の `keyPressed` で処理する。
+① `paintListBoxItem` にはhover状態が渡ってこない → ListBoxに `addMouseListener (this, true)` してmouseMoveで `getRowContainingPosition` → 行indexを自前保持し `repaintRow` で更新（ProjectChooserComponent参照）② 行高は `setRowHeight` の全行共通のみ。可変高の行（ヒーローカード等）はListBoxの外に別Componentとして置く ③ ListBoxがフォーカスを持つと↑↓Returnは素のListBox処理に奪われる。リスト外の要素を含む選択遷移を作るなら `listBox.setWantsKeyboardFocus (false)` にして親の `keyPressed` で処理する ④ **行内に置いたボタンでmouseDownを取ると、その領域だけ選択と `getDragSourceDescription` 由来のドラッグが死ぬ**。行コンポーネント自体は `setInterceptsMouseClicks (false, true)`（自分は透過・子だけ受ける）にして、押したい部分だけを覆う子Componentを1つ置く。押した側では選択が起きないので `selectRow()` を自前で呼ぶ（AudioFileBrowserView参照）⑤ **`refreshComponentForRow` の `existingComponentToUpdate` は「別の行のために作られたもの」が渡ってくる**（スクロールで使い回される。JUCE本体のコメントに明記あり）。作成時の行番号をクリックのlambdaにキャプチャすると、スクロール後に別の行を操作する。呼ばれるたびにコンポーネント側の行番号を書き直す。
 
 ### ネイティブメニューバー（setMacMainMenu）の4つの罠
 
