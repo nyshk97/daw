@@ -275,11 +275,13 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     notesButton.onClick = [this] { toggleRightPanel (RightPanel::Mode::notes); };
     notesButton.setTooltip (jp (u8"プロジェクトメモ"));
     notesButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
+    notesButton.setToggleIconColour (Theme::panelToggleOn);
     notesButton.setBorderless (true);
 
     filesButton.onClick = [this] { toggleRightPanel (RightPanel::Mode::files); };
     filesButton.setTooltip (jp (u8"オーディオファイル"));
     filesButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
+    filesButton.setToggleIconColour (Theme::panelToggleOn);
     filesButton.setBorderless (true);
 
     bounceOverlay.onCancel = [this]
@@ -2279,6 +2281,10 @@ void MainComponent::paint (juce::Graphics& g)
     auto bar = getLocalBounds().removeFromTop (topBarHeight).toFloat();
     g.setColour (juce::Colours::white.withAlpha (0.05f));
     g.fillRect (bar.removeFromTop (1.0f));
+
+    // 右上: パネルトグル（メモ・ファイル）と設定を隔てる区切り線
+    g.setColour (juce::Colours::white.withAlpha (0.10f));
+    g.fillRect (topBarSeparator);
 }
 
 void MainComponent::resized()
@@ -2295,12 +2301,19 @@ void MainComponent::resized()
     clickButton.setBounds (transportButton());
     topRow.removeFromLeft (10);
 
-    // 歯車は補助機能なので控えめに（枠を絞るとアイコンもホバー範囲も一回り小さくなる）
-    settingsButton.setBounds (topRow.removeFromRight (44).withSizeKeepingCentre (32, 32));
-    topRow.removeFromRight (4);
-    filesButton.setBounds (topRow.removeFromRight (36).withSizeKeepingCentre (32, 32));
+    // 右上の補助ボタン。パネルトグル（メモ・ファイル）は隣接させて一組に見せ、
+    // 性質の違う設定（歯車）は区切り線を挟んで離す
+    constexpr int auxSize = 30;
+    auto auxButton = [&topRow] { return topRow.removeFromRight (auxSize)
+                                            .withSizeKeepingCentre (auxSize, auxSize); };
+    settingsButton.setBounds (auxButton());
+    topRow.removeFromRight (8);
+    topBarSeparator = juce::Rectangle<float> (1.0f, 16.0f)
+                          .withCentre (topRow.removeFromRight (1).toFloat().getCentre());
+    topRow.removeFromRight (8);
+    filesButton.setBounds (auxButton());
     topRow.removeFromRight (2);
-    notesButton.setBounds (topRow.removeFromRight (36).withSizeKeepingCentre (32, 32));
+    notesButton.setBounds (auxButton());
     topRow.removeFromRight (10);
 
     // LCDはウィンドウ中央に置く（Logicの配置）。狭いときは左のボタン群を優先して右へ逃がす

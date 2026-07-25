@@ -16,6 +16,7 @@ inline const juce::Colour soloOn        { 0xffdfae4a };  // ソロONボタン（
 // 注意: juce::Colours::* から初期化しないこと。Colours::* はヘッダ内のTUローカルconst（非constexpr）で、
 // inline変数の初期化順序次第でゼロ初期化（透明）を拾う（playheadが透明になる実害を確認済み）
 inline const juce::Colour warning       { 0xffff4500 };  // SR不一致警告・エラーメッセージ（orangered）
+inline const juce::Colour panelToggleOn { 0xff7a9ede };  // 右上パネルトグルON時のアイコン（accentを薄く敷いた地の上で読める明るい青）
 
 // ---- トランスポート ----
 inline const juce::Colour playGreen      { 0xff7bc47b };  // 再生中アイコン・レベルメーター

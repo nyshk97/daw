@@ -204,6 +204,7 @@ private:
     juce::TooltipWindow tooltipWindow { this }; // アイコンのみのボタン（歯車等）のホバー説明用
 
     static constexpr int topBarHeight = 54; // paint（グラデーション帯）とresizedで共有
+    juce::Rectangle<float> topBarSeparator; // 右上ボタン群の区切り線（resizedで算出しpaintで描く）
 
     int selectedTrack = -1;
     bool dirty = false;

@@ -30,7 +30,18 @@ public:
         }
     }
 
-    // 枠・背景を描かない（歯車など補助ボタン用）。ホバー/押下時だけ薄い背景で反応を示す
+    // borderlessボタンのON時のアイコン色（地はbuttonOnColourIdを薄く敷く）
+    void setToggleIconColour (juce::Colour newColour)
+    {
+        if (toggleIconColour != newColour)
+        {
+            toggleIconColour = newColour;
+            repaint();
+        }
+    }
+
+    // 枠・背景を描かない（右上の補助ボタン用）。ホバー/押下時は薄い背景で反応を示し、
+    // ON状態はアクセント色を薄く敷いた地＋色付きアイコンで示す（ベタ塗りより一段沈める）
     void setBorderless (bool shouldBeBorderless)
     {
         if (borderless != shouldBeBorderless)
@@ -55,17 +66,16 @@ public:
     {
         if (borderless)
         {
-            if (getToggleState())
+            const bool on = getToggleState();
+            if (on || highlighted || down)
             {
-                g.setColour (findColour (juce::TextButton::buttonOnColourId));
-                g.fillRoundedRectangle (getLocalBounds().toFloat(), 6.0f);
-            }
-            else if (highlighted || down)
-            {
-                // hoverは明るいオーバーレイ、押下は暗いオーバーレイで「沈む」表現に揃える
-                g.setColour (down ? juce::Colours::black.withAlpha (0.25f)
-                                  : juce::Colours::white.withAlpha (0.06f));
-                g.fillRoundedRectangle (getLocalBounds().toFloat(), 6.0f);
+                // ONはアクセント地（hover/押下でさらに濃く）、OFFのhoverは明るいオーバーレイ、
+                // 押下は暗いオーバーレイで「沈む」表現に揃える
+                g.setColour (on ? findColour (juce::TextButton::buttonOnColourId)
+                                      .withAlpha (highlighted || down ? 0.32f : 0.24f)
+                                : (down ? juce::Colours::black.withAlpha (0.25f)
+                                        : juce::Colours::white.withAlpha (0.07f)));
+                g.fillRoundedRectangle (getLocalBounds().toFloat(), 7.0f);
             }
         }
         else
@@ -89,9 +99,26 @@ public:
                                .withCentre (centre));
         }
 
-        g.setColour (isEnabled() ? iconColour : iconColour.withAlpha (0.35f));
+        // borderlessはOFF/hoverを白の明度で、ONを色付きで示す。
+        // 枠付きボタンは従来どおりiconColour（録音の赤など）をそのまま使う
+        if (borderless)
+        {
+            if (getToggleState())
+                g.setColour (isEnabled() ? toggleIconColour : toggleIconColour.withAlpha (0.35f));
+            else
+                g.setColour (juce::Colours::white.withAlpha (! isEnabled()         ? 0.30f
+                                                             : (highlighted || down) ? 0.92f
+                                                                                     : 0.62f));
+        }
+        else
+        {
+            g.setColour (isEnabled() ? iconColour : iconColour.withAlpha (0.35f));
+        }
 
-        const float side = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.42f;
+        // 線画アイコン（メモ・フォルダ・歯車）は塗り図形と同じ寸法だと軽く見えるので一回り大きくする
+        const bool strokeIcon = icon == Icon::notes || icon == Icon::folder || icon == Icon::gear;
+        const float side = juce::jmin (bounds.getWidth(), bounds.getHeight())
+                           * (strokeIcon ? 0.57f : 0.42f);
         const auto r = juce::Rectangle<float> (side, side).withCentre (bounds.getCentre());
 
         switch (icon)
@@ -134,9 +161,9 @@ public:
             case Icon::gear:
             {
                 const auto centre = bounds.getCentre();
-                const float rOuter = side * 0.75f;
-                const float rBody  = side * 0.55f;
-                const float rHole  = side * 0.27f;
+                const float rOuter = design (side, 9.2f);
+                const float rBody  = design (side, 6.4f);
+                const float rHole  = design (side, 2.9f);
                 const int teeth = 8;
                 const float step = juce::MathConstants<float>::twoPi / (float) teeth;
                 const float half = step * 0.22f; // 歯の角度幅の半分
@@ -158,10 +185,12 @@ public:
                     p.lineTo (pt (rBody, a + step - half * 1.9f));
                 }
                 p.closeSubPath();
-                auto rounded = p.createPathWithRoundedCorners (side * 0.06f);
-                rounded.addEllipse (juce::Rectangle<float> (rHole * 2.0f, rHole * 2.0f).withCentre (centre));
-                rounded.setUsingNonZeroWinding (false); // 中心の穴を抜くため偶奇塗り（rounded生成後に設定しないと消える）
-                g.fillPath (rounded);
+                const float stroke = strokeWidth (side);
+                g.strokePath (p.createPathWithRoundedCorners (side * 0.06f),
+                              juce::PathStrokeType (stroke, juce::PathStrokeType::curved,
+                                                    juce::PathStrokeType::rounded));
+                g.drawEllipse (juce::Rectangle<float> (rHole * 2.0f, rHole * 2.0f).withCentre (centre),
+                               stroke);
                 break;
             }
             case Icon::plus:
@@ -179,41 +208,53 @@ public:
             }
             case Icon::notes:
             {
-                const auto nr = r.expanded (side * 0.08f);
-                const float stroke = juce::jmax (1.3f, side * 0.11f);
-                g.drawRoundedRectangle (nr, side * 0.08f, stroke);
-                for (float y : { 0.32f, 0.52f, 0.72f })
-                    g.drawLine (nr.getX() + nr.getWidth() * 0.24f,
-                                nr.getY() + nr.getHeight() * y,
-                                nr.getRight() - nr.getWidth() * (y > 0.7f ? 0.38f : 0.22f),
-                                nr.getY() + nr.getHeight() * y, stroke);
+                const float stroke = strokeWidth (side);
+                g.drawRoundedRectangle ({ at (r, 4.6f, 3.6f), at (r, 19.4f, 20.4f) },
+                                        design (side, 2.6f), stroke);
+                // 罫線3本（最下段だけ短くして「書きかけのメモ」に見せる）
+                const float rows[3][2] = { { 8.6f, 15.8f }, { 12.0f, 15.8f }, { 15.4f, 12.8f } };
+                for (const auto& row : rows)
+                    g.drawLine ({ at (r, 8.2f, row[0]), at (r, row[1], row[0]) }, stroke);
                 break;
             }
             case Icon::folder:
             {
-                const auto fr = r.expanded (side * 0.14f, side * 0.02f);
-                const float stroke = juce::jmax (1.3f, side * 0.11f);
+                const float stroke = strokeWidth (side);
+                // 左上にタブが立ち上がる形。角丸はcreatePathWithRoundedCornersで一括して付ける
+                const float pts[6][2] = { { 3.4f, 4.6f },   { 8.9f, 4.6f },   { 11.0f, 7.1f },
+                                          { 20.6f, 7.1f },  { 20.6f, 19.9f }, { 3.4f, 19.9f } };
                 juce::Path p;
-                p.startNewSubPath (fr.getX(), fr.getY() + fr.getHeight() * 0.28f);
-                p.lineTo (fr.getX() + fr.getWidth() * 0.38f, fr.getY() + fr.getHeight() * 0.28f);
-                p.lineTo (fr.getX() + fr.getWidth() * 0.50f, fr.getY());
-                p.lineTo (fr.getRight(), fr.getY());
-                p.lineTo (fr.getRight(), fr.getBottom());
-                p.lineTo (fr.getX(), fr.getBottom());
+                p.startNewSubPath (at (r, pts[0][0], pts[0][1]));
+                for (int i = 1; i < 6; ++i)
+                    p.lineTo (at (r, pts[i][0], pts[i][1]));
                 p.closeSubPath();
-                g.strokePath (p, juce::PathStrokeType (stroke, juce::PathStrokeType::curved,
-                                                       juce::PathStrokeType::rounded));
+                g.strokePath (p.createPathWithRoundedCorners (design (side, 2.0f)),
+                              juce::PathStrokeType (stroke, juce::PathStrokeType::curved,
+                                                    juce::PathStrokeType::rounded));
                 break;
             }
         }
     }
 
 private:
+    // 線画アイコンは24x24のデザインボックス上で形を定義し、実サイズへ換算して描く
+    // （SVGのモックからそのまま移植でき、サイズを変えても比率が崩れない）
+    static float design (float side, float value) { return side * value / 24.0f; }
+
+    static juce::Point<float> at (juce::Rectangle<float> box, float x, float y)
+    {
+        return { box.getX() + design (box.getWidth(), x), box.getY() + design (box.getHeight(), y) };
+    }
+
+    // 線画アイコン共通の線幅（デザインボックス上で1.6）。細くなりすぎないよう下限を置く
+    static float strokeWidth (float side) { return juce::jmax (1.0f, design (side, 1.6f)); }
+
     Icon icon;
     bool borderless = false;
     float glowAmount = 0.0f;
     juce::Colour glowColour;
     juce::Colour iconColour { juce::Colours::white.withAlpha (0.85f) };
+    juce::Colour toggleIconColour { juce::Colours::white }; // borderlessのON時（setToggleIconColourで上書き）
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (IconButton)
 };
