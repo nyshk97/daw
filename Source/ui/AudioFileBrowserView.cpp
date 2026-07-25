@@ -97,13 +97,14 @@ AudioFileBrowserView::AudioFileBrowserView()
     autoPreviewToggle.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
     autoPreviewToggle.setToggleIconColour (Theme::panelToggleOn);
     autoPreviewToggle.setToggleState (policy.isEnabled(), juce::dontSendNotification);
-    autoPreviewToggle.setTooltip (jp (u8"選択したファイルを自動で試聴"));
     autoPreviewToggle.onClick = [this]
     {
         const bool on = ! policy.isEnabled();
         autoPreviewToggle.setToggleState (on, juce::dontSendNotification);
         apply (policy.setEnabled (on));
+        updateAutoPreviewButton();
     };
+    updateAutoPreviewButton();
 
     addAndMakeVisible (listBox);
     listBox.addMouseListener (this, true); // ホバー行の追跡（イベントは奪わず監視するだけ）
@@ -424,6 +425,15 @@ void AudioFileBrowserView::timerCallback()
 void AudioFileBrowserView::setTransportRunning (bool running)
 {
     apply (policy.setTransportRunning (running));
+}
+
+// ONは音波つきスピーカー、OFFは×つき。色だけの違いだと「鳴るのか鳴らないのか」が読めない
+void AudioFileBrowserView::updateAutoPreviewButton()
+{
+    const bool on = policy.isEnabled();
+    autoPreviewToggle.setIcon (on ? IconButton::Icon::speaker : IconButton::Icon::speakerMuted);
+    autoPreviewToggle.setTooltip (on ? jp (u8"自動試聴: ON（選んだファイルをすぐ鳴らす）")
+                                     : jp (u8"自動試聴: OFF（行の▶を押したときだけ鳴らす）"));
 }
 
 // 現在の並び順はボタンの見た目に出ないので、ツールチップで示す

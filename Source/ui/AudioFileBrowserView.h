@@ -71,6 +71,7 @@ private:
     void refreshSelection();
     void setSortOrder (FileSortOrder::Mode mode);
     void updateSortTooltip();
+    void updateAutoPreviewButton();
     void rebuildDisplayOrder();
     juce::File fileAt (int row) const;
     bool fileInfoAt (int row, juce::DirectoryContentsList::FileInfo& info) const;
