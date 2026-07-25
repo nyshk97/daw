@@ -90,8 +90,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     };
     rightPanel.fileBrowser().onImportRequested = [this] (const juce::File& file)
     {
-        filePreview.stop();
-        startImport (file, -1,
+        startImport (file, -1, // 試聴の停止・予約の取り消しは startImport 側で畳む
                      timeline.snapSampleToVisibleGrid (transport.playheadSamplePos.load()));
     };
     mixerWindow.content().setProject (project.get());
@@ -384,6 +383,7 @@ void MainComponent::timerCallback()
                                               previewStatus == AudioFilePreview::Status::playing,
                                               previewError);
     rightPanel.fileBrowser().setImporting (importActive);
+    rightPanel.fileBrowser().setTransportRunning (transport.isPlaying.load());
 
     // デバイスのサンプルレート確定・変更に追従してGM音源を作り直す（変更があったときだけ再push）
     if (synthBank.sync (*project, transport.sampleRate.load(), transport.blockSizeExpected.load()))
@@ -1032,10 +1032,7 @@ void MainComponent::toggleRightPanel (RightPanel::Mode mode)
 
     if (rightPanel.isOpen() && rightPanel.mode() == RightPanel::Mode::files
         && mode != RightPanel::Mode::files)
-    {
-        filePreview.stop();
-        previewError.clear();
-    }
+        rightPanel.fileBrowser().cancelPreview(); // 予約中のオートプレビューも取り消す
     rightPanel.open (mode);
     notesButton.setToggleState (mode == RightPanel::Mode::notes, juce::dontSendNotification);
     filesButton.setToggleState (mode == RightPanel::Mode::files, juce::dontSendNotification);
@@ -1049,10 +1046,7 @@ void MainComponent::closeRightPanel()
     if (! rightPanel.isOpen())
         return;
     if (rightPanel.mode() == RightPanel::Mode::files)
-    {
-        filePreview.stop();
-        previewError.clear();
-    }
+        rightPanel.fileBrowser().cancelPreview(); // 予約中のオートプレビューも取り消す
     rightPanel.close();
     notesButton.setToggleState (false, juce::dontSendNotification);
     filesButton.setToggleState (false, juce::dontSendNotification);
@@ -1584,7 +1578,7 @@ void MainComponent::startImport (const juce::File& source, int targetTrack, juce
 {
     if (importActive || bounceActive || engine.isRecording())
         return;
-    filePreview.stop();
+    rightPanel.fileBrowser().cancelPreview(); // 予約中のオートプレビューごと畳む
 
     // プロジェクトSRの確定（最初の録音「または取り込み」時にデバイスレートで確定。
     // SR確定はundo対象外 — UndoStackが戻すのはtracks/markersのみで、録音による確定と同じ扱い）

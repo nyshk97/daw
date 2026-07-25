@@ -14,6 +14,7 @@
 #include "shared/UndoStack.h"
 #include "shared/AudioFileTypes.h"
 #include "shared/AudioBrowserNavigation.h"
+#include "ui/PreviewPolicy.h"
 
 namespace
 {
@@ -173,6 +174,180 @@ void testAudioFilePreview()
 
     preview.cancelAndWait();
     dir.deleteRecursively();
+}
+
+// ---- オーディオブラウザの試聴判定（オート/手動・予約・トランスポート・トグル） ----
+void testPreviewPolicy()
+{
+    beginTest ("preview policy");
+
+    const juce::File a ("/tmp/daw-policy-a.wav");
+    const juce::File b ("/tmp/daw-policy-b.wav");
+    const juce::File folder ("/tmp/daw-policy-dir");
+
+    // 選択でオート予約 → デバウンス満了で開始
+    {
+        PreviewPolicy policy;
+        auto selected = policy.selectionChanged (a, true);
+        expect (selected.startTimer, "選択でデバウンスを予約すること");
+        expect (! selected.startPreview, "選択の時点ではまだ鳴らさないこと");
+        expect (policy.pending() == a, "予約対象が選択ファイルであること");
+
+        auto fired = policy.takePending();
+        expect (fired.startPreview && fired.startFile == a, "満了で選択ファイルを鳴らすこと");
+        expect (policy.isActive (a), "試聴対象が■判定になること");
+        expect (fired.repaint.contains (a), "開始した行を再描画対象にすること");
+
+        // 連打しても最後の1件だけが残る
+        policy.selectionChanged (a, true);
+        policy.selectionChanged (b, true);
+        expect (policy.pending() == b, "連続選択では最後の予約だけが残ること");
+        expect (! policy.isActive (a), "選択が変わったら前の試聴を解除すること");
+    }
+
+    // フォルダ行・非対応ファイルは予約しない
+    {
+        PreviewPolicy policy;
+        auto selected = policy.selectionChanged (folder, false);
+        expect (! selected.startTimer, "フォルダ行では予約しないこと");
+        expect (policy.pending() == juce::File(), "予約が空のままであること");
+    }
+
+    // トランスポート開始で auto だけ止まる（遷移時のみ・manualは残る）
+    {
+        PreviewPolicy policy;
+        policy.selectionChanged (a, true);
+        policy.takePending();
+        auto started = policy.setTransportRunning (true);
+        expect (started.stopPreview, "走行開始でオート試聴を止めること");
+        expect (started.repaint.contains (a), "停止した行を再描画対象にすること");
+        expect (! policy.isActive (a), "停止後は■判定が外れること");
+
+        auto again = policy.setTransportRunning (true);
+        expect (! again.stopPreview, "走行中フラグを繰り返し渡しても停止は1回だけであること");
+
+        auto manual = policy.iconClicked (b);
+        expect (manual.startPreview && manual.startFile == b, "走行中でも手動▶なら鳴らせること");
+        auto stillRunning = policy.setTransportRunning (false);
+        expect (! stillRunning.stopPreview, "走行終了では何も止めないこと");
+        auto restart = policy.setTransportRunning (true);
+        expect (! restart.stopPreview, "手動試聴は走行開始で止めないこと");
+        expect (policy.isActive (b), "手動試聴が継続すること");
+    }
+
+    // 走行中は選択しても予約しない
+    {
+        PreviewPolicy policy;
+        policy.setTransportRunning (true);
+        auto selected = policy.selectionChanged (a, true);
+        expect (! selected.startTimer, "走行中は選択で予約しないこと");
+    }
+
+    // トグルOFFで auto だけ止まる（予約中・実行中とも）
+    {
+        PreviewPolicy policy;
+        policy.selectionChanged (a, true);
+        auto offWhilePending = policy.setEnabled (false);
+        expect (offWhilePending.stopTimer, "予約中のOFFで予約を取り消すこと");
+        expect (policy.pending() == juce::File(), "予約が消えること");
+
+        policy.setEnabled (true);
+        policy.selectionChanged (a, true);
+        policy.takePending();
+        auto offWhilePlaying = policy.setEnabled (false);
+        expect (offWhilePlaying.stopPreview, "実行中のOFFで試聴を止めること");
+        expect (! policy.isActive (a), "停止後は■判定が外れること");
+
+        auto manual = policy.iconClicked (b);
+        expect (manual.startPreview, "OFF中でも手動▶なら鳴らせること");
+        auto offAgain = policy.setEnabled (false);
+        expect (! offAgain.stopPreview, "同じ値のOFFでは何も起きないこと");
+        policy.setEnabled (true);
+        auto offManual = policy.setEnabled (false);
+        expect (! offManual.stopPreview, "手動試聴はトグルOFFで止めないこと");
+        expect (policy.isActive (b), "手動試聴が継続すること");
+
+        auto selected = policy.selectionChanged (a, true);
+        expect (! selected.startTimer, "OFF中は選択で予約しないこと");
+        expect (selected.stopPreview, "OFF中でも別の行を選べば止まること");
+    }
+
+    // 行アイコン: 同一ファイルで停止・別ファイルなら即開始
+    {
+        PreviewPolicy policy;
+        auto first = policy.iconClicked (a);
+        expect (first.startPreview && first.startFile == a, "▶で即開始すること");
+        expect (! first.startTimer, "手動▶はデバウンスを挟まないこと");
+
+        auto same = policy.iconClicked (a);
+        expect (same.stopPreview && ! same.startPreview, "同じ行の■で停止すること");
+        expect (same.repaint.contains (a), "停止した行を再描画対象にすること");
+
+        policy.iconClicked (a);
+        auto other = policy.iconClicked (b);
+        expect (other.startPreview && other.startFile == b, "別の行の▶で切り替わること");
+        expect (other.repaint.contains (a) && other.repaint.contains (b),
+                "切り替え前後の2行を再描画対象にすること");
+        expect (policy.isActive (b) && ! policy.isActive (a), "■が新しい行だけに付くこと");
+
+        // 予約中に▶を押したら予約は捨てる
+        PreviewPolicy other2;
+        other2.selectionChanged (a, true);
+        auto clicked = other2.iconClicked (b);
+        expect (clicked.stopTimer, "▶で予約を取り消すこと");
+        expect (other2.pending() == juce::File(), "予約が消えること");
+    }
+
+    // loading中も■・idleに落ちたら解除
+    {
+        PreviewPolicy policy;
+        policy.iconClicked (a);
+        auto loading = policy.previewStateChanged (true, false);
+        expect (policy.isActive (a), "loading中も■のままであること");
+        expect (loading.repaint.isEmpty(), "loading中は再描画不要であること");
+
+        policy.previewStateChanged (false, true);
+        expect (policy.isActive (a), "playing中も■のままであること");
+
+        auto finished = policy.previewStateChanged (false, false);
+        expect (! policy.isActive (a), "自然終了・失敗で■を外すこと");
+        expect (finished.repaint.contains (a), "終了した行を再描画対象にすること");
+
+        auto idle = policy.previewStateChanged (false, false);
+        expect (idle.repaint.isEmpty(), "解除済みなら繰り返し再描画しないこと");
+
+        auto restart = policy.iconClicked (a);
+        expect (restart.startPreview && ! restart.stopPreview,
+                "自然終了後の▶が「停止」でなく「開始」になること");
+    }
+
+    // パネルを閉じる・取り込み開始（cancelAll）は出自を問わず畳む
+    {
+        PreviewPolicy policy;
+        policy.selectionChanged (a, true);
+        auto whilePending = policy.cancelAll();
+        expect (whilePending.stopTimer, "予約中のcancelAllで予約を取り消すこと");
+        expect (policy.pending() == juce::File(), "予約が消えること");
+
+        policy.iconClicked (b);
+        auto whileManual = policy.cancelAll();
+        expect (whileManual.stopPreview, "手動試聴中でもcancelAllで止まること");
+        expect (! policy.isActive (b), "■が外れること");
+    }
+
+    // 失敗の後始末: 停止対象が無くても選択変更は停止要求を出す（フッターのエラーを畳むため）
+    {
+        PreviewPolicy policy;
+        policy.iconClicked (a);
+        policy.previewStateChanged (false, false); // failed → activeが外れた状態
+        auto toFolder = policy.selectionChanged (folder, false);
+        expect (toFolder.stopPreview, "失敗後にフォルダを選んでも停止要求が出ること");
+        expect (! toFolder.startTimer, "フォルダでは予約しないこと");
+        auto toFile = policy.selectionChanged (b, true);
+        expect (toFile.stopPreview, "失敗後に別のファイルを選んでも停止要求が出ること");
+        auto closed = policy.cancelAll();
+        expect (closed.stopPreview, "何も鳴っていなくてもcancelAllは停止要求を出すこと");
+    }
 }
 
 // ---- v1プロジェクト読込 → v2保存 → 再読込のラウンドトリップ ----
@@ -2964,6 +3139,7 @@ int main()
     testEngineBounceStereoConsistency();
     testAudioImporter();
     testAudioFilePreview();
+    testPreviewPolicy();
     testMonoRenderRegressionHash();
 
     if (failureCount > 0)

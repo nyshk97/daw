@@ -7,7 +7,7 @@
 class IconButton : public juce::Button
 {
 public:
-    enum class Icon { play, stop, record, metronome, gear, plus, notes, folder };
+    enum class Icon { play, stop, record, metronome, gear, plus, notes, folder, speaker };
 
     IconButton (Icon initialIcon, const juce::String& accessibleName)
         : juce::Button (accessibleName), icon (initialIcon) {}
@@ -116,7 +116,8 @@ public:
         }
 
         // 線画アイコン（メモ・フォルダ・歯車）は塗り図形と同じ寸法だと軽く見えるので一回り大きくする
-        const bool strokeIcon = icon == Icon::notes || icon == Icon::folder || icon == Icon::gear;
+        const bool strokeIcon = icon == Icon::notes || icon == Icon::folder || icon == Icon::gear
+                                || icon == Icon::speaker;
         const float side = juce::jmin (bounds.getWidth(), bounds.getHeight())
                            * (strokeIcon ? 0.57f : 0.42f);
         const auto r = juce::Rectangle<float> (side, side).withCentre (bounds.getCentre());
@@ -215,6 +216,33 @@ public:
                 const float rows[3][2] = { { 8.6f, 15.8f }, { 12.0f, 15.8f }, { 15.4f, 12.8f } };
                 for (const auto& row : rows)
                     g.drawLine ({ at (r, 8.2f, row[0]), at (r, row[1], row[0]) }, stroke);
+                break;
+            }
+            case Icon::speaker:
+            {
+                const float stroke = strokeWidth (side);
+                // 本体（左の箱＋右へ広がるコーン）を一筆で描き、右側に音波を2本重ねる
+                const float pts[6][2] = { { 3.2f, 9.4f },  { 7.0f, 9.4f },  { 12.0f, 4.4f },
+                                          { 12.0f, 19.6f }, { 7.0f, 14.6f }, { 3.2f, 14.6f } };
+                juce::Path body;
+                body.startNewSubPath (at (r, pts[0][0], pts[0][1]));
+                for (int i = 1; i < 6; ++i)
+                    body.lineTo (at (r, pts[i][0], pts[i][1]));
+                body.closeSubPath();
+                g.strokePath (body.createPathWithRoundedCorners (design (side, 1.4f)),
+                              juce::PathStrokeType (stroke, juce::PathStrokeType::curved,
+                                                    juce::PathStrokeType::rounded));
+
+                const auto centre = at (r, 12.0f, 12.0f);
+                const float quarter = juce::MathConstants<float>::halfPi * 0.5f;
+                juce::Path waves; // 3時方向を中心に±45°の弧
+                for (const float radius : { 4.4f, 7.4f })
+                    waves.addCentredArc (centre.x, centre.y, design (side, radius),
+                                         design (side, radius), 0.0f,
+                                         juce::MathConstants<float>::halfPi - quarter,
+                                         juce::MathConstants<float>::halfPi + quarter, true);
+                g.strokePath (waves, juce::PathStrokeType (stroke, juce::PathStrokeType::curved,
+                                                          juce::PathStrokeType::rounded));
                 break;
             }
             case Icon::folder:
