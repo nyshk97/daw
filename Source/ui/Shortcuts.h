@@ -49,6 +49,7 @@ enum class ID
     toggleMixer,
     toggleFxEditor,
     toggleNotes,
+    toggleFiles,
     browserHistory,
     shortcutList,
     // プロジェクト
@@ -228,6 +229,11 @@ inline const Entry table[] = {
     { ID::toggleNotes, Category::view, u8"プロジェクトメモを表示/隠す", u8"⌘N",
       [] (const juce::KeyPress& k)
       { return k == juce::KeyPress ('n', juce::ModifierKeys::commandModifier, 0); } },
+    // Logic準拠: F = ブラウザ。メモ（⌘N）と違いパネル内はListBoxだけで、ListBoxは文字キーを
+    // 消費せず親へ流す（juce_ListBox.cpp）ため修飾なし1文字のままトグルできる
+    { ID::toggleFiles, Category::view, u8"ファイルパネルを表示/隠す", u8"F",
+      [] (const juce::KeyPress& k)
+      { return detail::noCmdCtrlAlt (k) && k.getTextCharacter() == 'f'; } },
     // ファイルパネル（右ドック）表示中のみ有効。階層移動はパンくずが担うので、
     // 「行き来」だけをキーに逃がしてナビ行からボタンを無くしている
     { ID::browserHistory, Category::view, u8"ファイルパネルの戻る/進む", u8"⌘[ / ⌘]",

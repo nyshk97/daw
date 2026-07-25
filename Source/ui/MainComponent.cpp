@@ -281,7 +281,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     notesButton.setBorderless (true);
 
     filesButton.onClick = [this] { toggleRightPanel (RightPanel::Mode::files); };
-    filesButton.setTooltip (jp (u8"オーディオファイル"));
+    filesButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::toggleFiles));
     filesButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
     filesButton.setToggleIconColour (Theme::panelToggleOn);
     filesButton.setBorderless (true);
@@ -1850,8 +1850,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
             return true;
         }
         if (is (SC::shortcutList) || is (SC::toggleMixer) || is (SC::toggleFxEditor)
-            || is (SC::toggleNotes))
-            return true; // オーバーレイは高々1枚: AddTrack表示中の⌘?/X/B/⌘Nは無視
+            || is (SC::toggleNotes) || is (SC::toggleFiles))
+            return true; // オーバーレイは高々1枚: AddTrack表示中の⌘?/X/B/⌘N/Fは無視
     }
     // Logic準拠: X = ミキサー。表示中もモーダルにしない（Space再生・シーク等はそのまま効く）
     if (is (SC::toggleMixer))
@@ -1885,6 +1885,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (is (SC::toggleNotes))
     {
         toggleRightPanel (RightPanel::Mode::notes);
+        return true;
+    }
+    // Logic準拠: F = ブラウザ（本アプリでは右ドックの音声ファイル一覧）
+    if (is (SC::toggleFiles))
+    {
+        toggleRightPanel (RightPanel::Mode::files);
         return true;
     }
     // ⌘[ / ⌘] = ファイルパネルの履歴を戻る/進む（パネルを開いているときだけ効く）
