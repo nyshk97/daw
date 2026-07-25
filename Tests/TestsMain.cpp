@@ -14,6 +14,7 @@
 #include "shared/UndoStack.h"
 #include "shared/AudioFileTypes.h"
 #include "shared/AudioBrowserNavigation.h"
+#include "ui/FileSortOrder.h"
 #include "ui/PreviewPolicy.h"
 
 namespace
@@ -348,6 +349,40 @@ void testPreviewPolicy()
         auto closed = policy.cancelAll();
         expect (closed.stopPreview, "何も鳴っていなくてもcancelAllは停止要求を出すこと");
     }
+}
+
+// ---- ファイル一覧の並び順（追加日／名前） ----
+void testFileSortOrder()
+{
+    beginTest ("file sort order");
+
+    const juce::Time base (2026, 5, 1, 12, 0); // 月は0起点＝6月
+    juce::Array<FileSortOrder::Entry> entries;
+    entries.add ({ "b-old.wav",  base });
+    entries.add ({ "a-new.wav",  base + juce::RelativeTime::hours (2) });
+    entries.add ({ "C-mid.wav",  base + juce::RelativeTime::hours (1) });
+    entries.add ({ "d-same.wav", base }); // b-old と同時刻
+
+    const auto byDate = FileSortOrder::sortedIndices (entries, FileSortOrder::Mode::dateAdded);
+    expect (entries[byDate[0]].filename == "a-new.wav", "追加日順は新しいものが先頭に来ること");
+    expect (entries[byDate[1]].filename == "C-mid.wav", "以降も新しい順に並ぶこと");
+    expect (entries[byDate[2]].filename == "b-old.wav", "同時刻はファイル名で決まること");
+    expect (entries[byDate[3]].filename == "d-same.wav", "同時刻の並びが安定すること");
+
+    const auto byName = FileSortOrder::sortedIndices (entries, FileSortOrder::Mode::name);
+    expect (entries[byName[0]].filename == "a-new.wav", "名前順は昇順であること");
+    expect (entries[byName[1]].filename == "b-old.wav", "大文字小文字を区別しないこと(b < C)");
+    expect (entries[byName[2]].filename == "C-mid.wav", "大文字小文字を区別しないこと(C < d)");
+    expect (entries[byName[3]].filename == "d-same.wav", "名前順の末尾");
+
+    juce::Array<FileSortOrder::Entry> numbered;
+    numbered.add ({ "take10.wav", base });
+    numbered.add ({ "take2.wav",  base });
+    const auto natural = FileSortOrder::sortedIndices (numbered, FileSortOrder::Mode::name);
+    expect (numbered[natural[0]].filename == "take2.wav", "数字は数値として比較されること(2 < 10)");
+
+    expect (FileSortOrder::sortedIndices ({}, FileSortOrder::Mode::dateAdded).isEmpty(),
+            "空の一覧でも壊れないこと");
 }
 
 // ---- v1プロジェクト読込 → v2保存 → 再読込のラウンドトリップ ----
@@ -3140,6 +3175,7 @@ int main()
     testAudioImporter();
     testAudioFilePreview();
     testPreviewPolicy();
+    testFileSortOrder();
     testMonoRenderRegressionHash();
 
     if (failureCount > 0)

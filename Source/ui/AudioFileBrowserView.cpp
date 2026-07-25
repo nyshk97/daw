@@ -71,6 +71,25 @@ AudioFileBrowserView::AudioFileBrowserView()
     addAndMakeVisible (breadcrumb);
     breadcrumb.onNavigate = [this] (const juce::File& dir) { navigate (dir, true); };
 
+    // 並び順の切り替え。セッション内だけ保持し、起動時は常に追加日順
+    addAndMakeVisible (sortButton);
+    sortButton.setBorderless (true);
+    sortButton.setWantsKeyboardFocus (false);
+    sortButton.onClick = [this]
+    {
+        juce::PopupMenu menu;
+        menu.addItem (1, jp (u8"追加日順（新しい順）"), true, sortOrder == FileSortOrder::Mode::dateAdded);
+        menu.addItem (2, jp (u8"名前順"), true, sortOrder == FileSortOrder::Mode::name);
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (sortButton),
+                            [this] (int result)
+                            {
+                                if (result > 0)
+                                    setSortOrder (result == 1 ? FileSortOrder::Mode::dateAdded
+                                                              : FileSortOrder::Mode::name);
+                            });
+    };
+    updateSortTooltip();
+
     // オートプレビューのON/OFF。セッション内だけ保持し、起動時は常にON
     addAndMakeVisible (autoPreviewToggle);
     autoPreviewToggle.setBorderless (true);
@@ -123,6 +142,8 @@ void AudioFileBrowserView::navigate (const juce::File& directory, bool addToHist
         history.visit (directory);
     contents.setDirectory (directory, true, true);
     setHoveredRow (-1); // 移動先では行が総入れ替えになるので、古い行の▶を残さない
+    displayOrder.clearQuick();
+    listBox.updateContent();
     listBox.deselectAllRows();
     breadcrumb.setPath (directory);
     refreshSelection();
@@ -139,14 +160,73 @@ bool AudioFileBrowserView::navigateHistory (int delta)
 
 int AudioFileBrowserView::getNumRows()
 {
-    return contents.getNumFiles();
+    return displayOrder.size();
+}
+
+// 以降の row はすべて「表示行」。contents 側の並び（名前順固定）とは一致しない
+juce::File AudioFileBrowserView::fileAt (int row) const
+{
+    return juce::isPositiveAndBelow (row, displayOrder.size())
+               ? contents.getFile (displayOrder[row]) : juce::File();
+}
+
+bool AudioFileBrowserView::fileInfoAt (int row, juce::DirectoryContentsList::FileInfo& info) const
+{
+    return juce::isPositiveAndBelow (row, displayOrder.size())
+           && contents.getFileInfo (displayOrder[row], info);
+}
+
+int AudioFileBrowserView::rowForFile (const juce::File& file) const
+{
+    if (file == juce::File())
+        return -1;
+    for (int row = 0; row < displayOrder.size(); ++row)
+        if (fileAt (row) == file)
+            return row;
+    return -1;
+}
+
+// 並び替えは表示順インデックスの入れ替えだけで行う（DirectoryContentsList の並びは変えられない）
+void AudioFileBrowserView::rebuildDisplayOrder()
+{
+    const auto previouslySelected = selectedFile();
+
+    juce::Array<FileSortOrder::Entry> entries;
+    for (int i = 0; i < contents.getNumFiles(); ++i)
+    {
+        juce::DirectoryContentsList::FileInfo info;
+        if (contents.getFileInfo (i, info))
+            entries.add ({ info.filename, info.creationTime });
+    }
+    displayOrder = FileSortOrder::sortedIndices (entries, sortOrder);
+    listBox.updateContent();
+
+    // 行番号が動くので、選択は「選んでいたファイル」で取り直す（試聴は始めない）
+    const int row = rowForFile (previouslySelected);
+    if (row >= 0 && row != listBox.getSelectedRow())
+    {
+        suppressAutoPreview = true;
+        listBox.selectRow (row);
+        suppressAutoPreview = false;
+    }
+    listBox.repaint();
+}
+
+void AudioFileBrowserView::setSortOrder (FileSortOrder::Mode mode)
+{
+    if (sortOrder == mode)
+        return;
+    sortOrder = mode;
+    setHoveredRow (-1); // 行が総入れ替えになるので古い▶を残さない
+    rebuildDisplayOrder();
+    updateSortTooltip();
 }
 
 void AudioFileBrowserView::paintListBoxItem (int row, juce::Graphics& g, int width, int height,
                                              bool selected)
 {
     juce::DirectoryContentsList::FileInfo info;
-    if (! contents.getFileInfo (row, info))
+    if (! fileInfoAt (row, info))
         return;
     if (selected)
     {
@@ -156,7 +236,7 @@ void AudioFileBrowserView::paintListBoxItem (int row, juce::Graphics& g, int wid
 
     const auto textColour = juce::Colours::white.withAlpha (selected ? 0.94f : 0.72f);
     const auto iconArea = juce::Rectangle<int> (iconAreaX, 0, iconAreaWidth, height);
-    const auto file = contents.getFile (row);
+    const auto file = fileAt (row);
     g.setFont (Fonts::body());
 
     if (info.isDirectory)
@@ -212,14 +292,14 @@ juce::Component* AudioFileBrowserView::refreshComponentForRow (int row, bool,
         iconRow = new RowIconComponent();
         owned.reset (iconRow);
     }
-    iconRow->update (row, isPlayable (contents.getFile (row)),
+    iconRow->update (row, isPlayable (fileAt (row)),
                      [this] (int clicked) { iconClicked (clicked); });
     return owned.release();
 }
 
 void AudioFileBrowserView::iconClicked (int row)
 {
-    const auto file = contents.getFile (row);
+    const auto file = fileAt (row);
     if (! isPlayable (file))
         return;
 
@@ -278,7 +358,7 @@ void AudioFileBrowserView::listBoxItemDoubleClicked (int row, const juce::MouseE
 {
     if (importInProgress)
         return;
-    const auto file = contents.getFile (row);
+    const auto file = fileAt (row);
     if (file.isDirectory())
         navigate (file, true);
     else if (AudioFileTypes::isSupported (file) && onImportRequested)
@@ -289,7 +369,7 @@ juce::var AudioFileBrowserView::getDragSourceDescription (const juce::SparseSet<
 {
     if (importInProgress || rows.size() != 1)
         return {};
-    const auto file = contents.getFile (rows[0]);
+    const auto file = fileAt (rows[0]);
     return file.existsAsFile() && AudioFileTypes::isSupported (file)
                ? juce::var (file.getFullPathName())
                : juce::var();
@@ -297,14 +377,12 @@ juce::var AudioFileBrowserView::getDragSourceDescription (const juce::SparseSet<
 
 void AudioFileBrowserView::changeListenerCallback (juce::ChangeBroadcaster*)
 {
-    listBox.updateContent();
-    listBox.repaint();
+    rebuildDisplayOrder(); // スキャンでファイルが増えるたびに並べ直す
 }
 
 juce::File AudioFileBrowserView::selectedFile() const
 {
-    const int row = listBox.getSelectedRow();
-    return row >= 0 ? contents.getFile (row) : juce::File();
+    return fileAt (listBox.getSelectedRow());
 }
 
 bool AudioFileBrowserView::isPlayable (const juce::File& file) const
@@ -333,12 +411,8 @@ void AudioFileBrowserView::apply (const PreviewPolicy::Result& result)
 
 void AudioFileBrowserView::repaintRowFor (const juce::File& file)
 {
-    for (int row = 0; row < contents.getNumFiles(); ++row)
-        if (contents.getFile (row) == file)
-        {
-            listBox.repaintRow (row);
-            return;
-        }
+    if (const int row = rowForFile (file); row >= 0)
+        listBox.repaintRow (row);
 }
 
 void AudioFileBrowserView::timerCallback()
@@ -350,6 +424,14 @@ void AudioFileBrowserView::timerCallback()
 void AudioFileBrowserView::setTransportRunning (bool running)
 {
     apply (policy.setTransportRunning (running));
+}
+
+// 現在の並び順はボタンの見た目に出ないので、ツールチップで示す
+void AudioFileBrowserView::updateSortTooltip()
+{
+    sortButton.setTooltip (jp (u8"並び順: ")
+                           + (sortOrder == FileSortOrder::Mode::dateAdded ? jp (u8"追加日（新しい順）")
+                                                                         : jp (u8"名前")));
 }
 
 void AudioFileBrowserView::cancelPreview()
@@ -413,6 +495,7 @@ void AudioFileBrowserView::resized()
     auto area = getLocalBounds();
     auto top = area.removeFromTop (32);
     autoPreviewToggle.setBounds (top.removeFromRight (30).reduced (2, 3));
+    sortButton.setBounds (top.removeFromRight (30).reduced (2, 3));
     breadcrumb.setBounds (top.reduced (8, 0));
 
     auto footer = area.removeFromBottom (footerHeight).reduced (10, 6);

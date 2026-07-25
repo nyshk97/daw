@@ -7,7 +7,7 @@
 class IconButton : public juce::Button
 {
 public:
-    enum class Icon { play, stop, record, metronome, gear, plus, notes, folder, speaker };
+    enum class Icon { play, stop, record, metronome, gear, plus, notes, folder, speaker, sort };
 
     IconButton (Icon initialIcon, const juce::String& accessibleName)
         : juce::Button (accessibleName), icon (initialIcon) {}
@@ -117,7 +117,7 @@ public:
 
         // 線画アイコン（メモ・フォルダ・歯車）は塗り図形と同じ寸法だと軽く見えるので一回り大きくする
         const bool strokeIcon = icon == Icon::notes || icon == Icon::folder || icon == Icon::gear
-                                || icon == Icon::speaker;
+                                || icon == Icon::speaker || icon == Icon::sort;
         const float side = juce::jmin (bounds.getWidth(), bounds.getHeight())
                            * (strokeIcon ? 0.57f : 0.42f);
         const auto r = juce::Rectangle<float> (side, side).withCentre (bounds.getCentre());
@@ -216,6 +216,29 @@ public:
                 const float rows[3][2] = { { 8.6f, 15.8f }, { 12.0f, 15.8f }, { 15.4f, 12.8f } };
                 for (const auto& row : rows)
                     g.drawLine ({ at (r, 8.2f, row[0]), at (r, row[1], row[0]) }, stroke);
+                break;
+            }
+            case Icon::sort:
+            {
+                const float stroke = strokeWidth (side);
+                // 長さの違う横線3本（上が長い）＋右に下向き矢印
+                juce::Path lines;
+                const float rows[3][2] = { { 6.6f, 15.4f }, { 12.0f, 12.2f }, { 17.4f, 9.0f } };
+                for (const auto& row : rows)
+                {
+                    lines.startNewSubPath (at (r, 3.4f, row[0]));
+                    lines.lineTo (at (r, row[1], row[0]));
+                }
+                g.strokePath (lines, juce::PathStrokeType (stroke, juce::PathStrokeType::curved,
+                                                          juce::PathStrokeType::rounded));
+                juce::Path arrow;
+                arrow.startNewSubPath (at (r, 19.4f, 5.4f));
+                arrow.lineTo (at (r, 19.4f, 18.6f));
+                arrow.startNewSubPath (at (r, 16.4f, 15.4f));
+                arrow.lineTo (at (r, 19.4f, 18.6f));
+                arrow.lineTo (at (r, 22.4f, 15.4f));
+                g.strokePath (arrow, juce::PathStrokeType (stroke, juce::PathStrokeType::curved,
+                                                          juce::PathStrokeType::rounded));
                 break;
             }
             case Icon::speaker:

@@ -6,6 +6,7 @@
 
 #include "../shared/AudioBrowserNavigation.h"
 #include "BreadcrumbBar.h"
+#include "FileSortOrder.h"
 #include "IconButton.h"
 #include "PreviewPolicy.h"
 
@@ -68,6 +69,12 @@ private:
 
     void navigate (const juce::File& directory, bool addToHistory);
     void refreshSelection();
+    void setSortOrder (FileSortOrder::Mode mode);
+    void updateSortTooltip();
+    void rebuildDisplayOrder();
+    juce::File fileAt (int row) const;
+    bool fileInfoAt (int row, juce::DirectoryContentsList::FileInfo& info) const;
+    int rowForFile (const juce::File& file) const;
     juce::File selectedFile() const;
     juce::String durationText (const juce::File& file);
     bool isPlayable (const juce::File& file) const;
@@ -85,6 +92,8 @@ private:
     static constexpr int footerHeight = 56;  // 選択ファイル名・長さ・状態を出す下段
 
     PreviewPolicy policy;
+    FileSortOrder::Mode sortOrder = FileSortOrder::Mode::dateAdded; // セッション内のみ保持
+    juce::Array<int> displayOrder;                                  // 表示行 → contents のindex
     bool suppressAutoPreview = false; // 行アイコン由来の選択変更でオート予約を立てないためのガード
     int hoveredRow = -1;
 
@@ -96,6 +105,7 @@ private:
     bool importInProgress = false;
 
     BreadcrumbBar breadcrumb;
+    IconButton sortButton { IconButton::Icon::sort, "Sort order" };
     IconButton autoPreviewToggle { IconButton::Icon::speaker, "Auto preview" };
     juce::ListBox listBox { {}, this };
     juce::Label selectedNameLabel;
