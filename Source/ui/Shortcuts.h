@@ -48,6 +48,7 @@ enum class ID
     zoomHorizontal,
     toggleMixer,
     toggleFxEditor,
+    toggleNotes,
     browserHistory,
     shortcutList,
     // プロジェクト
@@ -221,6 +222,12 @@ inline const Entry table[] = {
     { ID::toggleFxEditor, Category::view, u8"FXパネルを表示/隠す", u8"I",
       [] (const juce::KeyPress& k)
       { return detail::noCmdCtrlAlt (k) && k.getTextCharacter() == 'i'; } },
+    // メモ欄はTextEditorなので修飾なし1文字（X/I方式）だと入力中に文字が挿入されて閉じられない。
+    // ⌘付きならmacのpeerがtextCharacterを0にする（juce_NSViewComponentPeer_mac.mm）ため
+    // TextEditorが消費せず親まで届き、フォーカスがメモにあるままトグルできる
+    { ID::toggleNotes, Category::view, u8"プロジェクトメモを表示/隠す", u8"⌘N",
+      [] (const juce::KeyPress& k)
+      { return k == juce::KeyPress ('n', juce::ModifierKeys::commandModifier, 0); } },
     // ファイルパネル（右ドック）表示中のみ有効。階層移動はパンくずが担うので、
     // 「行き来」だけをキーに逃がしてナビ行からボタンを無くしている
     { ID::browserHistory, Category::view, u8"ファイルパネルの戻る/進む", u8"⌘[ / ⌘]",

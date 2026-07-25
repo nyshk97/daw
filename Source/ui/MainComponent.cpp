@@ -275,7 +275,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     settingsButton.setBorderless (true);
 
     notesButton.onClick = [this] { toggleRightPanel (RightPanel::Mode::notes); };
-    notesButton.setTooltip (jp (u8"プロジェクトメモ"));
+    notesButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::toggleNotes));
     notesButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
     notesButton.setToggleIconColour (Theme::panelToggleOn);
     notesButton.setBorderless (true);
@@ -1849,8 +1849,9 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
             addTrackOverlay.dismiss();
             return true;
         }
-        if (is (SC::shortcutList) || is (SC::toggleMixer) || is (SC::toggleFxEditor))
-            return true; // オーバーレイは高々1枚: AddTrack表示中の⌘?/X/Bは無視
+        if (is (SC::shortcutList) || is (SC::toggleMixer) || is (SC::toggleFxEditor)
+            || is (SC::toggleNotes))
+            return true; // オーバーレイは高々1枚: AddTrack表示中の⌘?/X/B/⌘Nは無視
     }
     // Logic準拠: X = ミキサー。表示中もモーダルにしない（Space再生・シーク等はそのまま効く）
     if (is (SC::toggleMixer))
@@ -1877,6 +1878,13 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (is (SC::toggleFxEditor))
     {
         toggleFxEditor();
+        return true;
+    }
+    // ⌘N = 右ドックのメモ。開くとメモ欄にフォーカスが移るが、⌘付きなのでTextEditorに
+    // 消費されず同じキーで閉じられる（Shortcuts.h の toggleNotes のコメント参照）
+    if (is (SC::toggleNotes))
+    {
+        toggleRightPanel (RightPanel::Mode::notes);
         return true;
     }
     // ⌘[ / ⌘] = ファイルパネルの履歴を戻る/進む（パネルを開いているときだけ効く）
