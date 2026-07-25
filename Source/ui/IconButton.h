@@ -7,7 +7,7 @@
 class IconButton : public juce::Button
 {
 public:
-    enum class Icon { play, stop, record, metronome, gear, plus };
+    enum class Icon { play, stop, record, metronome, gear, plus, notes, folder };
 
     IconButton (Icon initialIcon, const juce::String& accessibleName)
         : juce::Button (accessibleName), icon (initialIcon) {}
@@ -55,7 +55,12 @@ public:
     {
         if (borderless)
         {
-            if (highlighted || down)
+            if (getToggleState())
+            {
+                g.setColour (findColour (juce::TextButton::buttonOnColourId));
+                g.fillRoundedRectangle (getLocalBounds().toFloat(), 6.0f);
+            }
+            else if (highlighted || down)
             {
                 // hoverは明るいオーバーレイ、押下は暗いオーバーレイで「沈む」表現に揃える
                 g.setColour (down ? juce::Colours::black.withAlpha (0.25f)
@@ -169,6 +174,34 @@ public:
                 p.startNewSubPath (pr.getX(), pr.getCentreY());
                 p.lineTo (pr.getRight(), pr.getCentreY());
                 g.strokePath (p, juce::PathStrokeType (stroke, juce::PathStrokeType::mitered,
+                                                       juce::PathStrokeType::rounded));
+                break;
+            }
+            case Icon::notes:
+            {
+                const auto nr = r.expanded (side * 0.08f);
+                const float stroke = juce::jmax (1.3f, side * 0.11f);
+                g.drawRoundedRectangle (nr, side * 0.08f, stroke);
+                for (float y : { 0.32f, 0.52f, 0.72f })
+                    g.drawLine (nr.getX() + nr.getWidth() * 0.24f,
+                                nr.getY() + nr.getHeight() * y,
+                                nr.getRight() - nr.getWidth() * (y > 0.7f ? 0.38f : 0.22f),
+                                nr.getY() + nr.getHeight() * y, stroke);
+                break;
+            }
+            case Icon::folder:
+            {
+                const auto fr = r.expanded (side * 0.14f, side * 0.02f);
+                const float stroke = juce::jmax (1.3f, side * 0.11f);
+                juce::Path p;
+                p.startNewSubPath (fr.getX(), fr.getY() + fr.getHeight() * 0.28f);
+                p.lineTo (fr.getX() + fr.getWidth() * 0.38f, fr.getY() + fr.getHeight() * 0.28f);
+                p.lineTo (fr.getX() + fr.getWidth() * 0.50f, fr.getY());
+                p.lineTo (fr.getRight(), fr.getY());
+                p.lineTo (fr.getRight(), fr.getBottom());
+                p.lineTo (fr.getX(), fr.getBottom());
+                p.closeSubPath();
+                g.strokePath (p, juce::PathStrokeType (stroke, juce::PathStrokeType::curved,
                                                        juce::PathStrokeType::rounded));
                 break;
             }

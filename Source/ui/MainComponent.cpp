@@ -40,6 +40,8 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     addChildComponent (fxEditor);  // 左のFXパネル（概要・基本常設・Iで開閉）
     addChildComponent (fxDetail);  // 下部のFX詳細（スロットクリックで開く・ピアノロールと排他）
     addChildComponent (bottomResizeBar); // 下部パネル表示中のみ可視（パネル群より後に追加＝前面）
+    addChildComponent (rightPanel);      // 右ドック（初期状態は閉じる）
+    addChildComponent (rightResizeBar);  // 右ドック表示中のみ可視
     bottomResizeBar.onDragStart = [this] { bottomHeightAtDragStart = bottomPanelHeight; };
     bottomResizeBar.onDragged = [this] (int dy)
     {
@@ -47,10 +49,19 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         bottomPanelHeight = juce::jmax (bottomPanelMinHeight, bottomHeightAtDragStart - dy);
         resized();
     };
+    rightResizeBar.onDragStart = [this] { rightWidthAtDragStart = rightPanelWidth; };
+    rightResizeBar.onDragged = [this] (int dx)
+    {
+        rightPanelWidth = juce::jlimit (rightPanelMinWidth, rightPanelMaxWidth,
+                                        rightWidthAtDragStart - dx);
+        resized();
+    };
     addAndMakeVisible (playButton);
     addAndMakeVisible (recordButton);
     addAndMakeVisible (addTrackButton);
     addAndMakeVisible (settingsButton);
+    addAndMakeVisible (notesButton);
+    addAndMakeVisible (filesButton);
     addAndMakeVisible (clickButton);
     addChildComponent (addTrackOverlay); // トラック追加メニュー表示中のみ可視
     addChildComponent (shortcutOverlay); // ⌘?表示中のみ可視
@@ -62,6 +73,27 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     timeline.setProject (project.get());
     headers.setProject (project.get());
     pianoRoll.setProject (project.get());
+    rightPanel.setProject (project.get());
+    rightPanel.onMemoChanged = [this] { setDirty (true); };
+    rightPanel.fileBrowser().onPreviewRequested = [this] (const juce::File& file)
+    {
+        previewError.clear();
+        Log::info ("file_preview.start", "source=" + file.getFullPathName());
+        filePreview.start (file);
+    };
+    rightPanel.fileBrowser().onPreviewStopRequested = [this]
+    {
+        if (filePreview.status() != AudioFilePreview::Status::idle)
+            Log::info ("file_preview.stop");
+        filePreview.stop();
+        previewError.clear();
+    };
+    rightPanel.fileBrowser().onImportRequested = [this] (const juce::File& file)
+    {
+        filePreview.stop();
+        startImport (file, -1,
+                     timeline.snapSampleToVisibleGrid (transport.playheadSamplePos.load()));
+    };
     mixerWindow.content().setProject (project.get());
     mixerWindow.content().onSelectTrack = [this] (int index) { selectTrackFromUser (index); };
     mixerWindow.content().onChanged = [this]
@@ -240,6 +272,16 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     settingsButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::audioSettings));
     settingsButton.setBorderless (true);
 
+    notesButton.onClick = [this] { toggleRightPanel (RightPanel::Mode::notes); };
+    notesButton.setTooltip (jp (u8"プロジェクトメモ"));
+    notesButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
+    notesButton.setBorderless (true);
+
+    filesButton.onClick = [this] { toggleRightPanel (RightPanel::Mode::files); };
+    filesButton.setTooltip (jp (u8"オーディオファイル"));
+    filesButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
+    filesButton.setBorderless (true);
+
     bounceOverlay.onCancel = [this]
     {
         Log::info ("bounce.cancel_requested", "source=overlay");
@@ -267,7 +309,8 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
 
     // Space（再生/停止）をボタンに奪わせない
     for (auto* c : std::initializer_list<juce::Component*> {
-             &playButton, &recordButton, &addTrackButton, &settingsButton, &clickButton })
+             &playButton, &recordButton, &addTrackButton, &settingsButton, &notesButton,
+             &filesButton, &clickButton })
     {
         c->setWantsKeyboardFocus (false);
         c->setMouseClickGrabsKeyboardFocus (false);
@@ -285,6 +328,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
 
     setWantsKeyboardFocus (true);
     setSize (1100, 700);
+    engine.setFilePreview (&filePreview);
     setAudioChannels (1, 2); // 入力1ch（マイク）・出力2ch
     startTimerHz (30);       // GOTCHAS.md: 通知はpush型でなくpull型（Timerポーリング）
 }
@@ -294,6 +338,7 @@ MainComponent::~MainComponent()
     Log::info ("project.close", "name=" + project->name() + " dirty=" + juce::String ((int) dirty));
     // engine・snapshots より先にオーディオコールバックを止める
     shutdownAudio();
+    filePreview.cancelAndWait();
 }
 
 // ---- オーディオコールバック（audio/ へ転送するだけ）----
@@ -324,6 +369,17 @@ void MainComponent::timerCallback()
     }
 
     snapshots.deleteRetired(); // 旧スナップショット（＋退役したGM音源）の解放は必ずメッセージスレッドで
+    filePreview.deleteRetired();
+    if (auto error = filePreview.takeError(); error.isNotEmpty())
+    {
+        previewError = error;
+        Log::error ("file_preview.failed", "message=" + error.replace ("\n", " / "));
+    }
+    const auto previewStatus = filePreview.status();
+    rightPanel.fileBrowser().setPreviewState (previewStatus == AudioFilePreview::Status::loading,
+                                              previewStatus == AudioFilePreview::Status::playing,
+                                              previewError);
+    rightPanel.fileBrowser().setImporting (importActive);
 
     // デバイスのサンプルレート確定・変更に追従してGM音源を作り直す（変更があったときだけ再push）
     if (synthBank.sync (*project, transport.sampleRate.load(), transport.blockSizeExpected.load()))
@@ -959,6 +1015,45 @@ void MainComponent::closeFxEditor()
     resized();
 }
 
+// ---- 右パネル（メモ／ファイル。初期状態は閉じる）----
+
+void MainComponent::toggleRightPanel (RightPanel::Mode mode)
+{
+    if (rightPanel.isOpen() && rightPanel.mode() == mode)
+    {
+        closeRightPanel();
+        return;
+    }
+
+    if (rightPanel.isOpen() && rightPanel.mode() == RightPanel::Mode::files
+        && mode != RightPanel::Mode::files)
+    {
+        filePreview.stop();
+        previewError.clear();
+    }
+    rightPanel.open (mode);
+    notesButton.setToggleState (mode == RightPanel::Mode::notes, juce::dontSendNotification);
+    filesButton.setToggleState (mode == RightPanel::Mode::files, juce::dontSendNotification);
+    resized();
+    if (mode == RightPanel::Mode::notes)
+        rightPanel.focusNotesEditor();
+}
+
+void MainComponent::closeRightPanel()
+{
+    if (! rightPanel.isOpen())
+        return;
+    if (rightPanel.mode() == RightPanel::Mode::files)
+    {
+        filePreview.stop();
+        previewError.clear();
+    }
+    rightPanel.close();
+    notesButton.setToggleState (false, juce::dontSendNotification);
+    filesButton.setToggleState (false, juce::dontSendNotification);
+    resized();
+}
+
 void MainComponent::toggleFxDetailSlot (int slot)
 {
     if (fxDetail.isOpen() && fxDetailSlot == slot && fxDetailKey == fxEditor.targetKey())
@@ -1467,6 +1562,7 @@ void MainComponent::startImport (const juce::File& source, int targetTrack, juce
 {
     if (importActive || bounceActive || engine.isRecording())
         return;
+    filePreview.stop();
 
     // プロジェクトSRの確定（最初の録音「または取り込み」時にデバイスレートで確定。
     // SR確定はundo対象外 — UndoStackが戻すのはtracks/markersのみで、録音による確定と同じ扱い）
@@ -2194,6 +2290,10 @@ void MainComponent::resized()
 
     // 歯車は補助機能なので控えめに（枠を絞るとアイコンもホバー範囲も一回り小さくなる）
     settingsButton.setBounds (topRow.removeFromRight (44).withSizeKeepingCentre (32, 32));
+    topRow.removeFromRight (4);
+    filesButton.setBounds (topRow.removeFromRight (36).withSizeKeepingCentre (32, 32));
+    topRow.removeFromRight (2);
+    notesButton.setBounds (topRow.removeFromRight (36).withSizeKeepingCentre (32, 32));
     topRow.removeFromRight (10);
 
     // LCDはウィンドウ中央に置く（Logicの配置）。狭いときは左のボタン群を優先して右へ逃がす
@@ -2208,6 +2308,20 @@ void MainComponent::resized()
     auto warnArea = topRow;
     warnArea.setLeft (juce::jmin (warnArea.getRight(), lcdArea.getRight() + 10));
     srWarningLabel.setBounds (warnArea);
+
+    // 右ドックは上部バー直下の全高。先に右側を取ることで、下部エディタも
+    // ドックの下へ潜り込まず中央領域だけを使う
+    rightResizeBar.setVisible (rightPanel.isOpen());
+    if (rightPanel.isOpen())
+    {
+        const int leftChrome = (fxEditor.isOpen() ? FxEditorView::preferredWidth : 0)
+                             + TrackHeadersView::preferredWidth;
+        const int available = juce::jmax (0, area.getWidth() - leftChrome - 160);
+        const int effectiveWidth = juce::jmin (rightPanelWidth, available);
+        auto panelArea = area.removeFromRight (effectiveWidth);
+        rightPanel.setBounds (panelArea);
+        rightResizeBar.setBounds (panelArea.getX() - 4, panelArea.getY(), 8, panelArea.getHeight());
+    }
 
     // 下部スロット: ピアノロール⇄FX詳細の排他（後勝ち）。FXパネルより先に取り、横幅フルを使わせる
     // （EQカーブ等の詳細UIに横幅を与えるのがこの配置の目的）。

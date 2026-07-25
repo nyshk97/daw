@@ -66,6 +66,7 @@ for i in $(seq 1 30); do pgrep -x LaLa-dev >/dev/null || break; sleep 3; done
 - quitイベントは何も破棄しない。ダイアログ待ちでosascriptに `-128`（ユーザによってキャンセル）が返ることがあるが、プロセスが終了していれば問題ない
 - **quitを送る前に、ユーザーがそのインスタンスを操作中でないかアプリログで確認する**（直近数分に `marker.add` / `edit.*` 等の操作イベントがあれば操作中とみなす）。未保存変更があるとquitは保存ダイアログを出してユーザーの作業を中断させる。誤って出してしまったら「キャンセル」だけ押して復元し、以降そのインスタンスには触らない
 - **ユーザーがdev版を使用中でも検証は止めない**: dev版とRelease版は bundle id が別で同時起動できるため、`cmake --build build-release` → `open -g build-release/daw_artefacts/Release/LaLa.app` で並走検証する（描画コードは同一なのでスクショ検証として等価。検証後は自分でquitして片付ける）
+- **dev版とRelease版を並走しているときは、表示名でquit対象を指定しない**: `tell application "LaLa" to quit` の実行後にRelease版とdev版の両方が終了した実例がある。Release版は `tell application id "local.d0ne1s.daw" to quit`、dev版は `tell application id "local.d0ne1s.daw.dev" to quit` とbundle idで限定し、実行前後に `pgrep -x LaLa` / `pgrep -x LaLa-dev` で対象PIDだけが変化したことを確認する
 
 ```sh
 # テストプロジェクトをCLIで用意（新規作成フローを迂回）
@@ -157,8 +158,15 @@ afconvert -f m4af -d aac /tmp/beat.wav /tmp/beat.m4a   # CoreAudio経路（m4a�
 
 - 導線: Fileメニュー「オーディオを読み込む…」（⇧⌘I）＝新規トラック小節1 / FinderからタイムラインへD&D＝ドロップ位置（空白は新規トラック・MIDIトラックは不受理）
 - 取り込み後の裏取り: アプリログの `import.start` / `import.done`（frames・ch・sourceSr）/ `import.fail`
-- 成果物: project.json が version 6・クリップに `name`・SR未確定プロジェクトなら `sampleRate` が確定済み。`afinfo <project>/clip-NNN.wav` で 2ch・プロジェクトSR・24bit
+  - 成果物: project.json が version 7・クリップに `name`・SR未確定プロジェクトなら `sampleRate` が確定済み。`afinfo <project>/clip-NNN.wav` で 2ch・プロジェクトSR・24bit
 - 変換仕様（SR変換長・末尾パルス・ch規則・GC安全性）はCTestの testAudioImporter / testStereoClipLoadAndV6 が自動で固定している
+
+## 右パネル（メモ／オーディオファイル）の確認
+
+- プロジェクト画面では `button "プロジェクトメモ"` / `button "オーディオファイル"` をAXPressできる。選択中のボタンを再度AXPressすると閉じ、他方を押すと開いたまま内容が切り替わる
+- 背面のまま見た目を確認する場合は、CGWindowListでLaLaのタイトル付きwindow IDを取得し、`screencapture -x -l <windowID> /tmp/lala-right-panel.png` で撮る。初期幅300px、上部バー直下から下端まで、下部エディタが開いてもパネル下へ潜らないことを見る
+- ファイルパネルの初期パスは `~/Downloads`。一覧はフォルダ＋WAV/AIF/AIFF/FLAC/MP3/M4Aのみで、フォルダが先、単一選択。下部に選択名・長さ・再生/停止が出る
+- 自動テスト `Audio file browser filter and preview` が、対応拡張子、22.05kHz→44.1kHz線形補間、ステレオ維持、ブロック境界をまたぐ位置、停止後無音を固定している
 
 ## MIDI機能の半自動確認
 

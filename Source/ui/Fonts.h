@@ -15,6 +15,10 @@ inline juce::Font bodyStrong() { return juce::Font (juce::FontOptions (".AppleSy
 inline juce::Font title()      { return juce::Font (juce::FontOptions (".AppleSystemUIFont", "Semibold", 15.0f)); }
 inline juce::Font largeTitle() { return juce::Font (juce::FontOptions (20.0f, juce::Font::bold)); }
 
+// プロジェクトメモは日本語と英語が同じ文章内に混在する。SF Pro→ヒラギノの
+// フォールバックだと見かけのサイズ・ウェイトが変わるため、両方を同じ書体で描く。
+inline juce::Font memo() { return juce::Font (juce::FontOptions ("Hiragino Sans", "W3", 13.0f)); }
+
 // 数字表示（小節ルーラー・BPM・再生位置）。可変幅だと再生中に数字がガタつくため等幅にする
 inline juce::Font mono (float height)
 {

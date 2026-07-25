@@ -8,6 +8,8 @@
 #include "../shared/Ppq.h"
 #include "../shared/PreviewFifo.h"
 
+class AudioFilePreview;
+
 // サンプル位置ベースの自前ミックスエンジン。process() はオーディオスレッドで走る。
 // クリップ/トラック構成は SnapshotExchange 経由で受け取り、単一値は TransportState の atomic を読む。
 // UIへの直接参照は持たない。
@@ -21,6 +23,7 @@ public:
     void prepareToPlay (int samplesPerBlockExpected, double sampleRate);
     void process (const juce::AudioSourceChannelInfo& bufferToFill);
     void releaseResources();
+    void setFilePreview (AudioFilePreview* previewToUse) { filePreview = previewToUse; }
 
     // ---- メッセージスレッド専用 ----
     void play();
@@ -66,6 +69,7 @@ private:
     SnapshotExchange& snapshots;
     PreviewFifo& previewFifo;
     Recorder recorder;
+    AudioFilePreview* filePreview = nullptr;
 
     double currentSampleRate = 0.0;
 

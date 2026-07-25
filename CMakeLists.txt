@@ -87,6 +87,7 @@ target_sources(daw PRIVATE
     Source/Main.cpp
     Source/mac/SparkleBridge.mm
     Source/audio/AudioImporter.cpp
+    Source/audio/AudioFilePreview.cpp
     Source/audio/BounceRenderer.cpp
     Source/audio/PlaybackEngine.cpp
     Source/audio/Recorder.cpp
@@ -94,10 +95,12 @@ target_sources(daw PRIVATE
     Source/shared/Project.cpp
     Source/shared/SynthBank.cpp
     Source/ui/FxEditorView.cpp
+    Source/ui/AudioFileBrowserView.cpp
     Source/ui/MainComponent.cpp
     Source/ui/MixerOverlay.cpp
     Source/ui/PianoRollView.cpp
     Source/ui/ProjectChooserComponent.cpp
+    Source/ui/RightPanel.cpp
     Source/ui/TimelineView.cpp
     Source/ui/TrackHeadersView.cpp
 )
@@ -209,6 +212,7 @@ juce_add_console_app(daw_tests PRODUCT_NAME "daw_tests")
 target_sources(daw_tests PRIVATE
     Tests/TestsMain.cpp
     Source/audio/AudioImporter.cpp
+    Source/audio/AudioFilePreview.cpp
     Source/audio/BounceRenderer.cpp
     Source/audio/PlaybackEngine.cpp
     Source/audio/Recorder.cpp

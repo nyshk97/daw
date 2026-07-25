@@ -196,6 +196,7 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
     root->setProperty ("nextId", (juce::int64) nextId);
     root->setProperty ("bpm", bpm);
     root->setProperty ("sampleRate", sampleRate);
+    root->setProperty ("memo", memo);
 
     juce::Array<juce::var> tracksArray;
     for (auto& track : tracks)
@@ -354,6 +355,7 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
 
     project->bpm = juce::jlimit (30.0, 300.0, (double) parsed.getProperty ("bpm", 120.0));
     project->sampleRate = juce::jmax (0.0, (double) parsed.getProperty ("sampleRate", 0.0));
+    project->memo = parsed.getProperty ("memo", "").toString();
     project->nextId = (juce::uint64) juce::jmax ((juce::int64) 1, (juce::int64) parsed.getProperty ("nextId", 1));
 
     // 同一WAVを参照する複数クリップ（分割・複製後）が別々の全量バッファを持たないよう、

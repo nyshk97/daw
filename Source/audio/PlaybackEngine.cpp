@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "../shared/Pan.h"
+#include "AudioFilePreview.h"
 
 namespace
 {
@@ -40,10 +41,14 @@ void PlaybackEngine::prepareToPlay (int samplesPerBlockExpected, double sampleRa
     // ノートオン上限（1024）＋オフ（activeNotes追跡により最大 SynthInstance::maxActiveNotes = 256 に有界）
     // ＋All Notes Off等。1イベントあたりの格納コストは数バイト＋ヘッダなので、1イベント16バイト換算で余裕を持って確保
     midiScratch.ensureSize ((size_t) (maxNoteOnsPerBlock * 2 + 512) * 16);
+    if (filePreview != nullptr)
+        filePreview->prepareToPlay (sampleRate);
 }
 
 void PlaybackEngine::releaseResources()
 {
+    if (filePreview != nullptr)
+        filePreview->releaseResources();
 }
 
 void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
@@ -195,6 +200,11 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
 
     if (playing)
         transport.playheadSamplePos.store (segPos);
+
+    // ファイル試聴はプロジェクトのMaster・トランスポート・バウンスから独立した
+    // post-master信号。デコード済み不変バッファを線形補間して加算するだけ。
+    if (filePreview != nullptr)
+        filePreview->mixInto (buffer, startSample, numSamples);
 }
 
 // オーディオスレッド専用。スクラッチバッファは常にオフセット0から segLen 分を使い、

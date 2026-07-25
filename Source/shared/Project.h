@@ -137,12 +137,14 @@ class Project
 public:
     // v2: MIDIトラック・ID追加 / v3: クリップのoffsetSamples・lengthSamples /
     // v4: pan・sends・固定バス3本・Master / v5: サイクル（ループ範囲）/
-    // v6: ステレオクリップ（ch数はJSONに持たずWAV自体から判定）・クリップ表示名（取り込み用）
-    static constexpr int currentVersion = 6;
+    // v6: ステレオクリップ（ch数はJSONに持たずWAV自体から判定）・クリップ表示名（取り込み用）/
+    // v7: プロジェクトメモ
+    static constexpr int currentVersion = 7;
 
     juce::File directory;
     double bpm = 120.0;
     double sampleRate = 0.0; // 0 = 未確定（最初の録音時にデバイスレートで確定）
+    juce::String memo;       // プロジェクトごとの自由記述メモ（v7。旧形式は空文字）
     std::vector<Track> tracks;
     std::vector<SectionMarker> markers; // 常にstartBar昇順・同一barなし（SectionMarkersヘルパーで編集する）
 

@@ -6,11 +6,14 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 
 #include "audio/AudioImporter.h"
+#include "audio/AudioFilePreview.h"
 #include "audio/BounceRenderer.h"
 #include "audio/PlaybackEngine.h"
 #include "shared/Project.h"
 #include "shared/SynthBank.h"
 #include "shared/UndoStack.h"
+#include "shared/AudioFileTypes.h"
+#include "shared/AudioBrowserNavigation.h"
 
 namespace
 {
@@ -59,6 +62,117 @@ bool writeTestWav (const juce::File& file, int numSamples)
     for (int i = 0; i < numSamples; ++i)
         buffer.setSample (0, i, std::sin ((float) i * 0.1f) * 0.5f);
     return writer->writeFromAudioSampleBuffer (buffer, 0, numSamples);
+}
+
+bool writeBufferWav (const juce::File& file, const juce::AudioBuffer<float>& buffer,
+                     double sampleRate)
+{
+    juce::WavAudioFormat wavFormat;
+    std::unique_ptr<juce::OutputStream> stream (file.createOutputStream());
+    if (stream == nullptr)
+        return false;
+    using Opts = juce::AudioFormatWriterOptions;
+    auto writer = wavFormat.createWriterFor (stream,
+        Opts{}.withSampleRate (sampleRate).withNumChannels (buffer.getNumChannels())
+              .withBitsPerSample (24));
+    return writer != nullptr
+           && writer->writeFromAudioSampleBuffer (buffer, 0, buffer.getNumSamples());
+}
+
+void testAudioFilePreview()
+{
+    beginTest ("Audio file browser filter and preview");
+    expect (AudioFileTypes::isSupported ("/tmp/a.WAV"), "WAVを受理");
+    expect (AudioFileTypes::isSupported ("/tmp/a.m4a"), "M4Aを受理");
+    expect (! AudioFileTypes::isSupported ("/tmp/a.txt"), "非対応拡張子を拒否");
+    expect (! AudioFileTypes::isSupported ("/tmp/.hidden"), "隠し拡張子なしを拒否");
+    expect (AudioBrowserNavigation::initialDirectory().getFileName() == "Downloads",
+            "初期位置はDownloads");
+    AudioBrowserNavigation::History history;
+    history.visit (juce::File ("/one"));
+    history.visit (juce::File ("/two"));
+    expect (history.canMove (-1) && ! history.canMove (1), "戻るだけが有効");
+    expect (history.move (-1) == juce::File ("/one"), "戻る履歴");
+    expect (history.canMove (1), "戻った後は進める");
+    history.visit (juce::File ("/three"));
+    expect (! history.canMove (1), "戻った後の新規移動で進む履歴を破棄");
+
+    const auto dir = makeTempDir();
+    const auto file = dir.getChildFile ("preview.wav");
+    juce::AudioBuffer<float> source (2, 8);
+    const float left[]  = { 0, 1, 0, -1, 0, 1, 0, -1 };
+    const float right[] = { 1, 0, -1, 0, 1, 0, -1, 0 };
+    for (int i = 0; i < 8; ++i)
+    {
+        source.setSample (0, i, left[i]);
+        source.setSample (1, i, right[i]);
+    }
+    expect (writeBufferWav (file, source, 22050.0), "試聴用ステレオWAVを書けること");
+
+    AudioFilePreview preview;
+    preview.prepareToPlay (44100.0);
+    expect (preview.start (file), "試聴デコードを開始できること");
+    for (int i = 0; i < 200 && preview.status() == AudioFilePreview::Status::loading; ++i)
+        juce::Thread::sleep (5);
+    expect (preview.status() == AudioFilePreview::Status::playing, "デコード後に再生状態になること");
+
+    juce::AudioBuffer<float> first (2, 5);
+    first.clear();
+    preview.mixInto (first, 1, 3);
+    expect (std::abs (first.getSample (0, 1) - 0.0f) < 0.001f, "L先頭に遅延なし");
+    expect (std::abs (first.getSample (0, 2) - 0.25f) < 0.001f, "L線形補間");
+    expect (std::abs (first.getSample (0, 3) - 0.5f) < 0.001f, "L元サンプル");
+    expect (std::abs (first.getSample (1, 1) - 0.5f) < 0.001f, "Rステレオ維持");
+    expect (std::abs (first.getSample (1, 2) - 0.25f) < 0.001f, "R線形補間");
+    expect (std::abs (first.getSample (0, 0)) < 0.001f
+            && std::abs (first.getSample (0, 4)) < 0.001f,
+            "指定範囲外を書き換えないこと");
+
+    juce::AudioBuffer<float> second (2, 3);
+    second.clear();
+    preview.mixInto (second, 0, 3);
+    expect (std::abs (second.getSample (0, 0) - 0.25f) < 0.001f,
+            "コールバックをまたいでsourcePositionを維持");
+    expect (std::abs (second.getSample (0, 2) + 0.25f) < 0.001f,
+            "負値も線形補間");
+
+    preview.stop();
+    juce::AudioBuffer<float> stopped (2, 4);
+    stopped.clear();
+    preview.mixInto (stopped, 0, 4);
+    expect (stopped.getMagnitude (0, 0, 4) == 0.0f, "停止後は無音");
+
+    const auto monoFile = dir.getChildFile ("mono.wav");
+    juce::AudioBuffer<float> monoSource (1, 3);
+    monoSource.setSample (0, 0, 0.5f);
+    monoSource.setSample (0, 1, -0.5f);
+    monoSource.setSample (0, 2, 0.25f);
+    expect (writeBufferWav (monoFile, monoSource, 44100.0), "モノWAVを書けること");
+    expect (preview.start (monoFile), "別ファイルへ世代切替できること");
+    for (int i = 0; i < 200 && preview.status() == AudioFilePreview::Status::loading; ++i)
+        juce::Thread::sleep (5);
+    juce::AudioBuffer<float> monoOutput (2, 8);
+    monoOutput.clear();
+    preview.mixInto (monoOutput, 0, 8);
+    expect (std::abs (monoOutput.getSample (0, 0) - 0.25f) < 0.001f
+            && std::abs (monoOutput.getSample (1, 0) - 0.25f) < 0.001f,
+            "モノをL/Rへ同量で出すこと");
+    expect (preview.status() == AudioFilePreview::Status::idle,
+            "末尾を境界外読みせず完了すること");
+    expect (std::abs (monoOutput.getSample (0, 3)) < 0.001f,
+            "完了後の残りブロックは無音");
+
+    const auto broken = dir.getChildFile ("broken.wav");
+    broken.replaceWithText ("not audio");
+    expect (preview.start (broken), "破損ファイルの検査を開始できること");
+    for (int i = 0; i < 200 && preview.status() == AudioFilePreview::Status::loading; ++i)
+        juce::Thread::sleep (5);
+    expect (preview.status() == AudioFilePreview::Status::failed,
+            "破損ファイルはfailed");
+    expect (preview.takeError().isNotEmpty(), "破損理由をUI側で回収できること");
+
+    preview.cancelAndWait();
+    dir.deleteRecursively();
 }
 
 // ---- v1プロジェクト読込 → v2保存 → 再読込のラウンドトリップ ----
@@ -1580,6 +1694,43 @@ void testBuildItemRender()
             "ノート空リージョンはnotes空で成功すること");
 }
 
+// ---- v7: プロジェクトメモの保存・読込と、旧形式の空文字補完 ----
+void testProjectMemoRoundtrip()
+{
+    beginTest ("project memo roundtrip and v6 default");
+
+    auto dir = makeTempDir();
+    Project project;
+    project.directory = dir;
+    project.memo = juce::String::fromUTF8 (u8"仮歌\n・2番を録り直す\n\"引用\" と \\\\");
+
+    juce::String error;
+    expect (project.save (error), "メモ入りプロジェクトを保存できること");
+
+    const auto parsed = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
+    expect ((int) parsed.getProperty ("version", 0) == Project::currentVersion,
+            "メモ保存時のversionが現行値であること");
+    expect (parsed.getProperty ("memo", "").toString() == project.memo,
+            "JSON上で改行・日本語・引用符・バックスラッシュが維持されること");
+
+    juce::StringArray warnings;
+    auto reloaded = Project::load (dir, warnings, error);
+    expect (reloaded != nullptr && reloaded->memo == project.memo,
+            "メモが保存→再読込で一致すること");
+
+    dir.getChildFile ("project.json").replaceWithText (R"({
+        "version": 6, "bpm": 120.0, "sampleRate": 0.0, "nextId": 1,
+        "tracks": []
+    })");
+    warnings.clear();
+    error.clear();
+    auto legacy = Project::load (dir, warnings, error);
+    expect (legacy != nullptr && legacy->memo.isEmpty(),
+            "v6のmemo欠損は空文字で補完されること");
+
+    dir.deleteRecursively();
+}
+
 // ---- v4: pan/sends/バス/Masterの保存・読込と、v3以前のデフォルト補完 ----
 void testMixerParamsRoundtrip()
 {
@@ -2229,7 +2380,8 @@ void testStereoClipLoadAndV6()
         importTemp.deleteFile();
 
         const auto json = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
-        expect ((int) json.getProperty ("version", 0) == 6, "v6で保存されること");
+        expect ((int) json.getProperty ("version", 0) == Project::currentVersion,
+                "現行バージョンで保存されること");
 
         juce::StringArray warnings;
         auto loaded = Project::load (dir, warnings, error);
@@ -2799,6 +2951,7 @@ int main()
     testBounceRendererClippingProtection();
     testBounceRendererMidiTail();
     testBuildItemRender();
+    testProjectMemoRoundtrip();
     testMixerParamsRoundtrip();
     testEnginePanSendsMaster();
     testEngineOutputChannelRule();
@@ -2810,6 +2963,7 @@ int main()
     testEngineStereoPan();
     testEngineBounceStereoConsistency();
     testAudioImporter();
+    testAudioFilePreview();
     testMonoRenderRegressionHash();
 
     if (failureCount > 0)

@@ -32,6 +32,7 @@
 
 - **macのTypeface解決は「family名＋style名」**（`juce_Fonts_mac.mm` がCTFontDescriptorに `kCTFontFamilyNameAttribute` + `kCTFontStyleNameAttribute` で問い合わせる）。`.AppleSystemUIFontDemi` のような**font名（PostScript名）指定では引けない**。semibold等のウェイトは `FontOptions(".AppleSystemUIFont", "Semibold", h)` とfamily＋styleで指定する。familyが持つstyle一覧はCoreTextの `CTFontDescriptorCreateMatchingFontDescriptors` で列挙して事前確認できる
 - **システムUIフォントの内部名**: 可変幅 = `.AppleSystemUIFont`（SF Pro相当）、等幅 = `.AppleSystemUIFontMonospaced`（SF Mono相当）。アプリ全体への適用は `getTypefaceForFont` の手書きoverrideでなく **`setDefaultSansSerifTypefaceName(".AppleSystemUIFont")`** が正解（基底実装が「デフォルトsans名のときだけ差し替え、明示指定は素通し」なので、`Fonts::mono` 等の明示指定と共存できる）。日本語グリフはSF Proに無いが、JUCE 8のフォールバックでヒラギノに自動解決される（8.0.9で確認済み）
+- **日英混植の自由記述欄はフォールバック任せにしない**: `.AppleSystemUIFont` を指定すると英字はSF Pro、日本語はヒラギノへフォールバックするため、同じサイズでも見かけの大きさ・ウェイトが揃わない。メモのように日英が同じ文章内へ入るUIは、`FontOptions("Hiragino Sans", "W3", 13.0f)` のように両言語を描ける同一書体へ固定する。`TextEditor` の外側余白はbounds、文字との内側余白は `setIndents(x, y)` で別々に調整する
 - **LookAndFeelデフォルトのコントロールフォントはHIG（13px）より大きい**: TextButton = `min(16, 高さ×0.6)`、ComboBox = `min(16, 高さ×0.85)`、Label = 15px。全角を目一杯使う日本語で特に大きく見える。本プロジェクトは `AppLookAndFeel` + `ui/Fonts.h` で13pxに統一済み。**新しいコントロール種を使うときはデフォルトフォントを確認すること**
 - **`getLabelFont` はoverrideしない**: 基底実装が「Label自身のフォントを返す」ため、無条件overrideすると `setFont` で設定した `Fonts::mono` 等を壊す。Labelは生成側で `setFont` する
 - **ToggleButtonはフォント取得フックがない**: `drawToggleButton` 内に `min(15, 高さ×0.75)` がハードコードされており、変えるには描画メソッドごとコピーしてoverrideするしかない

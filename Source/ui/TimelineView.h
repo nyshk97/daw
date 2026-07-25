@@ -91,6 +91,7 @@ public:
     int ppqToX (juce::int64 ppq) const;
     juce::int64 xToPpq (int x) const;
     juce::int64 gridPpq() const;                     // 表示中の最小グリッドのPPQ幅
+    juce::int64 snapSampleToVisibleGrid (juce::int64 sample) const;
 
     // 拍（曲頭から0始まり・4/4固定）⇔ サンプル・ピクセル。セクションマーカーの描画・追加・
     // シークは必ずここを経由する（1始まり小節との換算を呼び出し側に書かせない）

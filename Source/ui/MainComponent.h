@@ -10,11 +10,13 @@
 #include "IconButton.h"
 #include "MixerWindow.h"
 #include "PianoRollView.h"
+#include "RightPanel.h"
 #include "ShortcutListOverlay.h"
 #include "TimelineView.h"
 #include "TrackHeadersView.h"
 #include "TransportLcd.h"
 #include "../audio/AudioImporter.h"
+#include "../audio/AudioFilePreview.h"
 #include "../audio/BounceRenderer.h"
 #include "../audio/PlaybackEngine.h"
 #include "../shared/PreviewFifo.h"
@@ -27,6 +29,7 @@
 // 1プロジェクト分のメイン画面。AudioAppComponent のオーディオコールバックは
 // PlaybackEngine（audio/）への転送だけを行い、ここに処理を書かない。
 class MainComponent : public juce::AudioAppComponent,
+                      public juce::DragAndDropContainer,
                       private juce::Timer
 {
 public:
@@ -97,6 +100,8 @@ private:
     void toggleFxDetailSlot (int slot);  // FXパネルのスロットクリック（下部詳細の開閉）
     void closeFxDetail();
     void syncFxDetail();                 // FXパネルの表示対象変更に下部詳細を追従（不整合なら閉じる）
+    void toggleRightPanel (RightPanel::Mode mode);
+    void closeRightPanel();
     void showDeviceSettings();
     void applyBpmText();
     void beginBounce (const juce::File& target); // 保存先確定後: パラメータ固定→専用synth生成→ワーカー開始
@@ -129,6 +134,7 @@ private:
     SynthBank synthBank; // メッセージスレッド専用。MIDIトラックのGM音源を管理
     UndoStack undoStack; // 構造編集のundo/redo（メッセージスレッド専用）
     PreviewFifo previewFifo;
+    AudioFilePreview filePreview;
     PlaybackEngine engine { transport, snapshots, previewFifo };
 
     TimelineView timeline { transport };
@@ -160,10 +166,34 @@ private:
     int bottomHeightAtDragStart = 0;
     static constexpr int bottomPanelMinHeight = 180;
 
+    class RightResizeBar : public juce::Component
+    {
+    public:
+        std::function<void()> onDragStart;
+        std::function<void (int)> onDragged;
+
+        RightResizeBar() { setMouseCursor (juce::MouseCursor::LeftRightResizeCursor); }
+        void mouseDown (const juce::MouseEvent&) override { if (onDragStart) onDragStart(); }
+        void mouseDrag (const juce::MouseEvent& e) override
+        {
+            if (onDragged)
+                onDragged (e.getDistanceFromDragStartX());
+        }
+    };
+
+    RightPanel rightPanel;
+    RightResizeBar rightResizeBar;
+    int rightPanelWidth = 300;
+    int rightWidthAtDragStart = 300;
+    static constexpr int rightPanelMinWidth = 240;
+    static constexpr int rightPanelMaxWidth = 480;
+
     IconButton playButton { IconButton::Icon::play, juce::String::fromUTF8 (u8"再生") };
     IconButton recordButton { IconButton::Icon::record, juce::String::fromUTF8 (u8"録音") };
     IconButton clickButton { IconButton::Icon::metronome, juce::String::fromUTF8 (u8"クリック") };
     IconButton settingsButton { IconButton::Icon::gear, juce::String::fromUTF8 (u8"オーディオ設定") };
+    IconButton notesButton { IconButton::Icon::notes, juce::String::fromUTF8 (u8"プロジェクトメモ") };
+    IconButton filesButton { IconButton::Icon::folder, juce::String::fromUTF8 (u8"オーディオファイル") };
     IconButton addTrackButton { IconButton::Icon::plus, juce::String::fromUTF8 (u8"トラックを追加") };
     AddTrackOverlay addTrackOverlay;
     ShortcutListOverlay shortcutOverlay; // ⌘?のショートカット一覧（表示中のみ可視）
@@ -179,6 +209,7 @@ private:
     bool dirty = false;
     std::vector<juce::uint64> lastSoloIds; // sキーで解除したソロ構成（トラックID）。次のsで再適用する。セッション内のみ保持
     bool focusGrabbed = false;
+    juce::String previewError;
 
     // メーター値の配布用（timerCallbackで毎tick詰め直す。peakL/peakRのexchange(0)は
     // ヘッダー・ミキサー・FXパネルで取り合わないようここで一元的に行う）

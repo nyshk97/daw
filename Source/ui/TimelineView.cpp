@@ -5,6 +5,7 @@
 #include "Fonts.h"
 #include "Shortcuts.h"
 #include "Theme.h"
+#include "../shared/AudioFileTypes.h"
 #include "../shared/Log.h"
 
 namespace
@@ -216,7 +217,8 @@ private:
 };
 
 class TimelineView::LaneContent : public juce::Component,
-                                  public juce::FileDragAndDropTarget
+                                  public juce::FileDragAndDropTarget,
+                                  public juce::DragAndDropTarget
 {
 public:
     explicit LaneContent (TimelineView& o) : owner (o) {}
@@ -224,12 +226,7 @@ public:
     // ---- オーディオファイルのD&D取り込み（コンテンツ空間の座標で受ける）----
     bool isInterestedInFileDrag (const juce::StringArray& files) override
     {
-        if (owner.project == nullptr || owner.onImportFilesDropped == nullptr)
-            return false;
-        for (const auto& file : files)
-            if (TimelineView::isImportableAudioFile (file))
-                return true;
-        return false;
+        return isInterested (files);
     }
 
     void fileDragEnter (const juce::StringArray&, int x, int y) override { owner.updateFileDrop (x, y); }
@@ -238,18 +235,33 @@ public:
 
     void filesDropped (const juce::StringArray& files, int x, int y) override
     {
-        owner.updateFileDrop (x, y);
-        const auto drop = owner.fileDrop;
-        owner.clearFileDrop();
-        if (! drop.active || drop.rejected)
-            return; // MIDIトラック上は不受理（インジケータで示済み）
+        completeDrop (files, x, y);
+    }
 
-        juce::StringArray audioFiles;
-        for (const auto& file : files)
-            if (TimelineView::isImportableAudioFile (file))
-                audioFiles.add (file);
-        if (! audioFiles.isEmpty() && owner.onImportFilesDropped != nullptr)
-            owner.onImportFilesDropped (audioFiles, drop.track, drop.startSample);
+    bool isInterestedInDragSource (const SourceDetails& details) override
+    {
+        juce::StringArray files;
+        files.add (details.description.toString());
+        return isInterested (files);
+    }
+
+    void itemDragEnter (const SourceDetails& details) override
+    {
+        owner.updateFileDrop (details.localPosition.x, details.localPosition.y);
+    }
+
+    void itemDragMove (const SourceDetails& details) override
+    {
+        owner.updateFileDrop (details.localPosition.x, details.localPosition.y);
+    }
+
+    void itemDragExit (const SourceDetails&) override { owner.clearFileDrop(); }
+
+    void itemDropped (const SourceDetails& details) override
+    {
+        juce::StringArray files;
+        files.add (details.description.toString());
+        completeDrop (files, details.localPosition.x, details.localPosition.y);
     }
 
     void paint (juce::Graphics& g) override
@@ -407,6 +419,32 @@ public:
     }
 
 private:
+    bool isInterested (const juce::StringArray& files) const
+    {
+        if (owner.project == nullptr || owner.onImportFilesDropped == nullptr)
+            return false;
+        for (const auto& file : files)
+            if (TimelineView::isImportableAudioFile (file))
+                return true;
+        return false;
+    }
+
+    void completeDrop (const juce::StringArray& files, int x, int y)
+    {
+        owner.updateFileDrop (x, y);
+        const auto drop = owner.fileDrop;
+        owner.clearFileDrop();
+        if (! drop.active || drop.rejected)
+            return;
+
+        juce::StringArray audioFiles;
+        for (const auto& file : files)
+            if (TimelineView::isImportableAudioFile (file))
+                audioFiles.add (file);
+        if (! audioFiles.isEmpty() && owner.onImportFilesDropped != nullptr)
+            owner.onImportFilesDropped (audioFiles, drop.track, drop.startSample);
+    }
+
     void drawClip (juce::Graphics& g, const Clip& clip, int y, bool isSelected,
                    const juce::Rectangle<int>& clipRegion, bool trackDimmed)
     {
@@ -656,10 +694,14 @@ juce::int64 TimelineView::snapSampleToGrid (juce::int64 sample) const
     return juce::jmax ((juce::int64) 0, (juce::int64) std::llround ((double) gridIndex * gridSamples));
 }
 
+juce::int64 TimelineView::snapSampleToVisibleGrid (juce::int64 sample) const
+{
+    return snapSampleToGrid (sample);
+}
+
 bool TimelineView::isImportableAudioFile (const juce::String& path)
 {
-    // AudioImporter側の対応形式（registerBasicFormats＋CoreAudio）と揃える
-    return juce::File (path).hasFileExtension ("wav;aif;aiff;flac;mp3;m4a");
+    return AudioFileTypes::isSupported (path);
 }
 
 void TimelineView::updateFileDrop (int contentX, int contentY)
