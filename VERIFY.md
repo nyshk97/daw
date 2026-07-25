@@ -19,6 +19,8 @@ sleep 3 && pgrep -fl "LaLa-dev.app/Contents/MacOS/LaLa-dev"   # プロセス生�
 ```
 
 - 起動するとプロジェクト選択画面が出る（`~/Music/daw/` のフォルダ一覧＋新規作成）
+- **2つ目のインスタンスは起動できない**（`moreThanOneInstanceAllowed() == false`）。`open -n` でも既存インスタンスが前面化されるだけなので、新旧バイナリの並行確認はできない（dev版とRelease版はbundle idが別なので同時起動は可能）。「起動したのにログへ `session.start` が増えない」ときはこれ
+- **実機の状態はウィンドウタイトルで読める**（`CGWindowListCopyWindowInfo` の name）: `LaLa-dev` だけなら選択画面、`LaLa-dev — <プロジェクト名>` ならメイン画面、**末尾の `●` は未保存**。`●` があるときにquitすると保存ダイアログが出てユーザーの作業を止めるので、起動中インスタンスをquit・再起動する前に ①タイトルの `●` ②アプリログ末尾の操作イベント ③`ioreg -c IOHIDSystem` のHIDIdleTime ④frontmostプロセス、を確認する
 - マイク権限のplist文言確認: `plutil -extract NSMicrophoneUsageDescription raw build/daw_artefacts/Debug/LaLa-dev.app/Contents/Info.plist`
 - **リビルドしてもマイク権限は再要求されない**（POST_BUILD でバンドルリソースを先行コピーした上で Apple Development 証明書により再署名しているため。`--target daw` 単体ビルドや `--clean-first` でも維持される。bundle id を分けた直後の dev 版初回起動のみ再付与が必要）。ダイアログが出たら署名が壊れている兆候なので以下を確認:
   - `codesign -dvv build/daw_artefacts/Debug/LaLa-dev.app 2>&1 | grep Signature` → `Signature=adhoc` になっていたら、configure 時の証明書自動解決が失敗して ad-hoc フォールバックしている（`cmake -B build` を再実行して `Codesign identity:` の STATUS 行と WARNING の有無を見る）
@@ -258,6 +260,30 @@ EOF
 
 - **タイトルバー帯（@2xで上約62px）は比較から除外する**。macOS側の合成（背後との透け・フォーカス状態）で毎回変わり、アプリ描画と無関係な差分が出る。クロップしてから比較する
 - 差分ゼロを期待して大きな差分が出たら、先に「同じバイナリか」（プロセス起動時刻 vs バイナリmtime）と「プロジェクトファイルが変わっていないか」（ユーザーが保存した等）を疑う
+
+## アプリを起動せずに描画を確認する（オフスクリーン・スナップショット）
+
+実機が使えない（ユーザーが操作中・未保存変更あり・別Space）ときは、`daw_tests` に一時的な描画コードを足してコンポーネントの `paint*` を直接 `juce::Image` へ描き、PNGで目視する。アプリ起動もフォーカス奪取も不要:
+
+```cpp
+// Tests/TestsMain.cpp に一時追加（確認後に必ず削除）
+juce::Image img (juce::Image::ARGB, (int) (W * scale), (int) (H * scale), true);
+juce::Graphics g (img);
+g.addTransform (juce::AffineTransform::scale (scale)); // scale=2でRetinaの見え方を再現
+g.fillAll (Theme::windowBg);
+IconButton btn (icon, "probe"); btn.setBorderless (true); btn.setBounds (b);
+btn.setToggleState (on, juce::dontSendNotification);
+{ juce::Graphics::ScopedSaveState s (g); g.setOrigin (b.getX(), b.getY());
+  btn.paintButton (g, hover, down); }   // hover/押下/ONを状態ごとに描き分けられる
+juce::FileOutputStream out (file); juce::PNGImageFormat().writeImageToStream (img, out);
+```
+
+- **必ず2xで描く**。1x画像では細線（線画アイコンの1.1px等）が潰れて判断できない
+- **罠: `img.getWidth()` はスケール後のピクセル数**。レイアウト計算にそのまま渡すと論理座標を外れて何も描かれない（`img.getWidth() / scale` を使う）
+- 拡大版は `img.rescaled (w * 3, h * 3, juce::Graphics::lowResamplingQuality)`（nearest。補間するとアンチエイリアスの評価ができない）
+- レイアウトを再現するときは `resized()` と同じ計算式をそのまま写す（間隔・区切り線の検証になる）
+- キーボードフォーカス依存の見た目（`hasKeyboardFocus`）はこの方法では再現できない。実機で確認する
+- 確認後は一時コードを削除し、`git diff Tests/TestsMain.cpp` が空になることを確認する
 
 ## サンプルレート自動追従の確認（CLI）
 

@@ -72,6 +72,14 @@ PopupMenuの表示位置はOSの「使用可能画面領域」（Dock除け）�
 
 LookAndFeelで `drawPopupMenuBackground` を角丸にしても、`PopupMenu::backgroundColourId` が不透明のままだとメニューウィンドウ自体がopaqueになり角の外が黒く残る。`juce_PopupMenu.cpp` のMenuWindowがこの色の `isOpaque()` で `setOpaque` を決めているため、`setColour (backgroundColourId, transparentBlack)` にして全描画を自前で行う。もう1つの罠: `getIdealPopupMenuItemSize` には**ショートカット表記文字列が渡ってこない**（本文textのみ）。ショートカット付き項目の幅は右余白の決め打ちで吸収するしかない（AppLookAndFeel.hでは+44px）。
 
+### TextEditorのフォーカス枠は2pxのベタ塗り
+
+`LookAndFeel_V4::drawTextEditorOutline` はフォーカス時だけ `focusedOutlineColourId` で**2px**の矩形を描く（非フォーカスは1px）。面積の大きい入力欄では枠が主役になってしまう。細くする・やめるには ①`AppLookAndFeel` で `drawTextEditorOutline` をoverride（全TextEditorに効く）②その欄だけなら `outlineColourId` / `focusedOutlineColourId` を両方 `transparentBlack` にしてサブクラスの `paintOverChildren` で自前描画する（メモ欄 `MemoEditor` はこの方式で、フォーカスは枠でなく地の明度で示している）。
+
+### `Component::setColour` は再描画しない
+
+`colourChanged()` の基底実装が空なので、`setColour` を呼んだだけでは画面に反映されない。フォーカスや状態に応じて色を差し替えるときは明示的に `repaint()` する。`TextEditor::focusGained/focusLost` は内部で `repaint()` を呼ぶが、それは基底呼び出しの時点なので、その**後**に色を変える実装は順序依存になる（自分で `repaint()` を呼ぶこと）。
+
 ### 起動直後のgrabKeyboardFocusはisShowing()が偽で空振りする
 
 MainWindowのコンストラクタは `setContentOwned`（→ `parentHierarchyChanged` 発火）→ `setVisible(true)` の順で走るため、初回表示時のフックで `isShowing()` を条件にしたフォーカス取得は実行されない。`MessageManager::callAsync`＋SafePointerでコールスタックを抜けてから再試行する（画面遷移で戻ってきた場合はウィンドウ表示済みなので即時パスが通る）。
