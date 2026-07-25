@@ -53,6 +53,8 @@ JUCEアプリはAppleScriptの合成キーストローク・座標クリック�
 
 - **同名ボタン（トラックごとのM/S等）のAX参照は2個目以降が壊れる**: `every button of window 1 whose name is "M"` の item 2 をclickしても1個目に着弾する（`position of` も全itemが同一座標を返す）。`button <index> of window 1`（`name of every button` の並びのindex）で2個目に届くこともあるが不発（no-op）のこともある。**どの方式でも1クリックごとにピクセル差分のbboxで「意図した行に着弾したか」を裏取りする**（ミュート点灯のような大差分は maxDiff 400超、AXPress後にボタン上へ残るホバー状態は同領域40×36px@2x・maxDiff 50前後の微差分として出る。後者は原状復帰の差分ゼロ判定で誤検知しやすい）
 
+- **ダイアログ／独立ウィンドウが開くと `window 1` はそちらに移る**: メイン画面のボタンを押すつもりの `button "名前" of window 1` が `-1728`（取り出すことはできません）で落ちる。ウィンドウ名で指定する（`button "オーディオ設定" of window "LaLa-dev — <プロジェクト名>"`）。**非モーダルなウィンドウなら背面のメイン画面のボタンもAXPress1回で効く**ので、モーダル/非モーダルの切り分け自体にも使える（モーダルだとクリックが届かず無反応になる）
+
 ユーザーが他アプリで作業中にフォーカスを奪いたくないときは、`open -g` でバックグラウンド起動し、
 `screencapture -x -l <windowID>` で背面のまま撮る（AXPressは背面ウィンドウにも効くが**同一Spaceに限る**。
 別SpaceだとSystem Eventsからウィンドウ自体が見えなくなる。切り分けと対処、windowIDの取り方は

@@ -64,6 +64,14 @@ PopupMenuの表示位置はOSの「使用可能画面領域」（Dock除け）�
 
 ボタン・リスト・`keyPressed` のコールバック内で `setContentOwned` 等により自コンポーネントを差し替えると、実行中オブジェクトの自己破棄になる（スタック上のメソッドの持ち主が消える）。画面遷移は `MessageManager::callAsync` でコールスタックを抜けてから実行する。ラムダには `Component::SafePointer` を捕捉し、実行時に生存確認する（キュー済み遷移や `NativeMessageBox::showAsync` のコールバックが shutdown 後に走る競合も同時に防げる）。連打対策の再入ガードフラグ（開始で立て、キャンセル・失敗・遷移完了で戻す）もセットで入れる。
 
+### `DialogWindow::LaunchOptions::launchAsync()` はモーダル（トグル開閉にはできない）
+
+`launchAsync()` は `enterModalState` に入るため、開いている間はメインウィンドウへのクリックが一切届かない。「開いたボタンをもう一度押して閉じる」ができず、閉じ方が×とEscだけになる。トグル開閉にしたいなら `juce::DialogWindow` を継承して `setVisible(true)` + `toFront()` で非モーダルに出す（`Source/ui/DeviceSettingsWindow.h`）。その際:
+
+- 閉じる経路は `closeButtonPressed()`（×）・`escapeKeyPressed()`（Esc）を override して1関数に集約し、所有者へ通知するだけにする。実際の破棄は所有者側が `MessageManager::callAsync` で行う（→「コールバック実行中のComponentを自己破棄しない」）
+- **そのウィンドウにフォーカスがある間は `MainComponent::keyPressed` にキーが来ない**。開閉ショートカットはウィンドウ側でも `keyPressed` を override し `Shortcuts::matches()` で拾う。全キーをメインへ転送するかは画面の性格で決める（ミキサーは転送して再生・m/sを効かせる／デバイス設定は⌘,だけ拾い、設定中に `r` で録音が走らないようにする）
+- モーダルでなくなる＝危険な同時操作が可能になる。競合する操作（録音開始とデバイス変更等）は開始側から明示的に閉じる
+
 ### AudioAppComponent はアプリ内1個が前提
 
 ヘッダに「An application should only create one global instance of this object and multiple classes should not inherit from this」と明記されている（`juce_AudioAppComponent.h`）。実体は「`AudioDeviceManager`＋`AudioSourcePlayer`」の組。複数の再生系を並べたくなったら、継承をやめてアプリ所有の `AudioDeviceManager` 1個に各自の `AudioSourcePlayer` を `addAudioCallback` する（複数コールバックの出力は合算・入力は全コールバックに配られる）。デバイスSRはグローバル1個なので、SR変更の主導権をどこが持つかの設計も必要になる。
