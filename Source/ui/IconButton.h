@@ -259,28 +259,25 @@ public:
                               juce::PathStrokeType (stroke, juce::PathStrokeType::curved,
                                                     juce::PathStrokeType::rounded));
 
-                // 鳴る側は音波2本、鳴らない側は×（色だけの違いにせず形で区別する）
-                if (icon == Icon::speaker)
+                const auto centre = at (r, 12.0f, 12.0f);
+                const float quarter = juce::MathConstants<float>::halfPi * 0.5f;
+                juce::Path waves; // 3時方向を中心に±45°の弧
+                for (const float radius : { 4.4f, 7.4f })
+                    waves.addCentredArc (centre.x, centre.y, design (side, radius),
+                                         design (side, radius), 0.0f,
+                                         juce::MathConstants<float>::halfPi - quarter,
+                                         juce::MathConstants<float>::halfPi + quarter, true);
+                g.strokePath (waves, juce::PathStrokeType (stroke, juce::PathStrokeType::curved,
+                                                          juce::PathStrokeType::rounded));
+
+                // 鳴らない側は全体に斜線を重ねる（色だけの違いにせず形で区別する）
+                if (icon == Icon::speakerMuted)
                 {
-                    const auto centre = at (r, 12.0f, 12.0f);
-                    const float quarter = juce::MathConstants<float>::halfPi * 0.5f;
-                    juce::Path waves; // 3時方向を中心に±45°の弧
-                    for (const float radius : { 4.4f, 7.4f })
-                        waves.addCentredArc (centre.x, centre.y, design (side, radius),
-                                             design (side, radius), 0.0f,
-                                             juce::MathConstants<float>::halfPi - quarter,
-                                             juce::MathConstants<float>::halfPi + quarter, true);
-                    g.strokePath (waves, juce::PathStrokeType (stroke, juce::PathStrokeType::curved,
-                                                              juce::PathStrokeType::rounded));
-                }
-                else
-                {
-                    juce::Path cross;
-                    cross.startNewSubPath (at (r, 15.4f, 9.0f));
-                    cross.lineTo (at (r, 21.0f, 14.6f));
-                    cross.startNewSubPath (at (r, 21.0f, 9.0f));
-                    cross.lineTo (at (r, 15.4f, 14.6f));
-                    g.strokePath (cross, juce::PathStrokeType (stroke, juce::PathStrokeType::curved,
+                    juce::Path slash;
+                    slash.startNewSubPath (at (r, 3.8f, 20.6f));
+                    slash.lineTo (at (r, 20.6f, 3.8f));
+                    g.strokePath (slash, juce::PathStrokeType (stroke * 1.15f,
+                                                              juce::PathStrokeType::curved,
                                                               juce::PathStrokeType::rounded));
                 }
                 break;
