@@ -348,7 +348,7 @@ JUCEアプリには合成キーストロークが届かないため、ショー�
   int hits = 0;
   for (const auto& e : Shortcuts::table) if (e.matcher (cmdN)) ++hits;   // hits == 1 なら衝突なし
   ```
-- **メモ欄のようなTextEditorにフォーカスがあっても効かせたいキーは⌘付きにする**: macのpeerは⌘押下時に `textCharacter` を0にする（`juce_NSViewComponentPeer_mac.mm` の `handleKeyEvent`）ため `TextEditor::keyPressed` が文字挿入せず親へ伝播する。修飾なし1文字（X/I方式）だと入力中に文字が入って閉じられない。⌘系でも c/x/v/a/z/y は `TextEditorKeyMapper` が消費する
+- キーの選び方（修飾なし1文字にできるか・入力欄にフォーカスがあっても効くか）は GOTCHAS.md「修飾なし1文字のショートカットは『そのとき誰がフォーカスを持つか』で可否が決まる」を参照
 
 ## 音が絡む確認（要ユーザー操作）
 

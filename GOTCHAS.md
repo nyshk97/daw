@@ -15,6 +15,10 @@
 
 `Shift+,` は `KeyPress::getTextCharacter()` が `<` になる（レイアウト依存）。`switch (getTextCharacter())` で拾う場合は、素の文字＋`isShiftDown()` と、シフト後文字（`<` `>` 等）の両方のcaseを用意する。
 
+### 修飾なし1文字のショートカットは「そのとき誰がフォーカスを持つか」で可否が決まる
+
+macのpeerは**⌘押下時に `textCharacter` を0にする**（`juce_NSViewComponentPeer_mac.mm` の `handleKeyEvent`）。そのため⌘付きキーは `TextEditor::keyPressed` の文字挿入分岐（`getTextCharacter() >= ' '`）に落ちず `false` で親へ伝播する＝**入力欄にフォーカスがあっても効く**。逆に修飾なし1文字はそのまま入力されるので、入力欄を含むパネルのトグルには使えない（Escも `setEscapeAndReturnKeysConsumed (true)` なら吸われる）。⌘系でも `c/x/v/a/z/y` は `TextEditorKeyMapper` が消費する。一方 `ListBox` は↑↓/Page/Home/End/Return/Delete/⌘Aだけ処理して**文字キーは親へ流す**ので、リストだけのパネルなら修飾なし1文字でトグルできる。実例: メモ（TextEditor）は`⌘N`、ファイルパネル（ListBoxのみ）は`F`。
+
 ### AUホスティング（DLSMusicDevice）の落とし穴
 
 - **同期インスタンス化**: `AudioUnitPluginFormat::findAllTypesForFile (found, "AudioUnit:Synths/aumu,dls ,appl")` → `createInstanceFromDescription`（同期版）で取得できる。AUv2なのでメッセージスレッドから同期生成してよい。コンソール（テスト）から使うときは `ScopedJuceInitialiser_GUI` でMessageManagerを先に初期化する
