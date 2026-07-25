@@ -33,6 +33,8 @@ inline const juce::Colour headerBg          { 0xff26262a };  // トラックヘ�
 inline const juce::Colour headerSelectedBg  { 0xff33333c };  // 選択トラックのヘッダー
 inline const juce::Colour laneSelectedRowBg { 0xff26262e };  // 選択トラックのレーン行
 inline const juce::Colour panelBorder       { 0xff2d2d32 };  // パネル・行の区切り線（主張しない程度に背景より一段明るいだけ）
+inline const juce::Colour memoBorder        { 0x17ffffff };  // メモ欄の枠（フォーカスの有無で変えない）
+inline const juce::Colour memoFocusedBg     { 0xff22222a };  // メモ欄のフォーカス時の地（枠でなく明度でフォーカスを示す）
 
 // ---- ポップアップ（ツールチップ・オーバーレイ）----
 inline const juce::Colour popupBg     { 0xff2c2c30 };

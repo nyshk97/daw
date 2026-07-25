@@ -8,6 +8,34 @@ namespace
 juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
 }
 
+MemoEditor::MemoEditor()
+{
+    // 枠はpaintOverChildrenで自前描画するため、JUCE側の枠は両状態とも消す
+    setColour (juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+    setColour (juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
+}
+
+// setColourはrepaintを伴わない（Component::colourChangedは空実装）ため明示的に再描画する
+void MemoEditor::focusGained (FocusChangeType cause)
+{
+    juce::TextEditor::focusGained (cause);
+    setColour (juce::TextEditor::backgroundColourId, Theme::memoFocusedBg);
+    repaint();
+}
+
+void MemoEditor::focusLost (FocusChangeType cause)
+{
+    juce::TextEditor::focusLost (cause);
+    setColour (juce::TextEditor::backgroundColourId, Theme::timelineBg);
+    repaint();
+}
+
+void MemoEditor::paintOverChildren (juce::Graphics& g)
+{
+    g.setColour (Theme::memoBorder);
+    g.drawRect (getLocalBounds(), 1);
+}
+
 RightPanel::RightPanel()
 {
     addAndMakeVisible (titleLabel);
@@ -33,9 +61,6 @@ RightPanel::RightPanel()
     memoEditor.setColour (juce::TextEditor::backgroundColourId, Theme::timelineBg);
     memoEditor.setColour (juce::TextEditor::textColourId,
                           juce::Colours::white.withAlpha (0.88f));
-    memoEditor.setColour (juce::TextEditor::outlineColourId,
-                          juce::Colours::white.withAlpha (0.09f));
-    memoEditor.setColour (juce::TextEditor::focusedOutlineColourId, Theme::accent);
     memoEditor.setColour (juce::TextEditor::highlightColourId, Theme::accent.withAlpha (0.65f));
     memoEditor.onTextChange = [this]
     {

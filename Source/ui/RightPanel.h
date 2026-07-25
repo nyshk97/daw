@@ -6,6 +6,19 @@
 #include "../shared/Project.h"
 #include "AudioFileBrowserView.h"
 
+// メモ本文の入力欄。フォーカスは枠の色でなく地の明度で示す
+// （面積が大きく四方を囲むため、青枠だとパネル内で枠が主役になってしまう）。
+// 枠はJUCEデフォルトだとフォーカス時に2pxへ太るので、自前で1pxに固定する
+class MemoEditor : public juce::TextEditor
+{
+public:
+    MemoEditor();
+
+    void focusGained (FocusChangeType cause) override;
+    void focusLost (FocusChangeType cause) override;
+    void paintOverChildren (juce::Graphics& g) override;
+};
+
 // メイン画面右側のドック。内容の切替状態はセッション内だけ保持し、
 // プロジェクトにはメモ本文だけを保存する。
 class RightPanel : public juce::Component
@@ -39,7 +52,7 @@ private:
 
     juce::Label titleLabel;
     juce::Label scopeLabel;
-    juce::TextEditor memoEditor;
+    MemoEditor memoEditor;
     AudioFileBrowserView browser;
 
     static constexpr int headerHeight = 42;
