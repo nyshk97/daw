@@ -5,6 +5,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "../shared/AudioBrowserNavigation.h"
+#include "BreadcrumbBar.h"
 
 class AudioFileBrowserView final : public juce::Component,
                                    private juce::ListBoxModel,
@@ -21,6 +22,9 @@ public:
     void setPreviewState (bool loading, bool playing, const juce::String& error);
     void setImporting (bool importing);
     void stopPreviewUi();
+
+    // 履歴の戻る/進む（⌘[ / ⌘]）。移動できたらtrue
+    bool navigateHistory (int delta);
 
     void paint (juce::Graphics& g) override;
     void resized() override;
@@ -44,11 +48,9 @@ private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
 
     void navigate (const juce::File& directory, bool addToHistory);
-    void navigateHistory (int delta);
     void refreshSelection();
     juce::File selectedFile() const;
     juce::String durationText (const juce::File& file);
-    void updateButtons();
 
     AudioFilter filter;
     juce::TimeSliceThread directoryThread { "Audio browser directory scan" };
@@ -58,10 +60,7 @@ private:
     bool importInProgress = false;
     bool previewPlaying = false;
 
-    juce::TextButton backButton { juce::String::fromUTF8 (u8"‹") };
-    juce::TextButton forwardButton { juce::String::fromUTF8 (u8"›") };
-    juce::TextButton parentButton { juce::String::fromUTF8 (u8"↑") };
-    juce::Label pathLabel;
+    BreadcrumbBar breadcrumb;
     juce::ListBox listBox { {}, this };
     juce::Label selectedNameLabel;
     juce::Label durationLabel;

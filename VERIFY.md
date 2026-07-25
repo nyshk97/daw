@@ -166,6 +166,8 @@ afconvert -f m4af -d aac /tmp/beat.wav /tmp/beat.m4a   # CoreAudio経路（m4a�
 - プロジェクト画面では `button "プロジェクトメモ"` / `button "オーディオファイル"` をAXPressできる。選択中のボタンを再度AXPressすると閉じ、他方を押すと開いたまま内容が切り替わる
 - 背面のまま見た目を確認する場合は、CGWindowListでLaLaのタイトル付きwindow IDを取得し、`screencapture -x -l <windowID> /tmp/lala-right-panel.png` で撮る。初期幅300px、上部バー直下から下端まで、下部エディタが開いてもパネル下へ潜らないことを見る
 - ファイルパネルの初期パスは `~/Downloads`。一覧はフォルダ＋WAV/AIF/AIFF/FLAC/MP3/M4Aのみで、フォルダが先、単一選択。下部に選択名・長さ・再生/停止が出る
+- パス欄はパンくず（`/ › Users › d0ne1s › Downloads`）。祖先クリックでその階層へ移動、幅が足りないときは左から `…` に畳まれる（`…` クリックで畳まれた祖先のポップアップ。親と現在フォルダは必ず残る）。履歴の戻る/進むは ⌘[ / ⌘]（ファイルパネルを開いているときだけ効く）
+- パンくずの畳み・省略はアプリを起動せずに検証できる: JUCEのコンソールアプリを1本足して `BreadcrumbBar` を任意の幅・パスで `setBounds`→`paintEntireComponent`し、`PNGImageFormat` で1枚のシートに並べて目視する（ホバーは `MouseEvent` を組んで `mouseMove` に渡す）。ユーザーが実機を使用中でUIを触れないときでもレイアウト回帰を機械的に見られる
 - 自動テスト `Audio file browser filter and preview` が、対応拡張子、22.05kHz→44.1kHz線形補間、ステレオ維持、ブロック境界をまたぐ位置、停止後無音を固定している
 
 ## MIDI機能の半自動確認

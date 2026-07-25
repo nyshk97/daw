@@ -48,6 +48,7 @@ enum class ID
     zoomHorizontal,
     toggleMixer,
     toggleFxEditor,
+    browserHistory,
     shortcutList,
     // プロジェクト
     save,
@@ -220,6 +221,17 @@ inline const Entry table[] = {
     { ID::toggleFxEditor, Category::view, u8"FXパネルを表示/隠す", u8"I",
       [] (const juce::KeyPress& k)
       { return detail::noCmdCtrlAlt (k) && k.getTextCharacter() == 'i'; } },
+    // ファイルパネル（右ドック）表示中のみ有効。階層移動はパンくずが担うので、
+    // 「行き来」だけをキーに逃がしてナビ行からボタンを無くしている
+    { ID::browserHistory, Category::view, u8"ファイルパネルの戻る/進む", u8"⌘[ / ⌘]",
+      [] (const juce::KeyPress& k)
+      {
+          // ⌘併用でtextCharacterが化ける環境があるためkeyCodeで判定する
+          return k.getModifiers().testFlags (juce::ModifierKeys::commandModifier)
+              && ! k.getModifiers().testFlags (juce::ModifierKeys::ctrlModifier
+                                               | juce::ModifierKeys::altModifier)
+              && (k.getKeyCode() == '[' || k.getKeyCode() == ']');
+      } },
     { ID::shortcutList, Category::view, u8"ショートカット一覧", u8"⌘?",
       [] (const juce::KeyPress& k)
       {

@@ -31,19 +31,8 @@ AudioFileBrowserView::AudioFileBrowserView()
     contents.setIgnoresHiddenFiles (true);
     contents.addChangeListener (this);
 
-    for (auto* button : { &backButton, &forwardButton, &parentButton, &previewButton })
-    {
-        addAndMakeVisible (*button);
-        button->setWantsKeyboardFocus (false);
-    }
-    backButton.onClick = [this] { navigateHistory (-1); };
-    forwardButton.onClick = [this] { navigateHistory (1); };
-    parentButton.onClick = [this]
-    {
-        const auto parent = contents.getDirectory().getParentDirectory();
-        if (parent != contents.getDirectory())
-            navigate (parent, true);
-    };
+    addAndMakeVisible (previewButton);
+    previewButton.setWantsKeyboardFocus (false);
     previewButton.onClick = [this]
     {
         if (previewPlaying)
@@ -59,10 +48,8 @@ AudioFileBrowserView::AudioFileBrowserView()
         }
     };
 
-    addAndMakeVisible (pathLabel);
-    pathLabel.setFont (Fonts::small());
-    pathLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.48f));
-    pathLabel.setJustificationType (juce::Justification::centredLeft);
+    addAndMakeVisible (breadcrumb);
+    breadcrumb.onNavigate = [this] (const juce::File& dir) { navigate (dir, true); };
 
     addAndMakeVisible (listBox);
     listBox.setRowHeight (30);
@@ -99,15 +86,17 @@ void AudioFileBrowserView::navigate (const juce::File& directory, bool addToHist
         history.visit (directory);
     contents.setDirectory (directory, true, true);
     listBox.deselectAllRows();
-    pathLabel.setText (directory.getFullPathName(), juce::dontSendNotification);
+    breadcrumb.setPath (directory);
     refreshSelection();
-    updateButtons();
 }
 
-void AudioFileBrowserView::navigateHistory (int delta)
+bool AudioFileBrowserView::navigateHistory (int delta)
 {
-    if (const auto directory = history.move (delta); directory != juce::File())
-        navigate (directory, false);
+    const auto directory = history.move (delta);
+    if (directory == juce::File())
+        return false;
+    navigate (directory, false);
+    return true;
 }
 
 int AudioFileBrowserView::getNumRows()
@@ -217,13 +206,6 @@ void AudioFileBrowserView::setImporting (bool importing)
     previewButton.setEnabled (! importing && selectedFile().existsAsFile());
 }
 
-void AudioFileBrowserView::updateButtons()
-{
-    backButton.setEnabled (history.canMove (-1));
-    forwardButton.setEnabled (history.canMove (1));
-    parentButton.setEnabled (contents.getDirectory().getParentDirectory() != contents.getDirectory());
-}
-
 void AudioFileBrowserView::paint (juce::Graphics& g)
 {
     g.fillAll (Theme::chooserPanelBg);
@@ -234,11 +216,7 @@ void AudioFileBrowserView::paint (juce::Graphics& g)
 void AudioFileBrowserView::resized()
 {
     auto area = getLocalBounds();
-    auto nav = area.removeFromTop (32);
-    backButton.setBounds (nav.removeFromLeft (30).reduced (2));
-    forwardButton.setBounds (nav.removeFromLeft (30).reduced (2));
-    parentButton.setBounds (nav.removeFromLeft (30).reduced (2));
-    pathLabel.setBounds (nav.reduced (6, 0));
+    breadcrumb.setBounds (area.removeFromTop (32).reduced (8, 0));
 
     auto preview = area.removeFromBottom (78).reduced (10, 7);
     auto line = preview.removeFromTop (25);

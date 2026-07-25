@@ -1857,6 +1857,13 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         toggleFxEditor();
         return true;
     }
+    // ⌘[ / ⌘] = ファイルパネルの履歴を戻る/進む（パネルを開いているときだけ効く）
+    if (is (SC::browserHistory))
+    {
+        if (! rightPanel.isOpen() || rightPanel.mode() != RightPanel::Mode::files)
+            return false;
+        return rightPanel.fileBrowser().navigateHistory (key.getKeyCode() == '[' ? -1 : 1);
+    }
     if (is (SC::shortcutList))
     {
         shortcutOverlay.setBounds (getLocalBounds());
