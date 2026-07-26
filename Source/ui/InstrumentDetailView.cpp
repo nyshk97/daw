@@ -1,6 +1,9 @@
 #include "InstrumentDetailView.h"
 
 #include <cmath>
+#include <limits>
+#include <memory>
+#include <vector>
 
 #include "Fonts.h"
 #include "StereoMeter.h"
@@ -32,7 +35,7 @@ public:
         g.fillRoundedRectangle (bounds.toFloat(), 5.0f);
 
         auto* model = owner.track;
-        if (model == nullptr || ! model->hasSample() || model->samplePeakCache.empty())
+        if (model == nullptr || ! model->hasSample())
         {
             g.setColour (juce::Colours::white.withAlpha (0.3f));
             g.setFont (Fonts::small());
@@ -40,24 +43,27 @@ public:
             return;
         }
 
-        const auto& peaks = model->samplePeakCache;
+        ensurePixelPeaks();
         const float midY = (float) bounds.getCentreY();
         const float halfH = (float) (bounds.getHeight() / 2 - 6);
-        const int w = juce::jmax (1, bounds.getWidth());
+        const int w = juce::jmin ((int) pxMax.size(), juce::jmax (1, bounds.getWidth()));
 
-        // 波形（クリップの描画と同じ流儀: ピークキャッシュを1px1本の縦線で描く）
+        // 波形（1px＝そのピクセルが表す区間の実データの上下端を結ぶ縦線）。
+        // クリップ描画の1.4倍強調は掛けない（小さなレーンで見せるための補正で、
+        // この大きさでは頭打ちになって減衰の形が読めなくなる）
         g.setColour (juce::Colours::white.withAlpha (0.75f));
+        float prevTop = midY, prevBottom = midY;
         for (int px = 0; px < w; ++px)
         {
-            const int i0 = (int) ((double) px / (double) w * (double) peaks.size());
-            const int i1 = juce::jmax (i0 + 1, (int) ((double) (px + 1) / (double) w * (double) peaks.size()));
-            float peak = 0.0f;
-            for (int i = i0; i < i1 && i < (int) peaks.size(); ++i)
-                peak = juce::jmax (peak, peaks[(size_t) i]);
-            // クリップ描画の1.4倍強調は掛けない（小さなレーンで見せるための補正で、
-            // この大きさでは頭打ちになって減衰の形が読めなくなる）
-            const float h = juce::jlimit (1.0f, halfH, peak * halfH);
-            g.drawVerticalLine (px, midY - h, midY + h);
+            const float top = midY - juce::jlimit (-halfH, halfH, pxMax[(size_t) px] * halfH);
+            const float bottom = midY - juce::jlimit (-halfH, halfH, pxMin[(size_t) px] * halfH);
+            // 隣のpxと範囲が重ならない区間（1px内に半周期未満しか入らない低音）でも
+            // 線が途切れないよう、前のpxの範囲まで伸ばして繋ぐ
+            const float y0 = px > 0 ? juce::jmin (top, prevBottom) : top;
+            const float y1 = px > 0 ? juce::jmax (bottom, prevTop) : bottom;
+            g.drawVerticalLine (px, y0, juce::jmax (y1, y0 + 1.0f));
+            prevTop = top;
+            prevBottom = bottom;
         }
 
         // 中央線（振幅0の基準。波形が薄いサンプルでも位置が分かる）
@@ -124,6 +130,84 @@ public:
     }
 
 private:
+    // 表示幅に合わせた1pxごとの上下ピーク。samplePeakCache（512サンプル単位）を引き伸ばすと
+    // この大きさでは1ビンが数px幅の階段になって波形が角張るため、元バッファから作り直す。
+    // 上下を別々に取る（絶対値の対称ではない）のはLogicの波形と同じ読み方にするため。
+    //
+    // 作り直すのは「サンプルの実体が変わった or 幅が変わった」ときだけ。refreshFromModel()は
+    // 音量・Mono・ルート音の変更でも走るので、そこから毎回無効化してはいけない。
+    void ensurePixelPeaks()
+    {
+        auto* model = owner.track;
+        const auto buffer = model != nullptr ? model->sampleAudio : nullptr;
+        const int w = juce::jmax (1, getWidth());
+        // shared_ptrの実体で比べる（生ポインタだと、解放後に同じアドレスへ載った別サンプルを
+        // 取りこぼす）。バッファの中身が後から書き換わることはないのでこれで足りる
+        if (cachedBuffer.lock() == buffer && w == cachedWidth)
+            return;
+
+        cachedBuffer = buffer;
+        cachedWidth = w;
+        pxMin.assign ((size_t) w, 0.0f);
+        pxMax.assign ((size_t) w, 0.0f);
+        const int numSamples = buffer != nullptr ? buffer->getNumSamples() : 0;
+        if (numSamples <= 0)
+            return;
+
+        // 十分に長い素材では、元バッファの全走査をやめてsamplePeakCacheから引く
+        // （走査量の上限を w * samplesPerPeak * minBinsPerPixel に抑える）。
+        // 1pxが1〜2ビンしか表さない密度では使えない: ビン境界とpx境界のズレで最大1ビンぶん
+        // 広い区間を見てしまい、片側にしか振れない区間まで中央線を跨いで太る。
+        // 実測では8ビン/px あれば実データ直読みとの差は0.03以下（20Hz正弦・808とも）
+        constexpr int minBinsPerPixel = 8;
+        if ((juce::int64) numSamples >= (juce::int64) w * Clip::samplesPerPeak * minBinsPerPixel)
+        {
+            const auto& bins = model->samplePeakCache;
+            for (int px = 0; px < w && ! bins.empty(); ++px)
+            {
+                // ビン数をpx数で按分すると、1pxが表す区間の端が最大1ビンぶん見落とされる
+                // （波形が痩せる）。サンプル位置から引いて、区間に掛かるビンを全部見る
+                const juce::int64 s0 = (juce::int64) px * numSamples / w;
+                const juce::int64 s1 = juce::jmax (s0 + 1, (juce::int64) (px + 1) * numSamples / w);
+                const int i0 = juce::jmin ((int) bins.size() - 1, (int) (s0 / Clip::samplesPerPeak));
+                const int i1 = juce::jmin ((int) bins.size(),
+                                           (int) ((s1 + Clip::samplesPerPeak - 1) / Clip::samplesPerPeak));
+                float lo = bins[(size_t) i0].lo, hi = bins[(size_t) i0].hi;
+                for (int i = i0 + 1; i < i1; ++i)
+                {
+                    lo = juce::jmin (lo, bins[(size_t) i].lo);
+                    hi = juce::jmax (hi, bins[(size_t) i].hi);
+                }
+                pxMin[(size_t) px] = lo;
+                pxMax[(size_t) px] = hi;
+            }
+            return;
+        }
+
+        const int numChannels = juce::jmin (2, buffer->getNumChannels());
+        for (int px = 0; px < w; ++px)
+        {
+            const int s0 = (int) ((juce::int64) px * numSamples / w);
+            const int s1 = juce::jmin (numSamples,
+                                       juce::jmax (s0 + 1, (int) ((juce::int64) (px + 1) * numSamples / w)));
+            // 0で初期化しない（区間が中央線を跨がないときまで跨がせると、正弦波が
+            // 中央から生える櫛になってしまう。実際の上下端をそのまま採る）
+            float lo = std::numeric_limits<float>::max();
+            float hi = std::numeric_limits<float>::lowest();
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                const float* data = buffer->getReadPointer (ch);
+                for (int i = s0; i < s1; ++i)
+                {
+                    lo = juce::jmin (lo, data[i]);
+                    hi = juce::jmax (hi, data[i]);
+                }
+            }
+            pxMin[(size_t) px] = lo;
+            pxMax[(size_t) px] = hi;
+        }
+    }
+
     int trimX() const
     {
         auto* model = owner.track;
@@ -136,6 +220,10 @@ private:
 
     InstrumentDetailView& owner;
     bool dragging = false;
+
+    std::vector<float> pxMin, pxMax;                        // 1pxごとの上下ピーク（ensurePixelPeaksが作る）
+    std::weak_ptr<juce::AudioBuffer<float>> cachedBuffer;   // 作った時点のサンプル（差し替え検出用）
+    int cachedWidth = 0;
 };
 
 // ---- InstrumentDetailView ---------------------------------------------------
@@ -238,7 +326,7 @@ void InstrumentDetailView::refreshFromModel()
     gainSlider.setEnabled (hasSample);
 
     trimLabel.setText (trimText(), juce::dontSendNotification);
-    wave->repaint();
+    wave->repaint(); // 波形キャッシュの作り直しはWaveDisplay側が実体の変化で判断する
     repaint();
 }
 

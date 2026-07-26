@@ -30,9 +30,18 @@ struct Clip
     void buildPeakCache();
 };
 
-// バッファ全長の描画用ピークキャッシュ（Clip::samplesPerPeak 単位・ステレオはL/Rのmax合成）。
+// 区間の下端/上端（signed）。絶対値1本にしないのは、512サンプルが1周期に満たない低音
+// （48kHzなら93.75Hz未満。808はここに入る）だと片側にしか振れない区間が生まれ、
+// 絶対値を±で描くと実際にはない側へ波形が伸びてしまうため
+struct PeakRange
+{
+    float lo = 0.0f;
+    float hi = 0.0f;
+};
+
+// バッファ全長の描画用ピークキャッシュ（Clip::samplesPerPeak 単位・ステレオはL/Rを合成）。
 // サンプル音源の波形表示用（クリップは参照範囲だけを見る Clip::buildPeakCache を使う）
-std::vector<float> buildFullPeakCache (const juce::AudioBuffer<float>& audio);
+std::vector<PeakRange> buildFullPeakCache (const juce::AudioBuffer<float>& audio);
 
 // クリップを splitSample（絶対サンプル位置）で左右に分ける。左右は同じソースWAVを共有参照する。
 // 分割点が内側（開始 < 分割点 < 終端）にないときは false（境界ちょうどは分割しない）
@@ -154,7 +163,7 @@ struct Track
     juce::int64 sampleStartOffset = 0;  // 頭の無音カット位置（バッファ内サンプル）
     double sampleSourceRate = 0.0;      // ファイル自体のSR（再生比率 sourceRate/deviceRate の計算に必要）
     std::shared_ptr<juce::AudioBuffer<float>> sampleAudio; // メモリ常駐（Clip::audio と同じ寿命規則）
-    std::vector<float> samplePeakCache;                    // 波形描画用（Clip::samplesPerPeak 単位・全長）
+    std::vector<PeakRange> samplePeakCache;                // 波形描画用（Clip::samplesPerPeak 単位・全長）
 
     bool hasSample() const { return sampleAudio != nullptr && sampleSourceRate > 0.0; }
     bool usesSampler() const { return type == TrackType::midi && instrument == InstrumentKind::sample; }

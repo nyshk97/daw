@@ -38,9 +38,9 @@ void Clip::buildPeakCache()
     }
 }
 
-std::vector<float> buildFullPeakCache (const juce::AudioBuffer<float>& audio)
+std::vector<PeakRange> buildFullPeakCache (const juce::AudioBuffer<float>& audio)
 {
-    std::vector<float> peaks;
+    std::vector<PeakRange> peaks;
     const int numSamples = audio.getNumSamples();
     const int numChannels = juce::jmin (2, audio.getNumChannels());
     if (numSamples <= 0 || numChannels <= 0)
@@ -50,14 +50,19 @@ std::vector<float> buildFullPeakCache (const juce::AudioBuffer<float>& audio)
     for (int i = 0; i < numSamples; i += Clip::samplesPerPeak)
     {
         const int count = juce::jmin (Clip::samplesPerPeak, numSamples - i);
-        float peak = 0.0f;
+        // 0で初期化しない（片側にしか振れない区間まで中央線を跨がせないため）
+        float lo = std::numeric_limits<float>::max();
+        float hi = std::numeric_limits<float>::lowest();
         for (int ch = 0; ch < numChannels; ++ch)
         {
             const float* data = audio.getReadPointer (ch);
             for (int j = 0; j < count; ++j)
-                peak = juce::jmax (peak, std::abs (data[i + j]));
+            {
+                lo = juce::jmin (lo, data[i + j]);
+                hi = juce::jmax (hi, data[i + j]);
+            }
         }
-        peaks.push_back (peak);
+        peaks.push_back ({ lo, hi });
     }
     return peaks;
 }
