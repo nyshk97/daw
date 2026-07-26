@@ -34,16 +34,14 @@ bool BounceRenderer::buildItemRender (const Track& track, int itemIndex, double 
         if (clip.audio == nullptr)
             return false;
 
-        // buildSnapshotと同じ範囲クランプ（範囲外読みの最終防衛線）
-        const auto bufferLength = (juce::int64) clip.audio->getNumSamples();
-        const auto offset = juce::jlimit ((juce::int64) 0, bufferLength, clip.offsetSamples);
-        const auto length = juce::jlimit ((juce::int64) 0, bufferLength - offset, clip.lengthSamples);
-        if (length <= 0)
+        // ループ展開と範囲クランプは buildSnapshot と共通のヘルパー（appendClipPlaybacks）。
+        // muted は見ない（明示選択が優先という⌘Eの既存仕様。ヘルパー側も判断しない）
+        appendClipPlaybacks (clip, out.clips);
+        if (out.clips.empty())
             return false;
-        out.clips.push_back ({ clip.audio, clip.startSample, offset, length });
 
         rangeStart = clip.startSample;
-        rangeEnd = clip.startSample + clip.lengthSamples;
+        rangeEnd = clip.startSample + clip.totalLengthSamples(); // ループ終端まで書き出す
         return true;
     }
 
@@ -51,28 +49,20 @@ bool BounceRenderer::buildItemRender (const Track& track, int itemIndex, double 
         return false;
     const auto& region = track.midiRegions[(size_t) itemIndex];
 
-    // ノートのフラット化・境界マスク・固定ピッチ置換はbuildSnapshotと同じ規則（対象リージョンのみ）。
-    // 固定ピッチ置換はGM音源専用（サンプラーはピッチを見ずに等速で鳴らすので置換しない）。
-    // 同じ規則が Project::buildSnapshot にもあるので、変えるときは両方を見ること
+    // ノートのフラット化・境界マスク・ループ展開・固定ピッチ置換は buildSnapshot と共通の
+    // ヘルパー（appendRegionNotes）。固定ピッチ置換はGM音源専用（サンプラーはピッチを見ずに
+    // 等速で鳴らすので置換しない）。muted は見ない（明示選択が優先という⌘Eの既存仕様）
     const bool fixedPitch = track.instrument == InstrumentKind::gm
                             && track.drums && track.drumPitch >= 0;
-    const auto regionEnd = region.startPpq + region.lengthPpq;
-    for (const auto& note : region.notes)
-    {
-        const auto absStart = region.startPpq + note.startPpq;
-        const auto absEnd = juce::jmin (absStart + note.lengthPpq, regionEnd);
-        if (absEnd <= absStart)
-            continue;
-        out.notes.push_back ({ absStart, absEnd,
-                               fixedPitch ? track.drumPitch : note.pitch, note.velocity });
-    }
+    appendRegionNotes (region, fixedPitch ? track.drumPitch : -1, out.notes);
     std::stable_sort (out.notes.begin(), out.notes.end(),
                       [] (const MidiNotePlayback& a, const MidiNotePlayback& b)
                       { return a.startPpq < b.startPpq; });
 
     const double tps = Ppq::ticksPerSample (bpm, sampleRate);
     rangeStart = (juce::int64) std::llround ((double) region.startPpq / tps);
-    rangeEnd = (juce::int64) std::llround ((double) regionEnd / tps);
+    // ループ終端まで書き出す（リージョン境界の余白も含めるためノート終端でなくモデル側から算出）
+    rangeEnd = (juce::int64) std::llround ((double) (region.startPpq + region.totalLengthPpq()) / tps);
     return true;
 }
 

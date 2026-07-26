@@ -286,6 +286,9 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     };
     timeline.onExportItemRequested = [this] (int trackIndex, int itemIndex)
     { startRegionExportFlow (trackIndex, itemIndex); };
+    // 録音中は構造編集を止める。キー経由（⌘T/⌃M/⌘R）はMainComponent側でも弾いているが、
+    // 右クリックメニュー経由はTimelineViewが直接モデルを書くのでここを通す
+    timeline.canEdit = [this] { return ! engine.isRecording(); };
     timeline.onImportFilesDropped = [this] (const juce::StringArray& files, int trackIndex,
                                             juce::int64 startSample)
     {
@@ -1624,14 +1627,16 @@ void MainComponent::beginBounce (const juce::File& target)
 
         // 終端 = 最後のクリップ終端 / MIDIリージョン終端。リージョンは最後のノートの後の
         // 余白も範囲に含めるため、ノート終端でなくモデル側のリージョン境界から算出する
-        // （スナップショットには境界情報が残らない）。ミュートリージョンは含めない
+        // （スナップショットには境界情報が残らない）。ミュートリージョンは含めない。
+        // ループはここに効く: オーディオは展開済みのクリップ実体から取れるが、MIDIは
+        // モデル側から算出するので totalLengthPpq（ループ終端）を見ないと本体終端で切れる
         for (auto& clip : trackRender.clips)
             endSample = juce::jmax (endSample, clip.startSample + clip.lengthSamples);
         if (model.type == TrackType::midi)
             for (auto& region : model.midiRegions)
                 if (! region.muted)
                     endSample = juce::jmax (endSample, (juce::int64) std::llround (
-                                                (double) (region.startPpq + region.lengthPpq) / tps));
+                                                (double) (region.startPpq + region.totalLengthPpq()) / tps));
 
         // 固定モード（One Shot）のサンプルはノート長でもリージョン長でもなく「サンプル全長」鳴る。
         // テールの上限（5秒・-60dB打ち切り）に依存させず、範囲自体を末尾まで延ばす
@@ -2210,8 +2215,14 @@ bool MainComponent::trySave()
 
     project->bpm = transport.bpm.load();
     juce::String error;
-    // undo/redo履歴が参照するWAVはGCから保護する（redoでの復元に備える）
-    if (! project->save (error, undoStack.referencedWavs()))
+    // undo/redo履歴が参照するWAVはGCから保護する（redoでの復元に備える）。
+    // クリップボードのクリップも同じ「モデル外からの参照」なので保護する
+    // （コピー → 元クリップを削除 → 保存、で実ファイルが消えるとペーストが壊れる）
+    auto keepWavs = undoStack.referencedWavs();
+    if (itemClipboard.kind == ItemClipboard::Kind::audioClip
+        && itemClipboard.clip.fileName.isNotEmpty())
+        keepWavs.addIfNotAlreadyThere (itemClipboard.clip.fileName);
+    if (! project->save (error, keepWavs))
     {
         showAlert (jp (u8"保存に失敗しました"), error);
         return false;
@@ -2390,7 +2401,22 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
             requestDeleteSelectedClip();
         return true;
     }
-    // ピアノロールの選択ノートへのキー操作（Logic準拠: ↑↓=半音・⌥↑↓=オクターブ、⌘C/⌘V）
+    // ⌘C/⌘V はノート（ピアノロール）とリージョン/クリップ（タイムライン）で共用。
+    // ピアノロールが開いていてノートが選択されていればノート、そうでなければタイムライン側へ
+    // フォールバックする（Deleteと同じ裁き方。copySelection/pasteAtPlayhead は空ならfalseを返す）
+    if (is (SC::copyItem))
+    {
+        if (pianoRoll.isOpen() && pianoRoll.copySelection())
+            return true;
+        return copySelectedItem(); // コピーはモデルを触らないので録音中も許可
+    }
+    if (is (SC::pasteItem))
+    {
+        if (pianoRoll.isOpen() && ! engine.isRecording() && pianoRoll.pasteAtPlayhead())
+            return true;
+        return pasteItemAtPlayhead();
+    }
+    // ピアノロールの選択ノートへのキー操作（Logic準拠: ↑↓=半音・⌥↑↓=オクターブ）
     if (pianoRoll.isOpen() && ! engine.isRecording())
     {
         const bool up = key.isKeyCode (juce::KeyPress::upKey);
@@ -2398,10 +2424,6 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
             return pianoRoll.transposeSelection (up ? 12 : -12);
         if (is (SC::noteSemitone))
             return pianoRoll.transposeSelection (up ? 1 : -1);
-        if (is (SC::noteCopy))
-            return pianoRoll.copySelection();
-        if (is (SC::notePaste))
-            return pianoRoll.pasteAtPlayhead();
     }
     // Undo/Redo（構造編集のみ対象）
     if (is (SC::redo))
@@ -2479,6 +2501,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (is (SC::split))
     {
         splitSelectedItemAtPlayhead();
+        return true;
+    }
+    // Logic準拠: ⌘R = 選択中のリージョン/クリップを終端直後へ複製（連打で伸ばせる）
+    if (is (SC::repeatItem))
+    {
+        repeatSelectedItem();
         return true;
     }
     // ,/.=1拍シーク、Shift+,/.（レイアウトにより<>）=1小節シーク
@@ -2716,6 +2744,107 @@ void MainComponent::splitSelectedItemAtPlayhead()
         timeline.splitAtPlayhead (sel.track, sel.clip);
     else if (const auto rsel = timeline.getRegionSelection(); rsel.isValid())
         timeline.splitAtPlayhead (rsel.track, rsel.region);
+}
+
+bool MainComponent::copySelectedItem()
+{
+    if (project == nullptr)
+        return false;
+
+    // 選択は clips / midiRegions のどちらか排他（exportSelectedItem と同じ順で見る）
+    if (const auto sel = timeline.getSelection(); sel.isValid())
+    {
+        if (sel.track < 0 || sel.track >= (int) project->tracks.size())
+            return false;
+        const auto& clips = project->tracks[(size_t) sel.track].clips;
+        if (sel.clip < 0 || sel.clip >= (int) clips.size())
+            return false;
+        itemClipboard.kind = ItemClipboard::Kind::audioClip;
+        itemClipboard.clip = clips[(size_t) sel.clip]; // fileName/audioは共有参照、peakCacheは値コピー
+        itemClipboard.region = {};
+        Log::info ("region.copy", "type=audio track=" + juce::String (sel.track)
+                                      + " item=" + juce::String (sel.clip));
+        return true;
+    }
+    if (const auto rsel = timeline.getRegionSelection(); rsel.isValid())
+    {
+        if (rsel.track < 0 || rsel.track >= (int) project->tracks.size())
+            return false;
+        const auto& regions = project->tracks[(size_t) rsel.track].midiRegions;
+        if (rsel.region < 0 || rsel.region >= (int) regions.size())
+            return false;
+        itemClipboard.kind = ItemClipboard::Kind::midiRegion;
+        itemClipboard.region = regions[(size_t) rsel.region]; // ノート・ミュートごと丸ごと
+        itemClipboard.clip = {};
+        Log::info ("region.copy", "type=midi track=" + juce::String (rsel.track)
+                                      + " item=" + juce::String (rsel.region));
+        return true;
+    }
+    return false;
+}
+
+bool MainComponent::pasteItemAtPlayhead()
+{
+    if (engine.isRecording() || project == nullptr)
+        return false;
+    if (itemClipboard.kind == ItemClipboard::Kind::none)
+        return false;
+    if (selectedTrack < 0 || selectedTrack >= (int) project->tracks.size())
+        return false;
+
+    auto& track = project->tracks[(size_t) selectedTrack];
+    const bool wantMidi = itemClipboard.kind == ItemClipboard::Kind::midiRegion;
+    if (wantMidi != (track.type == TrackType::midi))
+        return false; // 型不一致（MIDIリージョンをオーディオトラックへ等）は何もしない
+
+    const auto playhead = juce::jmax ((juce::int64) 0, transport.playheadSamplePos.load());
+    undoStack.begin (*project);
+
+    int pastedIndex = 0;
+    if (wantMidi)
+    {
+        MidiRegion pasted = itemClipboard.region;
+        pasted.id = project->allocateId();
+        for (auto& note : pasted.notes)
+            note.id = project->allocateId();
+        // 再生ヘッドを表示グリッドの最近傍へ（リージョン移動と同じ規則）
+        const double bpm = juce::jlimit (20.0, 400.0, transport.bpm.load());
+        const auto absPpq = (juce::int64) std::llround (
+            (double) playhead * Ppq::ticksPerSample (bpm, timeline.effectiveSampleRate()));
+        const auto grid = juce::jmax ((juce::int64) 1, timeline.gridPpq());
+        pasted.startPpq = juce::jmax ((juce::int64) 0,
+                                      (juce::int64) std::llround ((double) absPpq / (double) grid) * grid);
+        track.midiRegions.push_back (std::move (pasted));
+        pastedIndex = (int) track.midiRegions.size() - 1;
+    }
+    else
+    {
+        Clip pasted = itemClipboard.clip; // fileName/audioは共有参照、peakCacheは値コピー
+        pasted.startSample = timeline.snapSampleToVisibleGrid (playhead);
+        track.clips.push_back (std::move (pasted));
+        pastedIndex = (int) track.clips.size() - 1;
+    }
+
+    timeline.selectItem (selectedTrack, pastedIndex, wantMidi);
+    Log::info ("region.paste", juce::String (wantMidi ? "type=midi" : "type=audio")
+                                   + " track=" + juce::String (selectedTrack)
+                                   + " item=" + juce::String (pastedIndex)
+                                   + " pos=" + juce::String (playhead));
+    pushSnapshot();
+    setDirty (true);
+    timeline.refresh();
+    return true;
+}
+
+void MainComponent::repeatSelectedItem()
+{
+    if (engine.isRecording())
+        return;
+    // duplicateAt が複製を選択状態にするので、連打すると後ろへ伸びていく（Logicの⌘Rと同じ）
+    if (const auto sel = timeline.getSelection(); sel.isValid())
+        timeline.duplicateAt (sel.track, sel.clip);
+    else if (const auto rsel = timeline.getRegionSelection(); rsel.isValid())
+        timeline.duplicateAt (rsel.track, rsel.region);
 }
 
 // ---- 表示更新 ----

@@ -80,6 +80,9 @@ private:
     void toggleSoloTracks();             // sキー: ソロ中なら全解除、なければ直近のソロ構成を再適用
     void toggleMuteSelectedItem();       // Ctrl+M: 選択中のクリップ/リージョンをミュート
     void splitSelectedItemAtPlayhead();  // ⌘T: 選択中のクリップ/リージョンを再生ヘッド位置で分割
+    void repeatSelectedItem();           // ⌘R: 選択中のクリップ/リージョンを終端直後へ複製（連打で伸ばせる）
+    bool copySelectedItem();             // ⌘C: 選択中のクリップ/リージョンをクリップボードへ（録音中も可）
+    bool pasteItemAtPlayhead();          // ⌘V: 再生ヘッド位置×選択トラックへ貼る（型が合わなければ何もしない）
     void requestDeleteSelectedClip();    // 選択を読んで requestDeleteClipAt に渡す薄いラッパー
     void deleteSelectedRegion();         // 同上（deleteRegionAt へ）
     void requestDeleteClipAt (int trackIndex, int clipIndex);   // 確認ダイアログあり
@@ -237,6 +240,20 @@ private:
 
     static constexpr int topBarHeight = 54; // paint（グラデーション帯）とresizedで共有
     juce::Rectangle<float> topBarSeparator; // 右上ボタン群の区切り線（resizedで算出しpaintで描く）
+
+    // ⌘C/⌘V のクリップボード（アプリ内メモリ・セッション内のみ。システムのクリップボードとは無関係）。
+    // MidiRegion / Clip を丸ごと値で持つ（フィールドを詰め替えると、後からモデルに項目が
+    // 増えたときに取りこぼす）。ペーストで差し替えるのは開始位置とIDだけ。
+    // MainComponent は1プロジェクトにつき1つ生成されるので、プロジェクトを閉じれば一緒に消える。
+    // オーディオクリップを持っている間は fileName を保存時のGC保護リストへ渡す（trySave）
+    struct ItemClipboard
+    {
+        enum class Kind { none, midiRegion, audioClip };
+        Kind kind = Kind::none;
+        MidiRegion region; // kind == midiRegion のときだけ有効
+        Clip clip;         // kind == audioClip のときだけ有効
+    };
+    ItemClipboard itemClipboard;
 
     int selectedTrack = -1;
     bool dirty = false;

@@ -10,6 +10,9 @@
 // メッセージスレッドが所有するデータモデル。オーディオスレッドへは
 // buildSnapshot() で作った PlaybackSnapshot を SnapshotExchange 経由で渡す。
 
+// ループ回数の上限（手編集JSONの極端値で展開量が暴走しないための安全弁。実用上は十分な回数）
+inline constexpr int maxLoopCount = 999;
+
 // クリップはソースWAVへの非破壊参照（offsetSamples から lengthSamples 分）。
 // 分割・複製で複数クリップが同じ audio（と fileName）を共有する。
 // 不変条件: 0 <= offsetSamples / offsetSamples + lengthSamples <= バッファ全長 / lengthSamples >= 1。
@@ -24,8 +27,14 @@ struct Clip
     juce::int64 offsetSamples = 0;  // ソースWAV内の読み出し開始位置
     juce::int64 lengthSamples = 0;  // 再生長（サンプル）
     bool muted = false;         // リージョン単位のミュート（再生スナップショットから除外）
+    // 本体の後ろに何回繰り返すか（0 = ループなし）。元を編集すると繰り返し全部に反映される
+    // ＝実体は1つ。長さは本体長の整数倍のみ（中途半端な終端を作らない）
+    int loopCount = 0;
     std::shared_ptr<juce::AudioBuffer<float>> audio; // 1ch=モノ（録音）/ 2ch=ステレオ（取り込み）。メモリ常駐
     std::vector<float> peakCache;                    // samplesPerPeak ごとの絶対値ピーク（参照範囲のみ。ステレオはL/Rのmax合成）
+
+    // ループを含む総再生長（描画・ヒットテスト・終端計算はこちらを見る）
+    juce::int64 totalLengthSamples() const { return lengthSamples * (1 + juce::jmax (0, loopCount)); }
 
     void buildPeakCache();
 };
@@ -65,7 +74,12 @@ struct MidiRegion
     juce::int64 startPpq = 0;                  // 曲頭からの絶対位置（>= 0）
     juce::int64 lengthPpq = Ppq::ticksPerBar;  // >= 1
     bool muted = false;                        // リージョン単位のミュート（再生スナップショットから除外）
+    // 本体の後ろに何回繰り返すか（0 = ループなし）。Clip::loopCount と同じ規則
+    int loopCount = 0;
     std::vector<MidiNote> notes;
+
+    // ループを含む総再生長（描画・ヒットテスト・終端計算はこちらを見る）
+    juce::int64 totalLengthPpq() const { return lengthPpq * (1 + juce::jmax (0, loopCount)); }
 
     // 不変条件をモデル層で強制する。ノートの追加・移動・リサイズ後に必ず通すこと
     void clampNote (MidiNote& note) const
@@ -81,6 +95,22 @@ struct MidiRegion
 // 分割点以降に始まるノートは相対シフトして右へ移す。右の id は 0 のまま返す（呼び出し側で採番する）。
 // 分割点が内側にないときは false
 bool splitMidiRegion (const MidiRegion& region, juce::int64 splitPpq, MidiRegion& left, MidiRegion& right);
+
+// ---- 再生用の展開（ループ回数ぶん繰り返す）----
+// 通常再生・⌘B（Project::buildSnapshot）と ⌘E（BounceRenderer::buildItemRender）の両方から呼ぶ。
+// 展開規則を1箇所に集めるためのヘルパーなので、変えると両方の経路に効く。
+//
+// ミュートは判断しない。⌘Eは「明示選択が優先」でリージョンのミュートを無視する既存仕様なので、
+// muted による除外は呼び出し側（buildSnapshot）の責任にしている。
+
+// ノートを絶対PPQへフラット化して out へ足す。**各反復の末尾で境界マスクをかける**ので、
+// 境界をまたぐロングノートは次の反復へ持ち越さない（最終ループ終端だけで切るのでは足りない）。
+// fixedPitch >= 0 なら全ノートのピッチを置き換える（GMドラムの固定ピッチ規則。-1で置換なし）
+void appendRegionNotes (const MidiRegion& region, int fixedPitch, std::vector<MidiNotePlayback>& out);
+
+// クリップを ClipPlayback 列へ展開して out へ足す。開始位置だけが本体長ずつ進み、
+// ソース参照範囲（offset/length）は全反復で共通。範囲外読みの最終防衛線もここで掛ける
+void appendClipPlaybacks (const Clip& clip, std::vector<ClipPlayback>& out);
 
 enum class TrackType { audio, midi };
 
@@ -175,8 +205,9 @@ public:
     // v2: MIDIトラック・ID追加 / v3: クリップのoffsetSamples・lengthSamples /
     // v4: pan・sends・固定バス3本・Master / v5: サイクル（ループ範囲）/
     // v6: ステレオクリップ（ch数はJSONに持たずWAV自体から判定）・クリップ表示名（取り込み用）/
-    // v7: プロジェクトメモ / v8: サンプル音源（instrument・sample*）
-    static constexpr int currentVersion = 8;
+    // v7: プロジェクトメモ / v8: サンプル音源（instrument・sample*）/
+    // v9: リージョン/クリップのループ（loopCount。欠損＝ループなし）
+    static constexpr int currentVersion = 9;
 
     juce::File directory;
     double bpm = 120.0;

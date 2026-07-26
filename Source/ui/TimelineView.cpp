@@ -468,20 +468,45 @@ private:
         }
     }
 
+    // ループ部分（本体の繰り返し）を1枚の帯として薄く敷く。タイルを並べず1枚にするのは、
+    // 「複製が並んでいる」のではなく「1つの実体が繰り返されている」ことを見た目で分けるため。
+    // 反復境界の縦線はこの後に本体・中身を描いてから drawLoopTicks で引く
+    void drawLoopBand (juce::Graphics& g, juce::Colour base, int x, int loopRight, int y, int reps)
+    {
+        if (reps <= 1)
+            return;
+        g.setColour (base.withAlpha (0.42f));
+        g.fillRoundedRectangle (juce::Rectangle<int> (x, y + 4, loopRight - x, trackHeight - 8).toFloat(), 4.0f);
+    }
+
+    // ループハンドル（選択中のみ）。右端リサイズ（本体右端8px）とは辺を分けているので、
+    // 「長さを変えるつもりがループになった」が起きない
+    void drawLoopHandle (juce::Graphics& g, int x, int loopRight, int y, bool isSelected)
+    {
+        if (! isSelected)
+            return;
+        g.setColour (juce::Colours::white.withAlpha (0.85f));
+        g.fillRoundedRectangle (owner.loopHandleRect (x, loopRight, y).toFloat(), 2.0f);
+    }
+
     void drawClip (juce::Graphics& g, const Clip& clip, int y, bool isSelected,
                    const juce::Rectangle<int>& clipRegion, bool trackDimmed)
     {
         const double spp = owner.samplesPerPixel();
         const int x = owner.sampleToX (clip.startSample);
         const int w = juce::jmax (2, (int) ((double) clip.lengthSamples / spp));
-        if (x > clipRegion.getRight() || x + w < clipRegion.getX())
+        const int reps = 1 + juce::jmax (0, clip.loopCount);
+        const int loopRight = owner.sampleToX (clip.startSample + clip.totalLengthSamples());
+        if (x > clipRegion.getRight() || loopRight < clipRegion.getX())
             return;
 
         const auto rect = juce::Rectangle<int> (x, y + 4, w, trackHeight - 8);
         // ミュート中（リージョン単位 or トラック単位・ソロ含む）はグレー減光（Logic準拠）
         const bool dimmed = clip.muted || trackDimmed;
-        g.setColour (dimmed ? (isSelected ? Theme::clipMutedSelected : Theme::clipMuted)
-                            : (isSelected ? Theme::accent : Theme::clipAudio));
+        const auto base = dimmed ? (isSelected ? Theme::clipMutedSelected : Theme::clipMuted)
+                                 : (isSelected ? Theme::accent : Theme::clipAudio);
+        drawLoopBand (g, base, x, loopRight, y, reps);
+        g.setColour (base);
         g.fillRoundedRectangle (rect.toFloat(), 4.0f);
         // 上端1pxの微かなハイライトで面の上面を作る（Logicのリージョンと同じ。強くしない）
         g.setColour (juce::Colours::white.withAlpha (0.08f));
@@ -492,27 +517,40 @@ private:
             g.drawRoundedRectangle (rect.toFloat().reduced (0.5f), 4.0f, 1.5f);
         }
 
-        // 波形（ロード時に作ったピークキャッシュから描く）
-        g.setColour (juce::Colours::white.withAlpha (dimmed ? 0.3f : 0.75f));
-        const int x0 = juce::jmax (rect.getX(), clipRegion.getX());
-        const int x1 = juce::jmin (rect.getRight(), clipRegion.getRight());
+        // 波形（ロード時に作ったピークキャッシュから描く）。ループ部分は同じ形を薄く繰り返す
         const float midY = (float) rect.getCentreY();
         const float halfH = (float) (rect.getHeight() / 2 - 3);
-
-        for (int px = x0; px < x1; ++px)
+        for (int r = 0; r < reps; ++r)
         {
-            const double s0 = (px - x) * spp;
-            const double s1 = s0 + spp;
-            const int i0 = (int) (s0 / Clip::samplesPerPeak);
-            const int i1 = juce::jmax (i0 + 1, (int) (s1 / Clip::samplesPerPeak));
+            const int repX = owner.sampleToX (clip.startSample + (juce::int64) r * clip.lengthSamples);
+            if (repX > clipRegion.getRight())
+                break;
+            if (repX + w < clipRegion.getX())
+                continue;
+            if (r > 0) // 反復の切れ目
+            {
+                g.setColour (juce::Colours::white.withAlpha (0.25f));
+                g.drawVerticalLine (repX, (float) rect.getY(), (float) rect.getBottom());
+            }
+            g.setColour (juce::Colours::white.withAlpha (dimmed ? 0.3f : (r > 0 ? 0.4f : 0.75f)));
+            const int x0 = juce::jmax (repX, clipRegion.getX());
+            const int x1 = juce::jmin (repX + w, clipRegion.getRight());
+            for (int px = x0; px < x1; ++px)
+            {
+                const double s0 = (px - repX) * spp;
+                const double s1 = s0 + spp;
+                const int i0 = (int) (s0 / Clip::samplesPerPeak);
+                const int i1 = juce::jmax (i0 + 1, (int) (s1 / Clip::samplesPerPeak));
 
-            float peak = 0.0f;
-            for (int i = i0; i < i1 && i < (int) clip.peakCache.size(); ++i)
-                peak = juce::jmax (peak, clip.peakCache[(size_t) i]);
+                float peak = 0.0f;
+                for (int i = i0; i < i1 && i < (int) clip.peakCache.size(); ++i)
+                    peak = juce::jmax (peak, clip.peakCache[(size_t) i]);
 
-            const float h = juce::jlimit (1.0f, halfH, peak * halfH * 1.4f);
-            g.drawVerticalLine (px, midY - h, midY + h);
+                const float h = juce::jlimit (1.0f, halfH, peak * halfH * 1.4f);
+                g.drawVerticalLine (px, midY - h, midY + h);
+            }
         }
+        drawLoopHandle (g, x, loopRight, y, isSelected);
 
         // 表示名（取り込みクリップのみ。録音クリップは空=無ラベル）。
         // 強弱方針: リージョン本体より控えめ（波形と同程度のアルファ）
@@ -530,14 +568,18 @@ private:
     {
         const int x = owner.ppqToX (region.startPpq);
         const int w = juce::jmax (2, owner.ppqToX (region.startPpq + region.lengthPpq) - x);
-        if (x > clipRegion.getRight() || x + w < clipRegion.getX())
+        const int reps = 1 + juce::jmax (0, region.loopCount);
+        const int loopRight = owner.ppqToX (region.startPpq + region.totalLengthPpq());
+        if (x > clipRegion.getRight() || loopRight < clipRegion.getX())
             return;
 
         const auto rect = juce::Rectangle<int> (x, y + 4, w, trackHeight - 8);
         // ミュート中（リージョン単位 or トラック単位・ソロ含む）はグレー減光（Logic準拠）
         const bool dimmed = region.muted || trackDimmed;
-        g.setColour (dimmed ? (isSelected ? Theme::clipMutedSelected : Theme::clipMuted)
-                            : (isSelected ? Theme::regionMidiSelected : Theme::regionMidi));
+        const auto base = dimmed ? (isSelected ? Theme::clipMutedSelected : Theme::clipMuted)
+                                 : (isSelected ? Theme::regionMidiSelected : Theme::regionMidi);
+        drawLoopBand (g, base, x, loopRight, y, reps);
+        g.setColour (base);
         g.fillRoundedRectangle (rect.toFloat(), 4.0f);
         // 上端1pxの微かなハイライトで面の上面を作る（Logicのリージョンと同じ。強くしない）
         g.setColour (juce::Colours::white.withAlpha (0.08f));
@@ -548,22 +590,36 @@ private:
             g.drawRoundedRectangle (rect.toFloat().reduced (0.5f), 4.0f, 1.5f);
         }
 
-        // ノートのミニチュア（ピッチ範囲 C1..C7 に射影。範囲外はクランプ）
-        g.setColour (juce::Colours::white.withAlpha (dimmed ? 0.3f : 0.8f));
+        // ノートのミニチュア（ピッチ範囲 C1..C7 に射影。範囲外はクランプ）。
+        // ループ部分は同じノート列を薄く繰り返す（元を編集すると全部に反映されることを示す）
         constexpr int loPitch = 24, hiPitch = 96;
         const auto inner = rect.reduced (1, 3);
         const double tickW = (double) w / (double) juce::jmax ((juce::int64) 1, region.lengthPpq);
 
-        for (const auto& note : region.notes)
+        for (int r = 0; r < reps; ++r)
         {
-            const int nx = rect.getX() + (int) std::llround ((double) note.startPpq * tickW);
-            const int nw = juce::jmax (2, (int) std::llround ((double) note.lengthPpq * tickW));
-            const int clamped = juce::jlimit (loPitch, hiPitch, note.pitch);
-            const float rel = (float) (hiPitch - clamped) / (float) (hiPitch - loPitch);
-            const int ny = inner.getY() + (int) (rel * (float) (inner.getHeight() - 2));
-            g.fillRect (juce::jmax (nx, rect.getX()), ny,
-                        juce::jmin (nw, rect.getRight() - nx), 2);
+            const int repX = owner.ppqToX (region.startPpq + (juce::int64) r * region.lengthPpq);
+            if (repX > clipRegion.getRight())
+                break;
+            if (repX + w < clipRegion.getX())
+                continue;
+            if (r > 0) // 反復の切れ目
+            {
+                g.setColour (juce::Colours::white.withAlpha (0.25f));
+                g.drawVerticalLine (repX, (float) rect.getY(), (float) rect.getBottom());
+            }
+            g.setColour (juce::Colours::white.withAlpha (dimmed ? 0.3f : (r > 0 ? 0.45f : 0.8f)));
+            for (const auto& note : region.notes)
+            {
+                const int nx = repX + (int) std::llround ((double) note.startPpq * tickW);
+                const int nw = juce::jmax (2, (int) std::llround ((double) note.lengthPpq * tickW));
+                const int clamped = juce::jlimit (loPitch, hiPitch, note.pitch);
+                const float rel = (float) (hiPitch - clamped) / (float) (hiPitch - loPitch);
+                const int ny = inner.getY() + (int) (rel * (float) (inner.getHeight() - 2));
+                g.fillRect (juce::jmax (nx, repX), ny, juce::jmin (nw, repX + w - nx), 2);
+            }
         }
+        drawLoopHandle (g, x, loopRight, y, isSelected);
     }
 
     TimelineView& owner;
@@ -897,11 +953,12 @@ void TimelineView::updateContentSize()
         const double spt = samplesPerTick();
         for (auto& track : project->tracks)
         {
+            // ループ終端まで含める（含めないと長いループがビューポート外に出てスクロールできない）
             for (auto& clip : track.clips)
-                maxSample = juce::jmax (maxSample, clip.startSample + clip.lengthSamples);
+                maxSample = juce::jmax (maxSample, clip.startSample + clip.totalLengthSamples());
             for (auto& region : track.midiRegions)
                 maxSample = juce::jmax (maxSample,
-                                        (juce::int64) std::llround ((double) (region.startPpq + region.lengthPpq) * spt));
+                                        (juce::int64) std::llround ((double) (region.startPpq + region.totalLengthPpq()) * spt));
         }
         // 後方のマーカー（素材より先の小節）もコンテンツ幅に含める（見えない・操作できないを防ぐ）
         if (! project->markers.empty())
@@ -994,20 +1051,40 @@ void TimelineView::handleLaneMouseDown (const juce::MouseEvent& e)
             const int ri = hitTestRegion (row, e.x);
             if (ri >= 0)
             {
+                const bool wasSelected = regionSelection.track == row && regionSelection.region == ri;
                 selection.clear();
                 regionSelection = { row, ri };
                 auto& region = track.midiRegions[(size_t) ri];
 
-                // 右端8px以内はリサイズ（⌥ドラッグは常に移動＝複製）
+                // 判定順: ループハンドル（選択中のみ・右下隅はこちら優先）→ 右端リサイズ → 移動。
+                // ハンドルは選択中しか出ないので、未選択アイテムの1クリック目でループが伸びることはない
+                const int itemX = ppqToX (region.startPpq);
+                const int itemRight = ppqToX (region.startPpq + region.totalLengthPpq());
+                const bool onHandle = wasSelected && ! e.mods.isAltDown()
+                                      && loopHandleRect (itemX, itemRight, row * trackHeight)
+                                             .contains (e.x, e.y);
+                // 録音中はループ編集しない。ここで move/resize へ落とすと「ハンドルを掴んだつもりが
+                // リージョンが動く」になるので、ドラッグを開始せず選択だけで終える
+                if (onHandle && canEdit != nullptr && ! canEdit())
+                {
+                    if (onSelectionChanged)
+                        onSelectionChanged();
+                    lanes->repaint();
+                    return;
+                }
+                // 右端リサイズはループ中は無効（本体の右端がループ部分に隠れて「真ん中でリサイズ」になるため）
                 const int rightX = ppqToX (region.startPpq + region.lengthPpq);
-                regionDrag.mode = (! e.mods.isAltDown() && e.x >= rightX - 8)
-                                      ? RegionDrag::Mode::resize
-                                      : RegionDrag::Mode::move;
+                const bool onResize = ! onHandle && ! e.mods.isAltDown()
+                                      && region.loopCount == 0 && e.x >= rightX - 8;
+                regionDrag.mode = onHandle ? RegionDrag::Mode::loop
+                                  : onResize ? RegionDrag::Mode::resize
+                                             : RegionDrag::Mode::move;
                 regionDrag.isMidi = true;
                 regionDrag.track = row;
                 regionDrag.item = ri;
                 regionDrag.origStartPpq = region.startPpq;
                 regionDrag.origLengthPpq = region.lengthPpq;
+                regionDrag.origLoopCount = region.loopCount;
                 regionDrag.startX = e.x;
                 regionDrag.duplicateOnDrag = e.mods.isAltDown(); // 複製は実際に動いた時点で作る
 
@@ -1022,15 +1099,32 @@ void TimelineView::handleLaneMouseDown (const juce::MouseEvent& e)
             const int ci = hitTestClip (row, e.x);
             if (ci >= 0)
             {
+                const bool wasSelected = selection.track == row && selection.clip == ci;
                 selection = { row, ci };
                 regionSelection.clear();
+                const auto& clip = track.clips[(size_t) ci];
 
-                // オーディオは移動のみ（リサイズ＝トリムはTier 1スコープ外）。⌥ドラッグで複製
-                regionDrag.mode = RegionDrag::Mode::move;
+                // オーディオは移動とループのみ（リサイズ＝トリムはTier 1スコープ外）。⌥ドラッグで複製。
+                // ループハンドルは選択中しか出ない（MIDIリージョンと同じ規則）
+                const int itemX = sampleToX (clip.startSample);
+                const int itemRight = sampleToX (clip.startSample + clip.totalLengthSamples());
+                const bool onHandle = wasSelected && ! e.mods.isAltDown()
+                                      && loopHandleRect (itemX, itemRight, row * trackHeight)
+                                             .contains (e.x, e.y);
+                // 録音中はループ編集しない（移動へ落とさず選択だけで終える。MIDIと同じ規則）
+                if (onHandle && canEdit != nullptr && ! canEdit())
+                {
+                    if (onSelectionChanged)
+                        onSelectionChanged();
+                    lanes->repaint();
+                    return;
+                }
+                regionDrag.mode = onHandle ? RegionDrag::Mode::loop : RegionDrag::Mode::move;
                 regionDrag.isMidi = false;
                 regionDrag.track = row;
                 regionDrag.item = ci;
-                regionDrag.origStartSample = track.clips[(size_t) ci].startSample;
+                regionDrag.origStartSample = clip.startSample;
+                regionDrag.origLoopCount = clip.loopCount;
                 regionDrag.startX = e.x;
                 regionDrag.duplicateOnDrag = e.mods.isAltDown();
 
@@ -1067,8 +1161,18 @@ void TimelineView::handleLaneMouseDrag (const juce::MouseEvent& e)
     if (regionDrag.item < 0 || regionDrag.item >= itemCount)
         return;
 
+    // ループ伸縮のスナップ: ハンドルはループ終端を掴んでいる。ドラッグ後の総再生長を本体長で
+    // 割って回数にする（本体長の整数倍のみ。本体終端まで戻すと 0 = ループなしへ正規化される）
+    const auto loopCountFromDrag = [&] (double bodyLength, double delta)
+    {
+        const double body = juce::jmax (1.0, bodyLength);
+        const double newTotal = body * (1 + regionDrag.origLoopCount) + delta;
+        return juce::jlimit (0, maxLoopCount, (int) std::llround (newTotal / body) - 1);
+    };
+
     // スナップ後の時間位置・長さを先に計算する（編集開始の「実際に値が変わるか」の判定にも使う）
     juce::int64 snappedStart = 0, snappedLength = 0;
+    int snappedLoopCount = regionDrag.origLoopCount;
     if (regionDrag.isMidi)
     {
         const auto grid = juce::jmax ((juce::int64) 1, gridPpq());
@@ -1079,14 +1183,21 @@ void TimelineView::handleLaneMouseDrag (const juce::MouseEvent& e)
         snappedLength = juce::jmax (grid,
                                     (juce::int64) std::llround ((double) (regionDrag.origLengthPpq + deltaPpq)
                                                                 / (double) grid) * grid);
+        if (regionDrag.mode == RegionDrag::Mode::loop)
+            snappedLoopCount = loopCountFromDrag ((double) regionDrag.origLengthPpq, (double) deltaPpq);
     }
     else
     {
         const auto deltaSamples = xToSample (e.x) - xToSample (regionDrag.startX);
         snappedStart = snapSampleToGrid (regionDrag.origStartSample + deltaSamples);
+        if (regionDrag.mode == RegionDrag::Mode::loop)
+            snappedLoopCount = loopCountFromDrag ((double) sourceTrack.clips[(size_t) regionDrag.item].lengthSamples,
+                                                  (double) deltaSamples);
     }
     const bool timeChanged = regionDrag.mode == RegionDrag::Mode::resize
                                  ? snappedLength != regionDrag.origLengthPpq
+                             : regionDrag.mode == RegionDrag::Mode::loop
+                                 ? snappedLoopCount != regionDrag.origLoopCount
                                  : snappedStart != (regionDrag.isMidi ? regionDrag.origStartPpq
                                                                       : regionDrag.origStartSample);
 
@@ -1169,13 +1280,22 @@ void TimelineView::handleLaneMouseDrag (const juce::MouseEvent& e)
         auto& region = track.midiRegions[(size_t) regionDrag.item];
         if (regionDrag.mode == RegionDrag::Mode::move)
             region.startPpq = snappedStart;
-        else
+        else if (regionDrag.mode == RegionDrag::Mode::resize)
             region.lengthPpq = snappedLength;
+        else
+            region.loopCount = snappedLoopCount;
     }
     else
     {
-        track.clips[(size_t) regionDrag.item].startSample = snappedStart;
+        auto& clip = track.clips[(size_t) regionDrag.item];
+        if (regionDrag.mode == RegionDrag::Mode::loop)
+            clip.loopCount = snappedLoopCount;
+        else
+            clip.startSample = snappedStart;
     }
+    // ループ伸長中もコンテンツ幅を広げる（確定時だけだとハンドルを右へ引き続けられない）
+    if (regionDrag.mode == RegionDrag::Mode::loop)
+        updateContentSize();
     lanes->repaint();
 }
 
@@ -1183,12 +1303,32 @@ void TimelineView::handleLaneMouseUp (const juce::MouseEvent&)
 {
     if (regionDrag.mode != RegionDrag::Mode::none && regionDrag.edited)
     {
-        Log::info ("region.drag", juce::String (regionDrag.isMidi ? "type=midi" : "type=audio")
-                                      + (regionDrag.mode == RegionDrag::Mode::resize ? " mode=resize"
-                                                                                     : " mode=move")
-                                      + " track=" + juce::String (regionDrag.track)
-                                      + " item=" + juce::String (regionDrag.item)
-                                      + (regionDrag.duplicateOnDrag ? " dup=1" : ""));
+        if (regionDrag.mode == RegionDrag::Mode::loop)
+        {
+            int count = -1;
+            if (project != nullptr && regionDrag.track >= 0
+                && regionDrag.track < (int) project->tracks.size())
+            {
+                const auto& track = project->tracks[(size_t) regionDrag.track];
+                if (regionDrag.isMidi && regionDrag.item < (int) track.midiRegions.size())
+                    count = track.midiRegions[(size_t) regionDrag.item].loopCount;
+                else if (! regionDrag.isMidi && regionDrag.item < (int) track.clips.size())
+                    count = track.clips[(size_t) regionDrag.item].loopCount;
+            }
+            Log::info ("region.loop", juce::String (regionDrag.isMidi ? "type=midi" : "type=audio")
+                                          + " track=" + juce::String (regionDrag.track)
+                                          + " item=" + juce::String (regionDrag.item)
+                                          + " count=" + juce::String (count));
+        }
+        else
+        {
+            Log::info ("region.drag", juce::String (regionDrag.isMidi ? "type=midi" : "type=audio")
+                                          + (regionDrag.mode == RegionDrag::Mode::resize ? " mode=resize"
+                                                                                         : " mode=move")
+                                          + " track=" + juce::String (regionDrag.track)
+                                          + " item=" + juce::String (regionDrag.item)
+                                          + (regionDrag.duplicateOnDrag ? " dup=1" : ""));
+        }
         updateContentSize();
         if (onModelEdited)
             onModelEdited();
@@ -1248,7 +1388,7 @@ int TimelineView::hitTestRegion (int trackIndex, int x) const
     {
         const auto& region = track.midiRegions[(size_t) ri];
         const int x0 = ppqToX (region.startPpq);
-        const int x1 = ppqToX (region.startPpq + region.lengthPpq);
+        const int x1 = ppqToX (region.startPpq + region.totalLengthPpq()); // ループ部分も本体と同じ扱い
         if (x >= x0 && x <= x1)
             return ri;
     }
@@ -1268,7 +1408,8 @@ int TimelineView::hitTestClip (int trackIndex, int x) const
     for (int ci = (int) track.clips.size() - 1; ci >= 0; --ci)
     {
         const auto& clip = track.clips[(size_t) ci];
-        if (samplePos >= clip.startSample && samplePos < clip.startSample + clip.lengthSamples)
+        // ループ部分も本体と同じ扱い（クリックで選択・ドラッグで移動）
+        if (samplePos >= clip.startSample && samplePos < clip.startSample + clip.totalLengthSamples())
             return ci;
     }
     return -1;
@@ -1284,6 +1425,8 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
         return;
     const bool muted = isMidi ? track.midiRegions[(size_t) itemIndex].muted
                               : track.clips[(size_t) itemIndex].muted;
+    const bool looped = isMidi ? track.midiRegions[(size_t) itemIndex].loopCount > 0
+                               : track.clips[(size_t) itemIndex].loopCount > 0;
 
     // 分割は再生ヘッドが対象の内側（境界を除く）にあるときだけ有効
     bool canSplit = false;
@@ -1314,7 +1457,9 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
     juce::PopupMenu menu;
     menu.addItem (itemWithKey (1, muted ? jp (u8"ミュート解除") : jp (u8"ミュート"),
                                Shortcuts::ID::muteRegion));
-    menu.addItem (2, jp (u8"複製"));
+    menu.addItem (itemWithKey (2, jp (u8"複製"), Shortcuts::ID::repeatItem));
+    // ループはハンドルのドラッグで作るので「解除」だけメニューに置く（ループ中のみ有効）
+    menu.addItem (6, jp (u8"ループ解除"), looped);
     menu.addItem (itemWithKey (4, jp (u8"再生ヘッド位置で分割"), Shortcuts::ID::split, canSplit));
     menu.addItem (itemWithKey (5, jp (u8"書き出し…"), Shortcuts::ID::exportRegion));
     menu.addItem (itemWithKey (3, jp (u8"削除"), Shortcuts::ID::deleteItem));
@@ -1337,11 +1482,15 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
                                 safe->splitAtPlayhead (trackIndex, itemIndex);
                             else if (result == 5 && safe->onExportItemRequested)
                                 safe->onExportItemRequested (trackIndex, itemIndex);
+                            else if (result == 6)
+                                safe->clearLoopAt (trackIndex, itemIndex);
                         });
 }
 
 void TimelineView::toggleMuteAt (int trackIndex, int itemIndex)
 {
+    if (canEdit != nullptr && ! canEdit())
+        return; // 録音中（キー経由と右クリック経由で挙動を揃える）
     if (project == nullptr || trackIndex < 0 || trackIndex >= (int) project->tracks.size())
         return;
     auto& track = project->tracks[(size_t) trackIndex];
@@ -1362,8 +1511,62 @@ void TimelineView::toggleMuteAt (int trackIndex, int itemIndex)
     lanes->repaint();
 }
 
+void TimelineView::clearLoopAt (int trackIndex, int itemIndex)
+{
+    if (canEdit != nullptr && ! canEdit())
+        return; // 録音中
+    if (project == nullptr || trackIndex < 0 || trackIndex >= (int) project->tracks.size())
+        return;
+    auto& track = project->tracks[(size_t) trackIndex];
+    const bool isMidi = track.type == TrackType::midi;
+    if (itemIndex < 0 || itemIndex >= (int) (isMidi ? track.midiRegions.size() : track.clips.size()))
+        return;
+
+    int& loopCount = isMidi ? track.midiRegions[(size_t) itemIndex].loopCount
+                            : track.clips[(size_t) itemIndex].loopCount;
+    if (loopCount == 0)
+        return;
+
+    if (onWillEditModel)
+        onWillEditModel();
+    loopCount = 0;
+    Log::info ("region.loop", juce::String (isMidi ? "type=midi" : "type=audio")
+                                  + " track=" + juce::String (trackIndex)
+                                  + " item=" + juce::String (itemIndex) + " count=0");
+    updateContentSize();
+    if (onModelEdited)
+        onModelEdited();
+    lanes->repaint();
+}
+
+juce::Rectangle<int> TimelineView::loopHandleRect (int itemX, int itemRight, int laneY) const
+{
+    // 短いアイテムでははみ出さないよう幅を詰める（最低8px。それ未満ならアイテム幅どおり）
+    const int w = juce::jmin (loopHandleWidth, juce::jmax (8, itemRight - itemX));
+    return { itemRight - w, laneY + 4 + (trackHeight - 8) - loopHandleHeight, w, loopHandleHeight };
+}
+
+void TimelineView::selectItem (int trackIndex, int itemIndex, bool isMidi)
+{
+    if (isMidi)
+    {
+        selection.clear();
+        regionSelection = { trackIndex, itemIndex };
+    }
+    else
+    {
+        selection = { trackIndex, itemIndex };
+        regionSelection.clear();
+    }
+    if (onSelectionChanged)
+        onSelectionChanged();
+    lanes->repaint();
+}
+
 void TimelineView::duplicateAt (int trackIndex, int itemIndex)
 {
+    if (canEdit != nullptr && ! canEdit())
+        return; // 録音中（キー経由と右クリック経由で挙動を揃える）
     if (project == nullptr || trackIndex < 0 || trackIndex >= (int) project->tracks.size())
         return;
     auto& track = project->tracks[(size_t) trackIndex];
@@ -1378,7 +1581,8 @@ void TimelineView::duplicateAt (int trackIndex, int itemIndex)
         copy.id = project->allocateId();
         for (auto& note : copy.notes)
             note.id = project->allocateId();
-        copy.startPpq += copy.lengthPpq; // 元の終端直後（Logicのリピート相当）
+        // 元の終端直後（Logicのリピート相当）。ループ中はループ終端の直後＝重ならない位置へ
+        copy.startPpq += copy.totalLengthPpq();
         track.midiRegions.push_back (std::move (copy));
         selection.clear();
         regionSelection = { trackIndex, (int) track.midiRegions.size() - 1 };
@@ -1390,7 +1594,8 @@ void TimelineView::duplicateAt (int trackIndex, int itemIndex)
         if (onWillEditModel)
             onWillEditModel();
         Clip copy = track.clips[(size_t) itemIndex]; // fileName/audioは共有、peakCacheは値コピー
-        copy.startSample += copy.lengthSamples;      // 元の終端直後（Logicのリピート相当）
+        // 元の終端直後（Logicのリピート相当）。ループ中はループ終端の直後＝重ならない位置へ
+        copy.startSample += copy.totalLengthSamples();
         track.clips.push_back (std::move (copy));
         selection = { trackIndex, (int) track.clips.size() - 1 };
         regionSelection.clear();
@@ -1408,6 +1613,8 @@ void TimelineView::duplicateAt (int trackIndex, int itemIndex)
 
 void TimelineView::splitAtPlayhead (int trackIndex, int itemIndex)
 {
+    if (canEdit != nullptr && ! canEdit())
+        return; // 録音中（キー経由と右クリック経由で挙動を揃える）
     if (project == nullptr || trackIndex < 0 || trackIndex >= (int) project->tracks.size())
         return;
     auto& track = project->tracks[(size_t) trackIndex];
@@ -1425,6 +1632,8 @@ void TimelineView::splitAtPlayhead (int trackIndex, int itemIndex)
         if (onWillEditModel)
             onWillEditModel();
         right.id = project->allocateId();
+        // 分割はループを解除する（左右どちらに繰り返しを引き継ぐか自明でないため）
+        left.loopCount = right.loopCount = 0;
         track.midiRegions[(size_t) itemIndex] = std::move (left);
         track.midiRegions.push_back (std::move (right));
         selection.clear();
@@ -1439,6 +1648,7 @@ void TimelineView::splitAtPlayhead (int trackIndex, int itemIndex)
             return;
         if (onWillEditModel)
             onWillEditModel();
+        left.loopCount = right.loopCount = 0; // 分割はループを解除（MIDIと同じ規則）
         track.clips[(size_t) itemIndex] = std::move (left);
         track.clips.push_back (std::move (right));
         selection = { trackIndex, itemIndex };

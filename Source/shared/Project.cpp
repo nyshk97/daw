@@ -88,6 +88,44 @@ bool splitClip (const Clip& clip, juce::int64 splitSample, Clip& left, Clip& rig
     return true;
 }
 
+void appendRegionNotes (const MidiRegion& region, int fixedPitch, std::vector<MidiNotePlayback>& out)
+{
+    const int reps = 1 + juce::jmax (0, region.loopCount);
+    for (int r = 0; r < reps; ++r)
+    {
+        const auto repStart = region.startPpq + (juce::int64) r * region.lengthPpq;
+        const auto repEnd = repStart + region.lengthPpq; // マスクは反復ごと（次の反復へ持ち越さない）
+        for (const auto& note : region.notes)
+        {
+            const auto absStart = repStart + note.startPpq;
+            const auto absEnd = juce::jmin (absStart + note.lengthPpq, repEnd);
+            if (absEnd <= absStart)
+                continue;
+            out.push_back ({ absStart, absEnd,
+                             fixedPitch >= 0 ? fixedPitch : note.pitch, note.velocity });
+        }
+    }
+}
+
+void appendClipPlaybacks (const Clip& clip, std::vector<ClipPlayback>& out)
+{
+    if (clip.audio == nullptr)
+        return;
+    // オーディオスレッドの範囲外読みを防ぐ最終防衛線（モデル側の不変条件が正なら素通し）
+    const auto bufferLength = (juce::int64) clip.audio->getNumSamples();
+    const auto offset = juce::jlimit ((juce::int64) 0, bufferLength, clip.offsetSamples);
+    const auto length = juce::jlimit ((juce::int64) 0, bufferLength - offset, clip.lengthSamples);
+    if (length <= 0)
+        return;
+
+    // 反復の間隔はクランプ後の length でなくモデルの lengthSamples。描画も lengthSamples 基準なので、
+    // 異常値でクランプが効いたときに見た目と鳴りがズレないようにする
+    const int reps = 1 + juce::jmax (0, clip.loopCount);
+    for (int r = 0; r < reps; ++r)
+        out.push_back ({ clip.audio, clip.startSample + (juce::int64) r * clip.lengthSamples,
+                         offset, length });
+}
+
 bool splitMidiRegion (const MidiRegion& region, juce::int64 splitPpq, MidiRegion& left, MidiRegion& right)
 {
     if (splitPpq <= region.startPpq || splitPpq >= region.startPpq + region.lengthPpq)
@@ -283,6 +321,8 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
                 clipObj->setProperty ("offsetSamples", clip.offsetSamples);
                 clipObj->setProperty ("lengthSamples", clip.lengthSamples);
                 clipObj->setProperty ("muted", clip.muted);
+                if (clip.loopCount > 0) // ループなしはJSONを汚さない（旧形式と同じ見た目のまま）
+                    clipObj->setProperty ("loopCount", clip.loopCount);
                 clipsArray.add (juce::var (clipObj));
             }
             trackObj->setProperty ("clips", clipsArray);
@@ -317,6 +357,8 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
                 regionObj->setProperty ("startPpq", region.startPpq);
                 regionObj->setProperty ("lengthPpq", region.lengthPpq);
                 regionObj->setProperty ("muted", region.muted);
+                if (region.loopCount > 0) // ループなしはJSONを汚さない
+                    regionObj->setProperty ("loopCount", region.loopCount);
 
                 juce::Array<juce::var> notesArray;
                 for (auto& note : region.notes)
@@ -471,6 +513,9 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
                         clip.name = clipVar.getProperty ("name", "").toString(); // v5以前は無い（空=無ラベル）
                         clip.startSample = (juce::int64) clipVar.getProperty ("startSample", 0);
                         clip.muted = (bool) clipVar.getProperty ("muted", false);
+                        // v8以前は無い（欠損＝ループなし）。上限は展開量の暴走を防ぐ安全弁
+                        clip.loopCount = juce::jlimit (0, maxLoopCount,
+                                                       (int) clipVar.getProperty ("loopCount", 0));
 
                         const auto cached = wavCache.find (clip.fileName);
                         if (cached != wavCache.end())
@@ -567,6 +612,9 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
                         region.lengthPpq = juce::jmax ((juce::int64) 1,
                                                        (juce::int64) regionVar.getProperty ("lengthPpq", Ppq::ticksPerBar));
                         region.muted = (bool) regionVar.getProperty ("muted", false);
+                        // v8以前は無い（欠損＝ループなし）。上限は展開量の暴走を防ぐ安全弁
+                        region.loopCount = juce::jlimit (0, maxLoopCount,
+                                                         (int) regionVar.getProperty ("loopCount", 0));
 
                         if (auto* notesArray = regionVar.getProperty ("notes", {}).getArray())
                         {
@@ -778,21 +826,14 @@ std::unique_ptr<PlaybackSnapshot> Project::buildSnapshot() const
             {
                 if (clip.audio == nullptr || clip.muted)
                     continue;
-
-                // オーディオスレッドの範囲外読みを防ぐ最終防衛線（モデル側の不変条件が正なら素通し）
-                const auto bufferLength = (juce::int64) clip.audio->getNumSamples();
-                const auto offset = juce::jlimit ((juce::int64) 0, bufferLength, clip.offsetSamples);
-                const auto length = juce::jlimit ((juce::int64) 0, bufferLength - offset, clip.lengthSamples);
-                if (length <= 0)
-                    continue;
                 if (clip.audio->getNumChannels() >= 2)
                     trackPlayback.hasStereoClip = true; // エンジンのトラック経路選択（モノのみ=現行経路）
-                trackPlayback.clips.push_back ({ clip.audio, clip.startSample, offset, length });
+                appendClipPlaybacks (clip, trackPlayback.clips); // ループ展開・範囲クランプはヘルパー側
             }
         }
         else
         {
-            // ノートを絶対PPQへフラット化し、リージョン境界でマスクする。
+            // ノートを絶対PPQへフラット化し、（ループの各反復ごとに）リージョン境界でマスクする。
             // synth の参照は呼び出し側（MainComponent::pushSnapshot）が SynthBank から埋める。
             //
             // 固定ピッチ置換（Kick等）は**GM音源専用の規則**。GMのドラムマップへ「その打楽器の
@@ -803,19 +844,9 @@ std::unique_ptr<PlaybackSnapshot> Project::buildSnapshot() const
                                     && track.drums && track.drumPitch >= 0;
             for (auto& region : track.midiRegions)
             {
-                if (region.muted)
+                if (region.muted) // ミュート除外はここ（展開ヘルパーはミュートを判断しない）
                     continue;
-                const auto regionEnd = region.startPpq + region.lengthPpq;
-                for (auto& note : region.notes)
-                {
-                    const auto absStart = region.startPpq + note.startPpq;
-                    const auto absEnd = juce::jmin (absStart + note.lengthPpq, regionEnd);
-                    if (absEnd <= absStart)
-                        continue;
-                    trackPlayback.notes.push_back ({ absStart, absEnd,
-                                                     fixedPitch ? track.drumPitch : note.pitch,
-                                                     note.velocity });
-                }
+                appendRegionNotes (region, fixedPitch ? track.drumPitch : -1, trackPlayback.notes);
             }
             // stable_sort: 同時刻ノートの順序をリージョン/ノートの並びで決定的にする（イベント上限時の挙動を再現可能に）
             std::stable_sort (trackPlayback.notes.begin(), trackPlayback.notes.end(),

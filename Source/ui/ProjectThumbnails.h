@@ -8,6 +8,48 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 
 #include "../shared/Ppq.h"
+#include "../shared/Project.h" // maxLoopCount（クランプ上限をモデル側と共有する）
+
+// 1反復ぶんに集約したローカルビン（クリップ内を numBins 等分したピーク）を、ループ反復ぶん
+// グローバルビン（曲全体を numBins 等分）へ転写する。
+//
+// ループ回数ぶん元サンプルを走査し直すと O(サンプル数 × 回数) になり、上限回数では
+// 48kHz・1分のクリップで数秒かかってサムネイル用ワーカーを占有する（実測 8.7秒 → 9.5ms）。
+// 「集約は1回・転写は回数ぶん」に分けて O(サンプル数 + 回数 × numBins) に保つのが要点
+inline void spreadLoopedBins (const std::vector<float>& local, int numBins,
+                              juce::int64 clipStart, juce::int64 clipLength, int reps,
+                              juce::int64 totalSamples, std::vector<float>& out,
+                              const std::atomic<bool>* abortFlag = nullptr)
+{
+    if (clipLength <= 0 || totalSamples <= 0 || numBins <= 0)
+        return;
+    // 集約側は floor(sample * numBins / clipLength) でローカルビンを決めているので、
+    // 逆算（ビン → サンプル範囲）は切り上げになる。両端とも切り捨てると1サンプル手前へずれ、
+    // クリップが短い（clipLength が numBins に近い/下回る）ほどグローバルビンを跨いで見える
+    const auto ceilDiv = [] (juce::int64 a, juce::int64 b) { return (a + b - 1) / b; };
+    for (int r = 0; r < reps; ++r)
+    {
+        if (abortFlag != nullptr && abortFlag->load())
+            return;
+        const auto repStart = clipStart + (juce::int64) r * clipLength;
+        for (int k = 0; k < numBins && k < (int) local.size(); ++k)
+        {
+            const float peak = local[(size_t) k];
+            if (peak <= 0.0f)
+                continue;
+            // ローカルビンkが覆うサンプル範囲を、それが跨るグローバルビンすべてへ広げる
+            // （通常ローカルの方が細かいので1個。クリップが全長を占めるときだけ複数になる）
+            const auto s0 = repStart + ceilDiv ((juce::int64) k * clipLength, numBins);
+            const auto s1 = repStart + juce::jmax ((juce::int64) 0,
+                                                   ceilDiv ((juce::int64) (k + 1) * clipLength, numBins) - 1);
+            const auto b0 = (size_t) juce::jmin ((juce::int64) numBins - 1, s0 * numBins / totalSamples);
+            const auto b1 = (size_t) juce::jmin ((juce::int64) numBins - 1,
+                                                 juce::jmax (s0, s1) * numBins / totalSamples);
+            for (size_t b = b0; b <= b1 && b < out.size(); ++b)
+                out[b] = juce::jmax (out[b], peak);
+        }
+    }
+}
 
 // プロジェクト選択画面の行に出すオーバービュー（ミニ波形＋メタ情報）
 struct ProjectOverview
@@ -72,7 +114,10 @@ private:
 
     // キャッシュ形式: int32 version / int64 sourceMtimeMs / double bpm / int32 numTracks /
     //                double lengthSeconds / int32 count / float×count
-    static constexpr juce::int32 cacheVersion = 2;
+    // v3: ループ（loopCount）を曲長・ミニ波形に反映。計算結果が変わるので古いキャッシュを捨てる
+    // （mtimeでも大半は無効化されるが、ループ入りで保存済みのプロジェクトを旧版で1度でも
+    //   サムネイル生成していると mtime が同じまま古い結果を返してしまうため）
+    static constexpr juce::int32 cacheVersion = 3;
 
     static ProjectOverview loadOrCompute (const juce::File& dir, juce::int64 mtimeMs,
                                           std::atomic<bool>& abortFlag)
@@ -142,6 +187,7 @@ private:
         {
             std::unique_ptr<juce::AudioFormatReader> reader;
             juce::int64 start = 0, offset = 0, length = 0;
+            int reps = 1; // ループを含む再生回数（1 = ループなし）。同じソース範囲を繰り返す
         };
 
         ProjectOverview overview;
@@ -163,9 +209,14 @@ private:
             {
                 if (const auto* regions = track.getProperty ("regions", {}).getArray())
                     for (const auto& r : *regions)
+                    {
+                        // ループ回数ぶん伸ばす（欠損＝ループなし。v8以前のJSONもここを通る）
+                        const auto reps = (juce::int64) (1 + juce::jlimit (0, maxLoopCount,
+                                                                           (int) r.getProperty ("loopCount", 0)));
                         maxPpq = juce::jmax (maxPpq,
                                              (juce::int64) r.getProperty ("startPpq", 0)
-                                                 + (juce::int64) r.getProperty ("lengthPpq", 0));
+                                                 + (juce::int64) r.getProperty ("lengthPpq", 0) * reps);
+                    }
                 continue;
             }
 
@@ -194,6 +245,7 @@ private:
                 ref.length = declared > 0 ? juce::jmin (declared, available) : available;
                 if (ref.length <= 0)
                     continue;
+                ref.reps = 1 + juce::jlimit (0, maxLoopCount, (int) c.getProperty ("loopCount", 0));
                 if (sampleRate <= 0)
                     sampleRate = reader->sampleRate;
                 ref.reader = std::move (reader);
@@ -203,7 +255,7 @@ private:
 
         juce::int64 totalSamples = 0;
         for (const auto& c : clips)
-            totalSamples = juce::jmax (totalSamples, c.start + c.length);
+            totalSamples = juce::jmax (totalSamples, c.start + c.length * c.reps);
 
         // 曲長 = 音声クリップとMIDIリージョンの終端の遅い方
         const double audioSeconds = sampleRate > 0 ? (double) totalSamples / sampleRate : 0.0;
@@ -220,8 +272,14 @@ private:
         std::vector<float> buffer ((size_t) chunkSize);
         float* bufferPtr = buffer.data();
 
+        // ループは同じソース範囲の繰り返しなので、まず1反復ぶんを numBins 個のローカルビンへ
+        // 集約し、そのあと各反復のグローバルビンへ転写する。サンプルごとに反復数だけ回すと
+        // O(サンプル数 × 回数) になり、回数が大きいとワーカーを長時間占有してしまう
+        // （ここは O(サンプル数 + 回数 × numBins)）
+        std::vector<float> localPeaks ((size_t) numBins);
         for (auto& c : clips)
         {
+            localPeaks.assign ((size_t) numBins, 0.0f);
             for (juce::int64 pos = 0; pos < c.length; pos += chunkSize)
             {
                 if (abortFlag)
@@ -231,13 +289,14 @@ private:
                     break;
                 for (int i = 0; i < n; ++i)
                 {
-                    const auto bin = juce::jmin (
-                        (size_t) ((c.start + pos + i) * numBins / totalSamples),
-                        (size_t) numBins - 1);
-                    overview.peaks[bin] = juce::jmax (overview.peaks[bin],
-                                                      std::abs (bufferPtr[i]));
+                    const auto local = (size_t) juce::jmin ((juce::int64) numBins - 1,
+                                                            (pos + i) * numBins / c.length);
+                    localPeaks[local] = juce::jmax (localPeaks[local], std::abs (bufferPtr[i]));
                 }
             }
+
+            spreadLoopedBins (localPeaks, numBins, c.start, c.length, c.reps, totalSamples,
+                              overview.peaks, &abortFlag);
         }
 
         // 見た目の正規化: 最大値を1に合わせ、0.7乗で持ち上げて小音量部も形が見えるようにする

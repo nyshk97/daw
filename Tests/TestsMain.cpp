@@ -20,6 +20,7 @@
 #include "ui/BottomPanelHistory.h"
 #include "ui/FileSortOrder.h"
 #include "ui/PreviewPolicy.h"
+#include "ui/ProjectThumbnails.h"
 #include "ui/Shortcuts.h"
 
 namespace
@@ -606,6 +607,51 @@ void testBottomPanelShortcuts()
             "[ / ]の表記");
 }
 
+// ⌘R（リピート）と ⌘C/⌘V（コピー/ペースト）。素の R（録音）・C（サイクル）と混ざらないこと、
+// 1キーにマッチする項目がちょうど1件であること（⌘C/⌘Vはノートとリージョンで共用するので分けない）
+void testRegionEditShortcuts()
+{
+    beginTest ("region edit shortcuts");
+
+    const auto none = juce::ModifierKeys();
+    const auto cmd = juce::ModifierKeys (juce::ModifierKeys::commandModifier);
+
+    const juce::KeyPress plainR ('r', none, 'r');
+    const juce::KeyPress cmdR ('r', cmd, 0);
+    const juce::KeyPress plainC ('c', none, 'c');
+    const juce::KeyPress cmdC ('c', cmd, 0);
+    const juce::KeyPress cmdV ('v', cmd, 0);
+
+    expect (Shortcuts::matches (cmdR, Shortcuts::ID::repeatItem), "⌘R でリピート");
+    expect (! Shortcuts::matches (cmdR, Shortcuts::ID::record), "⌘R が録音に化けないこと");
+    expect (Shortcuts::matches (plainR, Shortcuts::ID::record), "R は従来どおり録音");
+    expect (! Shortcuts::matches (plainR, Shortcuts::ID::repeatItem), "R がリピートに化けないこと");
+
+    expect (Shortcuts::matches (cmdC, Shortcuts::ID::copyItem), "⌘C でコピー");
+    expect (! Shortcuts::matches (cmdC, Shortcuts::ID::toggleCycle), "⌘C がサイクルに化けないこと");
+    expect (Shortcuts::matches (plainC, Shortcuts::ID::toggleCycle), "C は従来どおりサイクル");
+    expect (Shortcuts::matches (cmdV, Shortcuts::ID::pasteItem), "⌘V でペースト");
+
+    auto hits = [] (const juce::KeyPress& k)
+    {
+        int n = 0;
+        for (const auto& e : Shortcuts::table)
+            if (e.matcher (k))
+                ++n;
+        return n;
+    };
+    expect (hits (cmdR) == 1, "⌘R にマッチする項目がちょうど1件");
+    expect (hits (plainR) == 1, "R にマッチする項目がちょうど1件");
+    expect (hits (cmdC) == 1, "⌘C にマッチする項目がちょうど1件（ノート用と分けない）");
+    expect (hits (cmdV) == 1, "⌘V にマッチする項目がちょうど1件");
+    expect (hits (plainC) == 1, "C にマッチする項目がちょうど1件");
+
+    // ⌘?一覧はテーブル走査で作られるので、載っている＝一覧に出る
+    expect (Shortcuts::keyText (Shortcuts::ID::repeatItem) == juce::String::fromUTF8 (u8"⌘R"), "⌘Rの表記");
+    expect (Shortcuts::keyText (Shortcuts::ID::copyItem) == juce::String::fromUTF8 (u8"⌘C"), "⌘Cの表記");
+    expect (Shortcuts::keyText (Shortcuts::ID::pasteItem) == juce::String::fromUTF8 (u8"⌘V"), "⌘Vの表記");
+}
+
 // ---- GAINスライダーの描画: 中央(0dB)起点の帯。トラックヘッダーの音量バーには出さない ----
 void testGainSliderCenterFill()
 {
@@ -786,6 +832,73 @@ void testMidiRoundtrip()
     expect (r.notes[1].id == note2.id && r.notes[1].startPpq == Ppq::ticksPerQuarter
                 && r.notes[1].lengthPpq == 80 && r.notes[1].velocity == 1,
             "ノート2維持（1/32三連符・velocity境界）");
+
+    dir.deleteRecursively();
+}
+
+// ループ回数の保存・読み込み。ループなしのときは loopCount を書かないので、
+// 出来上がるJSONはv8以前と同じ形になる（＝旧形式を読んでもループなしで復元される）
+void testLoopRoundtrip()
+{
+    beginTest ("loop roundtrip and legacy default");
+    const auto dir = makeTempDir();
+
+    juce::String error;
+    auto project = Project::createNew (dir.getChildFile ("proj"), error);
+    expect (project != nullptr, "createNewできること");
+    if (project == nullptr)
+        { dir.deleteRecursively(); return; }
+
+    const auto wavFile = project->directory.getChildFile ("clip-001.wav");
+    expect (writeTestWav (wavFile, 4410), "テストWAVを書けること");
+    Clip clip;
+    clip.fileName = "clip-001.wav";
+    clip.audio = Project::loadWav (wavFile);
+    clip.lengthSamples = clip.audio != nullptr ? clip.audio->getNumSamples() : 0;
+    clip.loopCount = 2;
+    project->tracks[0].clips.push_back (std::move (clip));
+
+    Track midiTrack;
+    midiTrack.id = project->allocateId();
+    midiTrack.type = TrackType::midi;
+    MidiRegion region;
+    region.id = project->allocateId();
+    region.startPpq = Ppq::ticksPerBar;
+    region.lengthPpq = Ppq::ticksPerBar;
+    region.loopCount = 3;
+    region.notes.push_back ({ project->allocateId(), 60, 0, Ppq::ticksPerQuarter, 100 });
+    midiTrack.midiRegions.push_back (region);
+    project->tracks.push_back (std::move (midiTrack));
+
+    expect (project->save (error), "保存できること");
+    const auto jsonFile = project->directory.getChildFile ("project.json");
+    expect (jsonFile.loadFileAsString().contains ("loopCount"), "ループありはJSONに書かれること");
+
+    juce::StringArray warnings;
+    auto reloaded = Project::load (project->directory, warnings, error);
+    expect (reloaded != nullptr, "再読込できること");
+    if (reloaded == nullptr)
+        { dir.deleteRecursively(); return; }
+    expect (reloaded->tracks[0].clips.size() == 1 && reloaded->tracks[0].clips[0].loopCount == 2,
+            "クリップのループ回数が復元されること");
+    expect (reloaded->tracks[1].midiRegions.size() == 1
+                && reloaded->tracks[1].midiRegions[0].loopCount == 3,
+            "リージョンのループ回数が復元されること");
+
+    // ループを外すと loopCount 自体がJSONから消える = v8以前と同じ形。それを読めばループなし
+    reloaded->tracks[0].clips[0].loopCount = 0;
+    reloaded->tracks[1].midiRegions[0].loopCount = 0;
+    expect (reloaded->save (error), "ループなしで保存できること");
+    expect (! jsonFile.loadFileAsString().contains ("loopCount"),
+            "ループなしはJSONに書かれないこと（旧形式と同じ形）");
+
+    auto legacy = Project::load (project->directory, warnings, error);
+    expect (legacy != nullptr, "旧形式相当のJSONを読めること");
+    if (legacy != nullptr)
+    {
+        expect (legacy->tracks[0].clips[0].loopCount == 0, "欠損時のクリップはループなし");
+        expect (legacy->tracks[1].midiRegions[0].loopCount == 0, "欠損時のリージョンはループなし");
+    }
 
     dir.deleteRecursively();
 }
@@ -1456,6 +1569,232 @@ void testSaveGcProtectsUndoWavs()
     dir.deleteRecursively();
 }
 
+// ⌘C/⌘V のクリップボードが参照するWAVもGCから保護されること。
+// undo履歴は深さ上限で押し出されるため、履歴とは別にクリップボードを保護源にする必要がある
+void testSaveGcProtectsClipboardWav()
+{
+    beginTest ("save GC protects clipboard wav");
+    const auto dir = makeTempDir();
+
+    juce::String error;
+    auto project = Project::createNew (dir.getChildFile ("proj"), error);
+    expect (project != nullptr, "createNewできること");
+    if (project == nullptr)
+        { dir.deleteRecursively(); return; }
+
+    const auto wavFile = project->directory.getChildFile ("clip-001.wav");
+    expect (writeTestWav (wavFile, 4410), "テストWAVを書けること");
+
+    Clip clip;
+    clip.fileName = "clip-001.wav";
+    clip.audio = Project::loadWav (wavFile);
+    clip.lengthSamples = clip.audio != nullptr ? clip.audio->getNumSamples() : 0;
+    project->tracks[0].clips.push_back (std::move (clip));
+
+    // ⌘C: クリップを丸ごとクリップボードへ（MainComponent::ItemClipboard 相当）
+    const Clip clipboard = project->tracks[0].clips[0];
+
+    // 元クリップを削除して保存。undo履歴が空でも（履歴から押し出された状況でも）
+    // クリップボードが参照しているWAVは消えてはいけない
+    project->tracks[0].clips.clear();
+    juce::StringArray keep;
+    keep.addIfNotAlreadyThere (clipboard.fileName);
+    expect (project->save (error, keep), "保存できること");
+    expect (wavFile.existsAsFile(), "クリップボードが参照するWAVはGCされないこと");
+
+    // ⌘V: モデルへ戻せば以降はモデル参照で守られる（保護リストなしでも残る）
+    project->tracks[0].clips.push_back (clipboard);
+    expect (project->save (error), "ペースト後に保存できること");
+    expect (wavFile.existsAsFile(), "ペースト後はモデル参照で守られること");
+    expect (project->tracks[0].clips[0].audio != nullptr, "ペーストしたクリップが音声バッファを共有すること");
+
+    dir.deleteRecursively();
+}
+
+// ---- ループ展開（appendRegionNotes / appendClipPlaybacks）----
+// 通常再生・⌘B（buildSnapshot）と ⌘E（buildItemRender）が共有するヘルパー。
+// 「各反復の末尾でマスクする」ことと「ミュートを判断しない」ことが要（前者を最終終端だけで
+// 見ると境界をまたぐノートが次の反復へ持ち越され、後者を入れると⌘Eの明示選択優先が壊れる）
+void testLoopExpansion()
+{
+    beginTest ("loop expansion");
+
+    const auto bar = Ppq::ticksPerBar;
+
+    MidiRegion region;
+    region.startPpq = bar;      // 2小節目から
+    region.lengthPpq = bar;     // 1小節ぶん
+    region.notes.push_back ({ 1, 60, 0, bar * 3 / 2, 100 });               // 境界を越えて伸びるノート
+    region.notes.push_back ({ 2, 64, Ppq::ticksPerQuarter, Ppq::ticksPerQuarter, 90 }); // 収まるノート
+
+    // ループなし = 従来と同じ（1回・境界マスクあり）
+    {
+        std::vector<MidiNotePlayback> out;
+        appendRegionNotes (region, -1, out);
+        expect (out.size() == 2, "ループなしはノート2つ");
+        expect (out[0].startPpq == bar && out[0].endPpq == bar * 2, "越境ノートは本体終端でマスク");
+        expect (out[1].pitch == 64, "ピッチはそのまま");
+    }
+
+    // 2回ループ（本体＋2反復 = 3回鳴る）
+    region.loopCount = 2;
+    expect (region.totalLengthPpq() == bar * 3, "総再生長は本体長×3");
+    {
+        std::vector<MidiNotePlayback> out;
+        appendRegionNotes (region, -1, out);
+        expect (out.size() == 6, "3反復ぶんのノート数");
+        bool startsOk = out.size() == 6, masksOk = startsOk, shortOk = startsOk;
+        for (int r = 0; r < 3 && startsOk; ++r)
+        {
+            const auto repStart = bar + (juce::int64) r * bar;
+            const auto& longNote = out[(size_t) r * 2];
+            const auto& shortNote = out[(size_t) r * 2 + 1];
+            startsOk = startsOk && longNote.startPpq == repStart;
+            // 越境ノートは各反復の末尾で切れる。最終ループ終端だけを見る検査では通ってしまう
+            masksOk = masksOk && longNote.endPpq == repStart + bar;
+            shortOk = shortOk && shortNote.startPpq == repStart + Ppq::ticksPerQuarter;
+        }
+        expect (startsOk, "各反復の開始位置が本体長ずつ進むこと");
+        expect (masksOk, "越境ノートが各反復の末尾で切れ、次の反復へ持ち越さないこと");
+        expect (shortOk, "各反復の通常ノートが同じ相対位置に来ること");
+    }
+
+    // 固定ピッチ置換（GMドラム規則）とミュート非判断
+    {
+        std::vector<MidiNotePlayback> out;
+        MidiRegion muted = region;
+        muted.muted = true;
+        appendRegionNotes (muted, 36, out);
+        expect (! out.empty(), "ヘルパーはミュートを見ないこと（⌘Eの明示選択優先を壊さない）");
+        expect (out[0].pitch == 36 && out[1].pitch == 36, "fixedPitchで全ノートを置換");
+    }
+
+    // ---- オーディオクリップ ----
+    Clip clip;
+    clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, 4000);
+    clip.audio->clear();
+    clip.startSample = 1000;
+    clip.offsetSamples = 500;
+    clip.lengthSamples = 800;
+    clip.loopCount = 3;
+    expect (clip.totalLengthSamples() == 3200, "総再生長は本体長×4");
+    {
+        std::vector<ClipPlayback> out;
+        appendClipPlaybacks (clip, out);
+        expect (out.size() == 4, "4反復ぶんのエントリ");
+        bool startsOk = out.size() == 4, offsetsOk = startsOk, lengthsOk = startsOk, sharedOk = startsOk;
+        for (int r = 0; r < 4 && startsOk; ++r)
+        {
+            startsOk = startsOk && out[(size_t) r].startSample == 1000 + (juce::int64) r * 800;
+            offsetsOk = offsetsOk && out[(size_t) r].offsetSamples == 500;
+            lengthsOk = lengthsOk && out[(size_t) r].lengthSamples == 800;
+            sharedOk = sharedOk && out[(size_t) r].audio == clip.audio;
+        }
+        expect (startsOk, "各反復の開始位置が本体長ずつ進むこと");
+        expect (offsetsOk, "ソース参照位置は全反復で共通");
+        expect (lengthsOk, "各反復の長さは本体長のまま");
+        expect (sharedOk, "バッファは全反復で共有参照");
+    }
+
+    // 範囲外読みのクランプ（バッファ末尾を越える参照は詰められる。反復間隔はモデル長のまま）
+    {
+        Clip over = clip;
+        over.offsetSamples = 3800;   // 残り200サンプルしかない
+        over.loopCount = 1;
+        std::vector<ClipPlayback> out;
+        appendClipPlaybacks (over, out);
+        expect (out.size() == 2, "クランプされても反復数は変わらない");
+        expect (out[0].lengthSamples == 200, "バッファ残量へクランプ");
+        expect (out[1].startSample == over.startSample + over.lengthSamples,
+                "反復間隔はクランプ後でなくモデルの lengthSamples（描画と一致させる）");
+    }
+}
+
+// プロジェクト選択画面のミニ波形: ループの転写（spreadLoopedBins）。
+// ループ回数ぶん元サンプルを走査し直すと O(サンプル数 × 回数) でワーカーを占有するため、
+// 「1反復ぶんの集約」と「反復ぶんの転写」を分けてある。ここは転写側の正しさと軽さを見る
+void testSpreadLoopedBins()
+{
+    beginTest ("thumbnail loop bins");
+
+    constexpr int bins = 240;
+    // クリップ長 = 全体の 1/4。ローカルビンは先頭だけにピークがある形にする
+    const juce::int64 clipLength = 1000, total = 4000;
+    std::vector<float> local ((size_t) bins, 0.0f);
+    local[0] = 1.0f;
+
+    {
+        std::vector<float> out ((size_t) bins, 0.0f);
+        spreadLoopedBins (local, bins, 0, clipLength, 1, total, out);
+        expect (out[0] > 0.0f, "ループなしでも先頭ビンへ転写されること");
+        int nonZero = 0;
+        for (auto v : out)
+            nonZero += v > 0.0f;
+        expect (nonZero >= 1 && nonZero <= 2, "1反復ぶんのピークが広がりすぎないこと");
+    }
+
+    {
+        // 4反復 = 全長を埋める。各反復の先頭（全体の 0/4, 1/4, 2/4, 3/4 位置）にピークが出る
+        std::vector<float> out ((size_t) bins, 0.0f);
+        spreadLoopedBins (local, bins, 0, clipLength, 4, total, out);
+        expect (out[0] > 0.0f && out[(size_t) (bins / 4)] > 0.0f
+                    && out[(size_t) (bins / 2)] > 0.0f && out[(size_t) (bins * 3 / 4)] > 0.0f,
+                "各反復の先頭位置へ転写されること");
+    }
+
+    {
+        // 上限回数でも転写だけで済む（O(回数 × ビン数)）。数十msで返ること＝サンプル再走査していない
+        std::vector<float> out ((size_t) bins, 0.0f);
+        std::vector<float> dense ((size_t) bins, 0.5f);
+        const auto start = juce::Time::getMillisecondCounterHiRes();
+        spreadLoopedBins (dense, bins, 0, 1000, maxLoopCount, 1000LL * maxLoopCount, out);
+        const auto elapsed = juce::Time::getMillisecondCounterHiRes() - start;
+        // サンプルを再走査していれば桁違いに遅くなる（旧実装は48kHz・1分×999回で約8.7秒）
+        expect (elapsed < 200.0, "上限回数でも200ms未満で終わること");
+        int nonZero = 0;
+        for (auto v : out)
+            nonZero += v > 0.0f;
+        expect (nonZero == bins, "全ビンが埋まること");
+    }
+
+    {
+        // 丸め方向: 集約が floor(sample * bins / len) なので逆算は切り上げでないと1サンプルずれる。
+        // 割り切れない長さ（241サンプルを240ビン）だと、そのずれがグローバルビンを跨いで見える。
+        // ローカルbin 1 に入るのは sample 2（floor(2*240/241)=1）で、sample 1 は bin 0 に入る
+        const juce::int64 oddLength = 241;
+        std::vector<float> oddLocal ((size_t) bins, 0.0f);
+        oddLocal[1] = 1.0f;
+
+        std::vector<float> out ((size_t) bins, 0.0f);
+        spreadLoopedBins (oddLocal, bins, 0, oddLength, 1, oddLength, out);
+        expect (out[1] > 0.0f, "ローカルbin1がグローバルbin1へ転写されること（切り上げ逆算）");
+        expect (out[0] == 0.0f, "1サンプル手前のビンへ漏れないこと（切り捨て逆算だとここが落ちる）");
+    }
+
+    {
+        // 短いクリップ（サンプル数 < ビン数）でも、ピークのあるビンの位置がずれないこと
+        const juce::int64 shortLength = 10;
+        std::vector<float> shortLocal ((size_t) bins, 0.0f);
+        shortLocal[(size_t) 24] = 1.0f; // sample 1 が入るビン（floor(1*240/10)=24）
+
+        std::vector<float> out ((size_t) bins, 0.0f);
+        spreadLoopedBins (shortLocal, bins, 0, shortLength, 1, shortLength, out);
+        // sample 1 → グローバルビン floor(1*240/10) = 24
+        expect (out[24] > 0.0f, "短いクリップでも対応するグローバルビンへ転写されること");
+    }
+
+    {
+        // abortFlagで途中終了できること（終了フローの応答性）
+        std::vector<float> out ((size_t) bins, 0.0f);
+        std::atomic<bool> abort { true };
+        spreadLoopedBins (local, bins, 0, clipLength, 4, total, out, &abort);
+        int nonZero = 0;
+        for (auto v : out)
+            nonZero += v > 0.0f;
+        expect (nonZero == 0, "abort済みなら何も書かないこと");
+    }
+}
+
 // ---- buildSnapshot のノートフラット化（絶対PPQ変換・リージョン境界マスク・ソート）----
 void testBuildSnapshotFlattensNotes()
 {
@@ -1999,7 +2338,8 @@ void testSamplerProjectRoundtrip()
     }
 
     const auto json = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
-    expect ((int) json.getProperty ("version", 0) == 8, "version 8 で保存されること");
+    expect ((int) json.getProperty ("version", 0) == Project::currentVersion,
+            "現行バージョンで保存されること");
 
     {
         juce::StringArray warnings;
@@ -3311,6 +3651,32 @@ void testBuildItemRender()
     expect (BounceRenderer::buildItemRender (midi, 0, 120.0, 44100.0, out, rangeStart, rangeEnd)
                 && out.notes.empty(),
             "ノート空リージョンはnotes空で成功すること");
+
+    // ---- ループ: ⌘Eの書き出しはループ終端まで伸びる ----
+    midi.drums = false;
+    midi.drumPitch = -1;
+    MidiRegion looped;
+    looped.startPpq = Ppq::ticksPerBar;
+    looped.lengthPpq = Ppq::ticksPerBar;
+    looped.loopCount = 2; // 本体＋2反復 = 3小節ぶん
+    looped.notes.push_back ({ 0, 60, 0, Ppq::ticksPerQuarter, 100 });
+    midi.midiRegions = { looped };
+    expect (BounceRenderer::buildItemRender (midi, 0, 120.0, 44100.0, out, rangeStart, rangeEnd),
+            "ループ付きリージョンを組み立てられること");
+    expect (out.notes.size() == 3, "反復ぶんのノートが入ること");
+    expect (rangeStart == 88200 && rangeEnd == 88200 * 4,
+            "書き出し範囲がループ終端（3小節ぶん）まで伸びること");
+
+    Clip loopedClip;
+    loopedClip.audio = makeAudio (1000, 0.4f);
+    loopedClip.startSample = 2000;
+    loopedClip.lengthSamples = 1000;
+    loopedClip.loopCount = 1; // 本体＋1反復
+    track.clips = { loopedClip };
+    expect (BounceRenderer::buildItemRender (track, 0, 120.0, 44100.0, out, rangeStart, rangeEnd),
+            "ループ付きクリップを組み立てられること");
+    expect (out.clips.size() == 2, "反復ぶんのクリップエントリが入ること");
+    expect (rangeStart == 2000 && rangeEnd == 4000, "書き出し範囲がループ終端まで伸びること");
 }
 
 // ---- v7: プロジェクトメモの保存・読込と、旧形式の空文字補完 ----
@@ -4592,6 +4958,11 @@ int main()
     testSectionMarkersInvalidLoad();
     testUndoStack();
     testSaveGcProtectsUndoWavs();
+    testSaveGcProtectsClipboardWav();
+    testRegionEditShortcuts();
+    testLoopExpansion();
+    testLoopRoundtrip();
+    testSpreadLoopedBins();
     testBuildSnapshotFlattensNotes();
     testSynthBank();
     testPlaybackEngineMidi();

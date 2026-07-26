@@ -29,6 +29,9 @@ enum class ID
     // 編集
     undo,
     redo,
+    copyItem,
+    pasteItem,
+    repeatItem,
     split,
     muteRegion,
     deleteItem,
@@ -42,8 +45,6 @@ enum class ID
     // ピアノロール（表示中のみ有効。有効条件はkeyPressed側が持つ）
     noteSemitone,
     noteOctave,
-    noteCopy,
-    notePaste,
     // 表示・ズーム
     zoomHorizontal,
     toggleMixer,
@@ -146,6 +147,19 @@ inline const Entry table[] = {
           return k == juce::KeyPress ('z', juce::ModifierKeys::commandModifier
                                                | juce::ModifierKeys::shiftModifier, 0);
       } },
+    // ⌘C/⌘V はピアノロールのノートとタイムラインのリージョン/クリップで共用する。
+    // ピアノロールが開いていてノートが選択されていればノート、そうでなければリージョン/クリップ
+    //（Deleteと同じ裁き方。判定は keyPressed 側）。1キー1項目の規約を保つため対象別に分けない
+    { ID::copyItem, Category::editing, u8"ノート/リージョンをコピー", u8"⌘C",
+      [] (const juce::KeyPress& k)
+      { return k == juce::KeyPress ('c', juce::ModifierKeys::commandModifier, 0); } },
+    { ID::pasteItem, Category::editing, u8"ノート/リージョンをペースト（再生ヘッド位置）", u8"⌘V",
+      [] (const juce::KeyPress& k)
+      { return k == juce::KeyPress ('v', juce::ModifierKeys::commandModifier, 0); } },
+    // Logic準拠: ⌘R = Repeat Regions/Events。複製が選択を引き継ぐので連打すると後ろへ伸びる
+    { ID::repeatItem, Category::editing, u8"リージョン/クリップをリピート", u8"⌘R",
+      [] (const juce::KeyPress& k)
+      { return k == juce::KeyPress ('r', juce::ModifierKeys::commandModifier, 0); } },
     { ID::split, Category::editing, u8"再生ヘッド位置で分割", u8"⌘T",
       [] (const juce::KeyPress& k)
       { return k == juce::KeyPress ('t', juce::ModifierKeys::commandModifier, 0); } },
@@ -203,12 +217,6 @@ inline const Entry table[] = {
           return k == juce::KeyPress (juce::KeyPress::upKey, juce::ModifierKeys::altModifier, 0)
               || k == juce::KeyPress (juce::KeyPress::downKey, juce::ModifierKeys::altModifier, 0);
       } },
-    { ID::noteCopy, Category::pianoRoll, u8"ノートをコピー", u8"⌘C",
-      [] (const juce::KeyPress& k)
-      { return k == juce::KeyPress ('c', juce::ModifierKeys::commandModifier, 0); } },
-    { ID::notePaste, Category::pianoRoll, u8"ノートをペースト", u8"⌘V",
-      [] (const juce::KeyPress& k)
-      { return k == juce::KeyPress ('v', juce::ModifierKeys::commandModifier, 0); } },
 
     // ---- 表示・ズーム ----
     { ID::zoomHorizontal, Category::view, u8"横ズームアウト/イン", u8"⌘← / ⌘→",

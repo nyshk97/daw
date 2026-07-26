@@ -34,6 +34,11 @@ public:
     static constexpr int trackHeight = 92;        // ヘッダの3行レイアウト（名前/M・S・音量/楽器）＋上下余白に合わせる
     static constexpr int rulerHeight = 26;
     static constexpr int markerLaneHeight = 18;   // ルーラー直下のセクションマーカー帯
+    // ループハンドル（選択中アイテムの下辺・右寄り）。右端リサイズ（本体右端8px）とは辺を分けて
+    // 「同じ辺の数px違いで機能が変わる」誤操作を避ける。選択中しか出ないので、未選択アイテムを
+    // 掴もうとしてループが伸びることは起きない（1クリック目が必ず選択になる）
+    static constexpr int loopHandleHeight = 6;
+    static constexpr int loopHandleWidth = 40;
     static constexpr int topHeight = rulerHeight + markerLaneHeight; // レーン上端（ヘッダ側の高さ合わせ用）
 
     explicit TimelineView (TransportState& transportState);
@@ -63,6 +68,10 @@ public:
     std::function<void (int, int)> onOpenRegion;     // リージョンをダブルクリック（track, region）
     std::function<void (int, int)> onDeleteItemRequested; // 右クリックメニューの削除（track, クリップorリージョンindex）
     std::function<void (int, int)> onExportItemRequested; // 右クリックメニューの書き出し（同上）
+    // 構造編集を受け付けてよいか（録音中は不可）。TimelineViewはPlaybackEngineを知らず
+    // TransportState::recordArmed は録音待機であって録音中と別物なので、MainComponentから渡してもらう。
+    // 未設定なら常に編集可（TrackHeadersView::canReorder と同じ形）
+    std::function<bool()> canEdit;
 
     // オーディオファイルのD&D取り込み。対応拡張子のファイルだけを渡す（先頭のみ処理するかは受け手が決める）。
     // trackIndex = -1 は空白ゾーンへのドロップ（新規トラックを作成して配置）。
@@ -78,6 +87,13 @@ public:
     void toggleMuteAt (int trackIndex, int itemIndex);
     void duplicateAt (int trackIndex, int itemIndex);      // 複製を元の終端直後に置いて選択する
     void splitAtPlayhead (int trackIndex, int itemIndex);  // 再生ヘッド位置で2分割（範囲外はno-op）。左側を選択する
+    // 外部（⌘Vのペースト等）がモデルへ追加したアイテムを選択する。isMidi = midiRegions か clips か
+    void selectItem (int trackIndex, int itemIndex, bool isMidi);
+    void clearLoopAt (int trackIndex, int itemIndex);      // 右クリックメニューの「ループ解除」
+
+    // ループハンドルの矩形（描画とヒットテストで同じものを使う）。itemX/itemRight はループ終端まで
+    // 含めたアイテムの左右端、laneY はそのトラック行の上端（いずれもコンテンツ座標）
+    juce::Rectangle<int> loopHandleRect (int itemX, int itemRight, int laneY) const;
 
     void scrollVertically (float wheelDeltaY);       // ヘッダ上のホイールを転送してもらう
     void zoomBy (double factor);                     // 横ズーム（アンカー: 再生ヘッド or ビュー中央）
@@ -167,12 +183,13 @@ private:
     // クリックしただけで元と完全に重なった見えない複製が残る事故になるため）
     struct RegionDrag
     {
-        enum class Mode { none, move, resize };
+        enum class Mode { none, move, resize, loop };
         Mode mode = Mode::none;
         bool isMidi = false;        // true = midiRegions / false = clips を対象にする
         int track = -1, item = -1;  // item は clips or midiRegions のindex
         juce::int64 origStartPpq = 0, origLengthPpq = 0; // MIDI用
         juce::int64 origStartSample = 0;                 // オーディオ用
+        int origLoopCount = 0;      // ループ伸縮の基準（ドラッグはループ終端を掴んでいる）
         int startX = 0;
         bool duplicateOnDrag = false; // ⌥ドラッグ: 最初の移動時に複製してから動かす
         bool edited = false;          // 実際に動いた時点で onWillEditModel を一度だけ呼ぶ
