@@ -68,6 +68,9 @@ public:
     // trackIndex = -1 は空白ゾーンへのドロップ（新規トラックを作成して配置）。
     // startSampleは表示グリッドへスナップ済み。MIDIトラック上の不受理はTimelineView側で弾く
     std::function<void (const juce::StringArray&, int, juce::int64)> onImportFilesDropped;
+    // MIDIトラックの行へのドロップ＝サンプル音源の割り当て（配置位置は使わない）。
+    // トラックヘッダーへのドロップ（TrackHeadersView）と同じ受け口へ繋ぐ
+    std::function<void (const juce::StringArray&, int)> onAssignInstrumentDropped;
     static bool isImportableAudioFile (const juce::String& path); // 拡張子判定（D&D受理と共用）
 
     // リージョン単位の操作。対象は引数で明示する（「現在の選択」を暗黙に読まない）。
@@ -207,13 +210,15 @@ private:
     struct FileDropState
     {
         bool active = false;
-        bool rejected = false;      // MIDIトラック上（不受理）
+        bool rejected = false;      // 不受理（現状は該当なし。将来の受理不能ケース用に残す）
+        bool instrument = false;    // MIDIトラック上＝サンプル音源の割り当て（クリップ配置ではない）
         int track = -1;             // -1 = 空白ゾーン（新規トラック）
         juce::int64 startSample = 0;
 
         bool operator== (const FileDropState& other) const
         {
             return active == other.active && rejected == other.rejected
+                && instrument == other.instrument
                 && track == other.track && startSample == other.startSample;
         }
     };

@@ -43,15 +43,28 @@ public:
             g.setColour (Theme::prKeyOutline);
             g.drawHorizontalLine (y, 0.0f, (float) getWidth());
 
-            // ドラムキット選択時はGMドラム名、それ以外はCだけ音名（C3 = 60 のLogic式表記）
+            // ドラムキット選択時はGMドラム名、サンプル音源の固定モードは固定行にサンプル名、
+            // それ以外はCだけ音名（C3 = 60 のLogic式表記）
             auto* track = owner.findTrack();
-            const bool drums = track != nullptr && track->drums;
-            const char* drumName = drums ? gmDrumName (pitch) : nullptr;
-            if (drumName != nullptr)
+            const bool sampler = track != nullptr && track->usesSampler();
+            const bool drums = track != nullptr && ! sampler && track->drums;
+            juce::String label;
+            if (sampler)
+            {
+                if (pitch == owner.forcedPitch())
+                    label = track->sampleName;
+            }
+            else if (drums)
+            {
+                if (const char* drumName = gmDrumName (pitch))
+                    label = drumName;
+            }
+
+            if (label.isNotEmpty())
             {
                 g.setColour (isBlackKey (pitch) ? Theme::prKeyLabelLight : Theme::prKeyLabelDark);
-                g.setFont (Fonts::small());
-                g.drawText (drumName, 2, y, getWidth() - 6, rowHeight, juce::Justification::centredRight);
+                g.setFont (Fonts::forText (Fonts::small(), label)); // サンプル名は自由入力（CJK補正）
+                g.drawText (label, 2, y, getWidth() - 6, rowHeight, juce::Justification::centredRight);
             }
             else if (! drums && pitch % 12 == 0)
             {
@@ -154,6 +167,35 @@ public:
             {
                 g.setColour (Theme::regionMidi);
                 g.drawRoundedRectangle (rect.toFloat().reduced (0.5f), 2.0f, 1.0f);
+            }
+        }
+
+        // 固定ピッチのトラック（GMの打楽器・サンプルの固定モード）は、置ける行以外を減光して
+        // 「どこを押してもこの行にできる」ことを見た目で示す。ノートより後に描くので、
+        // 他の行に残っている既存ノートも減光されて「編集対象ではない」ことが分かる
+        // （消さずに痕跡は見せる: docs/design/region-settings.md の可視性の原則）
+        if (forced >= 0)
+        {
+            const int rowY = (127 - forced) * rowHeight;
+            g.setColour (juce::Colours::black.withAlpha (0.45f));
+            if (rowY > clip.getY())
+                g.fillRect (clip.getX(), clip.getY(), clip.getWidth(), rowY - clip.getY());
+            const int below = rowY + rowHeight;
+            if (below < clip.getBottom())
+                g.fillRect (clip.getX(), below, clip.getWidth(), clip.getBottom() - below);
+        }
+
+        // リージョン終端より右は編集範囲外（クリックしても終端へ丸められるので、ノートは境界に溜まる）。
+        // 地を沈めて境界を示す — グリッド線が途切れるだけでは「まだ置ける」ように見える。
+        // ここから先へ打ちたいときはタイムラインでリージョンの右端をドラッグして伸ばす
+        {
+            const int endX = juce::jmax (clip.getX(), owner.ppqToX (region->lengthPpq));
+            if (endX < clip.getRight())
+            {
+                g.setColour (juce::Colours::black.withAlpha (0.5f));
+                g.fillRect (endX, clip.getY(), clip.getRight() - endX, clip.getHeight());
+                g.setColour (juce::Colours::white.withAlpha (0.22f)); // 終端の境界（小節線より主張させる）
+                g.drawVerticalLine (endX, (float) clip.getY(), (float) clip.getBottom());
             }
         }
 
@@ -316,6 +358,7 @@ void PianoRollView::openRegion (juce::uint64 trackId, juce::uint64 regionId)
                        : forcedPitch() >= 0    ? forcedPitch()
                                                : 60);
     }
+    lastForcedPitch = forcedPitch(); // 開いた時点を基準にする（直後の不要なスクロールを防ぐ）
     updateContentSize();
     grid->repaint();
 }
@@ -340,7 +383,20 @@ void PianoRollView::refreshFromModel()
     }
     pruneSelection();
     updateContentSize();
+
+    // 固定ピッチが変わった（音源の切り替え・ルート音の変更）ときは、その行を見せる。
+    // 変化したときだけ動かす: refreshFromModel は編集のたびに呼ばれるので、
+    // 無条件にスクロールすると関係のない編集で表示が飛ぶ
+    const int forced = forcedPitch();
+    if (forced != lastForcedPitch)
+    {
+        lastForcedPitch = forced;
+        if (forced >= 0)
+            ensurePitchVisible (forced);
+    }
+
     grid->repaint();
+    keyboard->repaint(); // 音源変更で鍵盤ラベル（ドラム名・サンプル名）が変わる
 }
 
 // ---- 選択 ----
@@ -350,10 +406,19 @@ bool PianoRollView::isSelected (juce::uint64 noteId) const
     return std::find (selectedIds.begin(), selectedIds.end(), noteId) != selectedIds.end();
 }
 
+// 編集ピッチを1行に拘束する固定ピッチ（0..127）。通常は-1。
+// 表示は常に128鍵のままで、変わるのは「ノート作成・移動・トランスポーズの拘束」「その行のハイライト」
+// 「開いたときのスクロール位置」の3つ（GMの固定ピッチ打楽器と同じ挙動）。
+// サンプル音源の固定モードは sampleRootNote を返す: 打ったノートが全部ルート音になるので、
+// あとで追従モードへ切り替えても全ノートが等速（音が飛ばない）
 int PianoRollView::forcedPitch() const
 {
     auto* track = findTrack();
-    return (track != nullptr && track->drums && track->drumPitch >= 0) ? track->drumPitch : -1;
+    if (track == nullptr)
+        return -1;
+    if (track->usesSampler())
+        return track->samplePitchFollow ? -1 : track->sampleRootNote;
+    return (track->drums && track->drumPitch >= 0) ? track->drumPitch : -1;
 }
 
 void PianoRollView::pruneSelection()
@@ -581,6 +646,16 @@ void PianoRollView::scrollToPitch (int pitch)
     viewport->setViewPosition (viewport->getViewPositionX(), juce::jmax (0, y));
 }
 
+void PianoRollView::ensurePitchVisible (int pitch)
+{
+    const int y = (127 - pitch) * rowHeight;
+    const int top = viewport->getViewPositionY();
+    const int bottom = top + viewport->getMaximumVisibleHeight();
+    if (y >= top && y + rowHeight <= bottom)
+        return; // 見えているなら勝手に動かさない
+    scrollToPitch (pitch);
+}
+
 void PianoRollView::preview (int pitch, int velocity)
 {
     if (onPreviewNote && ! transport.isPlaying.load())
@@ -788,15 +863,34 @@ void PianoRollView::handleGridDoubleClick (const juce::MouseEvent& e)
     note.startPpq = (xToPpq (e.x) / snap) * snap;
     note.lengthPpq = snap;
     note.velocity = 100;
-    region->clampNote (note);
+
+    // リージョン終端より右に打たれたら、そのノートが収まるまでリージョンを伸ばす。
+    // 終端へ丸めると「押した場所と違うところに打点が増える」ことになるため（clampNoteは
+    // startPpqをリージョン内に拘束する）。長さの変更もこの操作のundoに含まれる。
+    // 元の長さが小節ちょうどなら小節単位で伸ばす（リージョンは小節単位で作られるので端を揃える）。
+    // 分割等で半端な長さのリージョンは、余計に動かさずノート終端ちょうどまで伸ばす
+    if (const auto needed = note.startPpq + note.lengthPpq; needed > region->lengthPpq)
+    {
+        const bool barAligned = region->lengthPpq % Ppq::ticksPerBar == 0;
+        region->lengthPpq = barAligned
+                                ? ((needed + Ppq::ticksPerBar - 1) / Ppq::ticksPerBar) * Ppq::ticksPerBar
+                                : needed;
+    }
+
+    region->clampNote (note); // 伸ばした後にクランプする（リージョン内に収まっているので丸められない）
     region->notes.push_back (note);
 
     selectedIds.clear();
     selectedIds.push_back (note.id);
     syncVelocitySlider();
     preview (note.pitch, note.velocity);
+    // 固定ピッチのトラックは押した行と別の行にできるので、その行が画面外なら見える位置へ送る
+    // （「押したのに何も出ない」に見えるのを防ぐ）
+    if (forced >= 0)
+        ensurePitchVisible (forced);
+    updateContentSize(); // リージョンを伸ばした場合にグリッド幅を追従させる
     if (onModelEdited)
-        onModelEdited();
+        onModelEdited(); // タイムライン側のリージョン表示もここで更新される
     grid->repaint();
 }
 

@@ -38,6 +38,30 @@ void Clip::buildPeakCache()
     }
 }
 
+std::vector<float> buildFullPeakCache (const juce::AudioBuffer<float>& audio)
+{
+    std::vector<float> peaks;
+    const int numSamples = audio.getNumSamples();
+    const int numChannels = juce::jmin (2, audio.getNumChannels());
+    if (numSamples <= 0 || numChannels <= 0)
+        return peaks;
+
+    peaks.reserve ((size_t) (numSamples / Clip::samplesPerPeak + 1));
+    for (int i = 0; i < numSamples; i += Clip::samplesPerPeak)
+    {
+        const int count = juce::jmin (Clip::samplesPerPeak, numSamples - i);
+        float peak = 0.0f;
+        for (int ch = 0; ch < numChannels; ++ch)
+        {
+            const float* data = audio.getReadPointer (ch);
+            for (int j = 0; j < count; ++j)
+                peak = juce::jmax (peak, std::abs (data[i + j]));
+        }
+        peaks.push_back (peak);
+    }
+    return peaks;
+}
+
 bool splitClip (const Clip& clip, juce::int64 splitSample, Clip& left, Clip& right)
 {
     if (splitSample <= clip.startSample || splitSample >= clip.startSample + clip.lengthSamples)
@@ -171,14 +195,28 @@ juce::File Project::projectsRoot()
     return juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("daw");
 }
 
-std::shared_ptr<juce::AudioBuffer<float>> Project::loadWav (const juce::File& file)
+std::shared_ptr<juce::AudioBuffer<float>> Project::loadWav (const juce::File& file,
+                                                           double* sourceSampleRate)
 {
+    if (sourceSampleRate != nullptr)
+        *sourceSampleRate = 0.0;
+
     juce::AudioFormatManager formatManager;
     formatManager.registerBasicFormats();
 
     std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (file));
     if (reader == nullptr || reader->lengthInSamples <= 0)
         return nullptr;
+
+    // SRを要求されたのに取れない（0以下）ファイルは読込失敗として扱う。
+    // 正常なWAVならリーダーから必ず取得できるので、デバイスSRで代用するフォールバックは置かない
+    // （代用の責務がデバイスSRを知る SynthBank 側に移るだけで経路が増える）
+    if (sourceSampleRate != nullptr)
+    {
+        if (reader->sampleRate <= 0.0)
+            return nullptr;
+        *sourceSampleRate = reader->sampleRate;
+    }
 
     // 1chはモノ、2ch以上は先頭2chのみ（バッファのch数がreadの読み取りch数を決める）
     const int numChannels = reader->numChannels >= 2 ? 2 : 1;
@@ -244,9 +282,25 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
         }
         else
         {
+            trackObj->setProperty ("instrument",
+                                   track.instrument == InstrumentKind::sample ? "sample" : "gm");
             trackObj->setProperty ("gmProgram", track.gmProgram);
             trackObj->setProperty ("drums", track.drums);
             trackObj->setProperty ("drumPitch", track.drumPitch);
+
+            // サンプル音源の設定（instrument が gm に戻っていても保持する＝プルダウンで戻せる）。
+            // sampleSourceRate はWAV実体から復元できるが、ファイル欠損時のログ・将来の診断のためJSONにも書く
+            if (track.sampleFile.isNotEmpty())
+            {
+                trackObj->setProperty ("sampleFile", track.sampleFile);
+                trackObj->setProperty ("sampleName", track.sampleName);
+                trackObj->setProperty ("samplePitchFollow", track.samplePitchFollow);
+                trackObj->setProperty ("sampleMono", track.sampleMono);
+                trackObj->setProperty ("sampleRootNote", track.sampleRootNote);
+                trackObj->setProperty ("sampleGain", (double) track.sampleGain);
+                trackObj->setProperty ("sampleStartOffset", track.sampleStartOffset);
+                trackObj->setProperty ("sampleSourceRate", track.sampleSourceRate);
+            }
 
             juce::Array<juce::var> regionsArray;
             for (auto& region : track.midiRegions)
@@ -317,18 +371,23 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
         return false;
     }
 
-    // どのクリップからも参照されていない録音WAVを掃除する。
+    // どのクリップ・サンプル音源からも参照されていないWAVを掃除する。
     // クリップ削除は「モデルから外すだけ」で、実ファイルの削除は保存時にここでまとめて行う
     // （未保存のまま終了→再読込しても欠損しないようにするため）。
     // keepReferencedWavs（undo/redo履歴が参照するファイル）はredoでの復元に備えて消さない
     juce::StringArray referenced (keepReferencedWavs);
     for (auto& track : tracks)
+    {
         for (auto& clip : track.clips)
             referenced.add (clip.fileName);
+        if (track.sampleFile.isNotEmpty()) // GMへ戻していても参照は残す（プルダウンで戻せるため）
+            referenced.add (track.sampleFile);
+    }
 
-    for (auto& file : directory.findChildFiles (juce::File::findFiles, false, "clip-*.wav"))
-        if (! referenced.contains (file.getFileName()))
-            file.deleteFile();
+    for (const char* pattern : { "clip-*.wav", "instr-*.wav" })
+        for (auto& file : directory.findChildFiles (juce::File::findFiles, false, pattern))
+            if (! referenced.contains (file.getFileName()))
+                file.deleteFile();
 
     return true;
 }
@@ -443,6 +502,46 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
                 track.gmProgram = juce::jlimit (0, 127, (int) trackVar.getProperty ("gmProgram", 0));
                 track.drums = (bool) trackVar.getProperty ("drums", false);
                 track.drumPitch = juce::jlimit (-1, 127, (int) trackVar.getProperty ("drumPitch", -1));
+
+                // サンプル音源（v7以前は無い → instrument = gm）。
+                // 設定値は先にクランプし、WAV実体を読めたときだけ instrument = sample を成立させる
+                track.sampleFile = trackVar.getProperty ("sampleFile", "").toString();
+                track.sampleName = trackVar.getProperty ("sampleName", "").toString();
+                track.samplePitchFollow = (bool) trackVar.getProperty ("samplePitchFollow", false);
+                track.sampleMono = (bool) trackVar.getProperty ("sampleMono", false); // 欠損=OFF（重ねる）
+                track.sampleRootNote = juce::jlimit (0, 127, (int) trackVar.getProperty ("sampleRootNote", 60));
+                track.sampleGain = juce::jlimit (0.0f, 2.0f,
+                                                 (float) (double) trackVar.getProperty ("sampleGain", 1.0));
+                track.sampleStartOffset = juce::jmax ((juce::int64) 0,
+                                                     (juce::int64) trackVar.getProperty ("sampleStartOffset", 0));
+                // 元SRはまずJSONの記録値を復元しておく（WAVが欠けていても診断用の値を失わず、
+                // 開いて保存し直しても0で上書きされない）。読めたら実体の値で上書きする
+                track.sampleSourceRate = juce::jmax (0.0, (double) trackVar.getProperty ("sampleSourceRate", 0.0));
+                const bool wantsSample =
+                    trackVar.getProperty ("instrument", "gm").toString() == "sample";
+
+                if (track.sampleFile.isNotEmpty())
+                {
+                    // 元SRはWAV実体の値を優先する（JSONの値は診断用）
+                    double sourceRate = 0.0;
+                    track.sampleAudio = loadWav (dir.getChildFile (track.sampleFile), &sourceRate);
+                    if (track.sampleAudio != nullptr)
+                    {
+                        track.sampleSourceRate = sourceRate;
+                        track.sampleStartOffset = juce::jlimit ((juce::int64) 0,
+                                                                (juce::int64) track.sampleAudio->getNumSamples() - 1,
+                                                                track.sampleStartOffset);
+                        track.samplePeakCache = buildFullPeakCache (*track.sampleAudio);
+                        track.instrument = wantsSample ? InstrumentKind::sample : InstrumentKind::gm;
+                    }
+                    else if (wantsSample)
+                    {
+                        // 勝手にGM音源へ戻すと音が変わって混乱するため、無音のまま警告する
+                        warnings.add (track.sampleFile
+                                      + jp (u8" を読み込めないため、このトラックは無音になります"));
+                        track.instrument = InstrumentKind::sample;
+                    }
+                }
 
                 if (auto* regionsArray = trackVar.getProperty ("regions", {}).getArray())
                 {
@@ -631,6 +730,24 @@ juce::File Project::nextClipFile() const
     return directory.getChildFile ("clip-overflow.wav");
 }
 
+juce::File Project::nextInstrumentFile() const
+{
+    // 既存トラックが参照している名前も避ける（保存前＝実ファイルがまだ無い場合の衝突防止）
+    for (int i = 1; i < 10000; ++i)
+    {
+        const auto name = juce::String::formatted ("instr-%03d.wav", i);
+        auto file = directory.getChildFile (name);
+        if (file.existsAsFile())
+            continue;
+        const bool referenced = std::any_of (tracks.begin(), tracks.end(),
+                                             [&name] (const Track& t) { return t.sampleFile == name; });
+        if (! referenced)
+            return file;
+    }
+    jassertfalse;
+    return directory.getChildFile ("instr-overflow.wav");
+}
+
 std::unique_ptr<PlaybackSnapshot> Project::buildSnapshot() const
 {
     auto snapshot = std::make_unique<PlaybackSnapshot>();
@@ -667,9 +784,14 @@ std::unique_ptr<PlaybackSnapshot> Project::buildSnapshot() const
         else
         {
             // ノートを絶対PPQへフラット化し、リージョン境界でマスクする。
-            // 固定ピッチ打楽器（Kick等）はここでピッチを置き換える。
-            // synth の参照は呼び出し側（MainComponent::pushSnapshot）が SynthBank から埋める
-            const bool fixedPitch = track.drums && track.drumPitch >= 0;
+            // synth の参照は呼び出し側（MainComponent::pushSnapshot）が SynthBank から埋める。
+            //
+            // 固定ピッチ置換（Kick等）は**GM音源専用の規則**。GMのドラムマップへ「その打楽器の
+            // ピッチ」を送る必要があるためで、サンプラーの固定モードでは置換しない
+            // （サンプラーはピッチを見ずに等速で鳴らすので置換が無意味＝規則が増えるだけ）。
+            // 同じ規則が BounceRenderer::buildItemRender にもあるので、変えるときは両方を見ること
+            const bool fixedPitch = track.instrument == InstrumentKind::gm
+                                    && track.drums && track.drumPitch >= 0;
             for (auto& region : track.midiRegions)
             {
                 if (region.muted)

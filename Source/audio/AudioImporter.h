@@ -28,7 +28,9 @@ public:
     {
         juce::File sourceFile;         // 取り込み元（WAV/AIFF/FLAC/MP3/M4A等）
         juce::File tempFile;           // 一時出力先（呼び出し側がプロジェクトフォルダ内に採る）
-        double targetSampleRate = 0.0; // プロジェクトSR
+        // プロジェクトSR。<= 0 は「元のSRを保つ」（リサンプルをバイパスして出力長も入力と同じにする）。
+        // サンプル音源はデバイスSR変更に追従できるよう元SRのまま保存するため、この経路を使う
+        double targetSampleRate = 0.0;
     };
 
     enum class Status { idle, running, success, cancelled, failed };

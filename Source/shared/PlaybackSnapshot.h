@@ -6,6 +6,11 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 
+// SynthInstance が保持するサンプラー本体。shared/ から audio/ を include するのは
+// 「スナップショットが運ぶオーディオスレッド側オブジェクト」だからで、AUの
+// AudioPluginInstance と同じ立ち位置（unique_ptr のため完全型が必要）
+#include "../audio/SamplerEngine.h"
+
 // send用固定バスの本数（Reverb A / Reverb B / Delay）。本数・並びは固定で、
 // UI・保存形式・エンジンすべてこの順序を前提にする（バスの作成・削除UIは作らない）
 inline constexpr int numSendBuses = 3;
@@ -50,17 +55,25 @@ struct ClipPlayback
     juce::int64 lengthSamples = 0;  // 再生長
 };
 
-// GM音源（DLSMusicDevice）1インスタンス＋オーディオスレッド専用の発音状態。
+// MIDIトラックの音源1インスタンス＋オーディオスレッド専用の発音状態。
+// 中身は GM音源（DLSMusicDevice = plugin）か サンプル音源（sampler）のどちらか一方（排他）。
 // SynthBank（メッセージスレッド）が生成・所有し、スナップショットが shared_ptr で共有する。
 // 破棄は「参照する全スナップショットの解放後」＝ deleteRetired() 経由でメッセージスレッドのみで起きるため、
 // オーディオスレッドがレンダリング中のAUが消えることはない（ClipPlayback::audio と同じ寿命保証）。
 struct SynthInstance
 {
-    std::unique_ptr<juce::AudioPluginInstance> plugin;
+    std::unique_ptr<juce::AudioPluginInstance> plugin;  // GM音源（sampler と排他）
+    std::unique_ptr<SamplerEngine> sampler;             // サンプル音源（plugin と排他）
     int midiChannel = 1;            // ドラムキットは10
     double preparedSampleRate = 0.0; // このレートで prepareToPlay 済み。デバイスと不一致ならレンダリングをスキップ
     int preparedBlockSize = 0;
     int totalOutputChannels = 2;    // processBlock に渡すべきチャンネル数（DLSは2バス計4ch）。ミックスはch0/1のみ
+
+    // サンプル音源の固定モード（One Shot）か。PlaybackEngine が resound の可否判定に読む
+    // （One Shot は noteOff で消えないので、再発音すると二重に鳴る）。更新は SynthBank::sync()
+    std::atomic<bool> oneShot { false };
+
+    bool hasRenderer() const { return plugin != nullptr || sampler != nullptr; }
 
     // ---- 以下はオーディオスレッド専用（メッセージスレッドは触らない）----
     // 「実際にノートオンを送った論理ノート」の追跡。ノートオフはこの配列に載っているものだけ送る。

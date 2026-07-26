@@ -64,6 +64,14 @@ public:
     static bool buildItemRender (const Track& track, int itemIndex, double bpm, double sampleRate,
                                  TrackRender& out, juce::int64& rangeStart, juce::int64& rangeEnd);
 
+    // 固定モード（One Shot）のサンプル音源が鳴り切る終端（サンプル位置。0 = 延長不要）。
+    // 通常バウンス（全体）はレンダリング範囲をここまで延ばす: テールは最大5秒＋1ブロックでも
+    // -60dBを下回ると打ち切るため、曲末の長いワンショットや途中に無音区間を含むサンプルが切れる。
+    // サイクルバウンス・リージョン書き出しは「指定範囲を書き出す」のが仕様なので延長しない。
+    // 追従モードはノート長で止まるので対象外（既存のテールで足りる）
+    static juce::int64 oneShotEndSample (const Track& track, const std::vector<MidiNotePlayback>& notes,
+                                        double bpm, double sampleRate);
+
     enum class Status { idle, running, success, cancelled, failed };
 
     struct Result

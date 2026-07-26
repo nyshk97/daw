@@ -9,6 +9,7 @@
 #include "audio/AudioFilePreview.h"
 #include "audio/BounceRenderer.h"
 #include "audio/PlaybackEngine.h"
+#include "audio/SamplerEngine.h"
 #include "shared/Project.h"
 #include "shared/SynthBank.h"
 #include "shared/UndoStack.h"
@@ -1034,6 +1035,12 @@ void testUndoStack()
     UndoStack undo;
     expect (! undo.canUndo() && ! undo.canRedo(), "初期状態は履歴なし");
 
+    // 編集種別を捨てて呼ぶ薄いラッパー（種別自体は下の専用ブロックで検証する）
+    auto undoIt = [&undo, &project]
+    { UndoStack::EditKind kind {}; return undo.undo (project, kind); };
+    auto redoIt = [&undo, &project]
+    { UndoStack::EditKind kind {}; return undo.redo (project, kind); };
+
     // トラック追加 → undo → redo
     undo.begin (project);
     Track second;
@@ -1041,9 +1048,9 @@ void testUndoStack()
     second.name = "B";
     project.tracks.push_back (std::move (second));
 
-    expect (undo.undo (project), "undoできること");
+    expect (undoIt(), "undoできること");
     expect (project.tracks.size() == 1 && project.tracks[0].name == "A", "追加前に戻ること");
-    expect (undo.redo (project), "redoできること");
+    expect (redoIt(), "redoできること");
     expect (project.tracks.size() == 2 && project.tracks[1].name == "B", "redoで復元されること");
 
     // MIDIリージョン編集のundo
@@ -1052,47 +1059,78 @@ void testUndoStack()
     MidiRegion region;
     region.id = 3;
     project.tracks[1].midiRegions.push_back (region);
-    expect (undo.undo (project), "リージョン追加をundoできること");
+    expect (undoIt(), "リージョン追加をundoできること");
     expect (project.tracks[1].midiRegions.empty(), "リージョンが消えること");
 
     // ミキサー値（TrackParams）はundo対象外: begin後の変更がundoで巻き戻らない
     undo.begin (project);
     project.tracks.pop_back();
     project.tracks[0].params->mute.store (true);
-    undo.undo (project);
+    undoIt();
     expect (project.tracks.size() == 2, "構造は戻ること");
     expect (project.tracks[0].params->mute.load(), "ミキサー値はundoで巻き戻らないこと");
 
     // セクションマーカーの追加/種別変更/移動/削除のundo/redo
     undo.begin (project);
     SectionMarkers::set (project.markers, 0, SectionType::intro);
-    expect (undo.undo (project) && project.markers.empty(), "マーカー追加をundoできること");
-    expect (undo.redo (project) && project.markers.size() == 1, "マーカー追加をredoできること");
+    expect (undoIt() && project.markers.empty(), "マーカー追加をundoできること");
+    expect (redoIt() && project.markers.size() == 1, "マーカー追加をredoできること");
 
     undo.begin (project);
     SectionMarkers::set (project.markers, 0, SectionType::verse); // 同一位置 = 種別変更
-    undo.undo (project);
+    undoIt();
     expect (project.markers.size() == 1 && project.markers[0].type == SectionType::intro,
             "種別変更をundoできること");
 
     undo.begin (project);
     project.markers[0].startBeats = 18; // 移動（クランプ済みの値を直接書くUI側の操作と同じ）
-    undo.undo (project);
+    undoIt();
     expect (project.markers[0].startBeats == 0, "移動をundoできること");
 
     undo.begin (project);
     SectionMarkers::removeAt (project.markers, 0);
-    expect (undo.undo (project) && project.markers.size() == 1, "削除をundoできること");
+    expect (undoIt() && project.markers.size() == 1, "削除をundoできること");
 
     // マーカーを含むスナップショット化後もトラック編集のundoが維持されること（markersは巻き戻らない）
     undo.begin (project);
     Track third;
     third.id = 4;
     project.tracks.push_back (std::move (third));
-    undo.undo (project);
+    undoIt();
     expect (project.tracks.size() == 2, "トラック編集undoが維持されること");
     expect (project.markers.size() == 1 && project.markers[0].type == SectionType::intro,
             "トラック編集undoでマーカーが壊れないこと");
+
+    // 編集種別: サンプル値だけの編集は「スナップショット再pushが不要」を呼び出し側へ伝える
+    // （再pushすると発音中の音が頭から鳴り直すため、undo/redoでも区別が要る）
+    {
+        Project sampleProject;
+        Track samplerTrack;
+        samplerTrack.id = 1;
+        samplerTrack.type = TrackType::midi;
+        samplerTrack.instrument = InstrumentKind::sample;
+        samplerTrack.sampleGain = 1.0f;
+        sampleProject.tracks.push_back (std::move (samplerTrack));
+
+        UndoStack kinds;
+        kinds.begin (sampleProject, UndoStack::EditKind::sampleValue);
+        sampleProject.tracks[0].sampleGain = 0.5f;
+
+        auto kind = UndoStack::EditKind::structure;
+        expect (kinds.undo (sampleProject, kind) && kind == UndoStack::EditKind::sampleValue,
+                "サンプル値編集の種別がundoで返ること");
+        expect (std::abs (sampleProject.tracks[0].sampleGain - 1.0f) < 1.0e-6f, "値が戻ること");
+
+        kind = UndoStack::EditKind::structure;
+        expect (kinds.redo (sampleProject, kind) && kind == UndoStack::EditKind::sampleValue,
+                "redoでも同じ種別が返ること");
+        expect (std::abs (sampleProject.tracks[0].sampleGain - 0.5f) < 1.0e-6f, "redoで値が進むこと");
+
+        kinds.begin (sampleProject); // 既定は structure
+        sampleProject.tracks.clear();
+        expect (kinds.undo (sampleProject, kind) && kind == UndoStack::EditKind::structure,
+                "構造編集の種別は structure になること");
+    }
 }
 
 void testSaveGcProtectsUndoWavs()
@@ -1583,6 +1621,759 @@ void testOverflowDoesNotKillOtherNotes()
     snapshots.deleteRetired();
 }
 
+// ---- サンプル音源のテスト用ヘルパー ----
+
+// 全サンプルが同じ値のバッファ（レベル判定を単純にする）
+std::shared_ptr<juce::AudioBuffer<float>> makeFlatSample (int numSamples, float value,
+                                                          int numChannels = 1)
+{
+    auto buffer = std::make_shared<juce::AudioBuffer<float>> (numChannels, numSamples);
+    for (int ch = 0; ch < numChannels; ++ch)
+        juce::FloatVectorOperations::fill (buffer->getWritePointer (ch), value, numSamples);
+    return buffer;
+}
+
+// 0→1へ上がるランプ（サンプル単位の一致・startOffsetの検証用）
+std::shared_ptr<juce::AudioBuffer<float>> makeRampSample (int numSamples)
+{
+    auto buffer = std::make_shared<juce::AudioBuffer<float>> (1, numSamples);
+    for (int i = 0; i < numSamples; ++i)
+        buffer->setSample (0, i, (float) i / (float) numSamples);
+    return buffer;
+}
+
+// ボイスが全部消えるまでのブロック数（超えたら-1）
+int blocksUntilSilent (SamplerEngine& sampler, juce::AudioBuffer<float>& buffer, int limit)
+{
+    juce::MidiBuffer empty;
+    for (int i = 0; i < limit; ++i)
+    {
+        buffer.clear();
+        sampler.processBlock (buffer, empty);
+        if (sampler.numActiveVoices() == 0)
+            return i + 1;
+    }
+    return -1;
+}
+
+// PlaybackEngine結合テスト用の SynthInstance（SynthBank を介さず手で組む）
+std::shared_ptr<SynthInstance> makeSamplerInstance (std::shared_ptr<juce::AudioBuffer<float>> audio,
+                                                    double sourceRate, double deviceRate,
+                                                    int blockSize, bool pitchFollow)
+{
+    auto synth = std::make_shared<SynthInstance>();
+    synth->sampler = std::make_unique<SamplerEngine> (audio, sourceRate, deviceRate);
+    synth->sampler->setPitchFollow (pitchFollow);
+    synth->midiChannel = 1;
+    synth->preparedSampleRate = deviceRate;
+    synth->preparedBlockSize = juce::jmax (4096, blockSize);
+    synth->totalOutputChannels = 2;
+    synth->oneShot.store (! pitchFollow);
+    return synth;
+}
+
+// ---- v8: サンプル音源の保存/読込ラウンドトリップ（クランプ・欠損・SR復元）とGC ----
+void testSamplerProjectRoundtrip()
+{
+    beginTest ("sampler project roundtrip and gc");
+    const auto dir = makeTempDir();
+
+    // 44.1kHz素材（プロジェクトSRは48kHz＝サンプルは元SRのまま保存される）
+    constexpr double sampleRate = 44100.0;
+    auto audio = makeFlatSample ((int) sampleRate, 0.5f);
+    expect (writeBufferWav (dir.getChildFile ("instr-001.wav"), *audio, sampleRate),
+            "サンプルWAVを書けること");
+
+    {
+        Project project;
+        project.directory = dir;
+        project.sampleRate = 48000.0;
+
+        Track track;
+        track.id = 1;
+        track.type = TrackType::midi;
+        track.name = "kick track";
+        track.gmProgram = 48; // GM側の設定も保持されること
+        track.instrument = InstrumentKind::sample;
+        track.sampleFile = "instr-001.wav";
+        track.sampleName = "kick";
+        track.samplePitchFollow = true;
+        track.sampleMono = true;
+        track.sampleRootNote = 48;
+        track.sampleGain = 0.5f;
+        track.sampleStartOffset = 100;
+        track.sampleAudio = audio;
+        track.sampleSourceRate = sampleRate;
+        project.tracks.push_back (std::move (track));
+
+        juce::String error;
+        expect (project.save (error), "保存できること");
+    }
+
+    const auto json = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
+    expect ((int) json.getProperty ("version", 0) == 8, "version 8 で保存されること");
+
+    {
+        juce::StringArray warnings;
+        juce::String error;
+        auto loaded = Project::load (dir, warnings, error);
+        expect (loaded != nullptr && loaded->tracks.size() == 1, "読み込めること");
+        if (loaded == nullptr || loaded->tracks.empty())
+        {
+            dir.deleteRecursively();
+            return;
+        }
+        const auto& track = loaded->tracks[0];
+        expect (track.instrument == InstrumentKind::sample, "instrument=sample が復元されること");
+        expect (track.sampleFile == "instr-001.wav", "sampleFileが復元されること");
+        expect (track.sampleName == "kick", "sampleNameが復元されること");
+        expect (track.samplePitchFollow, "samplePitchFollowが復元されること");
+        expect (track.sampleMono, "sampleMonoが復元されること");
+        expect (track.sampleRootNote == 48, "sampleRootNoteが復元されること");
+        expect (std::abs (track.sampleGain - 0.5f) < 1.0e-6f, "sampleGainが復元されること");
+        expect (track.sampleStartOffset == 100, "sampleStartOffsetが復元されること");
+        expect (track.gmProgram == 48, "GM側の設定も保持されること");
+        expect (track.sampleAudio != nullptr, "サンプルWAVがメモリへ載ること");
+        expect (juce::approximatelyEqual (track.sampleSourceRate, sampleRate),
+                "元SR（44.1k）がWAVから復元されること");
+        expect (! track.samplePeakCache.empty(), "ピークキャッシュが作られること");
+        expect (warnings.isEmpty(), "正常なプロジェクトで警告が出ないこと");
+
+        // SR復元の意味: 48kHz環境での再生長が保存前と同じ比率になる（sampleSourceRateが0なら壊れる）
+        SamplerEngine sampler (track.sampleAudio, track.sampleSourceRate, 48000.0);
+        juce::AudioBuffer<float> buffer (2, 512);
+        juce::MidiBuffer midi;
+        midi.addEvent (juce::MidiMessage::noteOn (1, track.sampleRootNote, (juce::uint8) 127), 0);
+        buffer.clear();
+        sampler.processBlock (buffer, midi);
+        const int blocks = 1 + blocksUntilSilent (sampler, buffer, 300);
+        const int expected = (int) std::ceil (sampleRate * 48000.0 / sampleRate / 512.0);
+        expect (std::abs (blocks - expected) <= 2, "再読込後も再生長が比率どおりであること");
+    }
+
+    // ---- 既存v8ファイル互換: sampleMono キーが無ければOFF（後から足したキー）----
+    {
+        auto file = dir.getChildFile ("project.json");
+        auto text = file.loadFileAsString();
+        expect (text.contains ("\"sampleMono\""), "保存JSONにsampleMonoがあること");
+        // キーごと削除（後ろのキーとの区切りも一緒に消す）
+        const auto removed = text.replace ("\"sampleMono\": true,", "");
+        expect (! removed.contains ("\"sampleMono\""), "テスト用にキーを削除できること");
+        file.replaceWithText (removed);
+
+        juce::StringArray warnings;
+        juce::String error;
+        auto loaded = Project::load (dir, warnings, error);
+        expect (loaded != nullptr && ! loaded->tracks.empty(), "キー欠損でも読めること");
+        if (loaded != nullptr && ! loaded->tracks.empty())
+            expect (! loaded->tracks[0].sampleMono, "sampleMonoが無いv8ファイルはOFFとして読むこと");
+
+        file.replaceWithText (text); // 後続のクランプ検証のために戻す
+    }
+
+    // ---- 不正値のクランプ（手編集JSONへの防御）----
+    {
+        auto text = dir.getChildFile ("project.json").loadFileAsString();
+        text = text.replace ("\"sampleRootNote\": 48", "\"sampleRootNote\": 999")
+                   .replace ("\"sampleGain\": 0.5", "\"sampleGain\": 9.0")
+                   .replace ("\"sampleStartOffset\": 100", "\"sampleStartOffset\": 99999999");
+        dir.getChildFile ("project.json").replaceWithText (text);
+
+        juce::StringArray warnings;
+        juce::String error;
+        auto loaded = Project::load (dir, warnings, error);
+        expect (loaded != nullptr && ! loaded->tracks.empty(), "クランプ検証用に読めること");
+        if (loaded != nullptr && ! loaded->tracks.empty())
+        {
+            const auto& track = loaded->tracks[0];
+            expect (track.sampleRootNote == 127, "sampleRootNoteが0..127へクランプされること");
+            expect (std::abs (track.sampleGain - 2.0f) < 1.0e-6f, "sampleGainが0..2へクランプされること");
+            expect (track.sampleStartOffset < (juce::int64) track.sampleAudio->getNumSamples(),
+                    "sampleStartOffsetがバッファ長へクランプされること");
+        }
+    }
+
+    // ---- ファイル欠損: 警告を出してそのトラックは無音（勝手にGMへ戻さない）----
+    {
+        auto text = dir.getChildFile ("project.json").loadFileAsString()
+                        .replace ("instr-001.wav", "instr-missing.wav");
+        dir.getChildFile ("project.json").replaceWithText (text);
+
+        juce::StringArray warnings;
+        juce::String error;
+        auto loaded = Project::load (dir, warnings, error);
+        expect (loaded != nullptr && ! loaded->tracks.empty(), "欠損でもプロジェクトは開けること");
+        if (loaded != nullptr && ! loaded->tracks.empty())
+        {
+            const auto& track = loaded->tracks[0];
+            expect (track.instrument == InstrumentKind::sample, "欠損でも勝手にGMへ戻さないこと");
+            expect (track.sampleAudio == nullptr, "欠損時はバッファなし（無音）");
+            expect (juce::approximatelyEqual (track.sampleSourceRate, sampleRate),
+                    "欠損でもJSONに記録した元SRが復元されること（診断用）");
+            expect (! track.hasSample(), "バッファが無ければ hasSample は false");
+
+            // 欠損状態で保存し直しても記録値が0で上書きされないこと
+            juce::String saveError;
+            expect (loaded->save (saveError), "欠損状態でも保存できること");
+            juce::StringArray warnings2;
+            auto reloaded = Project::load (dir, warnings2, saveError);
+            expect (reloaded != nullptr && ! reloaded->tracks.empty(), "再読込できること");
+            if (reloaded != nullptr && ! reloaded->tracks.empty())
+                expect (juce::approximatelyEqual (reloaded->tracks[0].sampleSourceRate, sampleRate),
+                        "欠損状態の保存→再読込でも元SRが残ること");
+        }
+        expect (! warnings.isEmpty(), "欠損サンプルは警告されること");
+    }
+
+    dir.deleteRecursively();
+
+    // ---- GC: 未参照の instr-*.wav は消し、参照中・undo履歴のものは残す ----
+    {
+        const auto gcDir = makeTempDir();
+        expect (writeBufferWav (gcDir.getChildFile ("instr-001.wav"), *audio, sampleRate), "参照中サンプル");
+        expect (writeBufferWav (gcDir.getChildFile ("instr-002.wav"), *audio, sampleRate), "undo履歴のサンプル");
+        expect (writeBufferWav (gcDir.getChildFile ("instr-003.wav"), *audio, sampleRate), "孤児サンプル");
+
+        Project project;
+        project.directory = gcDir;
+        Track track;
+        track.id = 1;
+        track.type = TrackType::midi;
+        track.instrument = InstrumentKind::sample;
+        track.sampleFile = "instr-002.wav"; // まずこれを参照した状態を履歴へ積む
+        track.sampleAudio = audio;
+        track.sampleSourceRate = sampleRate;
+        project.tracks.push_back (std::move (track));
+
+        UndoStack undoStack;
+        undoStack.begin (project);                        // instr-002.wav を履歴が参照
+        project.tracks[0].sampleFile = "instr-001.wav";   // 差し替え（現行は instr-001.wav）
+
+        juce::String error;
+        expect (project.save (error, undoStack.referencedWavs()), "保存できること");
+        expect (gcDir.getChildFile ("instr-001.wav").existsAsFile(), "参照中のサンプルは残ること");
+        expect (gcDir.getChildFile ("instr-002.wav").existsAsFile(),
+                "undo履歴から参照されているサンプルは残ること");
+        expect (! gcDir.getChildFile ("instr-003.wav").existsAsFile(), "未参照のサンプルは消えること");
+        gcDir.deleteRecursively();
+    }
+}
+
+// ---- SynthBank: サンプル音源の生成・差し替え・atomic更新・音程モード切替の停止要求 ----
+void testSynthBankSampler()
+{
+    beginTest ("SynthBank sampler instances");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+
+    Project project;
+    Track track;
+    track.id = 50;
+    track.type = TrackType::midi;
+    track.instrument = InstrumentKind::sample;
+    track.sampleFile = "instr-001.wav";
+    track.sampleName = "kick";
+    track.sampleAudio = makeFlatSample ((int) sr, 0.5f); // 1秒
+    track.sampleSourceRate = sr;
+    project.tracks.push_back (std::move (track));
+    auto& model = project.tracks[0];
+
+    SynthBank bank;
+    expect (bank.sync (project, sr, blockSize), "初回syncでサンプラーが生成されること");
+    auto synth = bank.get (50);
+    expect (synth != nullptr && synth->sampler != nullptr, "samplerが生成されること");
+    expect (synth != nullptr && synth->plugin == nullptr, "サンプル音源のときpluginは持たないこと");
+    expect (synth != nullptr && synth->oneShot.load(), "既定（固定モード）はoneShot=true");
+    expect (synth != nullptr && synth->totalOutputChannels == 2, "サンプラーの出力は2ch");
+    expect (! bank.sync (project, sr, blockSize), "変更がなければsyncはfalse");
+    if (synth == nullptr || synth->sampler == nullptr)
+        return;
+
+    // 音量・頭カット・ルート音はインスタンスを作り直さない（発音中の音を切らないため）
+    model.sampleGain = 0.5f;
+    model.sampleStartOffset = 100;
+    model.sampleRootNote = 48;
+    expect (! bank.sync (project, sr, blockSize), "音量・頭カット・ルート音の変更ではsyncはfalse");
+    expect (bank.get (50) == synth, "同じインスタンスのまま（atomic更新のみ）");
+
+    // 音程モードの変化は「同じインスタンスのまま停止要求を立てる」
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    juce::MidiBuffer midi;
+    midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0);
+    buffer.clear();
+    synth->sampler->processBlock (buffer, midi);
+    midi.clear();
+    expect (synth->sampler->numActiveVoices() == 1, "発音中のボイスがあること");
+
+    model.samplePitchFollow = true;
+    expect (bank.sync (project, sr, blockSize), "音程モードの変化でsyncがtrue（再pushが必要）");
+    expect (bank.get (50) == synth, "音程モード変更でもインスタンスは作り直さないこと");
+    expect (! synth->oneShot.load(), "追従モードではoneShot=false");
+    buffer.clear();
+    synth->sampler->processBlock (buffer, midi);
+    expect (synth->sampler->numActiveVoices() == 0,
+            "音程モード切替でrequestStopAllが立ち、全ボイスが止まること");
+
+    // サンプルの差し替えはインスタンスごと交換
+    model.sampleFile = "instr-002.wav";
+    expect (bank.sync (project, sr, blockSize), "サンプル差し替えでsyncがtrue");
+    auto replaced = bank.get (50);
+    expect (replaced != nullptr && replaced != synth, "別インスタンスに差し替わること");
+    expect (replaced != nullptr && replaced->sampler != nullptr, "差し替え後もsamplerであること");
+
+    // デバイスSR変更もインスタンス差し替え（再生比率が変わる）
+    expect (bank.sync (project, 48000.0, blockSize), "SR変更でsyncがtrue");
+    expect (bank.get (50) != replaced, "SR変更で別インスタンスになること");
+
+    // GMへ戻す → pluginを持つインスタンスへ
+    model.instrument = InstrumentKind::gm;
+    model.gmProgram = 48;
+    expect (bank.sync (project, 48000.0, blockSize), "GMへ戻すとsyncがtrue");
+    auto gm = bank.get (50);
+    expect (gm != nullptr && gm->plugin != nullptr, "GMへ戻すとpluginを持つこと");
+    expect (gm != nullptr && gm->sampler == nullptr, "GMのときsamplerは持たないこと");
+    expect (gm != nullptr && ! gm->oneShot.load(), "GMはoneShot=false（resoundは従来どおり）");
+
+    // サンプル欠損（読込失敗）は無音: synthを作らず、再試行もしない
+    model.instrument = InstrumentKind::sample;
+    model.sampleAudio = nullptr;
+    model.sampleSourceRate = 0.0;
+    expect (bank.sync (project, 48000.0, blockSize), "欠損サンプルへの切り替えでもsyncがtrue");
+    expect (bank.get (50) == nullptr, "サンプル欠損時はsynthなし（トラックは無音）");
+    expect (! bank.sync (project, 48000.0, blockSize), "失敗はキャッシュされ再試行しないこと");
+}
+
+// ---- SamplerEngine: 発音・消音・レート・ボイス管理（オーディオスレッド側の単体検証）----
+void testSamplerEngine()
+{
+    beginTest ("SamplerEngine voices and rates");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+    const int sampleLength = (int) sr;                      // 1秒
+    const int blocksPerSample = sampleLength / blockSize;    // 86ブロック
+    auto flat = makeFlatSample (sampleLength, 0.5f);
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    juce::MidiBuffer midi;
+
+    // 1ブロック分レンダリングしてch0のピークを返す（midiは消費される）
+    auto renderInto = [&buffer, &midi] (SamplerEngine& sampler, int blocks)
+    {
+        float mag = 0.0f;
+        for (int i = 0; i < blocks; ++i)
+        {
+            buffer.clear();
+            sampler.processBlock (buffer, midi);
+            midi.clear();
+            mag = juce::jmax (mag, buffer.getMagnitude (0, 0, blockSize));
+        }
+        return mag;
+    };
+
+    // ---- 固定モード（One Shot）----
+    {
+        SamplerEngine sampler (flat, sr, sr);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0);
+        expect (renderInto (sampler, 1) > 0.49f, "固定: noteOnで鳴ること");
+
+        midi.addEvent (juce::MidiMessage::noteOff (1, 60), 0); // 8分音符相当で来るノートオフ
+        expect (renderInto (sampler, 1) > 0.49f, "固定: noteOffでレベルが落ちないこと");
+        expect (renderInto (sampler, blocksPerSample - 10) > 0.49f,
+                "固定: ノート長を無視してサンプル末尾まで鳴ること");
+        expect (blocksUntilSilent (sampler, buffer, 20) > 0, "固定: サンプル末尾で自然に停止すること");
+    }
+
+    // CC123（停止・シーク・サイクル折返しで送られる）では止まる
+    {
+        SamplerEngine sampler (flat, sr, sr);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0);
+        renderInto (sampler, 1);
+        midi.addEvent (juce::MidiMessage::allNotesOff (1), 0);
+        renderInto (sampler, 1); // このブロック内で5msフェード
+        expect (sampler.numActiveVoices() == 0, "固定: CC123でボイスが消えること");
+        expect (renderInto (sampler, 2) < 1.0e-6f, "固定: CC123の後は無音になること");
+    }
+
+    // requestStopAll（音程モード切替時にSynthBankが立てる）も同じく止める
+    {
+        SamplerEngine sampler (flat, sr, sr);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0);
+        renderInto (sampler, 1);
+        sampler.requestStopAll();
+        renderInto (sampler, 1);
+        expect (sampler.numActiveVoices() == 0, "requestStopAllで全ボイスが止まること");
+    }
+
+    // ---- 追従モード ----
+    {
+        SamplerEngine sampler (flat, sr, sr);
+        sampler.setPitchFollow (true);
+        sampler.setRootNote (60);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0);
+        expect (renderInto (sampler, 1) > 0.49f, "追従: noteOnで鳴ること");
+        midi.addEvent (juce::MidiMessage::noteOff (1, 60), 0);
+        renderInto (sampler, 1);
+        expect (sampler.numActiveVoices() == 0, "追従: noteOffでノート長どおり止まること");
+        expect (renderInto (sampler, 2) < 1.0e-6f, "追従: noteOff後は無音になること");
+    }
+
+    // rootNote+12 は再生長がおよそ半分
+    {
+        SamplerEngine sampler (flat, sr, sr);
+        sampler.setPitchFollow (true);
+        sampler.setRootNote (60);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 72, (juce::uint8) 127), 0);
+        renderInto (sampler, 1);
+        const int blocks = 1 + blocksUntilSilent (sampler, buffer, blocksPerSample);
+        expect (std::abs (blocks - blocksPerSample / 2) <= 2,
+                "追従: 1オクターブ上は再生長がおよそ半分になること");
+    }
+
+    // 離れた音程でも 2^((pitch-rootNote)/12) が効く（レートのクランプで頭打ちにならない）。
+    // ルート0＋ノート84 = 7オクターブ上 = 128倍速。上限64倍のままだと再生長が2倍になって落ちる
+    {
+        const int longFrames = (int) (sr * 4.0);
+        SamplerEngine sampler (makeFlatSample (longFrames, 0.5f), sr, sr);
+        sampler.setPitchFollow (true);
+        sampler.setRootNote (0);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 84, (juce::uint8) 127), 0);
+        renderInto (sampler, 1);
+        const int blocks = 1 + blocksUntilSilent (sampler, buffer, 400);
+        const int expected = (int) std::ceil ((double) longFrames / 128.0 / (double) blockSize);
+        expect (std::abs (blocks - expected) <= 1,
+                "7オクターブ上でも再生レートが 2^((pitch-root)/12) どおりであること");
+    }
+
+    // rootNoteちょうどはサンプル単位で元のサンプルと一致（velocity127・gain1.0）
+    {
+        auto ramp = makeRampSample (sampleLength);
+        SamplerEngine sampler (ramp, sr, sr);
+        sampler.setPitchFollow (true);
+        sampler.setRootNote (60);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0);
+        buffer.clear();
+        sampler.processBlock (buffer, midi);
+        midi.clear();
+
+        float maxDiff = 0.0f, maxLrDiff = 0.0f;
+        for (int i = 0; i < blockSize; ++i)
+        {
+            maxDiff = juce::jmax (maxDiff, std::abs (buffer.getSample (0, i) - ramp->getSample (0, i)));
+            maxLrDiff = juce::jmax (maxLrDiff,
+                                    std::abs (buffer.getSample (0, i) - buffer.getSample (1, i)));
+        }
+        expect (maxDiff < 1.0e-6f, "追従: ルート音は元のサンプルと一致すること");
+        expect (maxLrDiff < 1.0e-6f, "モノソースはL/Rへ複製されること");
+    }
+
+    // 同ピッチ連打のnoteOff対象は「未リリースのうち最古」1本だけ
+    {
+        SamplerEngine sampler (flat, sr, sr);
+        sampler.setPitchFollow (true);
+        sampler.setRootNote (60);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0);
+        renderInto (sampler, 1);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0);
+        expect (renderInto (sampler, 1) > 0.99f, "追従: 同ピッチ連打は重なって鳴ること");
+        midi.addEvent (juce::MidiMessage::noteOff (1, 60), 0);
+        renderInto (sampler, 1);
+        expect (sampler.numActiveVoices() == 1, "追従: 同ピッチのnoteOffで止まるのは最古の1本だけ");
+        const auto level = renderInto (sampler, 1);
+        expect (level > 0.49f && level < 0.51f, "追従: 後の発音は鳴り続けること");
+    }
+
+    // Mono: 新しい打点で前の音を切る（Logicの Polyphony: 1 相当。長い音の連打で重ならない）
+    {
+        SamplerEngine sampler (flat, sr, sr);
+        sampler.setMono (true);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0);
+        expect (renderInto (sampler, 1) > 0.49f, "Mono: 1発目が鳴ること");
+
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0);
+        renderInto (sampler, 1); // このブロック内で旧ボイスが5msフェードして消える
+        expect (sampler.numActiveVoices() == 1, "Mono: 連打しても1ボイスだけ残ること");
+        const auto level = renderInto (sampler, 1);
+        expect (level > 0.49f && level < 0.51f, "Mono: 重ならないので振幅が2倍にならないこと");
+
+        // 8連打しても積み上がらない。リリース長（5ms）以上の間隔なら同時に鳴るのは
+        // 「現在の1本＋尾1本」＝最大2ボイス分（この定数サンプルでは 0.5×2 = 1.0）。
+        // 重ねる場合の8ボイス分（4.0）とは桁が違う
+        float peak = 0.0f;
+        for (int i = 0; i < 8; ++i)
+        {
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0);
+            peak = juce::jmax (peak, renderInto (sampler, 4));
+        }
+        expect (peak <= 1.01f, "Mono: 連打しても2ボイス分（フェードの重なり）を超えないこと");
+        expect (sampler.numActiveVoices() == 1, "Mono: 8連打後も1ボイス");
+    }
+
+    // Mono × 追従: Monoが先に切ったノートのオフが、後から届いて新しいボイスを止めないこと
+    // （MIDIのnoteOffにノート個体のIDがないため、飲む仕組みが要る）
+    {
+        SamplerEngine sampler (flat, sr, sr);
+        sampler.setMono (true);
+        sampler.setPitchFollow (true);
+        sampler.setRootNote (60);
+
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0); // ノートA
+        renderInto (sampler, 2);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0); // ノートB（Aを切る）
+        renderInto (sampler, 2);
+        expect (sampler.numActiveVoices() == 1, "追従+Mono: Bだけになっていること");
+
+        // ここでAのnoteOffが届く（Aは既にMonoで切られている）→ Bは鳴り続けるべき
+        midi.addEvent (juce::MidiMessage::noteOff (1, 60), 0);
+        renderInto (sampler, 2);
+        expect (sampler.numActiveVoices() == 1, "追従+Mono: 古いノートのオフでBが止まらないこと");
+        expect (renderInto (sampler, 1) > 0.49f, "追従+Mono: Bが鳴り続けること");
+
+        // B自身のnoteOffではちゃんと止まる
+        midi.addEvent (juce::MidiMessage::noteOff (1, 60), 0);
+        renderInto (sampler, 2);
+        expect (sampler.numActiveVoices() == 0, "追従+Mono: 自分のオフでは止まること");
+    }
+
+    // Mono: 同じ位置に複数の noteOn（同時刻の和音等）が来ても尾が積み上がらないこと
+    {
+        SamplerEngine sampler (flat, sr, sr);
+        sampler.setMono (true);
+        for (int i = 0; i < SamplerEngine::maxVoices; ++i)
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0); // 全部同じオフセット
+        const auto level = renderInto (sampler, 1);
+        expect (sampler.numActiveVoices() == 1, "Mono: 同一位置の連続noteOnは1ボイスに畳まれること");
+        expect (level > 0.49f && level < 0.51f,
+                "Mono: 同一位置の連続noteOnで振幅が積み上がらないこと（未出力ボイスは即停止）");
+    }
+
+    // 連打（固定モード・Mono OFF）はボイスを奪わず加算される
+    {
+        SamplerEngine sampler (flat, sr, sr);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0);
+        renderInto (sampler, 1);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0);
+        expect (renderInto (sampler, 1) > 0.99f, "固定: 連打は前の音を切らず重なること");
+        expect (sampler.numActiveVoices() == 2, "固定: 連打で2ボイスになること");
+    }
+
+    // ボイス上限超え: 17音目で最古（velocity127の1本目）が奪われる
+    {
+        SamplerEngine sampler (makeFlatSample (sampleLength, 1.0f), sr, sr);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0); // 最古（寄与1.0）
+        renderInto (sampler, 1);
+        for (int i = 0; i < SamplerEngine::maxVoices - 1; ++i)
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 32), 0);
+        renderInto (sampler, 1);
+        expect (sampler.numActiveVoices() == SamplerEngine::maxVoices, "ボイスが上限まで埋まること");
+
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 32), 0); // 17音目
+        const auto level = renderInto (sampler, 1);
+        expect (sampler.numActiveVoices() == SamplerEngine::maxVoices, "上限超えでもボイス数は上限のまま");
+        const float expected = 16.0f * 32.0f / 127.0f; // 最古が奪われた＝全ボイスがvelocity32
+        expect (std::abs (level - expected) < 0.05f, "上限超えでは最古のボイスが奪われること");
+    }
+
+    // startOffset（頭の無音カット）とgain・velocity
+    {
+        auto ramp = makeRampSample (sampleLength);
+        SamplerEngine sampler (ramp, sr, sr);
+        sampler.setStartOffset (1000);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0);
+        buffer.clear();
+        sampler.processBlock (buffer, midi);
+        midi.clear();
+        expect (std::abs (buffer.getSample (0, 0) - ramp->getSample (0, 1000)) < 1.0e-6f,
+                "startOffsetの分だけ先頭が飛ぶこと");
+    }
+    {
+        SamplerEngine sampler (flat, sr, sr);
+        sampler.setGain (0.5f);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0);
+        const auto level = renderInto (sampler, 1);
+        expect (std::abs (level - 0.25f) < 0.001f, "gainが線形に効くこと");
+    }
+    {
+        SamplerEngine sampler (flat, sr, sr);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 64), 0);
+        const auto level = renderInto (sampler, 1);
+        expect (std::abs (level - 0.5f * 64.0f / 127.0f) < 0.001f,
+                "velocity 64 が velocity 127 のおよそ半分になること");
+    }
+
+    // デバイスSR≠ソースSR: 44.1k素材を48kで鳴らすと再生長が比率どおりに伸びる
+    {
+        SamplerEngine sampler (flat, sr, 48000.0);
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0);
+        renderInto (sampler, 1);
+        const int blocks = 1 + blocksUntilSilent (sampler, buffer, 200);
+        const int expected = (int) std::ceil (sampleLength * 48000.0 / sr / blockSize);
+        expect (std::abs (blocks - expected) <= 2, "デバイスSRに応じて再生長が変わること");
+    }
+}
+
+// ---- SamplerEngine × PlaybackEngine: 消音・再発音・モード切替の結合検証 ----
+void testSamplerThroughPlaybackEngine()
+{
+    beginTest ("Sampler through PlaybackEngine");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+    auto flat = makeFlatSample ((int) (sr * 2.0), 0.5f); // 2秒のワンショット
+
+    TransportState transport;
+    SnapshotExchange snapshots;
+    PreviewFifo previewFifo;
+    PlaybackEngine engine (transport, snapshots, previewFifo);
+    engine.prepareToPlay (blockSize, sr);
+
+    // 曲頭に1つだけ「1小節分の長さ」のノート（固定モードならノート長は無視される）
+    Project project;
+    Track track;
+    track.id = 40;
+    track.type = TrackType::midi;
+    MidiRegion region;
+    region.id = 41;
+    region.startPpq = 0;
+    region.lengthPpq = Ppq::ticksPerBar * 8;
+    region.notes.push_back ({ 42, 60, 0, Ppq::ticksPerBar * 4, 127 });
+    track.midiRegions.push_back (region);
+    project.tracks.push_back (std::move (track));
+    project.tracks[0].params->gain.store (1.0f); // 振幅をサンプル値そのままで読む
+
+    auto synth = makeSamplerInstance (flat, sr, sr, blockSize, false);
+    auto pushSnapshot = [&]
+    {
+        auto snapshot = project.buildSnapshot();
+        snapshot->tracks[0].synth = synth;
+        snapshots.push (std::move (snapshot));
+    };
+    pushSnapshot();
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    auto processBlocks = [&] (int count)
+    {
+        float magnitude = 0.0f;
+        for (int i = 0; i < count; ++i)
+        {
+            buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+            engine.process (info);
+            magnitude = juce::jmax (magnitude, buffer.getMagnitude (0, 0, blockSize));
+        }
+        return magnitude;
+    };
+
+    // 再生 → ワンショットが鳴る（ノート長より長く鳴り続ける）
+    engine.play();
+    expect (processBlocks (2) > 0.49f, "固定: 再生でワンショットが鳴ること");
+    expect (synth->sampler->numActiveVoices() == 1, "1ボイスだけ鳴っていること");
+
+    // 再生中のスナップショット差し替え（ノート追加相当）で二重発音しない（resoundスキップ）
+    snapshots.deleteRetired();
+    pushSnapshot();
+    const auto swapped = processBlocks (3);
+    expect (swapped < 0.6f, "固定: 差し替えでワンショットが二重に鳴らないこと");
+    expect (synth->sampler->numActiveVoices() == 1, "固定: 差し替え後もボイスは1本");
+
+    // 停止 → CC123で止まる
+    engine.stop();
+    processBlocks (2);
+    expect (synth->sampler->numActiveVoices() == 0, "固定: 停止でボイスが止まること");
+    expect (processBlocks (2) < 1.0e-6f, "固定: 停止後は無音");
+
+    // シーク（ノートを跨いだ位置へ）→ ワンショットは途中から鳴り出さない
+    transport.seekRequest.store ((juce::int64) (sr * 0.5));
+    engine.play();
+    expect (processBlocks (3) < 1.0e-6f, "固定: シーク先で跨ぎノートが途中から鳴り出さないこと");
+    engine.stop();
+    processBlocks (2);
+
+    // サイクル折返し: 範囲頭のノートが鳴り直しても重ならない（折返しの消音が効いている）
+    transport.seekRequest.store (0);
+    const auto barSamples = (juce::int64) (sr * 2.0); // 120bpm/4拍 = 2秒
+    transport.cycleRange.store (TransportState::packCycle (0, barSamples));
+    transport.cycleEnabled.store (true);
+    engine.play();
+    const auto looped = processBlocks ((int) (barSamples * 3 / blockSize)); // 3周ぶん
+    expect (looped < 0.6f, "サイクル折返しでワンショットが積み重ならないこと");
+    expect (synth->sampler->numActiveVoices() <= 1, "折返し後もボイスは1本以下");
+    engine.stop();
+    transport.cycleEnabled.store (false);
+    processBlocks (2);
+
+    // ---- 非整数サンプル境界（127BPM）でも、グリッド上のOne Shotが消えないこと ----
+    // シーク位置は「グリッドをサンプル整数へ丸めた値」なので、pos*tps でPPQへ戻すと
+    // ノートのPPQよりわずかに大きくなる。PPQ同士で比べていると境界ちょうどのノートが
+    // 「過去のノート」に落ち、One Shotは resound もしないので完全に消える
+    {
+        constexpr double oddBpm = 127.0;
+        transport.bpm.store (oddBpm);
+        project.tracks[0].midiRegions[0].notes.clear();
+        // 16分音符1つ目（PPQ 240）に短いノートを置く
+        project.tracks[0].midiRegions[0].notes.push_back ({ 50, 60, Ppq::ticksPerQuarter / 4,
+                                                            Ppq::ticksPerQuarter / 4, 127 });
+        synth->sampler->setPitchFollow (false);
+        synth->oneShot.store (true);
+        synth->sampler->requestStopAll();
+        snapshots.deleteRetired();
+        pushSnapshot();
+        processBlocks (2);
+
+        const auto gridSample = (juce::int64) std::llround (sr * 60.0 / oddBpm / 4.0); // = 5209
+        transport.seekRequest.store (gridSample);
+        engine.play();
+        expect (processBlocks (3) > 0.49f, "127BPMでもグリッド上のOne Shotがシーク直後に鳴ること");
+        engine.stop();
+        processBlocks (2);
+
+        transport.bpm.store (120.0);
+        project.tracks[0].midiRegions[0].notes.clear();
+        project.tracks[0].midiRegions[0].notes.push_back ({ 42, 60, 0, Ppq::ticksPerBar * 4, 127 });
+        snapshots.deleteRetired();
+        pushSnapshot();
+        processBlocks (2);
+    }
+
+    // ---- 追従モードは従来どおり resound で持続音が復元される ----
+    synth->sampler->setPitchFollow (true);
+    synth->sampler->setRootNote (60);
+    synth->oneShot.store (false);
+    synth->sampler->requestStopAll();
+    snapshots.deleteRetired();
+    pushSnapshot();
+    processBlocks (2);
+
+    transport.seekRequest.store ((juce::int64) (sr * 0.5)); // ノートを跨いだ位置
+    engine.play();
+    expect (processBlocks (3) > 0.49f, "追従: シーク先で跨ぎノートが復元されること");
+
+    // 再生中の固定⇄追従切替: 旧ボイスを止めてから復元するので二重発音しない
+    synth->sampler->setPitchFollow (false);
+    synth->oneShot.store (true);
+    synth->sampler->requestStopAll(); // SynthBank::sync()が立てるフラグ相当
+    snapshots.deleteRetired();
+    pushSnapshot();
+    processBlocks (3);
+    expect (synth->sampler->numActiveVoices() == 0,
+            "追従→固定: 全ボイス停止＋resoundスキップで鳴り残らないこと");
+
+    synth->sampler->setPitchFollow (true);
+    synth->oneShot.store (false);
+    synth->sampler->requestStopAll();
+    snapshots.deleteRetired();
+    pushSnapshot();
+    const auto afterSwitch = processBlocks (3);
+    expect (afterSwitch > 0.49f && afterSwitch < 0.6f,
+            "固定→追従: 持続音が1本だけ復元されること（二重発音しない）");
+    expect (synth->sampler->numActiveVoices() == 1, "固定→追従: ボイスは1本");
+
+    engine.stop();
+    processBlocks (2);
+    snapshots.deleteRetired();
+}
+
 // ---- スパイク: DLSMusicDevice をホストしてノートオン→無音でないことを確認 ----
 void testDlsMusicDeviceRendersAudio()
 {
@@ -1747,7 +2538,9 @@ void testBounceRendererMidiTail()
     const auto target = dir.getChildFile ("bounce.wav");
 
     SynthBank bank;
-    auto synth = bank.createIndependent (0, false, 44100.0, BounceRenderer::renderBlockSize);
+    Track gmTrack; // GM音源（Piano）の設定だけを持つダミー
+    gmTrack.type = TrackType::midi;
+    auto synth = bank.createIndependent (gmTrack, 44100.0, BounceRenderer::renderBlockSize);
     expect (synth != nullptr, "バウンス専用DLSインスタンスを作れること");
     if (synth == nullptr)
     {
@@ -1777,6 +2570,294 @@ void testBounceRendererMidiTail()
     expect (result.writtenSamples >= 22050, "テールで曲末より長くなること（最低でも切り捨てない）");
     expect (result.writtenSamples <= 22050 + (juce::int64) (44100 * 5.0) + BounceRenderer::renderBlockSize,
             "テール上限（5秒）を超えないこと");
+
+    dir.deleteRecursively();
+}
+
+// ---- バウンス: サンプル音源（範囲延長・厳密範囲・テールでのレンダリング・再生との一致）----
+void testBounceSampler()
+{
+    beginTest ("BounceRenderer sampler");
+
+    constexpr double sr = 44100.0;
+    const auto sampleFrames = (int) (sr * 6.0); // 曲末に置く6秒のワンショット
+
+    Track track;
+    track.id = 1;
+    track.type = TrackType::midi;
+    track.instrument = InstrumentKind::sample;
+    track.sampleFile = "instr-001.wav";
+    track.sampleName = "long808";
+    track.sampleAudio = makeFlatSample (sampleFrames, 0.4f);
+    track.sampleSourceRate = sr;
+
+    // 曲頭の16分音符1つ（固定モードではノート長を無視して6秒鳴る）
+    const std::vector<MidiNotePlayback> notes { { 0, Ppq::ticksPerQuarter / 4, 60, 127 } };
+
+    // ---- 範囲延長の計算（純関数）----
+    expect (BounceRenderer::oneShotEndSample (track, notes, 120.0, sr) == (juce::int64) sampleFrames,
+            "固定モードの終端がサンプル全長になること");
+    {
+        auto follow = track;
+        follow.samplePitchFollow = true;
+        expect (BounceRenderer::oneShotEndSample (follow, notes, 120.0, sr) == 0,
+                "追従モードは延長しないこと");
+
+        auto trimmed = track;
+        trimmed.sampleStartOffset = (juce::int64) sr; // 頭1秒カット
+        expect (BounceRenderer::oneShotEndSample (trimmed, notes, 120.0, sr)
+                    == (juce::int64) (sr * 5.0),
+                "頭カットの分だけ終端が手前になること");
+
+        auto gm = track;
+        gm.instrument = InstrumentKind::gm;
+        expect (BounceRenderer::oneShotEndSample (gm, notes, 120.0, sr) == 0,
+                "GM音源では延長しないこと");
+
+        // 非整数SR比: SamplerEngineは「読み出し位置が末尾に達するまで」出力するので必要長はceil。
+        // 四捨五入だと末尾1サンプルが切れる（残り2サンプル・44.1k→48kは実際に3サンプル出る）
+        auto tiny = track;
+        tiny.sampleAudio = makeFlatSample (2, 0.5f);
+        tiny.sampleSourceRate = sr;
+        const auto tinyEnd = BounceRenderer::oneShotEndSample (tiny, notes, 120.0, 48000.0);
+        expect (tinyEnd == 3, "非整数SR比の終端はceilで数えること");
+
+        // 実際のエンジン出力数と一致していること（helperの計算がエンジンの規則と同じか）
+        SamplerEngine tinySampler (tiny.sampleAudio, sr, 48000.0);
+        juce::AudioBuffer<float> tinyBuffer (2, 64);
+        juce::MidiBuffer tinyMidi;
+        tinyMidi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 127), 0);
+        tinyBuffer.clear();
+        tinySampler.processBlock (tinyBuffer, tinyMidi);
+        int sounded = 0;
+        for (int i = 0; i < tinyBuffer.getNumSamples(); ++i)
+            if (std::abs (tinyBuffer.getSample (0, i)) > 1.0e-6f)
+                ++sounded;
+        expect (sounded == (int) tinyEnd, "helperの終端がエンジンの実出力サンプル数と一致すること");
+    }
+
+    const auto dir = makeTempDir();
+    SynthBank bank;
+
+    auto runBounce = [&] (const juce::File& target, juce::int64 endSample, bool wantTail,
+                          const std::vector<MidiNotePlayback>& notesToRender)
+    {
+        BounceRenderer::Request request;
+        request.sampleRate = sr;
+        request.bpm = 120.0;
+        request.targetFile = target;
+        request.endSample = endSample;
+        request.wantTail = wantTail;
+
+        BounceRenderer::TrackRender render;
+        render.gain = 1.0f;
+        render.notes = notesToRender;
+        render.synth = bank.createIndependent (track, sr, BounceRenderer::renderBlockSize);
+        expect (render.synth != nullptr && render.synth->sampler != nullptr,
+                "バウンス専用サンプラーを作れること");
+        request.tracks.push_back (std::move (render));
+
+        BounceRenderer renderer;
+        expect (renderer.start (std::move (request)), "startできること");
+        expect (waitForBounce (renderer), "タイムアウトせず完了すること");
+        return renderer.takeResult();
+    };
+
+    auto readWav = [] (const juce::File& file, juce::AudioBuffer<float>& out)
+    {
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatReader> reader (
+            wav.createReaderFor (new juce::FileInputStream (file), true));
+        if (reader == nullptr)
+            return false;
+        out.setSize (2, (int) reader->lengthInSamples);
+        return reader->read (&out, 0, (int) reader->lengthInSamples, 0, true, true);
+    };
+
+    // ---- 全体バウンス: 延長した範囲でワンショットが全長書き出される ----
+    {
+        const auto target = dir.getChildFile ("full.wav");
+        const auto result = runBounce (target, (juce::int64) sampleFrames, true, notes);
+        expect (result.status == BounceRenderer::Status::success, "全体バウンスが成功すること");
+        expect (result.writtenSamples >= (juce::int64) sampleFrames, "全長ぶん書き出されること");
+
+        juce::AudioBuffer<float> out;
+        expect (readWav (target, out), "出力を読めること");
+        if (out.getNumSamples() >= sampleFrames)
+        {
+            // 5秒〜6秒の区間（現行テール上限5秒では切れていた領域）に音が残っていること
+            const int from = (int) (sr * 5.0);
+            expect (out.getMagnitude (0, from, (int) (sr * 0.9)) > 0.3f,
+                    "5秒以降もサンプルが鳴っていること（テール上限に依存していない）");
+        }
+    }
+
+    // ---- リージョン/サイクル書き出し: 指定範囲で厳密に切る（延長しない）----
+    {
+        const auto target = dir.getChildFile ("strict.wav");
+        const auto strictEnd = (juce::int64) (sr * 0.5);
+        const auto result = runBounce (target, strictEnd, false, notes);
+        expect (result.status == BounceRenderer::Status::success, "厳密範囲の書き出しが成功すること");
+        expect (result.writtenSamples == strictEnd, "指定範囲ちょうどで切れること");
+
+        juce::AudioBuffer<float> out;
+        expect (readWav (target, out), "出力を読めること");
+        expect (out.getNumSamples() == (int) strictEnd, "WAVの長さも指定範囲ちょうど");
+        expect (out.getMagnitude (0, 0, out.getNumSamples()) > 0.3f, "範囲内では鳴っていること");
+    }
+
+    // ---- サイクル範囲書き出し: 範囲頭を跨ぐOne Shotは鳴らさない（リアルタイム再生と一致させる）----
+    // 再生側は oneShot のとき resound しない＝シーク先で途中から鳴り出さないので、書き出しでも
+    // 範囲頭より前に始まったワンショットを鳴らしてはいけない（叩いていない打点が増える）
+    {
+        auto runRange = [&] (const juce::File& target, juce::int64 startSample, juce::int64 endSample,
+                             const std::vector<MidiNotePlayback>& notesToRender, double bpm = 120.0)
+        {
+            BounceRenderer::Request request;
+            request.sampleRate = sr;
+            request.bpm = bpm;
+            request.targetFile = target;
+            request.startSample = startSample;
+            request.endSample = endSample;
+            request.wantTail = false;
+
+            BounceRenderer::TrackRender render;
+            render.gain = 1.0f;
+            render.notes = notesToRender;
+            render.synth = bank.createIndependent (track, sr, BounceRenderer::renderBlockSize);
+            request.tracks.push_back (std::move (render));
+
+            BounceRenderer renderer;
+            expect (renderer.start (std::move (request)), "startできること");
+            expect (waitForBounce (renderer), "タイムアウトせず完了すること");
+            return renderer.takeResult();
+        };
+
+        // 1小節目頭のノート。終端は範囲頭より**後**（= 本当に範囲頭を跨いで鳴っている状態）にする。
+        // 終端が範囲頭ちょうどだと「鳴り終わったノート」の読み飛ばしでも除外されてしまい、
+        // One Shot専用の読み飛ばし規則を検証できない
+        const auto barSamples = (juce::int64) (sr * 2.0); // 120BPMの1小節
+        const std::vector<MidiNotePlayback> crossingOneShot { { 0, Ppq::ticksPerBar * 3, 60, 127 } };
+        const auto target = dir.getChildFile ("cycle-crossing.wav");
+        const auto result = runRange (target, barSamples, barSamples * 2, crossingOneShot);
+        expect (result.status == BounceRenderer::Status::success, "サイクル範囲の書き出しが成功すること");
+        expect (result.peak < 0.001f, "範囲頭を跨ぐOne Shotは鳴らさないこと（再生と一致）");
+
+        // 範囲頭ちょうどに始まるノートは鳴る（読み飛ばしが行き過ぎていないことの確認）
+        {
+            const double tps = Ppq::ticksPerSample (120.0, sr);
+            const auto atRangeStart = (juce::int64) std::llround ((double) barSamples * tps);
+            const std::vector<MidiNotePlayback> onRangeStart { { atRangeStart,
+                                                                atRangeStart + Ppq::ticksPerBar, 60, 127 } };
+            const auto onStart = dir.getChildFile ("cycle-on-start.wav");
+            const auto onStartResult = runRange (onStart, barSamples, barSamples * 2, onRangeStart);
+            expect (onStartResult.status == BounceRenderer::Status::success, "境界ちょうどでも成功すること");
+            expect (onStartResult.peak > 0.3f, "範囲頭ちょうどに始まるOne Shotは鳴ること");
+        }
+
+        // 非整数サンプル境界（127BPM/44.1kHz: 16分音符1つ目はPPQ240に対しサンプル5209で、
+        // tpsでPPQへ戻すと240.0156になる）。PPQ同士で比べていると境界ちょうどのノートが
+        // 「範囲頭より前」に落ちて消える
+        {
+            constexpr double oddBpm = 127.0;
+            const double sixteenth = sr * 60.0 / oddBpm / 4.0;
+            const auto rangeStart = (juce::int64) std::llround (sixteenth);       // = 5209
+            const auto rangeEnd = (juce::int64) std::llround (sixteenth * 5.0);
+            const std::vector<MidiNotePlayback> atGrid { { Ppq::ticksPerQuarter / 4,
+                                                           Ppq::ticksPerQuarter / 4 + Ppq::ticksPerQuarter,
+                                                           60, 127 } };
+            const auto oddTarget = dir.getChildFile ("cycle-odd-bpm.wav");
+            const auto oddResult = runRange (oddTarget, rangeStart, rangeEnd, atGrid, oddBpm);
+            expect (oddResult.status == BounceRenderer::Status::success, "127BPMでも成功すること");
+            expect (oddResult.peak > 0.3f,
+                    "非整数サンプル境界でも範囲頭ちょうどのOne Shotが鳴ること（PPQ丸めで消えない）");
+        }
+    }
+
+    // ---- テール: 範囲を跨ぐ追従ノートの余韻がサンプラーでもレンダリングされること ----
+    {
+        const auto saved = track.samplePitchFollow;
+        track.samplePitchFollow = true; // runBounceは現在のtrackを見る
+        const auto target = dir.getChildFile ("tail.wav");
+        const auto rangeEnd = (juce::int64) (sr * 0.25);
+        // 範囲末尾を跨いで鳴り続けるノート（テールの先頭でnoteOffが送られる）
+        const std::vector<MidiNotePlayback> crossing { { 0, Ppq::ticksPerBar, 60, 127 } };
+        const auto result = runBounce (target, rangeEnd, true, crossing);
+        track.samplePitchFollow = saved;
+
+        expect (result.status == BounceRenderer::Status::success, "テール付き書き出しが成功すること");
+        // テール先頭でnoteOff→5msフェード。サンプラーがテールで回っていれば
+        // 「音のあるブロック＋無音ブロック」の2ブロック書かれる（回らないと無音1ブロックで打ち切られる）
+        expect (result.writtenSamples >= rangeEnd + 2 * BounceRenderer::renderBlockSize,
+                "サンプラーがテールでもレンダリングされること");
+
+        juce::AudioBuffer<float> out;
+        expect (readWav (target, out), "出力を読めること");
+        if (out.getNumSamples() > (int) rangeEnd)
+            expect (out.getMagnitude (0, (int) rangeEnd, BounceRenderer::renderBlockSize) > 0.05f,
+                    "テール先頭に余韻（リリースのフェード）が入ること");
+    }
+
+    // ---- 再生（PlaybackEngine）とバウンスの出力一致 ----
+    {
+        constexpr int blockSize = 512;
+        const int totalSamples = blockSize * 40; // 約0.46秒
+
+        TransportState transport;
+        SnapshotExchange snapshots;
+        PreviewFifo previewFifo;
+        PlaybackEngine engine (transport, snapshots, previewFifo);
+        engine.prepareToPlay (blockSize, sr);
+
+        Project project;
+        Track playTrack = track;
+        MidiRegion region;
+        region.id = 2;
+        region.startPpq = 0;
+        region.lengthPpq = Ppq::ticksPerBar;
+        region.notes.push_back ({ 3, 60, 0, Ppq::ticksPerQuarter / 4, 127 });
+        playTrack.midiRegions.push_back (region);
+        playTrack.params->gain.store (1.0f);
+        project.tracks.push_back (std::move (playTrack));
+
+        SynthBank playBank;
+        playBank.sync (project, sr, blockSize);
+        auto snapshot = project.buildSnapshot();
+        snapshot->tracks[0].synth = playBank.get (1);
+        expect (snapshot->tracks[0].synth != nullptr, "再生用サンプラーが生成されること");
+        snapshots.push (std::move (snapshot));
+
+        juce::AudioBuffer<float> engineOut (2, totalSamples);
+        engineOut.clear();
+        engine.play();
+        juce::AudioBuffer<float> buffer (2, blockSize);
+        for (int block = 0; block < totalSamples / blockSize; ++block)
+        {
+            buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+            engine.process (info);
+            for (int ch = 0; ch < 2; ++ch)
+                engineOut.copyFrom (ch, block * blockSize, buffer, ch, 0, blockSize);
+        }
+        engine.stop();
+        snapshots.deleteRetired();
+
+        const auto target = dir.getChildFile ("consistency.wav");
+        const auto result = runBounce (target, (juce::int64) totalSamples, false, notes);
+        expect (result.status == BounceRenderer::Status::success, "一致検証用バウンスが成功すること");
+
+        juce::AudioBuffer<float> bounceOut;
+        expect (readWav (target, bounceOut), "出力を読めること");
+        if (bounceOut.getNumSamples() == totalSamples)
+        {
+            float maxDiff = 0.0f;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < totalSamples; ++i)
+                    maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (ch, i)
+                                                             - bounceOut.getSample (ch, i)));
+            expect (maxDiff < 1.0e-4f, "再生とバウンスのサンプル値が一致（24bit量子化誤差内）すること");
+        }
+    }
 
     dir.deleteRecursively();
 }
@@ -2453,7 +3534,10 @@ void testBounceCycleRange()
         const auto target = dir.getChildFile ("bounce.wav");
 
         SynthBank bank;
-        auto synth = bank.createIndependent (48, false, 44100.0, BounceRenderer::renderBlockSize); // Strings（持続音）
+        Track gmTrack; // Strings（持続音）
+        gmTrack.type = TrackType::midi;
+        gmTrack.gmProgram = 48;
+        auto synth = bank.createIndependent (gmTrack, 44100.0, BounceRenderer::renderBlockSize);
         expect (synth != nullptr, "バウンス専用DLSインスタンスを作れること");
         if (synth == nullptr)
         {
@@ -2965,6 +4049,30 @@ void testAudioImporter()
                 "中間パルスが換算位置±2サンプルに出ること（全体シフトなし）");
     }
 
+    // ---- targetSampleRate = 0（元のSRを保つ。サンプル音源の取り込み経路）----
+    {
+        constexpr int inputFrames = 3000;
+        juce::AudioBuffer<float> source (1, inputFrames);
+        for (int i = 0; i < inputFrames; ++i)
+            source.setSample (0, i, std::sin ((float) i * 0.03f) * 0.7f);
+        expect (writeWav ("keep-sr.wav", source, 44100.0), "44.1kソースを書けること");
+
+        const auto result = runImport ("keep-sr.wav", "keep-sr-out.tmp", 0.0);
+        expect (result.status == AudioImporter::Status::success, "SR保持経路で成功すること");
+        expect (result.outputFrames == inputFrames, "SR保持は入力と同じフレーム数（リサンプルなし）");
+        expect (juce::approximatelyEqual (result.sourceSampleRate, 44100.0), "元SRが結果に載ること");
+
+        juce::AudioBuffer<float> out;
+        double outRate = 0.0;
+        expect (readWav ("keep-sr-out.tmp", out, outRate), "出力を読めること");
+        expect (juce::approximatelyEqual (outRate, 44100.0), "出力WAVのSRが元のまま（44.1k）");
+        expect (out.getNumSamples() == inputFrames, "出力WAVの長さも入力と一致");
+        float maxDiff = 0.0f;
+        for (int i = 0; i < inputFrames; ++i)
+            maxDiff = juce::jmax (maxDiff, std::abs (out.getSample (0, i) - source.getSample (0, i)));
+        expect (maxDiff < 1.0e-4f, "SR保持は内容がそのまま（リサンプルをバイパス）");
+    }
+
     // ---- 4ch → 先頭2chのみ ----
     {
         juce::AudioBuffer<float> source (4, 2000);
@@ -2998,6 +4106,11 @@ void testAudioImporter()
 
     dir.deleteRecursively();
 }
+
+
+
+
+
 
 // ---- 回帰ハッシュ: モノのみ構成の決定的レンダリング結果のMD5をstdoutへ出す ----
 // ステレオ対応リファクタの前後で「モノのみトラックの出力がビット一致で不変」であることを、
@@ -3156,10 +4269,15 @@ int main()
     testTrackLevelMeter();
     testSnapshotSwapDuringPlayback();
     testOverflowDoesNotKillOtherNotes();
+    testSamplerProjectRoundtrip();
+    testSynthBankSampler();
+    testSamplerEngine();
+    testSamplerThroughPlaybackEngine();
     testDlsMusicDeviceRendersAudio();
     testBounceRendererBasic();
     testBounceRendererClippingProtection();
     testBounceRendererMidiTail();
+    testBounceSampler();
     testBuildItemRender();
     testProjectMemoRoundtrip();
     testMixerParamsRoundtrip();

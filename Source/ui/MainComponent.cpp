@@ -22,6 +22,47 @@ void showAlert (const juce::String& title, const juce::String& message)
 
 // バウンスの前回保存先（セッション内で記憶。プロジェクトを跨いでも引き継ぐ）
 juce::File lastBounceDirectory;
+
+// 初期名（「トラック 5」「MIDI 3」）かどうか。手動で命名済みのトラックは自動リネームしない
+bool isDefaultTrackName (const juce::String& name)
+{
+    for (const char* prefix : { u8"トラック ", u8"MIDI " })
+    {
+        const auto head = juce::String::fromUTF8 (prefix);
+        if (name.startsWith (head) && name.length() > head.length()
+            && name.substring (head.length()).containsOnly ("0123456789"))
+            return true;
+    }
+    return false;
+}
+
+// サンプルの頭の無音カット位置の自動検出。
+// 「ピーク絶対値の1%（かつ下限 -60dBFS）を最初に超える位置の1ms手前」。全編が閾値未満なら0
+juce::int64 detectSampleStartOffset (const juce::AudioBuffer<float>& audio, double sourceRate)
+{
+    const int numSamples = audio.getNumSamples();
+    const int numChannels = juce::jmin (2, audio.getNumChannels());
+    if (numSamples <= 0 || numChannels <= 0)
+        return 0;
+
+    float peak = 0.0f;
+    for (int ch = 0; ch < numChannels; ++ch)
+        peak = juce::jmax (peak, audio.getMagnitude (ch, 0, numSamples));
+    const float threshold = juce::jmax (peak * 0.01f, 0.001f);
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        for (int ch = 0; ch < numChannels; ++ch)
+        {
+            if (std::abs (audio.getReadPointer (ch)[i]) <= threshold)
+                continue;
+            const auto backoff = (juce::int64) (sourceRate * 0.001); // 打点を削らないよう1ms手前から
+            return juce::jlimit ((juce::int64) 0, (juce::int64) numSamples - 1,
+                                 (juce::int64) i - backoff);
+        }
+    }
+    return 0;
+}
 }
 
 MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
@@ -167,6 +208,46 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     };
     fxDetail.onCloseRequested = [this] { closeFxDetail(); };
 
+    // 下部詳細に載せる Instrument エディタ。モデルの書き換えはビュー側が行い、
+    // undoスナップショットと確定通知（音源への反映）はここで受ける
+    instrumentDetail.onWillEdit = [this] (bool valueOnly)
+    {
+        // サンプル値だけの編集は種別を分けて積む（undo/redoでも音を切らずに戻すため）
+        undoStack.begin (*project, valueOnly ? UndoStack::EditKind::sampleValue
+                                             : UndoStack::EditKind::structure);
+    };
+    // 音量・ルート音・頭カット: どれも「次の発音から効く」値なので、スナップショットは再pushせず
+    // SamplerEngine の atomic ミラーだけ更新する。再pushすると差し替え検出により
+    // 全ノートオフ＋跨ぎノート再発音が走り、追従モードで鳴っている音が頭から鳴り直してしまう
+    instrumentDetail.onValueEdited = [this]
+    {
+        // sync() はサンプル設定のミラー更新だけを行い false を返す（音源の作り直しは起きない）。
+        // 万一 true（構成変更を検知）なら、その時だけスナップショットを追従させる
+        if (synthBank.sync (*project, transport.sampleRate.load(), transport.blockSizeExpected.load()))
+            pushSnapshot();
+        setDirty (true);
+        pianoRoll.refreshFromModel(); // ルート音の変更で固定行（forcedPitch）と鍵盤ラベルが動く
+    };
+    instrumentDetail.onPitchModeEdited = [this]
+    {
+        // pushSnapshot → SynthBank::sync() が音程モードの変化を検知して requestStopAll() を立て、
+        // スナップショットのポインタが変わることで resound（跨ぎノートの復元）も走る。
+        // ここから sync()/requestStopAll() を直接呼ばないのは、undo/redo（UIを通らない復元）と
+        // 経路を一本にするため
+        pushSnapshot();
+        setDirty (true);
+        // ピアノロールの固定行（forcedPitch）が切り替わる。pushSnapshot内のrefreshFromModelが描き直す
+        timeline.refresh();
+    };
+    instrumentDetail.onPreview = [this] (int pitch)
+    {
+        if (transport.isPlaying.load() || engine.isRecording())
+            return;
+        // 宛先はエディタが表示しているトラック（選択が動いていても取り違えない）
+        if (auto* target = instrumentDetail.shownTrack())
+            previewFifo.push ({ PreviewFifo::Command::Type::noteOn, target->id, pitch, 100 });
+    };
+
     // ---- タイムライン・ヘッダの連携 ----
     timeline.onSeek = [this] (juce::int64 samplePos)
     {
@@ -211,6 +292,15 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         // 複数ファイルは先頭のみ処理（残りは完了表示の文言で知らせる）
         startImport (juce::File (files[0]), trackIndex, startSample, files.size() > 1);
     };
+    // MIDIトラックの行／ヘッダーへのドロップ = サンプル音源の割り当て（同じ受け口）
+    timeline.onAssignInstrumentDropped = [this] (const juce::StringArray& files, int trackIndex)
+    {
+        startInstrumentImport (juce::File (files[0]), trackIndex, files.size() > 1);
+    };
+    headers.onAssignInstrumentDropped = [this] (const juce::StringArray& files, int trackIndex)
+    {
+        startInstrumentImport (juce::File (files[0]), trackIndex, files.size() > 1);
+    };
     pianoRoll.onWillEditModel = [this] { undoStack.begin (*project); };
     pianoRoll.onModelEdited = [this]
     {
@@ -223,11 +313,22 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     {
         if (transport.isPlaying.load() || engine.isRecording())
             return;
-        // 固定ピッチ打楽器（Kick等）はプレビューもその打楽器の音で鳴らす
+        // 編集ピッチが1行に固定される音源（GMの固定ピッチ打楽器・サンプルの固定モード）は
+        // プレビューもその1音で鳴らす（PianoRollView::forcedPitch と同じ規則）
         for (auto& track : project->tracks)
-            if (track.id == trackId && track.type == TrackType::midi
-                && track.drums && track.drumPitch >= 0)
+        {
+            if (track.id != trackId || track.type != TrackType::midi)
+                continue;
+            if (track.usesSampler())
+            {
+                if (! track.samplePitchFollow)
+                    pitch = track.sampleRootNote;
+            }
+            else if (track.drums && track.drumPitch >= 0)
+            {
                 pitch = track.drumPitch;
+            }
+        }
         previewFifo.push ({ PreviewFifo::Command::Type::noteOn, trackId, pitch, velocity });
     };
     pianoRoll.onCloseRequested = [this] { closePianoRoll(); };
@@ -244,11 +345,29 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         }
     };
     headers.onWillChangeStructure = [this] { undoStack.begin (*project); };
-    headers.onInstrumentChanged = [this]
+    headers.onInstrumentChanged = [this] (int index)
     {
-        Log::info ("track.instrument");
+        if (index >= 0 && index < (int) project->tracks.size())
+        {
+            const auto& track = project->tracks[(size_t) index];
+            if (track.instrument == InstrumentKind::sample)
+                Log::info ("instrument.assign", "source=menu track=" + juce::String (index)
+                                                    + " name=" + track.sampleName);
+            else
+                Log::info ("instrument.revert_gm", "track=" + juce::String (index)
+                                                       + " program=" + juce::String (track.gmProgram)
+                                                       + " drums=" + juce::String ((int) track.drums));
+        }
         pushSnapshot(); // SynthBank が楽器変更を検知して音源を差し替える
         setDirty (true);
+        // FXパネルのInstrumentスロット（表示名・点灯/グレー）を更新し、下部エディタも追従させる。
+        // GMへ戻したときは syncFxDetail → updateFxDetailBody が中身のないエディタを閉じる
+        if (fxEditor.isOpen())
+        {
+            fxEditor.refreshFromModel (selectedTrack);
+            syncFxDetail();
+        }
+        // 固定ピッチ行・鍵盤ラベルが変わるのでピアノロールも描き直す（pushSnapshot内のrefreshFromModel）
     };
     headers.onWheel = [this] (float deltaY) { timeline.scrollVertically (deltaY); };
     headers.canReorder = [this] { return ! engine.isRecording(); }; // 録音中は並び替え不可
@@ -919,10 +1038,11 @@ void MainComponent::performUndo()
 {
     if (engine.isRecording())
         return;
-    if (undoStack.undo (*project))
+    auto kind = UndoStack::EditKind::structure;
+    if (undoStack.undo (*project, kind))
     {
         Log::info ("edit.undo");
-        afterHistoryRestore();
+        afterHistoryRestore (kind);
     }
 }
 
@@ -930,10 +1050,11 @@ void MainComponent::performRedo()
 {
     if (engine.isRecording())
         return;
-    if (undoStack.redo (*project))
+    auto kind = UndoStack::EditKind::structure;
+    if (undoStack.redo (*project, kind))
     {
         Log::info ("edit.redo");
-        afterHistoryRestore();
+        afterHistoryRestore (kind);
     }
 }
 
@@ -945,13 +1066,27 @@ void MainComponent::resetTrackPeakHolds()
         feed.maxSincePlay = 0.0f;
 }
 
-void MainComponent::afterHistoryRestore()
+void MainComponent::afterHistoryRestore (UndoStack::EditKind kind)
 {
     resetTrackPeakHolds();
     timeline.clearSelection();
     headers.rebuild();
-    selectTrack (selectedTrack); // 範囲内にクランプし直す
-    pushSnapshot();              // SynthBank も復元後のトラック構成に同期される
+    selectTrack (selectedTrack); // 範囲内にクランプし直す（下部エディタの対象もここで張り替わる）
+
+    if (kind == UndoStack::EditKind::sampleValue)
+    {
+        // サンプル値（音量・ルート音・頭カット）だけの復元はスナップショットを再pushしない:
+        // 差し替え検出で全ノートオフ＋跨ぎノート再発音が走り、鳴っている音が頭から鳴り直すため。
+        // ノート・クリップ・トラック構成は変わっていないので、SamplerEngineのatomicミラー更新で足りる
+        if (synthBank.sync (*project, transport.sampleRate.load(), transport.blockSizeExpected.load()))
+            pushSnapshot(); // 想定外に構成変更が検知されたときだけ追従
+        pianoRoll.refreshFromModel(); // ルート音の復元で固定行（forcedPitch）が動く
+    }
+    else
+    {
+        pushSnapshot(); // SynthBank も復元後のトラック構成に同期される
+    }
+
     setDirty (true);
     timeline.refresh();
 }
@@ -1067,6 +1202,7 @@ void MainComponent::toggleFxDetailSlot (int slot)
                                     + " channel=" + fxEditor.channelName());
     fxDetail.show (fxEditor.slotName (slot), fxEditor.channelName());
     fxEditor.setActiveSlot (slot);
+    updateFxDetailBody();
     resized();
 }
 
@@ -1075,7 +1211,8 @@ void MainComponent::closeFxDetail()
     if (! fxDetail.isOpen())
         return;
     Log::info ("fxdetail.close");
-    fxDetail.close();
+    fxDetail.close(); // 中身（body）の参照はclose側で外れる
+    instrumentDetail.setTrack (nullptr);
     fxDetailSlot = -1;
     fxDetailKey.clear();
     fxEditor.setActiveSlot (-1);
@@ -1096,9 +1233,43 @@ void MainComponent::syncFxDetail()
         fxDetailKey = key;
         fxDetail.show (fxEditor.slotName (fxDetailSlot), fxEditor.channelName());
         fxEditor.setActiveSlot (fxDetailSlot);
+        updateFxDetailBody();
         return;
     }
     closeFxDetail();
+}
+
+// 下部詳細の中身の載せ替え。Instrumentスロットのときだけ InstrumentDetailView を載せる
+// （他のFXは未実装なので空パネルのまま。EQ/Compのエディタも将来ここに足す）。
+// サンプルを持たないトラックのInstrumentスロットはクリック不可なので、通常ここには来ない
+void MainComponent::updateFxDetailBody()
+{
+    if (! fxDetail.isOpen())
+    {
+        fxDetail.setBody (nullptr);
+        return;
+    }
+
+    if (fxEditor.isInstrumentSlot (fxDetailSlot))
+    {
+        // 対象はFXパネルが表示しているトラック（選択トラックとは別に追従判定されるため shownTrack を見る）
+        const int index = fxEditor.shownTrack();
+        const bool valid = index >= 0 && index < (int) project->tracks.size()
+                           && project->tracks[(size_t) index].usesSampler();
+        if (! valid)
+        {
+            // undoで割り当てが取り消された・GMへ戻した等。中身のないInstrumentエディタは残さず閉じる
+            instrumentDetail.setTrack (nullptr);
+            closeFxDetail();
+            return;
+        }
+        instrumentDetail.setTrack (&project->tracks[(size_t) index]);
+        fxDetail.setBody (&instrumentDetail);
+        return;
+    }
+
+    instrumentDetail.setTrack (nullptr);
+    fxDetail.setBody (nullptr);
 }
 
 void MainComponent::selectTrack (int index)
@@ -1286,6 +1457,12 @@ void MainComponent::beginBounce (const juce::File& target)
                     endSample = juce::jmax (endSample, (juce::int64) std::llround (
                                                 (double) (region.startPpq + region.lengthPpq) / tps));
 
+        // 固定モード（One Shot）のサンプルはノート長でもリージョン長でもなく「サンプル全長」鳴る。
+        // テールの上限（5秒・-60dB打ち切り）に依存させず、範囲自体を末尾まで延ばす
+        // （サイクルON時はこの後で範囲を上書きするので、指定範囲どおりに切れる）
+        endSample = juce::jmax (endSample, BounceRenderer::oneShotEndSample (model, trackRender.notes,
+                                                                            request.bpm, sr));
+
         // ノートも音声もないトラックはレンダリング対象にしない（終端への寄与は上で済んでいる。
         // ノートのないリージョンだけのプロジェクトはリージョン終端までの無音が書き出される）
         if (trackRender.clips.empty() && trackRender.notes.empty())
@@ -1294,8 +1471,7 @@ void MainComponent::beginBounce (const juce::File& target)
         if (model.type == TrackType::midi)
         {
             // RT側の共有インスタンスとはprocessBlockが並走するため共有不可。専用に生成する
-            trackRender.synth = synthBank.createIndependent (model.gmProgram, model.drums,
-                                                             sr, BounceRenderer::renderBlockSize);
+            trackRender.synth = synthBank.createIndependent (model, sr, BounceRenderer::renderBlockSize);
             if (trackRender.synth == nullptr)
             {
                 auto errors = synthBank.takeCreateErrors();
@@ -1473,8 +1649,7 @@ void MainComponent::beginRegionBounce (const juce::File& target, int trackIndex,
     if (track.type == TrackType::midi)
     {
         // RT側の共有インスタンスとはprocessBlockが並走するため共有不可。専用に生成する
-        trackRender.synth = synthBank.createIndependent (track.gmProgram, track.drums,
-                                                         sr, BounceRenderer::renderBlockSize);
+        trackRender.synth = synthBank.createIndependent (track, sr, BounceRenderer::renderBlockSize);
         if (trackRender.synth == nullptr)
         {
             auto errors = synthBank.takeCreateErrors();
@@ -1596,12 +1771,38 @@ void MainComponent::startImport (const juce::File& source, int targetTrack, juce
         targetRate = deviceRate;
     }
 
-    // 一時名はGCパターン（clip-*.wav）に掛からない名前。最終名の採番はfinishImportのリネーム時
-    // に行う（nextClipFile()は予約できないため、録音完了との採番競合を構造的に防ぐ）
-    importTempFile = project->directory.getChildFile (".import-" + juce::Uuid().toString() + ".wav.tmp");
-    importDisplayName = source.getFileNameWithoutExtension();
+    importIsInstrument = false;
     importTargetTrack = targetTrack;
     importStartSample = juce::jmax ((juce::int64) 0, startSample);
+    beginImportWorker (source, targetRate, othersSkipped);
+}
+
+// ブラウザ／FinderからMIDIトラックへのドロップ = サンプル音源の割り当て。
+// クリップ取り込みと同じ一時ファイル→リネーム方式（排他も importActive を共用）
+void MainComponent::startInstrumentImport (const juce::File& source, int trackIndex, bool othersSkipped)
+{
+    if (importActive || bounceActive || engine.isRecording())
+        return;
+    if (trackIndex < 0 || trackIndex >= (int) project->tracks.size()
+        || project->tracks[(size_t) trackIndex].type != TrackType::midi)
+        return;
+    rightPanel.fileBrowser().cancelPreview(); // 予約中のオートプレビューごと畳む
+
+    importIsInstrument = true;
+    importTargetTrack = trackIndex;
+    importStartSample = 0;
+    // targetSampleRate = 0 = 元のSRを保つ。サンプルは再生時に sourceRate/deviceRate の比で
+    // 読み進めるので変換が不要で、デバイスSRを変えても追従できる（プロジェクトSRも確定させない）
+    beginImportWorker (source, 0.0, othersSkipped);
+}
+
+// 取り込みワーカーの起動（クリップ・サンプル共通の尻尾）。完了はpollImport()が拾う
+void MainComponent::beginImportWorker (const juce::File& source, double targetRate, bool othersSkipped)
+{
+    // 一時名はGCパターン（clip-*.wav / instr-*.wav）に掛からない名前。最終名の採番は
+    // 完了処理のリネーム時に行う（nextClipFile()は予約できないため、録音完了との採番競合を構造的に防ぐ）
+    importTempFile = project->directory.getChildFile (".import-" + juce::Uuid().toString() + ".wav.tmp");
+    importDisplayName = source.getFileNameWithoutExtension();
 
     AudioImporter::Request request;
     request.sourceFile = source;
@@ -1614,14 +1815,18 @@ void MainComponent::startImport (const juce::File& source, int targetTrack, juce
     }
 
     Log::info ("import.start", "source=" + source.getFullPathName()
-                                   + " track=" + juce::String (targetTrack)
+                                   + " kind=" + juce::String (importIsInstrument ? "instrument" : "clip")
+                                   + " track=" + juce::String (importTargetTrack)
                                    + " startSample=" + juce::String (importStartSample)
                                    + " sr=" + juce::String (targetRate, 0));
     importActive = true;
     importDoneTicks = 0;
-    importOverlay.setLabels (jp (u8"取り込み中…"),
-                             othersSkipped ? jp (u8"先頭の1ファイルのみ取り込みました")
-                                           : jp (u8"取り込みが完了しました"));
+    importOverlay.setLabels (importIsInstrument ? jp (u8"音源を読み込み中…") : jp (u8"取り込み中…"),
+                             importIsInstrument
+                                 ? (othersSkipped ? jp (u8"先頭の1ファイルのみ割り当てました")
+                                                  : jp (u8"音源を割り当てました"))
+                                 : (othersSkipped ? jp (u8"先頭の1ファイルのみ取り込みました")
+                                                  : jp (u8"取り込みが完了しました")));
     importOverlay.setBounds (getLocalBounds());
     importOverlay.show();
     refreshMacMenu(); // 取り込み中はFileメニューをdisabledにする
@@ -1645,7 +1850,10 @@ void MainComponent::pollImport()
     switch (result.status)
     {
         case AudioImporter::Status::success:
-            finishImport (result);
+            if (importIsInstrument)
+                finishInstrumentImport (result);
+            else
+                finishImport (result);
             break;
 
         case AudioImporter::Status::cancelled:
@@ -1720,6 +1928,78 @@ void MainComponent::finishImport (const AudioImporter::Result& result)
                                   + " frames=" + juce::String (result.outputFrames)
                                   + " ch=" + juce::String (result.numChannels)
                                   + " sourceSr=" + juce::String (result.sourceSampleRate, 0));
+    importOverlay.showDone();
+    importDoneTicks = 40; // 30Hz × 40 ≈ 1.3秒表示して自動で消える
+}
+
+// サンプル音源の割り当て確定。リネーム→自動検出→モデル反映→音源生成→保存までを
+// メッセージスレッドで一続きに行う（モーダル排他により、開始時の割り当て先はこの時点でも有効）
+void MainComponent::finishInstrumentImport (const AudioImporter::Result& result)
+{
+    const int trackIndex = importTargetTrack;
+    if (trackIndex < 0 || trackIndex >= (int) project->tracks.size()
+        || project->tracks[(size_t) trackIndex].type != TrackType::midi)
+    {
+        importOverlay.dismiss();
+        importTempFile.deleteFile();
+        Log::error ("instrument.load_fail", "message=track_missing track=" + juce::String (trackIndex));
+        showAlert (jp (u8"割り当てに失敗しました"), jp (u8"割り当て先のトラックが見つかりません。"));
+        return;
+    }
+
+    const auto finalFile = project->nextInstrumentFile();
+    if (! importTempFile.moveFileTo (finalFile))
+    {
+        importOverlay.dismiss();
+        importTempFile.deleteFile();
+        Log::error ("instrument.load_fail", "message=rename_failed target=" + finalFile.getFileName());
+        showAlert (jp (u8"割り当てに失敗しました"), jp (u8"変換結果の配置に失敗しました。"));
+        return;
+    }
+
+    // 元SRのまま保存しているので、再生比率の計算に使うSRをここで確定する
+    double sourceRate = 0.0;
+    auto audio = Project::loadWav (finalFile, &sourceRate);
+    if (audio == nullptr)
+    {
+        importOverlay.dismiss();
+        finalFile.deleteFile();
+        Log::error ("instrument.load_fail", "message=readback_failed file=" + finalFile.getFileName());
+        showAlert (jp (u8"割り当てに失敗しました"), jp (u8"変換結果の読み込みに失敗しました。"));
+        return;
+    }
+
+    undoStack.begin (*project); // 音源の割り当てはundo対象
+
+    auto& track = project->tracks[(size_t) trackIndex];
+    track.instrument = InstrumentKind::sample;
+    track.sampleFile = finalFile.getFileName();
+    track.sampleName = importDisplayName;
+    track.samplePitchFollow = false; // 落とした直後は常に「固定」（One Shot）
+    track.sampleRootNote = 60;       // C3
+    track.sampleGain = 1.0f;
+    track.sampleAudio = audio;
+    track.sampleSourceRate = sourceRate;
+    track.samplePeakCache = buildFullPeakCache (*audio);
+    track.sampleStartOffset = detectSampleStartOffset (*audio, sourceRate);
+    // 初期名のトラックだけサンプル名へ寄せる（手動で命名済みなら触らない）
+    if (isDefaultTrackName (track.name))
+        track.name = importDisplayName;
+
+    headers.rebuild(); // 楽器プルダウンの項目・トラック名の反映
+    selectTrackFromUser (trackIndex);
+    pushSnapshot();    // SynthBank が SamplerEngine を生成する
+    setDirty (true);
+    trySave();         // 確定処理の一部として保存まで行う（サンプルWAVがGC対象から即座に外れる）
+    timeline.refresh();
+
+    Log::info ("instrument.assign", "file=" + finalFile.getFileName()
+                                        + " name=" + importDisplayName
+                                        + " track=" + juce::String (trackIndex)
+                                        + " frames=" + juce::String (result.outputFrames)
+                                        + " ch=" + juce::String (result.numChannels)
+                                        + " sourceSr=" + juce::String (sourceRate, 0)
+                                        + " startOffset=" + juce::String (track.sampleStartOffset));
     importOverlay.showDone();
     importDoneTicks = 40; // 30Hz × 40 ≈ 1.3秒表示して自動で消える
 }

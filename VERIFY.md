@@ -160,10 +160,57 @@ w.writeframes(b''.join(struct.pack('<hh', int(16000*math.sin(2*math.pi*440*i/441
 afconvert -f m4af -d aac /tmp/beat.wav /tmp/beat.m4a   # CoreAudio経路（m4a）の確認用
 ```
 
-- 導線: Fileメニュー「オーディオを読み込む…」（⇧⌘I）＝新規トラック小節1 / FinderからタイムラインへD&D＝ドロップ位置（空白は新規トラック・MIDIトラックは不受理）
+- 導線: Fileメニュー「オーディオを読み込む…」（⇧⌘I）＝新規トラック小節1 / FinderからタイムラインへD&D＝ドロップ位置（空白は新規トラック。**MIDIトラックの行・ヘッダーへのドロップはサンプル音源の割り当て**＝下記「サンプル音源の確認」）
 - 取り込み後の裏取り: アプリログの `import.start` / `import.done`（frames・ch・sourceSr）/ `import.fail`
-  - 成果物: project.json が version 7・クリップに `name`・SR未確定プロジェクトなら `sampleRate` が確定済み。`afinfo <project>/clip-NNN.wav` で 2ch・プロジェクトSR・24bit
+  - 成果物: project.json が version 8・クリップに `name`・SR未確定プロジェクトなら `sampleRate` が確定済み。`afinfo <project>/clip-NNN.wav` で 2ch・プロジェクトSR・24bit
 - 変換仕様（SR変換長・末尾パルス・ch規則・GC安全性）はCTestの testAudioImporter / testStereoClipLoadAndV6 が自動で固定している
+
+## サンプル音源（サンプラートラック）の確認
+
+レンダリング仕様（One Shot/追従・ボイス管理・SR比・バウンス範囲）はCTestの `SamplerEngine *` /
+`Sampler through PlaybackEngine` / `SynthBank sampler instances` / `BounceRenderer sampler` /
+`sampler project roundtrip and gc` が担う。アプリ統合の確認:
+
+```sh
+# サンプル音源入りテストプロジェクトをCLIで用意（D&Dの割り当てを迂回して読込・再生・書き出しを見る）
+DIR=~/Music/daw/sampler-test; mkdir -p $DIR
+python3 -c "
+import wave, struct, math
+sr, dur = 44100, 6.0            # 44.1k素材。デバイス48kとの比率変換も同時に確認できる
+w = wave.open('$DIR/instr-001.wav','w'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+w.writeframes(b''.join(struct.pack('<h', int(28000 * (0 if i/sr < 0.003 else math.exp(-i/sr*0.55))
+                                   * math.sin(2*math.pi*55*i/sr))) for i in range(int(sr*dur))))"
+# project.json は MIDIトラックに "instrument": "sample" と sample* 一式を書く（形式は既存プロジェクト参照）
+```
+
+- 割り当て導線: 右パネルのファイルブラウザ or Finder から **MIDIトラックのヘッダー／タイムラインの行**へD&D
+  （行全体のハイライト＋"Instrument" ラベルが出る。クリップ配置の縦線とは見た目で区別される）。
+  オーディオトラックのヘッダーは減光＝不受理
+- 裏取りはログ: `import.start kind=instrument` → `instrument.assign`（file・name・sourceSr・startOffset）/
+  失敗は `instrument.load_fail`。プルダウンでGMへ戻すと `instrument.revert_gm`
+- 成果物: `<project>/instr-NNN.wav`（**元のSRのまま**・24bit。プロジェクトSRへ変換されない）と
+  project.json の `sampleFile` / `sampleSourceRate`。`afinfo` で元SRのままであることを確認する
+- ピアノロール（固定モード）: 置ける行は1行だけ（ルート音）で、**それ以外の行は減光**される。
+  ノートは押した行でなく固定行にでき、その行が画面外なら自動でスクロールする。
+  **リージョン終端より右は減光＋境界線**（編集範囲外）。そこをダブルクリックすると
+  **リージョンが伸びて押した場所にノートができる**（元の長さが小節ちょうどなら小節単位で伸びる）。
+  タイムライン側のリージョンも同時に伸び、⌘Zで長さごと戻る
+- FXパネル: MIDIトラック選択時、EQサムネイルの下に Instrument スロットが出る
+  （サンプル=点灯＋クリック可 / 内蔵GM=グレーでクリック不可）。クリックで下部エディタが開き
+  ログ `fxdetail.open fx=<サンプル名>`
+- 下部エディタの `VOICE: Mono`: ONで「新しい打点が前の音を切る」（Logicの Polyphony:1 相当）。
+  1.7秒の808を16分連打したとき、OFFだと重なってクリップ＋うなり（合計ピーク1.18）・ONだと単発と同程度
+  （0.65）に収まる。短いハイハット（0.05秒）はそもそも重ならないのでOFFのままで正常
+- 下部エディタ（合成クリックで確認できる範囲）: 「追従」を押すとROOTが有効化 → Fileメニューの`保存`で
+  project.json の `samplePitchFollow` が true になる → 「固定」で false に戻る。
+  波形の緑線ドラッグ（頭カット）と波形クリック試聴は実マウス（要ユーザー操作）で確認する
+- 全体バウンスは**固定モードのワンショットが鳴り切るまで範囲が延びる**: 曲末に6秒サンプルを置くと
+  ログの `bounce.start endSample=` がリージョン終端ではなく「最後のノート位置＋サンプル全長」になる
+  （例: 90BPM・4拍目のノート＋6秒サンプル・48kHz → endSample=384000 = 8.0秒）。
+  出力WAVの末尾付近に音が残っていること（テールの-60dB打ち切りに掛かっていないこと）も確認する
+- **合成クリックの被覆チェックは「クリック点を含むlayer=0のウィンドウが対象アプリか」で見るが、
+  デスクトップ上（該当ウィンドウなし）は素通りする**。ウィンドウが別ディスプレイへ移動していた事例があるので、
+  クリックの直前に winlist でウィンドウ矩形を取り直し、クリック点がその矩形内にあることも確かめる
 
 ## 右パネル（メモ／オーディオファイル）の確認
 

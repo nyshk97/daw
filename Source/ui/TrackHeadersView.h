@@ -48,6 +48,7 @@ public:
 
 private:
     static constexpr int iconSlotWidth = 20; // トラック名の左のトラック種別アイコン領域
+    static constexpr int sampleItemId = 1000; // 楽器プルダウンのサンプル項目（GMのid 1..13と衝突しない値）
 
     juce::Rectangle<float> typeIconArea() const;
     void applyDimVisual (bool dimmed); // 名前・アイコン・音量・楽器を減光（M/Sボタンは操作の主役なので沈めない）
@@ -69,7 +70,12 @@ private:
 
 // トラックヘッダの縦リスト。縦スクロールは TimelineView と同期する
 // （setViewY で追従し、自分の上のホイールは onWheel で転送する）。
-class TrackHeadersView : public juce::Component
+//
+// オーディオファイルのD&D（Finder＝FileDragAndDropTarget / 右パネルのブラウザ＝DragAndDropTarget）は
+// 「MIDIトラックへのサンプル音源の割り当て」として受ける。オーディオトラックのヘッダーは不受理表示。
+class TrackHeadersView : public juce::Component,
+                         public juce::FileDragAndDropTarget,
+                         public juce::DragAndDropTarget
 {
 public:
     static constexpr int preferredWidth = 200;
@@ -87,18 +93,39 @@ public:
     std::function<void (int)> onDeleteRequested;
     std::function<void()> onChanged;
     std::function<void()> onWillChangeStructure; // リネーム・楽器変更の直前（undo用）
-    std::function<void()> onInstrumentChanged;   // 楽器変更の確定後
+    std::function<void (int)> onInstrumentChanged; // 楽器変更の確定後（トラックindexを渡す。ログ・再描画用）
     std::function<void (float)> onWheel;
 
     // ドラッグ並び替え
     std::function<bool()> canReorder;                  // 録音中はfalse（判定はMainComponent）
     std::function<void (int, int)> onReorderRequested; // (from, 挿入先の隙間番号 0..tracks.size())
 
+    // オーディオファイルをMIDIトラックのヘッダーへドロップ＝サンプル音源の割り当て。
+    // 対応拡張子のファイルだけを渡す（複数なら先頭のみ処理するかは受け手が決める）
+    std::function<void (const juce::StringArray&, int)> onAssignInstrumentDropped;
+
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
-    void paintOverChildren (juce::Graphics& g) override; // 挿入位置インジケータ
+    void paintOverChildren (juce::Graphics& g) override; // 挿入位置インジケータ・ドロップ先ハイライト
+
+    // ---- D&D（Finder / 右パネルのブラウザ）----
+    bool isInterestedInFileDrag (const juce::StringArray& files) override;
+    void fileDragEnter (const juce::StringArray& files, int x, int y) override;
+    void fileDragMove (const juce::StringArray& files, int x, int y) override;
+    void fileDragExit (const juce::StringArray& files) override;
+    void filesDropped (const juce::StringArray& files, int x, int y) override;
+    bool isInterestedInDragSource (const SourceDetails& details) override;
+    void itemDragEnter (const SourceDetails& details) override;
+    void itemDragMove (const SourceDetails& details) override;
+    void itemDragExit (const SourceDetails& details) override;
+    void itemDropped (const SourceDetails& details) override;
 
 private:
     void refreshBindings();
+    static bool hasAudioFile (const juce::StringArray& files);
+    int rowForDropY (int y) const;      // ビュー座標Y → トラックindex（範囲外は-1）
+    void updateDropTarget (int y);
+    void clearDropTarget();
+    void completeAssignDrop (const juce::StringArray& files, int y);
     bool anySoloActive() const; // どれかのトラックがソロ中か（減光判定用）
     int gapForY (int containerY) const;            // container座標Y → 挿入先の隙間番号（クランプ済み）
     void updateReorderIndicator (int containerY);  // ドラッグ中のインジケータ更新
@@ -107,6 +134,11 @@ private:
     Project* project = nullptr;
     int selectedTrack = 0;
     int reorderGap = -1; // 並び替えドラッグ中の挿入位置インジケータ（-1 = 非表示）
+
+    // オーディオファイルのドロップ先（-1 = ドラッグ中でない）。
+    // rejected = オーディオトラック（サンプル音源を持てない）
+    int dropRow = -1;
+    bool dropRejected = false;
 
     juce::Component container;
     std::vector<std::unique_ptr<TrackHeaderComponent>> items;

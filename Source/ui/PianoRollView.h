@@ -72,6 +72,7 @@ private:
     juce::int64 snapTicks() const;
     void updateContentSize();
     void scrollToPitch (int pitch);
+    void ensurePitchVisible (int pitch); // 画面外なら中央へスクロール（見えていれば動かさない）
     void preview (int pitch, int velocity);
 
     // グリッド上のマウス操作（GridContentから転送される）
@@ -119,6 +120,7 @@ private:
     std::unique_ptr<GridViewport> viewport;
 
     juce::int64 lastPaintedPlayhead = -1;
+    int lastForcedPitch = -1; // 固定ピッチの変化検出（音源変更・ルート音変更でその行へスクロールする）
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PianoRollView)
 };

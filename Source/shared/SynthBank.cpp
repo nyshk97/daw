@@ -29,21 +29,53 @@ bool SynthBank::sync (const Project& project, double sampleRate, int deviceBlock
             continue;
 
         auto it = entries.find (track.id);
+        const bool rateChanged =
+            it != entries.end() && it->second.synth != nullptr
+            && (! juce::approximatelyEqual (it->second.synth->preparedSampleRate, sampleRate)
+                || it->second.synth->preparedBlockSize < blockSize);
         const bool needsCreate =
             it == entries.end()
-            || it->second.gmProgram != track.gmProgram
-            || it->second.drums != track.drums
-            || (it->second.synth != nullptr
-                && (! juce::approximatelyEqual (it->second.synth->preparedSampleRate, sampleRate)
-                    || it->second.synth->preparedBlockSize < blockSize));
+            || it->second.instrument != track.instrument
+            || (track.instrument == InstrumentKind::gm
+                && (it->second.gmProgram != track.gmProgram || it->second.drums != track.drums))
+            || (track.instrument == InstrumentKind::sample && it->second.sampleFile != track.sampleFile)
+            || rateChanged;
 
         if (needsCreate)
         {
             Entry entry;
+            entry.instrument = track.instrument;
             entry.gmProgram = track.gmProgram;
             entry.drums = track.drums;
-            entry.synth = createSynth (track.gmProgram, track.drums, sampleRate, blockSize);
+            entry.sampleFile = track.sampleFile;
+            entry.pitchFollow = track.samplePitchFollow;
+            entry.synth = track.instrument == InstrumentKind::sample
+                              ? createSampler (track, sampleRate, blockSize)
+                              : createSynth (track.gmProgram, track.drums, sampleRate, blockSize);
             entries[track.id] = std::move (entry); // 旧synthへの参照はここで手放す（破棄はスナップショット退役後）
+            changed = true;
+            continue;
+        }
+
+        if (track.instrument != InstrumentKind::sample)
+            continue;
+
+        // サンプルの音量・頭カット・音程モード・ルート音はインスタンスを作り直さず atomic の更新だけで
+        // 反映する（作り直すと発音中の音が切れる）
+        auto& entry = it->second;
+        if (entry.synth == nullptr)
+            continue;
+        applySampleParams (*entry.synth, track);
+
+        // 音程モードが切り替わった瞬間は全ボイスを止める（旧モードのボイスが残ったまま
+        // 新モードの resound が走ると二重発音・不自然な打ち切りになる）。
+        // この判定をUIハンドラでなく sync() に置くのは、undo/redo が
+        // afterHistoryRestore() → pushSnapshot() → sync() の経路で復元されUIを通らないため。
+        // UI側で立てると undo での切り替わりを取りこぼす
+        if (entry.pitchFollow != track.samplePitchFollow)
+        {
+            entry.pitchFollow = track.samplePitchFollow;
+            entry.synth->sampler->requestStopAll();
             changed = true;
         }
     }
@@ -75,13 +107,50 @@ std::shared_ptr<SynthInstance> SynthBank::get (juce::uint64 trackId) const
     return it != entries.end() ? it->second.synth : nullptr;
 }
 
-std::shared_ptr<SynthInstance> SynthBank::createIndependent (int gmProgram, bool drums,
+std::shared_ptr<SynthInstance> SynthBank::createIndependent (const Track& track,
                                                              double sampleRate, int blockSize)
 {
-    auto synth = createSynth (gmProgram, drums, sampleRate, blockSize);
+    if (track.instrument == InstrumentKind::sample)
+        return createSampler (track, sampleRate, blockSize); // サンプラーは実時間の概念を持たない
+
+    auto synth = createSynth (track.gmProgram, track.drums, sampleRate, blockSize);
     if (synth != nullptr && synth->plugin != nullptr)
         synth->plugin->setNonRealtime (true); // オフラインレンダリング（実時間より速いprocessBlock連打）
     return synth;
+}
+
+std::shared_ptr<SynthInstance> SynthBank::createSampler (const Track& track,
+                                                         double sampleRate, int blockSize)
+{
+    if (! track.hasSample())
+    {
+        // ファイル欠損（読込時に警告済み）。トラックは無音になる
+        Log::warn ("instrument.load_fail", "file=" + track.sampleFile
+                                               + " sourceSr=" + juce::String (track.sampleSourceRate, 0));
+        return nullptr;
+    }
+
+    auto synth = std::make_shared<SynthInstance>();
+    synth->sampler = std::make_unique<SamplerEngine> (track.sampleAudio, track.sampleSourceRate, sampleRate);
+    synth->midiChannel = 1;            // サンプラーはチャンネルを見ないが、既存経路と揃える
+    synth->preparedSampleRate = sampleRate;
+    synth->preparedBlockSize = blockSize;
+    synth->totalOutputChannels = 2;    // サンプラーの出力は常にステレオ
+    applySampleParams (*synth, track);
+    return synth;
+}
+
+void SynthBank::applySampleParams (SynthInstance& synth, const Track& track)
+{
+    if (synth.sampler == nullptr)
+        return;
+    synth.sampler->setGain (track.sampleGain);
+    synth.sampler->setStartOffset (track.sampleStartOffset);
+    synth.sampler->setRootNote (track.sampleRootNote);
+    synth.sampler->setPitchFollow (track.samplePitchFollow);
+    synth.sampler->setMono (track.sampleMono);
+    // 固定モード（One Shot）は PlaybackEngine の resound 判定にも使う
+    synth.oneShot.store (! track.samplePitchFollow);
 }
 
 juce::StringArray SynthBank::takeCreateErrors()

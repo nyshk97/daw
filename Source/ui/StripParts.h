@@ -36,14 +36,15 @@ inline void drawSlotPill (juce::Graphics& g, juce::Rectangle<int> bounds,
         g.setColour (Theme::faderSlotBg);
         g.fillRoundedRectangle (bounds.toFloat(), 5.0f);
         g.setColour (juce::Colours::white.withAlpha (0.25f));
-        g.setFont (Fonts::small());
-        g.drawText (name, bounds, juce::Justification::centred);
+        // 自由入力（サンプル名）が入り得るのでCJK補正を通す（ASCIIのみの固定文言は無補正のまま）
+        g.setFont (Fonts::forText (Fonts::small(), name));
+        g.drawText (name, bounds, juce::Justification::centred); // 収まらない名前は末尾省略
         return;
     }
     g.setColour (isOn ? Theme::accent : Theme::controlBg);
     g.fillRoundedRectangle (bounds.toFloat(), 5.0f);
     g.setColour (juce::Colours::white.withAlpha (isOn ? 0.95f : 0.75f));
-    g.setFont (Fonts::smallStrong());
-    g.drawText (name, bounds, juce::Justification::centred);
+    g.setFont (Fonts::forText (Fonts::smallStrong(), name));
+    g.drawText (name, bounds, juce::Justification::centred); // 収まらない名前は末尾省略
 }
 } // namespace StripParts

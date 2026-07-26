@@ -104,6 +104,21 @@ MainWindowのコンストラクタは `setContentOwned`（→ `parentHierarchyCh
 
 ① **keyEquivalent（⌘S等の表記）は `ApplicationCommandManager` 経由でのみ設定される**。`PopupMenu::Item::shortcutKeyDescription` はNSMenu変換で無視される（`juce_MainMenu_mac.mm` の `addMenuItem` 参照）。コマンド登録＋`commandManager.getKeyMappings()->addKeyPress()` が必須 ② **NSMenuのkeyEquivalentは `keyPressed` より先にイベントを取る**。メニューに載せたキーの実処理は `ApplicationCommandTarget::perform` に一本化する（keyPressed側の同判定はデッドパス化するがフォールバックとして無害）③ **メニューのenabled状態はNSMenu構築時のスナップショット**で古くなる（disabled表示のままでもキー押下は素通りし得る）。`perform` 側でも必ず状態ガードし、enable条件が変わったら `MenuBarModel::getMacMainMenu()->menuItemsChanged()` で組み直す（Main.cpp / MainComponent::refreshMacMenu 参照）④ **メニュー項目の追加は4点セット**。コマンドenum・`getCommandInfo`・`perform` を揃えても、`AppMenuModel::getMenuForIndex` に `addCommandItem` を足さないと項目自体が現れない（ショートカットだけ効く中途半端な状態になり、ビルドは通るので気づきにくい）。
 
+### ノートの位置判定をPPQ同士で比べるとグリッド上のノートを取りこぼす
+
+再生位置 `pos` は「グリッド位置をサンプル整数へ丸めた値」（シーク・サイクル範囲・録音位置はすべて
+サンプル単位に丸めて保持する）。これを `pos * ticksPerSample` でPPQへ戻すと、元のPPQより
+わずかに大きく（または小さく）なるため、`note.startPpq >= pos * tps` のようなPPQ同士の比較では
+**境界ちょうどのノートが「過去のノート」に落ちて発音されない**。
+
+実例: 127BPM・44.1kHz の16分音符1つ目は PPQ 240 に対しサンプル 5209。戻すと 240.0156 になり、
+その位置へシーク（またはサイクル範囲の開始位置に設定）すると PPQ 240 のノートが発音されない。
+持続音は resound（跨ぎノートの再発音）で救われるが、**One Shot（resound対象外）は完全に消える**。
+
+判定・オフセット計算の両方を `llround(ppq / tps)` の整数サンプルに統一する。
+PlaybackEngine（RT）とBounceRenderer（オフライン）は同じ規則で書くこと（片方だけ直すと
+「再生とバウンスの出力一致」が崩れる）。
+
 ### WindowedSincInterpolatorはレイテンシ補償と終端ゼロパディングが必須
 
 ① 入力100サンプルのアルゴリズム遅延を持つ（`WindowedSincTraits::algorithmicLatency`）。補償しないと出力全体が100入力サンプル分後ろへずれ、末尾が同じ分欠落する。「先頭の遅延分を捨て、その分余計に生成」で補償する（AudioImporter参照）② `process(available, wrapAround=0)` は「入力が尽きたらゼロを供給」に見えるが、**available==0でも境界判定より先に入力ポインタを1サンプル読む**（`interpolateImpl` が `input[numUsed++]` を先に実行）ため境界外読みになる。ソースバッファ末尾にゼロパディングを確保し、渡すポインタとavailable（≥1）を常にバッファ実体内に収める ③ 検証は「末尾1サンプルのパルスが出力末尾に残るか」＋「中間パルスが換算位置±2サンプルに出るか」のテストで固定する（testAudioImporter参照）

@@ -372,9 +372,21 @@ public:
 
             if (owner.fileDrop.rejected)
             {
-                // MIDIトラック: 不受理（減光で「置けない」を示す。挿入ラインは出さない）
+                // 不受理（減光で「置けない」を示す。挿入ラインは出さない）
                 g.setColour (juce::Colours::black.withAlpha (0.3f));
                 g.fillRect (laneRect);
+            }
+            else if (owner.fileDrop.instrument)
+            {
+                // MIDIトラック: サンプル音源の割り当て。行全体を枠で囲み、クリップ配置（挿入位置の
+                // 縦線）と意味が違うことを見た目で区別する（位置は関係ない操作なので線を出さない）
+                g.setColour (Theme::accent.withAlpha (0.16f));
+                g.fillRect (laneRect);
+                g.setColour (Theme::accent);
+                g.drawRect (laneRect.reduced (1), 2);
+                g.setColour (Theme::accent.brighter (0.4f));
+                g.setFont (Fonts::small());
+                g.drawText ("Instrument", laneRect.reduced (8, 6), juce::Justification::topLeft);
             }
             else
             {
@@ -421,7 +433,8 @@ public:
 private:
     bool isInterested (const juce::StringArray& files) const
     {
-        if (owner.project == nullptr || owner.onImportFilesDropped == nullptr)
+        if (owner.project == nullptr
+            || (owner.onImportFilesDropped == nullptr && owner.onAssignInstrumentDropped == nullptr))
             return false;
         for (const auto& file : files)
             if (TimelineView::isImportableAudioFile (file))
@@ -441,8 +454,18 @@ private:
         for (const auto& file : files)
             if (TimelineView::isImportableAudioFile (file))
                 audioFiles.add (file);
-        if (! audioFiles.isEmpty() && owner.onImportFilesDropped != nullptr)
+        if (audioFiles.isEmpty())
+            return;
+
+        if (drop.instrument) // MIDIトラック行 = サンプル音源の割り当て（配置位置は使わない）
+        {
+            if (owner.onAssignInstrumentDropped != nullptr)
+                owner.onAssignInstrumentDropped (audioFiles, drop.track);
+        }
+        else if (owner.onImportFilesDropped != nullptr)
+        {
             owner.onImportFilesDropped (audioFiles, drop.track, drop.startSample);
+        }
     }
 
     void drawClip (juce::Graphics& g, const Clip& clip, int y, bool isSelected,
@@ -715,7 +738,8 @@ void TimelineView::updateFileDrop (int contentX, int contentY)
     if (row >= 0 && row < numTracks)
     {
         next.track = row;
-        next.rejected = project->tracks[(size_t) row].type != TrackType::audio; // MIDIトラックは不受理
+        // MIDIトラック行はクリップを置けないが、サンプル音源の割り当てとして受理する
+        next.instrument = project->tracks[(size_t) row].type == TrackType::midi;
     }
     else
     {

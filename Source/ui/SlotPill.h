@@ -80,7 +80,7 @@ public:
             g.setColour (base.brighter (0.1f));
             g.fillRoundedRectangle (bounds, 5.0f);
             g.setColour (juce::Colours::white.withAlpha (isOn ? 0.95f : 0.75f));
-            g.setFont (Fonts::smallStrong());
+            g.setFont (Fonts::forText (Fonts::smallStrong(), name)); // 自由入力（サンプル名）のCJK補正
             g.drawText (name, getLocalBounds(), juce::Justification::centred);
         }
         else

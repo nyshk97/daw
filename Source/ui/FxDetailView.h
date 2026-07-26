@@ -8,7 +8,8 @@
 
 // 下部のFX詳細エディタ。左のFXパネル（FxEditorView）のスロットクリックで開き、
 // そのFXの操作UIを横幅フルで表示する（Logicのフローティングウィンドウの代替）。
-// 中身は後続スライスで埋める（スライス3=EQカーブ / 4=Compノブ / 5=Reverb・Delay・Limiter）。
+// 中身（body）は差し替え式で、所有はしない: MainComponent が対象スロットに応じた
+// コンポーネント（Instrumentエディタ等）を setBody で載せる。EQ/Compのエディタも同じ土台に乗る。
 // ピアノロールと同じ下部スロットを使い、排他（後勝ち）は MainComponent が制御する。
 class FxDetailView : public juce::Component
 {
@@ -44,6 +45,32 @@ public:
     {
         open = false;
         setVisible (false);
+        setBody (nullptr); // 載せていた中身は手放す（所有はしていない）
+    }
+
+    // 中身の差し替え（所有しない。呼び出し側がbodyより長生きすることを保証する）。
+    // nullptr で外す。載せ替えのたびに resized() でレイアウトし直す
+    void setBody (juce::Component* newBody)
+    {
+        if (body == newBody)
+            return;
+        if (body != nullptr)
+            removeChildComponent (body);
+        body = newBody;
+        if (body != nullptr)
+            addAndMakeVisible (*body);
+        resized();
+        repaint();
+    }
+
+    juce::Component* currentBody() const { return body; }
+
+    // 中身を置く領域（タイトル行の下・一段沈めた角丸パネルの内側）
+    juce::Rectangle<int> bodyArea() const
+    {
+        auto area = getLocalBounds().withTrimmedTop (titleHeight).reduced (8, 0);
+        area.removeFromBottom (8);
+        return area;
     }
 
     std::function<void()> onCloseRequested; // ✕ボタン
@@ -61,17 +88,17 @@ public:
         g.setFont (Fonts::forText (Fonts::bodyStrong(), title));
         g.drawText (title, 12, 0, getWidth() - 60, titleHeight, juce::Justification::centredLeft);
 
-        // 中身領域（各FXのUIは後続スライスでここに載る。今は一段沈めた空パネル）
-        auto body = getLocalBounds().withTrimmedTop (titleHeight).reduced (8, 0);
-        body.removeFromBottom (8);
+        // 中身領域（bodyがここに載る。未実装のFXでは一段沈めた空パネルのまま）
         g.setColour (Theme::headerBg);
-        g.fillRoundedRectangle (body.toFloat(), 6.0f);
+        g.fillRoundedRectangle (bodyArea().toFloat(), 6.0f);
     }
 
     void resized() override
     {
         closeButton.setBounds (getLocalBounds().removeFromTop (titleHeight)
                                    .removeFromRight (32).withSizeKeepingCentre (22, 20));
+        if (body != nullptr)
+            body->setBounds (bodyArea());
     }
 
 private:
@@ -79,6 +106,7 @@ private:
 
     bool open = false;
     juce::String fxName, channelName;
+    juce::Component* body = nullptr; // 非所有（MainComponentが所有する）
     juce::TextButton closeButton { juce::String::fromUTF8 (u8"×") };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FxDetailView)

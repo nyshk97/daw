@@ -30,6 +30,10 @@ struct Clip
     void buildPeakCache();
 };
 
+// バッファ全長の描画用ピークキャッシュ（Clip::samplesPerPeak 単位・ステレオはL/Rのmax合成）。
+// サンプル音源の波形表示用（クリップは参照範囲だけを見る Clip::buildPeakCache を使う）
+std::vector<float> buildFullPeakCache (const juce::AudioBuffer<float>& audio);
+
 // クリップを splitSample（絶対サンプル位置）で左右に分ける。左右は同じソースWAVを共有参照する。
 // 分割点が内側（開始 < 分割点 < 終端）にないときは false（境界ちょうどは分割しない）
 bool splitClip (const Clip& clip, juce::int64 splitSample, Clip& left, Clip& right);
@@ -115,6 +119,9 @@ namespace SectionMarkers
     juce::String displayName (const std::vector<SectionMarker>& markers, int index);
 }
 
+// MIDIトラックの音源種別。gm = macOS内蔵GM音源（DLSMusicDevice）/ sample = 外部ワンショット
+enum class InstrumentKind { gm, sample };
+
 struct Track
 {
     juce::uint64 id = 0; // プロジェクト内で一意。永続化される。0 = 未採番（読込時に採番）
@@ -126,10 +133,31 @@ struct Track
     std::vector<Clip> clips;
 
     // type == midi のとき
+    InstrumentKind instrument = InstrumentKind::gm;
+    // GM用（instrument == sample の間も保持し続ける。楽器プルダウンでGMへ戻したとき元の楽器が復元される）
     int gmProgram = 0;   // GMプログラム番号 0..127
     bool drums = false;  // true = ch10で発音（gmProgramは無視）
-    int drumPitch = -1;  // >=0: 固定ピッチ打楽器（Kick等）。再生時ノートのピッチをこの値に置き換える
+    int drumPitch = -1;  // >=0: 固定ピッチ打楽器（Kick等）。再生時ノートのピッチをこの値に置き換える（GM専用の規則）
     std::vector<MidiRegion> midiRegions;
+
+    // サンプル音源用（instrument == sample のとき有効。GMへ戻しても保持する）。
+    // undo対象にするため TrackParams（atomic共有）でなく Track のフィールドとして持ち、
+    // オーディオスレッドへは SynthBank::sync() が SamplerEngine の atomic へミラーする（真実の源はここ）
+    juce::String sampleFile;            // プロジェクトフォルダ相対（instr-NNN.wav）
+    juce::String sampleName;            // 表示名（元ファイル名・拡張子なし）
+    bool samplePitchFollow = false;     // false=固定（One Shot）/ true=音程追従（ノート長ゲート）
+    // true = 新しい打点で前の音を切る（Logicの Quick Sampler「Polyphony: 1」相当・実機TR-808と同じ）。
+    // 長い音（808等）を連打すると重なって濁る・出力がクリップするため、その回避用。既定OFF＝重ねる
+    bool sampleMono = false;
+    int sampleRootNote = 60;            // 追従時の基準ノート（既定 C3=60）
+    float sampleGain = 1.0f;            // サンプル音量 0..2
+    juce::int64 sampleStartOffset = 0;  // 頭の無音カット位置（バッファ内サンプル）
+    double sampleSourceRate = 0.0;      // ファイル自体のSR（再生比率 sourceRate/deviceRate の計算に必要）
+    std::shared_ptr<juce::AudioBuffer<float>> sampleAudio; // メモリ常駐（Clip::audio と同じ寿命規則）
+    std::vector<float> samplePeakCache;                    // 波形描画用（Clip::samplesPerPeak 単位・全長）
+
+    bool hasSample() const { return sampleAudio != nullptr && sampleSourceRate > 0.0; }
+    bool usesSampler() const { return type == TrackType::midi && instrument == InstrumentKind::sample; }
 };
 
 class Project
@@ -138,8 +166,8 @@ public:
     // v2: MIDIトラック・ID追加 / v3: クリップのoffsetSamples・lengthSamples /
     // v4: pan・sends・固定バス3本・Master / v5: サイクル（ループ範囲）/
     // v6: ステレオクリップ（ch数はJSONに持たずWAV自体から判定）・クリップ表示名（取り込み用）/
-    // v7: プロジェクトメモ
-    static constexpr int currentVersion = 7;
+    // v7: プロジェクトメモ / v8: サンプル音源（instrument・sample*）
+    static constexpr int currentVersion = 8;
 
     juce::File directory;
     double bpm = 120.0;
@@ -176,13 +204,17 @@ public:
                                           juce::String& error);
     static std::unique_ptr<Project> createNew (const juce::File& dir, juce::String& error);
 
-    juce::File nextClipFile() const; // clip-NNN.wav の空き連番
+    juce::File nextClipFile() const;       // clip-NNN.wav の空き連番
+    juce::File nextInstrumentFile() const; // instr-NNN.wav の空き連番（サンプル音源）
     std::unique_ptr<PlaybackSnapshot> buildSnapshot() const;
 
     static juce::File projectsRoot(); // ~/Music/daw
 
-    // 1chはモノ、2ch以上は先頭2chをL/Rとして読む（3ch以上の余剰chは捨てる）
-    static std::shared_ptr<juce::AudioBuffer<float>> loadWav (const juce::File& file);
+    // 1chはモノ、2ch以上は先頭2chをL/Rとして読む（3ch以上の余剰chは捨てる）。
+    // sourceSampleRate != nullptr ならファイル自体のSRも返す（サンプル音源は元SRのまま保存し、
+    // 再生比率の計算に使うため必須。クリップ読込はプロジェクトSRへ変換済みなので不要）
+    static std::shared_ptr<juce::AudioBuffer<float>> loadWav (const juce::File& file,
+                                                             double* sourceSampleRate = nullptr);
 
 private:
     juce::uint64 nextId = 1; // 永続化される採番カウンタ

@@ -1,11 +1,22 @@
 #include "FxEditorView.h"
 
+#include "../shared/GmInstruments.h"
 #include "Fonts.h"
 #include "StripParts.h"
 #include "Theme.h"
 
 namespace
 {
+// 内蔵GM音源の表示名（ヘッダーの楽器プルダウンと同じ対応表。一致が無ければ先頭＝Piano）
+juce::String gmInstrumentName (const Track& track)
+{
+    for (int i = 0; i < numGmInstruments; ++i)
+        if (gmInstruments[i].program == track.gmProgram && gmInstruments[i].drums == track.drums
+            && gmInstruments[i].fixedPitch == track.drumPitch)
+            return gmInstruments[i].name;
+    return gmInstruments[0].name;
+}
+
 constexpr int titleHeight = 28;
 constexpr int pad = 14;
 constexpr int thumbHeight = 44;
@@ -25,7 +36,7 @@ FxEditorView::FxEditorView()
     closeButton.onClick = [this] { if (onCloseRequested) onCloseRequested(); };
 
     // スロットピル（対話込みの実体はSlotPill。ミキサーのストリップと共有部品）
-    for (int i = 0; i < 3; ++i)
+    for (int i = 0; i < maxSlots; ++i)
     {
         addChildComponent (slotPills[i]);
         slotPills[i].onOpenEditor = [this, i] { if (onSlotClicked) onSlotClicked (i); };
@@ -139,6 +150,7 @@ void FxEditorView::refreshValues()
         row.refreshValue();
     for (auto& pill : slotPills)
         pill.repaint(); // EQ/CompのON/OFF（ミキサー側での電源トグル）を色に反映
+
     if (auto params = targetParams())
     {
         volumeSlider.setValue (params->gain.load(), juce::dontSendNotification);
@@ -196,7 +208,7 @@ void FxEditorView::setActiveSlot (int slot)
     if (activeSlot == slot)
         return;
     activeSlot = slot;
-    for (int i = 0; i < 3; ++i)
+    for (int i = 0; i < maxSlots; ++i)
         slotPills[i].setActiveOutline (i == activeSlot);
 }
 
@@ -238,6 +250,7 @@ void FxEditorView::rebind()
     // スロット構成（ON/OFFを持つのはトラックのEQ・Compのみ。バス/MasterのFXは常在でバイパスなし。
     // enabled atomicの実体はTrackが所有するTrackParams）
     slotCount = 0;
+    numOrderedSlots = 0;
     if (isTrack)
     {
         slotNames[0] = "EQ";
@@ -247,6 +260,23 @@ void FxEditorView::rebind()
         slotPills[1].configure ("Comp", &params->compEnabled, false);
         slotPills[2].configure ("Ext", nullptr, true); // スライス6まで操作不可（空きスロット表示）
         slotCount = 3;
+
+        // Instrumentスロット（MIDIトラックのみ）。サンプル割当時だけ点灯してクリック可、
+        // 内蔵GM音源のときは Ext と同じグレー表示（音源の差し替えはヘッダーのプルダウンで行う）
+        const auto& track = project->tracks[(size_t) targetTrack];
+        if (track.type == TrackType::midi)
+        {
+            const bool sampler = track.usesSampler();
+            slotNames[instrumentSlot] = sampler
+                                            ? (track.sampleName.isNotEmpty() ? track.sampleName
+                                                                             : juce::String ("Sample"))
+                                            : gmInstrumentName (track);
+            slotPills[instrumentSlot].configure (slotNames[instrumentSlot], nullptr, ! sampler);
+            slotCount = maxSlots;
+            slotOrder[numOrderedSlots++] = instrumentSlot; // 音源は一番上
+        }
+        for (int i = 0; i < 3; ++i)
+            slotOrder[numOrderedSlots++] = i;
     }
     else if (params != nullptr)
     {
@@ -254,9 +284,13 @@ void FxEditorView::rebind()
         slotNames[0] = target == Target::master ? "Limiter" : (isDelay ? "Delay" : "Reverb");
         slotPills[0].configure (slotNames[0], nullptr, false);
         slotCount = 1;
+        slotOrder[numOrderedSlots++] = 0;
     }
-    for (int i = 0; i < 3; ++i)
-        slotPills[i].setVisible (i < slotCount);
+
+    for (auto& pill : slotPills)
+        pill.setVisible (false);
+    for (int i = 0; i < numOrderedSlots; ++i)
+        slotPills[slotOrder[i]].setVisible (true);
 
     for (auto& row : sendRows)
         row.setVisible (isTrack);
@@ -292,11 +326,12 @@ void FxEditorView::resized()
     sendsArea = {};
     area = area.reduced (pad, 0);
 
-    auto placeSlots = [this, &area] (int count)
+    // 配置は slotOrder の順（配列indexの並びとは別。Instrumentが先頭に来る）
+    auto placeSlots = [this, &area]
     {
-        for (int i = 0; i < count; ++i)
+        for (int i = 0; i < numOrderedSlots; ++i)
         {
-            slotPills[i].setBounds (area.removeFromTop (slotHeight));
+            slotPills[slotOrder[i]].setBounds (area.removeFromTop (slotHeight));
             area.removeFromTop (slotGap);
         }
     };
@@ -308,7 +343,7 @@ void FxEditorView::resized()
         eqThumbArea = area.removeFromTop (thumbHeight);
         area.removeFromTop (10);
 
-        placeSlots (3);
+        placeSlots();
 
         // Sends区画（見出し＋「バス名ピル｜小ノブ」の行×3。Logicのsendスロット相当）
         area.removeFromTop (10);
@@ -330,7 +365,7 @@ void FxEditorView::resized()
     else if (target == Target::bus || target == Target::master)
     {
         area.removeFromTop (10);
-        placeSlots (1);
+        placeSlots();
     }
 
     // dB数値ボックス（左=設定値、右=ピーク。LogicのストリップどおりPanノブの下・フェーダーの上）

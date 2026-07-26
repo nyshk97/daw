@@ -51,8 +51,11 @@ bool BounceRenderer::buildItemRender (const Track& track, int itemIndex, double 
         return false;
     const auto& region = track.midiRegions[(size_t) itemIndex];
 
-    // ノートのフラット化・境界マスク・固定ピッチ置換はbuildSnapshotと同じ規則（対象リージョンのみ）
-    const bool fixedPitch = track.drums && track.drumPitch >= 0;
+    // ノートのフラット化・境界マスク・固定ピッチ置換はbuildSnapshotと同じ規則（対象リージョンのみ）。
+    // 固定ピッチ置換はGM音源専用（サンプラーはピッチを見ずに等速で鳴らすので置換しない）。
+    // 同じ規則が Project::buildSnapshot にもあるので、変えるときは両方を見ること
+    const bool fixedPitch = track.instrument == InstrumentKind::gm
+                            && track.drums && track.drumPitch >= 0;
     const auto regionEnd = region.startPpq + region.lengthPpq;
     for (const auto& note : region.notes)
     {
@@ -71,6 +74,34 @@ bool BounceRenderer::buildItemRender (const Track& track, int itemIndex, double 
     rangeStart = (juce::int64) std::llround ((double) region.startPpq / tps);
     rangeEnd = (juce::int64) std::llround ((double) regionEnd / tps);
     return true;
+}
+
+juce::int64 BounceRenderer::oneShotEndSample (const Track& track,
+                                              const std::vector<MidiNotePlayback>& notes,
+                                              double bpm, double sampleRate)
+{
+    // 追従モードはノート長で止まる（既存のテールで足りる）ので延長しない
+    if (! track.usesSampler() || track.samplePitchFollow || ! track.hasSample())
+        return 0;
+    if (sampleRate <= 0.0 || track.sampleSourceRate <= 0.0)
+        return 0;
+
+    const auto remaining = juce::jmax ((juce::int64) 0,
+                                       (juce::int64) track.sampleAudio->getNumSamples()
+                                           - track.sampleStartOffset);
+    // SamplerEngine は「読み出し位置がバッファ末尾に達するまで」出力するので、必要な出力サンプル数は
+    // ceil(remaining / rate)（rate = sourceRate/deviceRate）。四捨五入だと非整数SR比で末尾が1サンプル切れる
+    // （例: 残り2サンプル・44.1k→48k は実際に3サンプル出る）
+    const auto tail = (juce::int64) std::ceil ((double) remaining * sampleRate / track.sampleSourceRate);
+
+    const double tps = Ppq::ticksPerSample (bpm, sampleRate);
+    juce::int64 end = 0;
+    for (const auto& note : notes)
+    {
+        const auto noteStart = (juce::int64) std::llround ((double) note.startPpq / tps);
+        end = juce::jmax (end, noteStart + tail);
+    }
+    return end;
 }
 
 void BounceRenderer::run()
@@ -185,14 +216,30 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
     midiScratch.ensureSize (4096);
 
     cursors.assign (request.tracks.size(), {});
-    // 範囲開始より前に鳴り終わるノートの読み飛ばし（サイクル範囲書き出しで rangeStart > 0 になる。
-    // startPpq昇順の並びなので先頭からの連続分だけ飛ばす）。範囲頭を跨いで鳴っているノートは
-    // 読み飛ばされず、scheduleBlockMidi のオンオフセットのクランプ（jlimit 0..）で範囲頭から発音される
-    const double rangeStartPpq = (double) rangeStart * tps;
+    // 範囲開始より前のノートの読み飛ばし（サイクル範囲書き出しで rangeStart > 0 になる。
+    // startPpq昇順の並びなので先頭からの連続分だけ飛ばす）。
+    // - 通常（GM・追従モード）: 鳴り終わったノートだけ飛ばす。範囲頭を跨いで鳴っているノートは残り、
+    //   scheduleBlockMidi のオンオフセットのクランプ（jlimit 0..）で範囲頭から発音される
+    //   ＝リアルタイム側の resound と同じ挙動
+    // - One Shot（サンプルの固定モード）: **範囲頭より前に始まるノートも飛ばす**。リアルタイム側は
+    //   oneShot のとき resound しない（シーク先で途中から鳴り出さない）ので、跨ぎノートを範囲頭で
+    //   鳴らすと再生結果と食い違い、叩いていない打点が増える
+    // 比較はPPQ同士で行わずサンプル位置で行う（PlaybackEngine::renderMidiTracks と同じ理由:
+    // rangeStart は丸め済みのサンプル位置で、tps でPPQへ戻すと境界ちょうどのノートを取りこぼす）
     for (size_t i = 0; i < request.tracks.size(); ++i)
-        while (cursors[i].nextNote < request.tracks[i].notes.size()
-               && (double) request.tracks[i].notes[cursors[i].nextNote].endPpq <= rangeStartPpq)
+    {
+        const auto& track = request.tracks[i];
+        const bool oneShot = track.synth != nullptr && track.synth->oneShot.load();
+        while (cursors[i].nextNote < track.notes.size())
+        {
+            const auto& note = track.notes[cursors[i].nextNote];
+            const auto onSample = (juce::int64) std::llround ((double) note.startPpq / tps);
+            const auto offSample = (juce::int64) std::llround ((double) note.endPpq / tps);
+            if (! (oneShot ? onSample < rangeStart : offSample <= rangeStart))
+                break;
             ++cursors[i].nextNote;
+        }
+    }
 
     juce::AudioBuffer<float> mix (2, renderBlockSize);
     std::vector<juce::AudioBuffer<float>> busMix;
@@ -244,7 +291,7 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
                 }
             }
 
-            if (track.synth != nullptr && track.synth->plugin != nullptr)
+            if (track.synth != nullptr && track.synth->hasRenderer())
             {
                 scheduleBlockMidi (track, cursors[ti], pos, n, tps);
                 renderSynthInto (mix, busMix, track, n);
@@ -285,7 +332,9 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
             for (size_t ti = 0; ti < request.tracks.size(); ++ti)
             {
                 auto& track = request.tracks[ti];
-                if (track.synth == nullptr || track.synth->plugin == nullptr)
+                // サンプラーもテールを回す（範囲を跨ぐ追従ノートの余韻に必要。
+                // pluginだけを見て continue するとサンプラーがテールで一切鳴らない）
+                if (track.synth == nullptr || ! track.synth->hasRenderer())
                     continue;
 
                 midiScratch.clear();
@@ -366,17 +415,21 @@ void BounceRenderer::scheduleBlockMidi (const TrackRender& track, SynthCursor& c
                                         juce::int64 pos, int numSamples, double tps)
 {
     midiScratch.clear();
-    const double blockEndPpq = (double) (pos + numSamples) * tps;
+    // 位置判定はサンプル位置で行う（PPQ同士で比べない。理由は PlaybackEngine::renderMidiTracks の
+    // コメント参照。RT側と同じ規則にしておかないと再生とバウンスの出力が一致しない）
+    const auto blockEnd = pos + numSamples;
+    const auto toSample = [tps] (juce::int64 ppq)
+    { return (juce::int64) std::llround ((double) ppq / tps); };
     const int ch = track.synth->midiChannel;
 
     // 1) このブロック内で終わる発音中ノートのオフ（同位置のオンより先に積む。RTと同じ流儀）
     for (size_t i = 0; i < cursor.active.size();)
     {
         const auto [endPpq, pitch] = cursor.active[i];
-        if ((double) endPpq < blockEndPpq)
+        const auto offSample = toSample (endPpq);
+        if (offSample < blockEnd)
         {
-            const int off = juce::jlimit (0, numSamples - 1,
-                                          (int) ((juce::int64) std::llround ((double) endPpq / tps) - pos));
+            const int off = juce::jlimit (0, numSamples - 1, (int) (offSample - pos));
             midiScratch.addEvent (juce::MidiMessage::noteOff (ch, pitch), off);
             cursor.active[i] = cursor.active.back(); // swap-with-last（順序は不要）
             cursor.active.pop_back();
@@ -392,17 +445,17 @@ void BounceRenderer::scheduleBlockMidi (const TrackRender& track, SynthCursor& c
     while (cursor.nextNote < notes.size())
     {
         const auto& note = notes[cursor.nextNote];
-        if ((double) note.startPpq >= blockEndPpq)
+        const auto onSample = toSample (note.startPpq);
+        if (onSample >= blockEnd)
             break; // startPpq昇順なので以降は全てブロック外
 
-        const int on = juce::jlimit (0, numSamples - 1,
-                                     (int) ((juce::int64) std::llround ((double) note.startPpq / tps) - pos));
+        const int on = juce::jlimit (0, numSamples - 1, (int) (onSample - pos));
         midiScratch.addEvent (juce::MidiMessage::noteOn (ch, note.pitch, (juce::uint8) note.velocity), on);
 
-        if ((double) note.endPpq < blockEndPpq)
+        const auto offSample = toSample (note.endPpq);
+        if (offSample < blockEnd)
         {
-            const int off = juce::jlimit (on, numSamples - 1,
-                                          (int) ((juce::int64) std::llround ((double) note.endPpq / tps) - pos));
+            const int off = juce::jlimit (on, numSamples - 1, (int) (offSample - pos));
             midiScratch.addEvent (juce::MidiMessage::noteOff (ch, note.pitch), off);
         }
         else
@@ -428,7 +481,10 @@ void BounceRenderer::renderSynthInto (juce::AudioBuffer<float>& mix,
         chans[c] = synthScratch.getWritePointer (c);
     juce::AudioBuffer<float> block (chans, total, numSamples);
     block.clear();
-    synth->plugin->processBlock (block, midiScratch);
+    if (synth->plugin != nullptr)
+        synth->plugin->processBlock (block, midiScratch);
+    else
+        synth->sampler->processBlock (block, midiScratch);
 
     // ステレオソースなのでpanはバランス型（RTのrenderMidiTracksと同じ法則）。sendはpost-fader
     float balL = 1.0f, balR = 1.0f;

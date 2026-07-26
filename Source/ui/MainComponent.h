@@ -8,6 +8,7 @@
 #include "DeviceSettingsWindow.h"
 #include "FxDetailView.h"
 #include "FxEditorView.h"
+#include "InstrumentDetailView.h"
 #include "IconButton.h"
 #include "MixerWindow.h"
 #include "PianoRollView.h"
@@ -91,7 +92,9 @@ private:
     bool selectedTrackIsMidi() const;
     void performUndo();
     void performRedo();
-    void afterHistoryRestore();          // undo/redo後のUI・スナップショット同期
+    // undo/redo後のUI・スナップショット同期。kind がサンプル値だけの復元ならスナップショットを
+    // 再pushしない（発音中の音を切らないため。詳細は UndoStack::EditKind のコメント）
+    void afterHistoryRestore (UndoStack::EditKind kind);
     void resetTrackPeakHolds();          // トラック構造変更時（削除・並び替え・undo等）に呼ぶ
     void openPianoRoll (int trackIndex, int regionIndex);
     void closePianoRoll();
@@ -101,6 +104,7 @@ private:
     void toggleFxDetailSlot (int slot);  // FXパネルのスロットクリック（下部詳細の開閉）
     void closeFxDetail();
     void syncFxDetail();                 // FXパネルの表示対象変更に下部詳細を追従（不整合なら閉じる）
+    void updateFxDetailBody();           // 表示中スロットに応じて下部詳細の中身を載せ替える
     void toggleRightPanel (RightPanel::Mode mode);
     void closeRightPanel();
     void toggleDeviceSettings (const char* source); // 歯車ボタン／⌘,（開いていれば閉じる。sourceはログ用）
@@ -117,8 +121,13 @@ private:
     // othersSkipped = 複数ドロップの先頭のみ処理したとき（完了表示の文言に反映）
     void startImport (const juce::File& source, int targetTrack, juce::int64 startSample,
                       bool othersSkipped = false);
+    // MIDIトラックへのサンプル音源の割り当て（元のSRを保って取り込む）
+    void startInstrumentImport (const juce::File& source, int trackIndex, bool othersSkipped = false);
+    // 取り込みワーカーの起動（クリップ・サンプル共通の尻尾）。targetRate <= 0 で元SR保持
+    void beginImportWorker (const juce::File& source, double targetRate, bool othersSkipped);
     void pollImport();                                    // Timerからの完了ポーリング・進捗反映
     void finishImport (const AudioImporter::Result& result); // 成功時: リネーム→クリップ/トラック追加→保存
+    void finishInstrumentImport (const AudioImporter::Result& result); // 同上（サンプル音源の割り当て）
     static void refreshMacMenu();                // Fileメニューのenable状態を組み直させる
     void pushSnapshot();
     void setDirty (bool nowDirty);
@@ -144,6 +153,8 @@ private:
     PianoRollView pianoRoll { transport };
     FxEditorView fxEditor; // 左のFXパネル（概要・基本常設・Iで開閉。ピアノロールとは独立）
     FxDetailView fxDetail; // 下部のFX詳細（スロットクリックで開く。ピアノロールと排他・後勝ち）
+    // 下部詳細に載せる中身（fxDetailは非所有なので、こちらが所有してfxDetailより長生きさせる）
+    InstrumentDetailView instrumentDetail;
     int fxDetailSlot = -1;        // 詳細が表示中のスロット（FXパネルの並びに対応）
     juce::String fxDetailKey;     // 詳細が対象にしているチャンネル（fxEditor.targetKey()と比較して追従判定）
 
@@ -271,8 +282,9 @@ private:
     bool importActive = false;
     int importDoneTicks = 0;
     juce::File importTempFile;
-    juce::String importDisplayName; // 元ファイル名（拡張子なし）。クリップ表示名・新規トラック名に使う
-    int importTargetTrack = -1;     // -1 = 新規トラックを作成
+    juce::String importDisplayName; // 元ファイル名（拡張子なし）。クリップ表示名・新規トラック名・サンプル名に使う
+    bool importIsInstrument = false; // true = MIDIトラックへのサンプル音源割り当て（完了処理が別）
+    int importTargetTrack = -1;     // -1 = 新規トラックを作成（サンプル割り当てでは必ず既存MIDIトラック）
     juce::int64 importStartSample = 0;
     std::unique_ptr<juce::FileChooser> importChooser; // 非同期ダイアログの生存保持
 

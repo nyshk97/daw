@@ -477,13 +477,11 @@ void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, int numSample
                                        double sr, double bpm, bool anySolo)
 {
     const double tps = Ppq::ticksPerSample (bpm, sr);
-    const double blockStartPpq = (double) pos * tps;
-    const double blockEndPpq = (double) (pos + numSamples) * tps;
 
     for (auto& track : snapshot.tracks)
     {
         auto* synth = track.synth.get();
-        if (synth == nullptr || synth->plugin == nullptr)
+        if (synth == nullptr || ! synth->hasRenderer())
             continue;
 
         // レート/ブロックサイズ不一致は安全側でスキップ（メッセージスレッドのSynthBankが作り直して再pushする）
@@ -570,15 +568,29 @@ void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, int numSample
             }
         }
 
-        if (resound)
+        // One Shot（サンプル音源の固定モード）は resound しない。noteOff で消えないので
+        // 復元が不要であり、再発音すると鳴っているワンショットに重なって二重発音になる
+        // （副作用として、シーク先で「跨いでいる打楽器」が途中から鳴り出すこともなくなる）
+        // ノートの位置判定は**サンプル位置**で行う（PPQ同士で比べない）。
+        // pos は「グリッド位置をサンプル整数へ丸めた値」であることが多く、pos * tps でPPQへ戻すと
+        // 元のPPQよりわずかに大きく（または小さく）なる。例: 127BPM/44.1kHzの16分音符1つ目は
+        // PPQ 240 に対しサンプル5209で、戻すと240.0156 → 境界ちょうどのノートが「過去のノート」に
+        // 落ちて発音されない（One Shotはresoundもしないので完全に消える）。
+        // 判定・オフセット計算の両方を llround(ppq / tps) の整数サンプルに統一して取りこぼしを防ぐ
+        const auto blockEnd = pos + numSamples;
+        const auto noteStartSample = [tps] (const MidiNotePlayback& note)
+        { return (juce::int64) std::llround ((double) note.startPpq / tps); };
+        const auto noteEndSample = [tps] (const MidiNotePlayback& note)
+        { return (juce::int64) std::llround ((double) note.endPpq / tps); };
+
+        if (resound && ! synth->oneShot.load())
         {
             // 再生位置を跨いでいるノートを offset 0 で再発音（シーク途中・編集後の持続音）
             for (auto& note : track.notes)
             {
-                const double s = (double) note.startPpq;
-                if (s >= blockStartPpq)
+                if (noteStartSample (note) >= pos)
                     break; // startPpq昇順なので以降は跨ぎ得ない
-                if ((double) note.endPpq > blockStartPpq && noteOnsAdded < maxNoteOnsPerBlock
+                if (noteEndSample (note) > pos && noteOnsAdded < maxNoteOnsPerBlock
                     && synth->addActive (note.endPpq, note.pitch))
                 {
                     midiScratch.addEvent (juce::MidiMessage::noteOn (ch, note.pitch, (juce::uint8) note.velocity), 0);
@@ -591,28 +603,27 @@ void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, int numSample
         {
             for (auto& note : track.notes)
             {
-                const double s = (double) note.startPpq;
-                const double e = (double) note.endPpq;
-                if (s >= blockEndPpq)
+                const auto onSample = noteStartSample (note);
+                const auto offSample = noteEndSample (note);
+                if (onSample >= blockEnd)
                     break; // startPpq昇順なので以降は全てブロック外
 
                 // 過去に鳴らしたノートのオフ。実際にオンを送ったもの（activeNotesに載っているもの）だけ送る。
                 // 上限超過で捨てたノートの終端で、同ピッチの別ノートを誤って止めないため。
                 // （同一オフセットではオンより先に並ぶよう、オンより先に追加する）
-                if (s < blockStartPpq && e >= blockStartPpq && e < blockEndPpq)
+                if (onSample < pos && offSample >= pos && offSample < blockEnd)
                 {
                     const int index = synth->findActive (note.endPpq, note.pitch);
                     if (index >= 0)
                     {
-                        const int offOffset = juce::jlimit (0, numSamples - 1,
-                                                            (int) ((juce::int64) std::llround (e / tps) - pos));
+                        const int offOffset = juce::jlimit (0, numSamples - 1, (int) (offSample - pos));
                         midiScratch.addEvent (juce::MidiMessage::noteOff (ch, note.pitch), offOffset);
                         synth->removeActive (index);
                     }
                 }
 
                 // このブロックで始まるノートのオン
-                if (s >= blockStartPpq)
+                if (onSample >= pos)
                 {
                     if (noteOnsAdded >= maxNoteOnsPerBlock)
                     {
@@ -622,15 +633,13 @@ void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, int numSample
                         continue;
                     }
 
-                    const int onOffset = juce::jlimit (0, numSamples - 1,
-                                                       (int) ((juce::int64) std::llround (s / tps) - pos));
+                    const int onOffset = juce::jlimit (0, numSamples - 1, (int) (onSample - pos));
 
-                    if (e < blockEndPpq)
+                    if (offSample < blockEnd)
                     {
                         // ブロック内で終わる短いノートはオンとオフを同時に予約（activeNotes追跡は不要）
                         midiScratch.addEvent (juce::MidiMessage::noteOn (ch, note.pitch, (juce::uint8) note.velocity), onOffset);
-                        const int offOffset = juce::jlimit (onOffset, numSamples - 1,
-                                                            (int) ((juce::int64) std::llround (e / tps) - pos));
+                        const int offOffset = juce::jlimit (onOffset, numSamples - 1, (int) (offSample - pos));
                         midiScratch.addEvent (juce::MidiMessage::noteOff (ch, note.pitch), offOffset);
                         ++noteOnsAdded;
                     }
@@ -647,14 +656,18 @@ void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, int numSample
             }
         }
 
-        // ---- AUレンダリング（synthScratch の先頭 numSamples 分だけを非所有ビューで渡す）----
+        // ---- 音源レンダリング（synthScratch の先頭 numSamples 分だけを非所有ビューで渡す）----
         // DLSは全出力バス分（4ch）のバッファを要求する。ミックスに使うのはメインバスのch0/1のみ
+        // （サンプラーは常に2ch）
         float* chans[maxSynthChannels] = {};
         for (int sc = 0; sc < synth->totalOutputChannels; ++sc)
             chans[sc] = synthScratch.getWritePointer (sc);
         juce::AudioBuffer<float> block (chans, synth->totalOutputChannels, numSamples); // 外部データ参照・ヒープ確保なし
         block.clear();
-        synth->plugin->processBlock (block, midiScratch);
+        if (synth->plugin != nullptr)
+            synth->plugin->processBlock (block, midiScratch);
+        else
+            synth->sampler->processBlock (block, midiScratch);
 
         // ---- ミックス（ミュート/非ソロはゲイン0＝加算しないだけで、上のレンダリングは常に行う）----
         // シンセ出力はステレオなのでpanはバランス型（センター0dB・振った反対側だけ減衰）

@@ -1,6 +1,7 @@
 #include "TrackHeadersView.h"
 
 #include "TimelineView.h"
+#include "../shared/AudioFileTypes.h"
 #include "../shared/GmInstruments.h"
 #include "Fonts.h"
 #include "Shortcuts.h"
@@ -81,20 +82,38 @@ TrackHeaderComponent::TrackHeaderComponent()
             onChanged();
     };
 
-    for (int i = 0; i < numGmInstruments; ++i)
-        instrumentBox.addItem (gmInstruments[i].name, i + 1); // idは楽器リストのindex+1
+    // 項目はGM 13個（id = リストのindex+1）＋割り当て済みサンプル1個（id = sampleItemId）。
+    // 内容はサンプル名に依存するので bind() で組み直す
     instrumentBox.onChange = [this]
     {
+        if (track == nullptr)
+            return;
+
+        if (instrumentBox.getSelectedId() == sampleItemId)
+        {
+            // 残しているサンプル項目を選び直せば、D&Dし直さずにサンプル音源へ戻せる
+            if (track->sampleFile.isEmpty() || track->instrument == InstrumentKind::sample)
+                return; // bind() による表示同期では発火させない
+            if (onWillChangeStructure)
+                onWillChangeStructure();
+            track->instrument = InstrumentKind::sample;
+            if (onInstrumentChanged)
+                onInstrumentChanged();
+            return;
+        }
+
         const int index = instrumentBox.getSelectedId() - 1;
-        if (track == nullptr || index < 0 || index >= numGmInstruments)
+        if (index < 0 || index >= numGmInstruments)
             return;
         const auto& inst = gmInstruments[index];
-        if (track->gmProgram == inst.program && track->drums == inst.drums
-            && track->drumPitch == inst.fixedPitch)
+        if (track->instrument == InstrumentKind::gm && track->gmProgram == inst.program
+            && track->drums == inst.drums && track->drumPitch == inst.fixedPitch)
             return; // bind() による表示同期では発火させない
 
         if (onWillChangeStructure)
             onWillChangeStructure(); // 楽器変更もundo対象
+        // GMへ戻すときも sampleFile 等は保持する（プルダウンのサンプル項目も残す）
+        track->instrument = InstrumentKind::gm;
         track->gmProgram = inst.program;
         track->drums = inst.drums;
         track->drumPitch = inst.fixedPitch;
@@ -130,12 +149,32 @@ void TrackHeaderComponent::bind (Track* trackToBind, bool isSelected, bool anySo
         instrumentBox.setVisible (track->type == TrackType::midi);
         if (track->type == TrackType::midi)
         {
-            int matched = 0; // 一致が無ければ先頭（Piano）を表示
+            // サンプル名が変わるので毎回組み直す（GM13項目＋割り当て済みサンプル）
+            instrumentBox.clear (juce::dontSendNotification);
             for (int i = 0; i < numGmInstruments; ++i)
-                if (gmInstruments[i].program == track->gmProgram && gmInstruments[i].drums == track->drums
-                    && gmInstruments[i].fixedPitch == track->drumPitch)
-                    { matched = i; break; }
-            instrumentBox.setSelectedId (matched + 1, juce::dontSendNotification);
+                instrumentBox.addItem (gmInstruments[i].name, i + 1);
+            if (track->sampleFile.isNotEmpty())
+            {
+                instrumentBox.addSeparator();
+                const auto label = track->sampleName.isNotEmpty()
+                                       ? track->sampleName
+                                       : juce::File (track->sampleFile).getFileNameWithoutExtension();
+                instrumentBox.addItem (label, sampleItemId);
+            }
+
+            if (track->instrument == InstrumentKind::sample && track->sampleFile.isNotEmpty())
+            {
+                instrumentBox.setSelectedId (sampleItemId, juce::dontSendNotification);
+            }
+            else
+            {
+                int matched = 0; // 一致が無ければ先頭（Piano）を表示
+                for (int i = 0; i < numGmInstruments; ++i)
+                    if (gmInstruments[i].program == track->gmProgram && gmInstruments[i].drums == track->drums
+                        && gmInstruments[i].fixedPitch == track->drumPitch)
+                        { matched = i; break; }
+                instrumentBox.setSelectedId (matched + 1, juce::dontSendNotification);
+            }
         }
     }
     repaint();
@@ -315,7 +354,7 @@ void TrackHeadersView::rebuild()
             header->onDeleteClicked = [this, i] { if (onDeleteRequested) onDeleteRequested (i); };
             header->onChanged = [this] { if (onChanged) onChanged(); };
             header->onWillChangeStructure = [this] { if (onWillChangeStructure) onWillChangeStructure(); };
-            header->onInstrumentChanged = [this] { if (onInstrumentChanged) onInstrumentChanged(); };
+            header->onInstrumentChanged = [this, i] { if (onInstrumentChanged) onInstrumentChanged (i); };
             header->canReorder = [this] { return canReorder == nullptr || canReorder(); };
             header->onReorderDrag = [this] (int y) { updateReorderIndicator (y); };
             header->onReorderDrop = [this, i] (int y) { finishReorder (i, y); };
@@ -408,12 +447,126 @@ void TrackHeadersView::finishReorder (int from, int containerY)
 
 void TrackHeadersView::paintOverChildren (juce::Graphics& g)
 {
+    // オーディオファイルのドロップ先（行全体のハイライト。クリップ配置の縦線とは意味が違う）
+    if (dropRow >= 0)
+    {
+        const int y = container.getY() + dropRow * TimelineView::trackHeight;
+        const auto row = juce::Rectangle<int> (0, y, getWidth(), TimelineView::trackHeight);
+        if (dropRejected)
+        {
+            g.setColour (juce::Colours::black.withAlpha (0.3f)); // 置けない（減光）
+            g.fillRect (row);
+        }
+        else
+        {
+            g.setColour (Theme::accent.withAlpha (0.16f));
+            g.fillRect (row);
+            g.setColour (Theme::accent);
+            g.drawRect (row.reduced (1), 2);
+        }
+    }
+
     if (reorderGap < 0)
         return;
     // 挿入位置インジケータ（ヘッダ境界の横線）。containerのスクロール位置を足してビュー座標へ
     const int y = container.getY() + reorderGap * TimelineView::trackHeight;
     g.setColour (Theme::accent);
     g.fillRect (0, juce::jlimit (0, getHeight() - 3, y - 1), getWidth(), 3);
+}
+
+// ---- オーディオファイルのD&D（MIDIトラックへのサンプル音源割り当て）----
+
+bool TrackHeadersView::hasAudioFile (const juce::StringArray& files)
+{
+    for (const auto& file : files)
+        if (AudioFileTypes::isSupported (file))
+            return true;
+    return false;
+}
+
+int TrackHeadersView::rowForDropY (int y) const
+{
+    if (project == nullptr)
+        return -1;
+    const int row = (y - container.getY()) / TimelineView::trackHeight;
+    return row >= 0 && row < (int) project->tracks.size() ? row : -1;
+}
+
+void TrackHeadersView::updateDropTarget (int y)
+{
+    const int row = rowForDropY (y);
+    const bool rejected = row >= 0 && project->tracks[(size_t) row].type != TrackType::midi;
+    if (row == dropRow && rejected == dropRejected)
+        return;
+    dropRow = row;
+    dropRejected = rejected;
+    repaint();
+}
+
+void TrackHeadersView::clearDropTarget()
+{
+    if (dropRow < 0)
+        return;
+    dropRow = -1;
+    dropRejected = false;
+    repaint();
+}
+
+void TrackHeadersView::completeAssignDrop (const juce::StringArray& files, int y)
+{
+    updateDropTarget (y);
+    const int row = dropRow;
+    const bool rejected = dropRejected;
+    clearDropTarget();
+    if (row < 0 || rejected || onAssignInstrumentDropped == nullptr)
+        return;
+
+    juce::StringArray audioFiles;
+    for (const auto& file : files)
+        if (AudioFileTypes::isSupported (file))
+            audioFiles.add (file);
+    if (! audioFiles.isEmpty())
+        onAssignInstrumentDropped (audioFiles, row);
+}
+
+bool TrackHeadersView::isInterestedInFileDrag (const juce::StringArray& files)
+{
+    return onAssignInstrumentDropped != nullptr && hasAudioFile (files);
+}
+
+void TrackHeadersView::fileDragEnter (const juce::StringArray&, int, int y) { updateDropTarget (y); }
+void TrackHeadersView::fileDragMove (const juce::StringArray&, int, int y) { updateDropTarget (y); }
+void TrackHeadersView::fileDragExit (const juce::StringArray&) { clearDropTarget(); }
+
+void TrackHeadersView::filesDropped (const juce::StringArray& files, int, int y)
+{
+    completeAssignDrop (files, y);
+}
+
+bool TrackHeadersView::isInterestedInDragSource (const SourceDetails& details)
+{
+    juce::StringArray files;
+    files.add (details.description.toString());
+    return isInterestedInFileDrag (files);
+}
+
+void TrackHeadersView::itemDragEnter (const SourceDetails& details)
+{
+    updateDropTarget (details.localPosition.y);
+}
+
+void TrackHeadersView::itemDragMove (const SourceDetails& details)
+{
+    updateDropTarget (details.localPosition.y);
+}
+
+void TrackHeadersView::itemDragExit (const SourceDetails&) { clearDropTarget(); }
+
+void TrackHeadersView::itemDropped (const SourceDetails& details)
+{
+    juce::StringArray files;
+    files.add (details.description.toString());
+    completeAssignDrop (files, details.localPosition.y);
 }
 
 void TrackHeadersView::mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& wheel)

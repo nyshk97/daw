@@ -45,7 +45,9 @@ AudioImporter::Status AudioImporter::decodeAndWrite()
     const int numChannels = reader->numChannels >= 2 ? 2 : 1; // 3ch以上は先頭2chのみ
     const auto inputFrames = (juce::int64) reader->lengthInSamples;
     const double sourceRate = reader->sampleRate;
-    const double targetRate = request.targetSampleRate;
+    // targetSampleRate <= 0 は「元のSRを保つ」。0のまま以降の計算へ流すと出力フレーム数も
+    // writerのSRも0になるため、ここで実効値へ畳んで下流すべてでこの値を使う
+    const double targetRate = request.targetSampleRate > 0.0 ? request.targetSampleRate : sourceRate;
     result.numChannels = numChannels;
     result.sourceSampleRate = sourceRate;
 

@@ -16,31 +16,42 @@ class UndoStack
 public:
     static constexpr int maxDepth = 100;
 
+    // 復元後に必要な同期の種類。呼び出し側（begin）が「これから行う編集」を宣言し、
+    // undo/redo がその種類を返す。
+    // - sampleValue: サンプル音源の値だけ（音量・ルート音・頭カット）。ノート・クリップ・トラック構成は
+    //   変わらないので**スナップショットの再pushが不要**＝発音中の音を切らずに戻せる
+    //   （再pushすると差し替え検出で全ノートオフ＋跨ぎノート再発音が走り、頭から鳴り直す）
+    // - structure: それ以外。音程モードの変更もこちら（停止要求＋resoundの経路が必要なため）
+    enum class EditKind { structure, sampleValue };
+
     // 編集操作の直前に呼ぶ。redo履歴は破棄される
-    void begin (const Project& project)
+    void begin (const Project& project, EditKind kind = EditKind::structure)
     {
-        undoStates.push_back ({ project.tracks, project.markers });
+        undoStates.push_back ({ project.tracks, project.markers, kind });
         if ((int) undoStates.size() > maxDepth)
             undoStates.erase (undoStates.begin());
         redoStates.clear();
     }
 
-    bool undo (Project& project)
+    // kind には「復元した編集の種類」が入る（往復で同じ値。呼び出し側の同期範囲の判断に使う）
+    bool undo (Project& project, EditKind& kind)
     {
         if (undoStates.empty())
             return false;
-        redoStates.push_back ({ std::move (project.tracks), std::move (project.markers) });
+        kind = undoStates.back().kind;
+        redoStates.push_back ({ std::move (project.tracks), std::move (project.markers), kind });
         project.tracks = std::move (undoStates.back().tracks);
         project.markers = std::move (undoStates.back().markers);
         undoStates.pop_back();
         return true;
     }
 
-    bool redo (Project& project)
+    bool redo (Project& project, EditKind& kind)
     {
         if (redoStates.empty())
             return false;
-        undoStates.push_back ({ std::move (project.tracks), std::move (project.markers) });
+        kind = redoStates.back().kind;
+        undoStates.push_back ({ std::move (project.tracks), std::move (project.markers), kind });
         project.tracks = std::move (redoStates.back().tracks);
         project.markers = std::move (redoStates.back().markers);
         redoStates.pop_back();
@@ -50,16 +61,20 @@ public:
     bool canUndo() const { return ! undoStates.empty(); }
     bool canRedo() const { return ! redoStates.empty(); }
 
-    // undo/redo履歴が参照する録音WAVのファイル名。
-    // 保存時のGCから保護する（redoでクリップを復元したときにWAVが消えている事故を防ぐ）
+    // undo/redo履歴が参照するWAV（録音・取り込みクリップ＋サンプル音源）のファイル名。
+    // 保存時のGCから保護する（undo/redoで復元したときにWAVが消えている事故を防ぐ）
     juce::StringArray referencedWavs() const
     {
         juce::StringArray files;
         for (const auto* states : { &undoStates, &redoStates })
             for (const auto& state : *states)
                 for (const auto& track : state.tracks)
+                {
                     for (const auto& clip : track.clips)
                         files.addIfNotAlreadyThere (clip.fileName);
+                    if (track.sampleFile.isNotEmpty())
+                        files.addIfNotAlreadyThere (track.sampleFile);
+                }
         return files;
     }
 
@@ -68,6 +83,7 @@ private:
     {
         std::vector<Track> tracks;
         std::vector<SectionMarker> markers;
+        EditKind kind = EditKind::structure;
     };
     std::vector<State> undoStates, redoStates;
 };
