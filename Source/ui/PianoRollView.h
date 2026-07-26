@@ -36,6 +36,11 @@ public:
     // モデル変更（undo・リージョン削除等）後に呼ぶ。対象が消えていたら onCloseRequested を呼ぶ
     void refreshFromModel();
 
+    // openRegion で決めたスクロール先を、確定した高さで適用する。
+    // 閉じている間はboundsが更新されない（MainComponent::resized はピアノロールが開いているときだけ
+    // setBoundsする）ので、openRegion 時点の高さは古い可能性がある。呼び出し側はレイアウト後に呼ぶ
+    void applyPendingScroll();
+
     // ---- キーボード操作（MainComponentから委譲される。処理したらtrue）----
     bool deleteSelectedNotes();               // Delete
     bool transposeSelection (int semitones);  // ↑↓=±1・⌥↑↓=±12（Logic準拠）
@@ -121,6 +126,7 @@ private:
 
     juce::int64 lastPaintedPlayhead = -1;
     int lastForcedPitch = -1; // 固定ピッチの変化検出（音源変更・ルート音変更でその行へスクロールする）
+    int pendingScrollPitch = -1; // レイアウト未確定で開いたときの目標ピッチ（resized()で適用）
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PianoRollView)
 };

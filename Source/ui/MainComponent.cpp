@@ -1108,7 +1108,8 @@ void MainComponent::openPianoRoll (int trackIndex, int regionIndex)
     }
     closeFxDetail(); // 下部スロットはFX詳細と排他（後勝ち）
     pianoRoll.openRegion (track.id, region.id);
-    resized();
+    resized();                      // ここで初めてピアノロールにboundsが付く（閉じている間は更新されない）
+    pianoRoll.applyPendingScroll(); // 確定した高さでスクロール位置を決める
 }
 
 void MainComponent::closePianoRoll()

@@ -348,18 +348,20 @@ void PianoRollView::openRegion (juce::uint64 trackId, juce::uint64 regionId)
 
     auto* track = findTrack();
     auto* region = findRegion();
+    updateContentSize(); // スクロールより先にグリッド高さを確定させる（0だとViewportに位置を潰される）
     if (track != nullptr && region != nullptr)
     {
         titleLabel.setText (track->name + " — " + jp (u8"小節 ")
                                 + juce::String (region->startPpq / Ppq::ticksPerBar + 1),
                             juce::dontSendNotification);
-        // 最初のノート（無ければ固定ピッチ or C3=60）が見える位置へスクロール
-        scrollToPitch (! region->notes.empty() ? region->notes.front().pitch
-                       : forcedPitch() >= 0    ? forcedPitch()
-                                               : 60);
+        // 最初のノート（無ければ固定ピッチ or C3=60）が見える位置へスクロール。
+        // ここでは決めるだけで、実際のスクロールはレイアウト確定後（resized / applyPendingScroll）。
+        // 閉じている間はsetBoundsされないため、この時点の高さは0または前回の古い値になる
+        pendingScrollPitch = ! region->notes.empty() ? region->notes.front().pitch
+                             : forcedPitch() >= 0    ? forcedPitch()
+                                                     : 60;
     }
     lastForcedPitch = forcedPitch(); // 開いた時点を基準にする（直後の不要なスクロールを防ぐ）
-    updateContentSize();
     grid->repaint();
 }
 
@@ -369,6 +371,7 @@ void PianoRollView::close()
     setVisible (false);
     selectedIds.clear();
     noteDrag = {};
+    pendingScrollPitch = -1;
 }
 
 void PianoRollView::refreshFromModel()
@@ -913,6 +916,17 @@ void PianoRollView::resized()
     keyboard->setBounds (0, -viewport->getViewPositionY(), keyboardWidth, 128 * rowHeight);
     viewport->setBounds (body);
     updateContentSize();
+    applyPendingScroll(); // 開くのと同時にサイズが変わったときはここで確定する
+}
+
+// 保留中のスクロールを今の高さで適用する。boundsが変わらず resized() が呼ばれない
+// 開き直しに備えて、MainComponent がレイアウト後にも明示的に呼ぶ（二重に呼んでも無害）
+void PianoRollView::applyPendingScroll()
+{
+    if (pendingScrollPitch < 0 || viewport->getHeight() <= 0)
+        return;
+    scrollToPitch (pendingScrollPitch);
+    pendingScrollPitch = -1;
 }
 
 void PianoRollView::paint (juce::Graphics& g)
