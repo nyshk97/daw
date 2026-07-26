@@ -272,8 +272,10 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
                 for (int ch = 0; ch < 2; ++ch)
                 {
                     const float* src = clip.audio->getReadPointer (stereo ? ch : 0, srcOffset);
-                    const float gain = track.gain * (stereo ? (ch == 0 ? balL : balR)
-                                                            : (ch == 0 ? panL : panR));
+                    // リージョンゲインはトラックゲインの手前（RTのprocessと同じ順序）。
+                    // ユニティ(1.0f)なら track.gain と厳密に同値＝既存の書き出しは変わらない
+                    const float gain = track.gain * clip.gain * (stereo ? (ch == 0 ? balL : balR)
+                                                                       : (ch == 0 ? panL : panR));
                     mix.addFrom (ch, destOffset, src, count, gain);
                     for (int b = 0; b < numSendBuses; ++b)
                         if (track.sends[b] > 0.0f)

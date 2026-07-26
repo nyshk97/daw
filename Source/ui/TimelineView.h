@@ -68,6 +68,10 @@ public:
     std::function<void (int, int)> onOpenRegion;     // リージョンをダブルクリック（track, region）
     std::function<void (int, int)> onDeleteItemRequested; // 右クリックメニューの削除（track, クリップorリージョンindex）
     std::function<void (int, int)> onExportItemRequested; // 右クリックメニューの書き出し（同上）
+    // リージョンゲイン専用の編集通知。通常の onModelEdited（pushSnapshot）を使うとMIDIが
+    // 消音＋再発音されてしまうため、経路を分けている（MainComponent::pushAudioValueSnapshot へ繋ぐ）
+    std::function<void()> onWillEditClipGain; // ドラッグ開始・リセット直前（undoは1操作=1件）
+    std::function<void()> onClipGainEdited;   // 値の変更ごと（ドラッグ中も呼ばれる）
     // 構造編集を受け付けてよいか（録音中は不可）。TimelineViewはPlaybackEngineを知らず
     // TransportState::recordArmed は録音待機であって録音中と別物なので、MainComponentから渡してもらう。
     // 未設定なら常に編集可（TrackHeadersView::canReorder と同じ形）
@@ -90,6 +94,9 @@ public:
     // 外部（⌘Vのペースト等）がモデルへ追加したアイテムを選択する。isMidi = midiRegions か clips か
     void selectItem (int trackIndex, int itemIndex, bool isMidi);
     void clearLoopAt (int trackIndex, int itemIndex);      // 右クリックメニューの「ループ解除」
+    // リージョンゲインの吹き出しを閉じる。表示中はモーダルなのでユーザー操作でクリップは動かないが、
+    // 録音の終了ではクリップが増えて保持中のindexが失効するため、録音開始時に閉じてもらう
+    void dismissGainCallout();
 
     // ループハンドルの矩形（描画とヒットテストで同じものを使う）。itemX/itemRight はループ終端まで
     // 含めたアイテムの左右端、laneY はそのトラック行の上端（いずれもコンテンツ座標）
@@ -148,6 +155,8 @@ private:
     int hitTestRegion (int trackIndex, int x) const; // 見つからなければ-1（重なりは後勝ち）
     int hitTestClip (int trackIndex, int x) const;   // 同上（オーディオトラック用）
     void showItemMenu (int trackIndex, int itemIndex); // 右クリックメニュー（ミュート/複製/削除）
+    void showClipGainCallout (int trackIndex, int itemIndex); // メニューの「ゲイン…」→ 吹き出し
+    void applyClipGain (int trackIndex, int itemIndex, float gain); // 値の適用（index範囲を再検証する）
 
     // サイクル範囲（ルーラーの操作。クリック=シークは維持し、ドラッグだけが範囲を作る）
     int sixteenthToX (int sixteenths) const;
@@ -245,6 +254,9 @@ private:
 
     std::unique_ptr<RulerContent> ruler;
     std::unique_ptr<MarkerLaneContent> markerLane;
+    // リージョンゲインの吹き出し（非同期に閉じられるので SafePointer で追う）
+    juce::Component::SafePointer<juce::CallOutBox> gainCallout;
+
     std::unique_ptr<LaneViewport> viewport;
     std::unique_ptr<LaneContent> lanes;
 

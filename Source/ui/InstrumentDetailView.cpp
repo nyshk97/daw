@@ -277,14 +277,27 @@ InstrumentDetailView::InstrumentDetailView()
     gainSlider.getProperties().set ("centerFill", true);      // 0dB起点で左右に伸びる帯（Panノブと同じ読み方）
     gainSlider.setWantsKeyboardFocus (false);
     gainSlider.setMouseClickGrabsKeyboardFocus (false);
-    // undoの粒度: ドラッグ開始で1回積み、値変更ごとには積まない（確定はドラッグ終了時）
-    gainSlider.onDragStart = [this] { if (onWillEdit) onWillEdit (true); };
+    // undoの粒度: 1操作（＝1クリック列）で1件だけ積む。値が実際に動いた最初の瞬間に積み、
+    // 区切りは「新しいクリック列の始まり」で入れる（GainSlider::onNewClickSequence）。
+    // onDragStart を区切りにしてはいけない: JUCEのSliderは mouseDown ごとに
+    // ScopedDragNotification を作り（juce_Slider.cpp:900）、ダブルクリック確定時にも別の通知を
+    // 出す（同:1121）ため、つまみ以外をダブルクリックすると「クリック位置へのジャンプ」と
+    // 「0dBリセット」が別々のundoになり、最初の⌘Zが中間値へ戻ってしまう
+    gainSlider.onNewClickSequence = [this] { gainEditBegun = false; };
     gainSlider.onValueChange = [this]
     {
+        if (! gainEditBegun)
+        {
+            gainEditBegun = true;
+            if (onWillEdit)
+                onWillEdit (true);
+        }
         if (track != nullptr)
             track->sampleGain = GainScale::toLinear (gainSlider.getValue());
         gainValueLabel.setDb (gainSlider.getValue()); // ドラッグ中も常設表示を追従させる
     };
+    // 確定通知だけ行う（gainEditBegun はここでリセットしない: ダブルクリックの2回目の
+    // mouseDown より前に onDragEnd が挟まるため、リセットするとundoが2件に割れる）
     gainSlider.onDragEnd = [this] { if (onValueEdited) onValueEdited(); };
 
     // 現在値の常設表示。リセット専用ボタンを増やさず、この表示自体が「0 dBに戻す」を兼ねる
@@ -294,10 +307,10 @@ InstrumentDetailView::InstrumentDetailView()
     {
         if (track == nullptr || ! track->usesSampler() || gainSlider.getValue() == 0.0)
             return;
-        // undo・確定通知の粒度はドラッグと揃える（ダブルクリックはJUCE側がドラッグ通知で包むので同じ経路になる）
-        if (onWillEdit)
-            onWillEdit (true);
+        // undoは onValueChange 側で1件だけ積まれる（ここで onWillEdit も呼ぶと二重になる）
+        gainEditBegun = false;
         gainSlider.setValue (0.0, juce::sendNotificationSync); // onValueChange経由でモデルと表示が揃う
+        gainEditBegun = false;
         if (onValueEdited)
             onValueEdited();
     };
@@ -312,61 +325,6 @@ InstrumentDetailView::InstrumentDetailView()
 }
 
 InstrumentDetailView::~InstrumentDetailView() = default;
-
-double InstrumentDetailView::GainSlider::snapValue (double attemptedValue, DragMode dragMode)
-{
-    return GainScale::snapDb (attemptedValue, dragMode != notDragging);
-}
-
-// ---- GAINの現在値表示（クリックで0 dBに戻す）---------------------------------
-
-InstrumentDetailView::GainValueLabel::GainValueLabel()
-{
-    setTooltip (jp (u8"クリックで 0 dB に戻す"));
-    setMouseCursor (juce::MouseCursor::PointingHandCursor);
-    setWantsKeyboardFocus (false);
-}
-
-void InstrumentDetailView::GainValueLabel::setDb (double db)
-{
-    if (std::abs (db - valueDb) < 1.0e-9)
-        return;
-    valueDb = db;
-    repaint();
-}
-
-void InstrumentDetailView::GainValueLabel::mouseDown (const juce::MouseEvent&)
-{
-    if (isEnabled() && onReset != nullptr)
-        onReset();
-}
-
-void InstrumentDetailView::GainValueLabel::paint (juce::Graphics& g)
-{
-    const bool atDefault = std::abs (valueDb) < 0.05;
-    const bool active = isEnabled();
-
-    if (hovered && active) // 押せることはホバーで示す（常設の枠は置かない）
-    {
-        const auto area = getLocalBounds().toFloat().reduced (0.5f);
-        g.setColour (juce::Colours::white.withAlpha (0.07f));
-        g.fillRoundedRectangle (area, 4.0f);
-        g.setColour (juce::Colours::white.withAlpha (0.13f));
-        g.drawRoundedRectangle (area, 4.0f, 1.0f);
-    }
-
-    // 0dB（既定）のときは他の見出しと同じ静かさ、外れているときだけ明るくする
-    auto colour = atDefault ? Theme::lcdLabel : juce::Colours::white.withAlpha (0.85f);
-    if (! active)
-        colour = colour.withMultipliedAlpha (0.4f);
-    else if (hovered)
-        colour = juce::Colours::white;
-
-    g.setColour (colour);
-    g.setFont (Fonts::small());
-    g.drawText (GainScale::text (valueDb), getLocalBounds().reduced (5, 0),
-                juce::Justification::centredRight);
-}
 
 void InstrumentDetailView::setTrack (Track* trackToShow)
 {

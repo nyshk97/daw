@@ -348,6 +348,23 @@ juce::FileOutputStream out (file); juce::PNGImageFormat().writeImageToStream (im
 - キーボードフォーカス依存の見た目（`hasKeyboardFocus`）はこの方法では再現できない。実機で確認する
 - 確認後は一時コードを削除し、`git diff Tests/TestsMain.cpp` が空になることを確認する
 
+**ビュー丸ごと（タイムライン等）を撮るときは `paintEntireComponent`**: `TimelineView` のようにViewport＋子コンポーネントで組まれた画面は、`paint()` を呼んでも中身（レーン・クリップ）が描かれない。`view.setBounds(...)` → `view.refresh()` → `view.paintEntireComponent (g, false)` で子まで含めて描ける。プロジェクトを開く操作（合成ダブルクリック）が要らないので、ユーザーが別アプリで作業中でもクリップ描画の検証ができる（リージョンゲインの波形スケール・dBバッジの確認に使用）。
+
+```cpp
+// daw_tests に TimelineView を含める必要がある（CMakeLists.txt の daw_tests ソース一覧へ
+// Source/ui/TimelineView.cpp を一時追加 → 確認後に戻す）
+TransportState transport; transport.sampleRate.store (48000.0);
+Project project;  /* Clip を組んで clip.buildPeakCache() を忘れない（波形が出ない） */
+TimelineView view (transport);
+view.setProject (&project);
+view.setBounds (0, 0, 900, 3 * TimelineView::trackHeight + TimelineView::topHeight);
+view.selectItem (1, 0, false);   // 選択時のみ出る装飾（ループハンドル等）も撮れる
+view.refresh();
+view.paintEntireComponent (g, false);
+```
+
+- 出力先は環境変数で受けて `if (getenv("...") != nullptr) { render(); return 0; }` と main の先頭で分岐させると、通常のテスト実行を汚さずに撮れる
+
 ## サンプルレート自動追従の確認（CLI）
 
 プロジェクトを開くとデバイスSRがプロジェクトSRへ自動で合わせられる（`audio.device.rate_change` がログに出る）。

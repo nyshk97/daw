@@ -18,6 +18,7 @@
 #include "shared/GainScale.h"
 #include "ui/AppLookAndFeel.h"
 #include "ui/BottomPanelHistory.h"
+#include "ui/GainControls.h"
 #include "ui/FileSortOrder.h"
 #include "ui/PreviewPolicy.h"
 #include "ui/ProjectThumbnails.h"
@@ -903,6 +904,152 @@ void testLoopRoundtrip()
     dir.deleteRecursively();
 }
 
+// リージョンゲインの保存・読み込み。ユニティのときは gain を書かないので、
+// 出来上がるJSONはv9以前と同じ形になる（＝旧形式を読んでもユニティで復元される）
+void testClipGainRoundtrip()
+{
+    beginTest ("clip gain roundtrip, clamp and legacy default");
+    const auto dir = makeTempDir();
+
+    juce::String error;
+    auto project = Project::createNew (dir.getChildFile ("proj"), error);
+    expect (project != nullptr, "createNewできること");
+    if (project == nullptr)
+        { dir.deleteRecursively(); return; }
+
+    const auto wavFile = project->directory.getChildFile ("clip-001.wav");
+    expect (writeTestWav (wavFile, 4410), "テストWAVを書けること");
+    Clip clip;
+    clip.fileName = "clip-001.wav";
+    clip.audio = Project::loadWav (wavFile);
+    clip.lengthSamples = clip.audio != nullptr ? clip.audio->getNumSamples() : 0;
+    clip.gain = GainScale::toLinear (-4.0);
+    project->tracks[0].clips.push_back (std::move (clip));
+
+    expect (project->save (error), "保存できること");
+    const auto jsonFile = project->directory.getChildFile ("project.json");
+    // "gain" はトラック音量の保存キーにもあるため、clips要素のプロパティ有無で判定する
+    const auto clipHasGainKey = [&jsonFile]
+    {
+        const auto parsed = juce::JSON::parse (jsonFile.loadFileAsString());
+        if (auto* tracks = parsed.getProperty ("tracks", {}).getArray())
+            if (! tracks->isEmpty())
+                if (auto* clips = (*tracks)[0].getProperty ("clips", {}).getArray())
+                    if (! clips->isEmpty())
+                        return (*clips)[0].hasProperty ("gain");
+        return false;
+    };
+    expect (clipHasGainKey(), "ユニティ以外はJSONに書かれること");
+
+    juce::StringArray warnings;
+    auto reloaded = Project::load (project->directory, warnings, error);
+    expect (reloaded != nullptr, "再読込できること");
+    if (reloaded == nullptr)
+        { dir.deleteRecursively(); return; }
+    expect (reloaded->tracks[0].clips.size() == 1
+                && std::abs (GainScale::toDb (reloaded->tracks[0].clips[0].gain) + 4.0) < 0.01,
+            "クリップのゲインが復元されること");
+
+    // ユニティに戻すと gain 自体がJSONから消える = v9以前と同じ形。それを読めばユニティ
+    reloaded->tracks[0].clips[0].gain = 1.0f;
+    expect (reloaded->save (error), "ユニティで保存できること");
+    expect (! clipHasGainKey(), "ユニティはJSONに書かれないこと（旧形式と同じ形）");
+
+    auto legacy = Project::load (project->directory, warnings, error);
+    expect (legacy != nullptr, "旧形式相当のJSONを読めること");
+    if (legacy != nullptr)
+        expect (legacy->tracks[0].clips[0].gain == 1.0f, "欠損時はユニティ");
+
+    // 範囲外の値は読み込んだ時点でクランプする（表示は-12dBなのに-20dBで鳴る、を防ぐ）
+    {
+        const auto outOfRange = makeTempDir();
+        expect (writeTestWav (outOfRange.getChildFile ("clip-001.wav"), 4410), "テストWAVを書けること");
+        const char* json = R"({
+            "version": 10, "bpm": 120.0, "sampleRate": 44100.0, "nextId": 2,
+            "tracks": [
+                { "id": 1, "type": "audio", "name": "X",
+                  "clips": [
+                    { "file": "clip-001.wav", "startSample": 0, "gain": 99.0 },
+                    { "file": "clip-001.wav", "startSample": 0, "gain": 0.0 }
+                  ] }
+            ]
+        })";
+        outOfRange.getChildFile ("project.json").replaceWithText (json);
+        auto clamped = Project::load (outOfRange, warnings, error);
+        expect (clamped != nullptr && clamped->tracks[0].clips.size() == 2, "読込めること");
+        if (clamped != nullptr && clamped->tracks[0].clips.size() == 2)
+        {
+            expect (clamped->tracks[0].clips[0].gain == GainScale::maxLinear(), "過大値は+12dBへ");
+            expect (clamped->tracks[0].clips[1].gain == GainScale::minLinear(), "0（無音）は-12dBへ");
+        }
+        outOfRange.deleteRecursively();
+    }
+
+    dir.deleteRecursively();
+}
+
+// ---- リージョンゲインがスナップショットへ載ること（ループ展開の各反復にも同じ値） ----
+void testClipGainSnapshot()
+{
+    beginTest ("clip gain in snapshot");
+
+    Project project;
+    Track track;
+    track.id = 1;
+    Clip clip;
+    clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, 1000);
+    clip.audio->clear();
+    clip.lengthSamples = 500;
+    clip.loopCount = 2; // 本体＋2反復 = 3実体
+    clip.gain = GainScale::toLinear (-6.0);
+    track.clips.push_back (std::move (clip));
+    project.tracks.push_back (std::move (track));
+
+    auto snapshot = project.buildSnapshot();
+    expect (snapshot != nullptr && snapshot->tracks.size() == 1, "スナップショットが作れること");
+    if (snapshot == nullptr || snapshot->tracks.empty())
+        return;
+    const auto& clips = snapshot->tracks[0].clips;
+    expect (clips.size() == 3, "ループ分が展開されること");
+    for (size_t i = 0; i < clips.size(); ++i)
+        expect (std::abs (clips[i].gain - GainScale::toLinear (-6.0)) < 1.0e-6f,
+                "展開された各実体に同じゲインが載ること");
+}
+
+
+// ---- GAINスライダーはホイールで値が変わらない ----
+// undoの区切り（GainSlider::onNewClickSequence）は mouseDown 基準なので、mouseDown を伴わない
+// ホイール操作を許すと「ドラッグ後にホイールで微調整すると⌘Zがドラッグ前まで戻る」不整合が出る。
+// 経路を1本に絞ってあることをここで固定する（誰かが setScrollWheelEnabled を消したら落ちる）
+void testGainSliderIgnoresScrollWheel()
+{
+    beginTest ("gain slider ignores scroll wheel");
+
+    GainSlider slider;
+    slider.setRange (-GainScale::rangeDb, GainScale::rangeDb, 0.1);
+    slider.setValue (-3.0, juce::dontSendNotification);
+    slider.setBounds (0, 0, 200, 20);
+
+    int valueChanges = 0;
+    slider.onValueChange = [&valueChanges] { ++valueChanges; };
+
+    const auto& source = juce::Desktop::getInstance().getMainMouseSource();
+    const juce::MouseEvent event (source, { 100.0f, 10.0f }, juce::ModifierKeys(),
+                                  juce::MouseInputSource::defaultPressure,
+                                  juce::MouseInputSource::defaultOrientation,
+                                  juce::MouseInputSource::defaultRotation,
+                                  juce::MouseInputSource::defaultTiltX,
+                                  juce::MouseInputSource::defaultTiltY,
+                                  &slider, &slider, juce::Time::getCurrentTime(),
+                                  { 100.0f, 10.0f }, juce::Time::getCurrentTime(), 1, false);
+    juce::MouseWheelDetails wheel {};
+    wheel.deltaY = 1.0f;
+
+    slider.mouseWheelMove (event, wheel);
+    expect (std::abs (slider.getValue() + 3.0) < 1.0e-9, "ホイールで値が変わらないこと");
+    expect (valueChanges == 0, "onValueChangeも発火しないこと（undoが積まれない）");
+}
+
 // ---- 不正なJSONへの防御 ----
 void testInvalidJson()
 {
@@ -1531,6 +1678,33 @@ void testUndoStack()
         sampleProject.tracks.clear();
         expect (kinds.undo (sampleProject, kind) && kind == UndoStack::EditKind::structure,
                 "構造編集の種別は structure になること");
+    }
+
+    // クリップ値（リージョンゲイン）の種別。復元時に「MIDI世代を据え置くpush」を選ぶための区別
+    {
+        Project clipProject;
+        Track audioTrack;
+        audioTrack.id = 1;
+        Clip clip;
+        clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, 100);
+        clip.lengthSamples = 100;
+        clip.gain = 1.0f;
+        audioTrack.clips.push_back (std::move (clip));
+        clipProject.tracks.push_back (std::move (audioTrack));
+
+        UndoStack kinds;
+        kinds.begin (clipProject, UndoStack::EditKind::clipValue);
+        clipProject.tracks[0].clips[0].gain = 2.0f;
+
+        auto kind = UndoStack::EditKind::structure;
+        expect (kinds.undo (clipProject, kind) && kind == UndoStack::EditKind::clipValue,
+                "クリップ値編集の種別がundoで返ること");
+        expect (std::abs (clipProject.tracks[0].clips[0].gain - 1.0f) < 1.0e-6f, "ゲインが戻ること");
+
+        kind = UndoStack::EditKind::structure;
+        expect (kinds.redo (clipProject, kind) && kind == UndoStack::EditKind::clipValue,
+                "redoでも同じ種別が返ること");
+        expect (std::abs (clipProject.tracks[0].clips[0].gain - 2.0f) < 1.0e-6f, "redoでゲインが進むこと");
     }
 }
 
@@ -2176,6 +2350,152 @@ void testSnapshotSwapDuringPlayback()
     engine.stop();
     processBlocks (10);
     snapshots.deleteRetired();
+}
+
+// ---- オーディオ値のみの差し替え（Project::SnapshotChange::audioValuesOnly）----
+// リージョンゲインをドラッグ中に音へ反映させるための経路。MIDIの構成世代を据え置くので、
+// エンジンの「消音＋跨ぎノート再発音」が走らない＝鳴っているMIDIを乱さない
+void testAudioValuesOnlySnapshot()
+{
+    beginTest ("audio-only snapshot swap");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+
+    // ---- オーディオ: 世代を据え置いてもクリップゲインの変更が音に反映されること ----
+    {
+        TransportState transport;
+        SnapshotExchange snapshots;
+        PreviewFifo previewFifo;
+        PlaybackEngine engine (transport, snapshots, previewFifo);
+        engine.prepareToPlay (blockSize, sr);
+
+        Project project;
+        Track track;
+        track.id = 1;
+        track.params->gain.store (1.0f);
+        Clip clip;
+        clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, blockSize * 4);
+        for (int i = 0; i < clip.audio->getNumSamples(); ++i)
+            clip.audio->setSample (0, i, 0.4f);
+        clip.lengthSamples = blockSize * 4;
+        track.clips.push_back (std::move (clip));
+        project.tracks.push_back (std::move (track));
+        snapshots.push (project.buildSnapshot());
+
+        juce::AudioBuffer<float> buffer (2, blockSize);
+        const auto measure = [&]
+        {
+            transport.seekRequest.store (0);
+            engine.play();
+            buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+            engine.process (info);
+            const auto magnitude = buffer.getMagnitude (0, 0, blockSize);
+            engine.stop();
+            buffer.clear();
+            engine.process (info);
+            return magnitude;
+        };
+
+        expect (std::abs (measure() - 0.4f) < 0.001f, "ユニティでは素通し");
+
+        project.tracks[0].clips[0].gain = 0.5f;
+        snapshots.deleteRetired();
+        snapshots.push (project.buildSnapshot (Project::SnapshotChange::audioValuesOnly));
+        expect (std::abs (measure() - 0.2f) < 0.001f, "世代据え置きでもクリップゲインが音に反映されること");
+
+        snapshots.deleteRetired();
+    }
+
+    // ---- MIDI: 世代据え置きでは消音＋再発音が走らないこと（＋通常pushでは走ること） ----
+    {
+        TransportState transport;
+        SnapshotExchange snapshots;
+        PreviewFifo previewFifo;
+        PlaybackEngine engine (transport, snapshots, previewFifo);
+        engine.prepareToPlay (blockSize, sr);
+
+        Project project;
+        Track track;
+        track.id = 30;
+        track.type = TrackType::midi;
+        track.gmProgram = 48; // Strings（持続音）
+        MidiRegion region;
+        region.id = 31;
+        region.startPpq = 0;
+        region.lengthPpq = Ppq::ticksPerBar * 16;
+        region.notes.push_back ({ 32, 60, 0, Ppq::ticksPerBar * 16, 100 });
+        track.midiRegions.push_back (region);
+        project.tracks.push_back (std::move (track));
+
+        SynthBank bank;
+        bank.sync (project, sr, blockSize);
+        auto synth = bank.get (30);
+        expect (synth != nullptr, "synth取得");
+        const auto countActive = [&synth] (int pitch)
+        {
+            int count = 0;
+            if (synth != nullptr)
+                for (int i = 0; i < synth->numActiveNotes; ++i)
+                    if (synth->activeNotes[i].pitch == pitch)
+                        ++count;
+            return count;
+        };
+        const auto push = [&] (Project::SnapshotChange change)
+        {
+            snapshots.deleteRetired();
+            auto snapshot = project.buildSnapshot (change);
+            snapshot->tracks[0].synth = bank.get (30);
+            snapshots.push (std::move (snapshot));
+        };
+        juce::AudioBuffer<float> buffer (2, blockSize);
+        const auto processBlocks = [&] (int count)
+        {
+            for (int i = 0; i < count; ++i)
+            {
+                buffer.clear();
+                juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+                engine.process (info);
+            }
+        };
+
+        push (Project::SnapshotChange::midiStructure);
+        engine.play();
+        processBlocks (20);
+        expect (countActive (60) == 1, "ロングノートが発音中であること");
+
+        // ノートを消したスナップショットを audioValuesOnly で渡す＝消音がスキップされる。
+        // 「MIDI構成を変えていない」という契約を破ると鳴りっぱなしになる、という裏付けでもある
+        project.tracks[0].midiRegions[0].notes.clear();
+        push (Project::SnapshotChange::audioValuesOnly);
+        processBlocks (5);
+        expect (countActive (60) == 1, "世代据え置きでは消音＋再発音が走らないこと");
+
+        // 同じ状態を通常pushで渡すと、従来どおり安全機構（消音）が働く
+        push (Project::SnapshotChange::midiStructure);
+        processBlocks (5);
+        expect (countActive (60) == 0, "通常pushでは消音されること（鳴りっぱなし防止は健在）");
+
+        // ⌘Bのバウンス用構築（offlineRender）はエンジンへ渡さないので世代に触らない。
+        // ここで進んでしまうと「バウンス → リージョンゲイン調整」の順で鳴っているMIDIが鳴り直す
+        project.tracks[0].midiRegions[0].notes.push_back ({ 33, 60, 0, Ppq::ticksPerBar * 16, 100 });
+        push (Project::SnapshotChange::midiStructure);
+        processBlocks (10);
+        expect (countActive (60) == 1, "ノートを戻して再発音されること");
+
+        auto discarded = project.buildSnapshot (Project::SnapshotChange::offlineRender); // ⌘B相当
+        discarded.reset();
+        project.tracks[0].midiRegions[0].notes.clear(); // 消音が走ったかを見るための細工
+        push (Project::SnapshotChange::audioValuesOnly);
+        processBlocks (5);
+        expect (countActive (60) == 1,
+                "バウンス用の構築を挟んでも据え置きが効くこと（世代を進めていない）");
+
+        engine.stop();
+        processBlocks (10);
+        snapshots.deleteRetired();
+    }
 }
 
 // ---- イベント上限超過: 捨てたノートの終端で同ピッチの別ノートを誤って止めない ----
@@ -4479,6 +4799,123 @@ void testEngineStereoPan()
     snapshots.deleteRetired();
 }
 
+// ---- リージョンゲインが再生に効くこと（モノ経路・ステレオ経路・重なりクリップ個別） ----
+// トラックゲインでは再現できない「1トラック内のクリップ単位の差」を検証する
+void testEngineClipGain()
+{
+    beginTest ("engine applies per-clip gain");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+
+    TransportState transport;
+    SnapshotExchange snapshots;
+    PreviewFifo previewFifo;
+    PlaybackEngine engine (transport, snapshots, previewFifo);
+    engine.prepareToPlay (blockSize, sr);
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    const auto measure = [&] (float& left, float& right)
+    {
+        transport.seekRequest.store (0);
+        engine.play();
+        buffer.clear();
+        juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+        engine.process (info);
+        left = buffer.getMagnitude (0, 0, blockSize);
+        right = buffer.getMagnitude (1, 0, blockSize);
+        engine.stop();
+        buffer.clear();
+        engine.process (info); // 停止エッジの消化
+    };
+    const auto makeConst = [] (int channels, float value)
+    {
+        auto audio = std::make_shared<juce::AudioBuffer<float>> (channels, blockSize * 2);
+        for (int ch = 0; ch < channels; ++ch)
+            for (int i = 0; i < audio->getNumSamples(); ++i)
+                audio->setSample (ch, i, value);
+        return audio;
+    };
+
+    float left = 0.0f, right = 0.0f;
+
+    // ---- モノ経路: -6.02dB（0.5倍）のクリップは振幅が半分になる ----
+    {
+        Project project;
+        Track track;
+        track.id = 1;
+        track.params->gain.store (1.0f);
+        Clip clip;
+        clip.audio = makeConst (1, 0.4f);
+        clip.lengthSamples = blockSize * 2;
+        clip.gain = 0.5f;
+        track.clips.push_back (std::move (clip));
+        project.tracks.push_back (std::move (track));
+        // acquire() は retired が空のときだけ pending を取り込む（PlaybackSnapshot.h）。
+        // このテストは3構成を続けて差し替えるので、毎回メッセージスレッド側の掃除を挟む
+        snapshots.deleteRetired();
+        snapshots.push (project.buildSnapshot());
+
+        measure (left, right);
+        // モノは等パワー・センター補正型で、panセンターでは両ch 1.0倍（Pan::monoGains）
+        expect (std::abs (left - 0.4f * 0.5f) < 0.001f, "モノ経路: L がクリップゲイン分だけ下がること");
+        expect (std::abs (right - 0.4f * 0.5f) < 0.001f, "モノ経路: R も同じだけ下がること");
+    }
+
+    // ---- ステレオ経路: L/Rの比を保ったままスケールされる ----
+    {
+        Project project;
+        Track track;
+        track.id = 1;
+        track.params->gain.store (1.0f);
+        Clip clip;
+        clip.audio = std::make_shared<juce::AudioBuffer<float>> (2, blockSize * 2);
+        for (int i = 0; i < clip.audio->getNumSamples(); ++i)
+        {
+            clip.audio->setSample (0, i, 0.4f);
+            clip.audio->setSample (1, i, 0.2f); // L:R = 2:1
+        }
+        clip.lengthSamples = blockSize * 2;
+        clip.gain = 0.5f;
+        track.clips.push_back (std::move (clip));
+        project.tracks.push_back (std::move (track));
+        snapshots.deleteRetired();
+        snapshots.push (project.buildSnapshot());
+
+        measure (left, right);
+        expect (std::abs (left - 0.2f) < 0.001f, "ステレオ経路: L = 0.4 * 0.5");
+        expect (std::abs (right - 0.1f) < 0.001f, "ステレオ経路: R = 0.2 * 0.5（L:Rの比が保たれる）");
+    }
+
+    // ---- 重なりクリップ: 同一トラックでもクリップごとに別のゲインが効く ----
+    {
+        Project project;
+        Track track;
+        track.id = 1;
+        track.params->gain.store (1.0f);
+        Clip quiet;      // 0.4 を 0.5倍 → 0.2
+        quiet.audio = makeConst (1, 0.4f);
+        quiet.lengthSamples = blockSize * 2;
+        quiet.gain = 0.5f;
+        Clip loud;       // 0.1 を 2.0倍 → 0.2
+        loud.audio = makeConst (1, 0.1f);
+        loud.lengthSamples = blockSize * 2;
+        loud.gain = 2.0f;
+        track.clips.push_back (std::move (quiet));
+        track.clips.push_back (std::move (loud));
+        project.tracks.push_back (std::move (track));
+        snapshots.deleteRetired();
+        snapshots.push (project.buildSnapshot());
+
+        measure (left, right);
+        // 加算後 = 0.2 + 0.2（panセンターは両ch 1.0倍）。トラックゲイン1本ではこの組み合わせは作れない
+        expect (std::abs (left - 0.4f) < 0.001f, "重なり: クリップごとのゲイン適用後に加算されること");
+        expect (std::abs (right - 0.4f) < 0.001f, "重なり: R も同じ");
+    }
+
+    snapshots.deleteRetired();
+}
+
 // ---- エンジンとバウンスの一致: 同一のモノ＋ステレオ混在構成でL/Rサンプルが一致すること ----
 void testEngineBounceStereoConsistency()
 {
@@ -4500,7 +4937,7 @@ void testEngineBounceStereoConsistency()
 
     Project project;
     {
-        Track track; // ステレオクリップ・pan右寄り・send
+        Track track; // ステレオクリップ・pan右寄り・send・リージョンゲイン下げ
         track.id = 1;
         track.params->gain.store (0.8f);
         track.params->pan.store (0.4f);
@@ -4508,11 +4945,12 @@ void testEngineBounceStereoConsistency()
         Clip clip;
         clip.audio = makeAudio (2, totalSamples, 0.4f);
         clip.lengthSamples = totalSamples;
+        clip.gain = GainScale::toLinear (-3.0); // 2経路の一致をクリップゲイン込みで見る
         track.clips.push_back (std::move (clip));
         project.tracks.push_back (std::move (track));
     }
     {
-        Track track; // モノクリップ・pan左寄り
+        Track track; // モノクリップ・pan左寄り・リージョンゲイン上げ
         track.id = 2;
         track.params->gain.store (0.7f);
         track.params->pan.store (-0.6f);
@@ -4520,6 +4958,7 @@ void testEngineBounceStereoConsistency()
         clip.audio = makeAudio (1, totalSamples, 0.3f);
         clip.startSample = 1000;
         clip.lengthSamples = totalSamples - 1000;
+        clip.gain = GainScale::toLinear (2.0);
         track.clips.push_back (std::move (clip));
         project.tracks.push_back (std::move (track));
     }
@@ -4570,7 +5009,7 @@ void testEngineBounceStereoConsistency()
             for (int busIndex = 0; busIndex < numSendBuses; ++busIndex)
                 render.sends[busIndex] = track.params->sends[busIndex].load();
             for (auto& clip : track.clips)
-                render.clips.push_back ({ clip.audio, clip.startSample, clip.offsetSamples, clip.lengthSamples });
+                appendClipPlaybacks (clip, render.clips); // 本番（⌘B/⌘E）と同じ変換経路を通す
             request.tracks.push_back (std::move (render));
         }
         BounceRenderer renderer;
@@ -4962,12 +5401,15 @@ int main()
     testRegionEditShortcuts();
     testLoopExpansion();
     testLoopRoundtrip();
+    testClipGainRoundtrip();
+    testClipGainSnapshot();
     testSpreadLoopedBins();
     testBuildSnapshotFlattensNotes();
     testSynthBank();
     testPlaybackEngineMidi();
     testTrackLevelMeter();
     testSnapshotSwapDuringPlayback();
+    testAudioValuesOnlySnapshot();
     testOverflowDoesNotKillOtherNotes();
     testSamplerProjectRoundtrip();
     testSynthBankSampler();
@@ -4989,6 +5431,7 @@ int main()
     testBounceCycleRange();
     testStereoClipLoadAndV6();
     testEngineStereoPan();
+    testEngineClipGain();
     testEngineBounceStereoConsistency();
     testAudioImporter();
     testAudioFilePreview();
@@ -4997,6 +5440,7 @@ int main()
     testBottomPanelHistory();
     testBottomPanelShortcuts();
     testGainScale();
+    testGainSliderIgnoresScrollWheel();
     testGainSliderCenterFill();
     testMonoRenderRegressionHash();
 

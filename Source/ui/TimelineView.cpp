@@ -3,14 +3,97 @@
 #include <cmath>
 
 #include "Fonts.h"
+#include "GainControls.h"
 #include "Shortcuts.h"
 #include "Theme.h"
 #include "../shared/AudioFileTypes.h"
+#include "../shared/GainScale.h"
 #include "../shared/Log.h"
 
 namespace
 {
 juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
+
+// リージョンゲインの吹き出しの中身（CallOutBoxに載せる）。見出し＋現在値＋スライダーの1行構成。
+// スライダーの作法（±12dB・0.1刻み・0dB吸着・ドラッグ中のdBポップアップ・0dB起点の帯）は
+// サンプル音源のGAINと共通（GainControls.h / GainScale.h）。
+//
+// undoの粒度は「値が実際に変わる最初の瞬間に1件」。onDragStart で積んではいけない:
+// JUCEのSliderは mouseDown ごとに ScopedDragNotification を作り（juce_Slider.cpp:900）、
+// ダブルクリック確定時にも別の通知を出す（同:1121）ため、1回のダブルクリックで
+// onDragStart が最大3回発火する（＝undoが3件積まれる）。値が動いていないクリックでも積まれてしまう
+class RegionGainPanel : public juce::Component
+{
+public:
+    RegionGainPanel (float initialGain, std::function<void()> willEditIn,
+                     std::function<void (float)> applyIn)
+        : willEdit (std::move (willEditIn)), apply (std::move (applyIn))
+    {
+        addAndMakeVisible (slider);
+        slider.setSliderStyle (juce::Slider::LinearHorizontal);
+        slider.setRange (-GainScale::rangeDb, GainScale::rangeDb, 0.1);
+        slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        slider.setDoubleClickReturnValue (true, 0.0);
+        slider.textFromValueFunction = [] (double v) { return GainScale::text (v); };
+        slider.setPopupDisplayEnabled (true, false, nullptr);
+        slider.getProperties().set ("centerFill", true);
+        slider.setValue (GainScale::toDb (initialGain), juce::dontSendNotification);
+        slider.setWantsKeyboardFocus (false);
+        slider.setMouseClickGrabsKeyboardFocus (false);
+        // 1操作の区切りは「新しいクリック列の始まり」。ダブルクリックの2回目では区切らないので、
+        // つまみ以外をダブルクリックしても（1クリック目のジャンプ＋0dBリセットで）undoは1件のまま
+        slider.onNewClickSequence = [this] { editBegun = false; };
+        slider.onValueChange = [this]
+        {
+            if (! editBegun) // 値が動いた最初の1回だけundoを積む（連続ドラッグは1件にまとまる）
+            {
+                editBegun = true;
+                if (willEdit)
+                    willEdit();
+            }
+            valueLabel.setDb (slider.getValue());
+            if (apply)
+                apply (GainScale::toLinear (slider.getValue())); // ドラッグ中も音と波形へ反映する
+        };
+
+        addAndMakeVisible (valueLabel);
+        valueLabel.setDb (GainScale::toDb (initialGain));
+        valueLabel.onReset = [this]
+        {
+            if (slider.getValue() == 0.0)
+                return;
+            // undoは onValueChange 側で1件だけ積まれる（ここで willEdit を呼ぶと二重になる）
+            editBegun = false;
+            slider.setValue (0.0, juce::sendNotificationSync);
+            editBegun = false;
+        };
+
+        setSize (196, 52);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.setColour (Theme::lcdLabel);
+        g.setFont (Fonts::small());
+        g.drawText ("GAIN", getLocalBounds().removeFromTop (16).reduced (2, 0),
+                    juce::Justification::centredLeft);
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds();
+        auto header = area.removeFromTop (16);
+        valueLabel.setBounds (header.removeFromRight (72));
+        slider.setBounds (area.reduced (2, 4));
+    }
+
+private:
+    GainSlider slider;
+    GainValueLabel valueLabel;
+    std::function<void()> willEdit;
+    std::function<void (float)> apply;
+    bool editBegun = false; // この一連の操作でundoを積んだか（ドラッグ開始/終了でリセット）
+};
 
 // セクション種別ごとの固定色（ユーザー選択なし）。5種は有彩色、otherは「特定の種別ではない」ことが
 // 一目でわかる無彩色。ダーク背景上で黒文字が読める明度に揃える
@@ -489,6 +572,34 @@ private:
         g.fillRoundedRectangle (owner.loopHandleRect (x, loopRight, y).toFloat(), 2.0f);
     }
 
+    // ゲインバッジが占める幅（0 = 出さない）。表示名の描画幅を決めるのにも使う
+    static int gainBadgeWidth (float gain, const juce::Rectangle<int>& rect)
+    {
+        // 狭いリージョンでは振幅の変化だけで示す（名前とバッジを詰め込まない）
+        if (std::abs (GainScale::toDb (gain)) < 0.05 || rect.getWidth() < 56)
+            return 0;
+        return 34; // バッジ30px＋右マージン4px
+    }
+
+    // リージョンゲインのdB値。0dBのときは何も描かない（デフォルトは沈黙、逸脱だけ主張）。
+    // 波形の振幅スケールだけでは -1dB のような微差が読めないので数値も添える。
+    // 置き場所は本体の右上: 表示名（左上）とループハンドル（右下）を避けるため。
+    // 将来トランスポーズのバッジが増えたら、ここから左へ並べる
+    void drawGainBadge (juce::Graphics& g, float gain, const juce::Rectangle<int>& rect, bool dimmed)
+    {
+        if (gainBadgeWidth (gain, rect) == 0)
+            return;
+
+        const auto db = GainScale::toDb (gain);
+        const auto label = (db > 0.0 ? "+" : "") + juce::String (db, 1);
+        const auto badge = juce::Rectangle<int> (rect.getRight() - 34, rect.getY() + 3, 30, 13);
+        g.setColour (juce::Colours::black.withAlpha (0.34f));
+        g.fillRoundedRectangle (badge.toFloat(), 3.0f);
+        g.setColour (juce::Colours::white.withAlpha (dimmed ? 0.45f : 0.9f));
+        g.setFont (Fonts::small());
+        g.drawText (label, badge, juce::Justification::centred);
+    }
+
     void drawClip (juce::Graphics& g, const Clip& clip, int y, bool isSelected,
                    const juce::Rectangle<int>& clipRegion, bool trackDimmed)
     {
@@ -546,7 +657,9 @@ private:
                 for (int i = i0; i < i1 && i < (int) clip.peakCache.size(); ++i)
                     peak = juce::jmax (peak, clip.peakCache[(size_t) i]);
 
-                const float h = juce::jlimit (1.0f, halfH, peak * halfH * 1.4f);
+                // リージョンゲインを描画振幅に掛ける（「見た目＝出る音」。peakCacheは素のまま保つ）。
+                // 上げ側は jlimit で頭打ちになり、リージョン内で潰れて見える
+                const float h = juce::jlimit (1.0f, halfH, peak * clip.gain * halfH * 1.4f);
                 g.drawVerticalLine (px, midY - h, midY + h);
             }
         }
@@ -556,11 +669,15 @@ private:
         // 強弱方針: リージョン本体より控えめ（波形と同程度のアルファ）
         if (clip.name.isNotEmpty() && rect.getWidth() >= 40)
         {
+            // 名前とゲインバッジは同じ高さに並ぶので、バッジがある分だけ名前の幅を削る
+            // （長い取り込みファイル名でdB値が読めなくなるのを防ぐ）
+            const int nameWidth = rect.getWidth() - 12 - gainBadgeWidth (clip.gain, rect);
             g.setColour (juce::Colours::white.withAlpha (dimmed ? 0.35f : 0.7f));
             g.setFont (Fonts::forText (Fonts::small(), clip.name));
-            g.drawText (clip.name, rect.getX() + 6, rect.getY() + 3, rect.getWidth() - 12, 12,
+            g.drawText (clip.name, rect.getX() + 6, rect.getY() + 3, juce::jmax (0, nameWidth), 12,
                         juce::Justification::centredLeft);
         }
+        drawGainBadge (g, clip.gain, rect, dimmed); // 名前より後に描く（万一重なっても数値が読める）
     }
 
     void drawMidiRegion (juce::Graphics& g, const MidiRegion& region, int y, bool isSelected,
@@ -1457,6 +1574,16 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
     juce::PopupMenu menu;
     menu.addItem (itemWithKey (1, muted ? jp (u8"ミュート解除") : jp (u8"ミュート"),
                                Shortcuts::ID::muteRegion));
+    // ゲインはオーディオリージョン専用（MIDIリージョンには持たせない）。0dB以外なら現在値を横に出す
+    if (! isMidi)
+    {
+        const auto gainDb = GainScale::toDb (track.clips[(size_t) itemIndex].gain);
+        juce::PopupMenu::Item gainItem (jp (u8"ゲイン…"));
+        gainItem.itemID = 7;
+        if (std::abs (gainDb) >= 0.05)
+            gainItem.shortcutKeyDescription = GainScale::text (gainDb);
+        menu.addItem (gainItem);
+    }
     menu.addItem (itemWithKey (2, jp (u8"複製"), Shortcuts::ID::repeatItem));
     // ループはハンドルのドラッグで作るので「解除」だけメニューに置く（ループ中のみ有効）
     menu.addItem (6, jp (u8"ループ解除"), looped);
@@ -1484,7 +1611,68 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
                                 safe->onExportItemRequested (trackIndex, itemIndex);
                             else if (result == 6)
                                 safe->clearLoopAt (trackIndex, itemIndex);
+                            else if (result == 7)
+                                safe->showClipGainCallout (trackIndex, itemIndex);
                         });
+}
+
+// リージョンゲインの吹き出し。CallOutBox は非同期だがモーダル（enterModalState）なので、
+// 表示中にユーザー操作でクリップが動くことはない。位置決めと矢印の向きはJUCEに任せ、
+// こちらは「指し示す矩形」だけを渡す
+void TimelineView::showClipGainCallout (int trackIndex, int itemIndex)
+{
+    if (project == nullptr || trackIndex < 0 || trackIndex >= (int) project->tracks.size())
+        return;
+    auto& track = project->tracks[(size_t) trackIndex];
+    if (track.type != TrackType::audio
+        || itemIndex < 0 || itemIndex >= (int) track.clips.size())
+        return;
+    const auto& clip = track.clips[(size_t) itemIndex];
+
+    // クリック対象の範囲をコンテンツ座標で求め、this のローカル座標へ変換する。
+    // ループの反復部分も右クリックできるので、範囲はループ終端まで含める
+    // （本体だけにすると「本体は画面外・反復だけ表示中」で交差が空になり、吹き出しが的を外す）
+    const int x = sampleToX (clip.startSample);
+    const int right = sampleToX (clip.startSample + clip.totalLengthSamples());
+    const auto areaInLanes = juce::Rectangle<int> (x, trackIndex * trackHeight + 4,
+                                                  juce::jmax (2, right - x), trackHeight - 8);
+    // JUCEは渡した矩形の中央と各辺を矢印の候補にするため、長いリージョンや横スクロールで
+    // 大半が画面外だと吹き出しが画面外を指してしまう。見えている部分（viewportとの交差）を渡す
+    auto area = getLocalArea (lanes.get(), areaInLanes).getIntersection (viewport->getBounds());
+    if (area.isEmpty()) // 念のため（右クリックできた時点でどこかは見えている）
+        area = viewport->getBounds();
+
+    juce::Component::SafePointer<TimelineView> safe (this);
+    auto panel = std::make_unique<RegionGainPanel> (
+        clip.gain,
+        [safe] { if (safe != nullptr && safe->onWillEditClipGain) safe->onWillEditClipGain(); },
+        [safe, trackIndex, itemIndex] (float gain)
+        { if (safe != nullptr) safe->applyClipGain (trackIndex, itemIndex, gain); });
+
+    gainCallout = &juce::CallOutBox::launchAsynchronously (std::move (panel), area, this);
+}
+
+void TimelineView::applyClipGain (int trackIndex, int itemIndex, float gain)
+{
+    // 吹き出し表示中の非同期な構造変更（録音終了など）に備えて、適用のたびに範囲を再検証する
+    if (project == nullptr || trackIndex < 0 || trackIndex >= (int) project->tracks.size())
+        return;
+    auto& track = project->tracks[(size_t) trackIndex];
+    if (track.type != TrackType::audio
+        || itemIndex < 0 || itemIndex >= (int) track.clips.size())
+        return;
+
+    track.clips[(size_t) itemIndex].gain = GainScale::clampLinear (gain);
+    if (onClipGainEdited)
+        onClipGainEdited();
+    lanes->repaint(); // 波形の振幅とバッジを追従させる（ドラッグ中もここを通る）
+}
+
+void TimelineView::dismissGainCallout()
+{
+    if (gainCallout != nullptr)
+        gainCallout->dismiss();
+    gainCallout = nullptr;
 }
 
 void TimelineView::toggleMuteAt (int trackIndex, int itemIndex)

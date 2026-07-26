@@ -53,6 +53,7 @@ struct ClipPlayback
     juce::int64 startSample = 0;
     juce::int64 offsetSamples = 0;  // ソースバッファ内の読み出し開始位置（buildSnapshotでバッファ範囲内を保証済み）
     juce::int64 lengthSamples = 0;  // 再生長
+    float gain = 1.0f;              // リージョン単位のゲイン（線形倍率。Clip::gain のコピー。値域は GainScale）
 };
 
 // MIDIトラックの音源1インスタンス＋オーディオスレッド専用の発音状態。
@@ -138,6 +139,12 @@ struct PlaybackSnapshot
     // Project が所有する実体を shared_ptr で共有する（トラックの params と同じ寿命規則）
     std::shared_ptr<TrackParams> busParams[numSendBuses];
     std::shared_ptr<TrackParams> masterParams;
+
+    // MIDIの構成世代。エンジンはこの値が変わったときだけ「全ノートオフ＋跨ぎノート再発音」を行う
+    // （再生中の編集でノートオフが失われて鳴りっぱなしになるのを防ぐ安全機構）。
+    // オーディオ側だけが変わった差し替え（リージョンゲインのドラッグ等）では前回と同じ値を入れることで、
+    // 鳴っているMIDIを乱さずに音を更新できる。埋めるのは MainComponent::pushSnapshot 系のみ
+    juce::uint64 midiGeneration = 0;
 };
 
 // GOTCHAS.md パターン3: UIイベント→構築→atomicポインタ差し替え。解放は必ずメッセージスレッド側。

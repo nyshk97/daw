@@ -144,6 +144,11 @@ private:
     void finishInstrumentImport (const AudioImporter::Result& result); // 同上（サンプル音源の割り当て）
     static void refreshMacMenu();                // Fileメニューのenable状態を組み直させる
     void pushSnapshot();
+    // オーディオ側の値（クリップゲイン）だけが変わったときの差し替え。MIDIの構成世代を据え置くので
+    // エンジンの消音＋跨ぎノート再発音が走らず、鳴っているMIDIを乱さずに音を更新できる。
+    // 呼び出し側は「ノート・リージョン・トラック構成・音源を変えていないこと」を保証すること
+    void pushAudioValueSnapshot();
+    void pushSnapshotWithChange (Project::SnapshotChange change); // 上記2つの共通尻尾（synth参照を埋めて渡す）
     void setDirty (bool nowDirty);
     void updateTransportButtons();
     void updateLcdTime();

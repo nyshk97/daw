@@ -123,7 +123,7 @@ void appendClipPlaybacks (const Clip& clip, std::vector<ClipPlayback>& out)
     const int reps = 1 + juce::jmax (0, clip.loopCount);
     for (int r = 0; r < reps; ++r)
         out.push_back ({ clip.audio, clip.startSample + (juce::int64) r * clip.lengthSamples,
-                         offset, length });
+                         offset, length, clip.gain });
 }
 
 bool splitMidiRegion (const MidiRegion& region, juce::int64 splitPpq, MidiRegion& left, MidiRegion& right)
@@ -323,6 +323,8 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
                 clipObj->setProperty ("muted", clip.muted);
                 if (clip.loopCount > 0) // ループなしはJSONを汚さない（旧形式と同じ見た目のまま）
                     clipObj->setProperty ("loopCount", clip.loopCount);
+                if (clip.gain != 1.0f) // ユニティはJSONを汚さない（loopCountと同じ流儀）
+                    clipObj->setProperty ("gain", (double) clip.gain);
                 clipsArray.add (juce::var (clipObj));
             }
             trackObj->setProperty ("clips", clipsArray);
@@ -516,6 +518,9 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
                         // v8以前は無い（欠損＝ループなし）。上限は展開量の暴走を防ぐ安全弁
                         clip.loopCount = juce::jlimit (0, maxLoopCount,
                                                        (int) clipVar.getProperty ("loopCount", 0));
+                        // v9以前は無い（欠損＝ユニティ）。UIが表現できない値を残さないようクランプする
+                        clip.gain = GainScale::clampLinear (
+                            (float) (double) clipVar.getProperty ("gain", 1.0));
 
                         const auto cached = wavCache.find (clip.fileName);
                         if (cached != wavCache.end())
@@ -805,9 +810,16 @@ juce::File Project::nextInstrumentFile() const
     return directory.getChildFile ("instr-overflow.wav");
 }
 
-std::unique_ptr<PlaybackSnapshot> Project::buildSnapshot() const
+std::unique_ptr<PlaybackSnapshot> Project::buildSnapshot (SnapshotChange change)
 {
+    // 既定（midiStructure）は世代を進める＝エンジンに消音＋跨ぎノート再発音をさせる。
+    // audioValuesOnly は据え置き（鳴っているMIDIを乱さずにオーディオ側の値だけ差し替える）、
+    // offlineRender はエンジンへ渡さない構築なので世代に触らない（進めると次のaudioValuesOnlyが誤認される）
+    if (change == SnapshotChange::midiStructure)
+        ++midiGeneration;
+
     auto snapshot = std::make_unique<PlaybackSnapshot>();
+    snapshot->midiGeneration = midiGeneration;
     snapshot->tracks.reserve (tracks.size());
 
     for (int b = 0; b < numSendBuses; ++b)

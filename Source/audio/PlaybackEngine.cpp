@@ -109,9 +109,12 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
     auto* snapshot = snapshots.acquire();
 
     // 再生中の編集（ノート削除等）でノートオフが失われて鳴りっぱなしになるのを防ぐため、
-    // スナップショットの差し替えを検出して消音→跨ぎノート再発音を行う（ポインタ比較のみ）
-    const bool snapshotChanged = snapshot != lastSeenSnapshot;
-    lastSeenSnapshot = snapshot;
+    // MIDI構成の差し替えを検出して消音→跨ぎノート再発音を行う。
+    // 判定にポインタでなく midiGeneration を使うのは、オーディオ側だけの差し替え
+    // （リージョンゲインのドラッグ中の更新）でMIDIを鳴り直させないため（整数比較のみ）
+    const auto midiGeneration = snapshot != nullptr ? snapshot->midiGeneration : 0;
+    const bool snapshotChanged = midiGeneration != lastSeenMidiGeneration;
+    lastSeenMidiGeneration = midiGeneration;
 
     bool anySolo = false;
     if (snapshot != nullptr)
@@ -249,7 +252,9 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
                 // ---- モノのみトラック（現行経路）----
                 // このブロックは演算順序を含め一切変えないこと。クリップ単位のpan分配へ寄せると
                 // 重なりクリップの加算順序・sendの乗算順序が変わり、既存プロジェクトの出力との
-                // ビット一致が崩れる（回帰確認は testMonoRenderRegressionHash のハッシュ比較）
+                // ビット一致が崩れる（回帰確認は testMonoRenderRegressionHash のハッシュ比較）。
+                // リージョンゲインは「トラックゲインの手前に1回掛ける」形で足しており、
+                // ユニティ(1.0f)なら gain と厳密に同値なので既存の出力は変わらない
                 if (canProcess)
                     trackScratch.clear (0, 0, segLen); // 全トラックで再利用するため毎回必ずclear
 
@@ -267,24 +272,25 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
                     const int srcOffset = (int) (clip.offsetSamples + (overlapStart - clip.startSample));
                     const int count = (int) (overlapEnd - overlapStart);
                     const float* src = clip.audio->getReadPointer (0, srcOffset);
+                    const float clipGain = gain * clip.gain; // 素材のトリム → 曲中のバランスの順
 
                     // 重なったクリップは加算再生（メーターは加算後ピークを測る必要があるため
                     // 一旦モノスクラッチへ合算し、pan分配は後でまとめて行う）
                     if (canProcess)
                     {
-                        trackScratch.addFrom (0, destOffset, src, count, gain);
+                        trackScratch.addFrom (0, destOffset, src, count, clipGain);
                     }
                     else if (buffer.getNumChannels() >= 2)
                     {
                         // フォールバックの縮退はsend/メーターのみ。出力ルール（ch0/1・1chダウンミックス）と
                         // pan・Masterは本編と揃える
-                        buffer.addFrom (0, outOffset + destOffset, src, count, gain * panL * masterGain);
-                        buffer.addFrom (1, outOffset + destOffset, src, count, gain * panR * masterGain);
+                        buffer.addFrom (0, outOffset + destOffset, src, count, clipGain * panL * masterGain);
+                        buffer.addFrom (1, outOffset + destOffset, src, count, clipGain * panR * masterGain);
                     }
                     else
                     {
                         buffer.addFrom (0, outOffset + destOffset, src, count,
-                                        gain * 0.5f * (panL + panR) * masterGain);
+                                        clipGain * 0.5f * (panL + panR) * masterGain);
                     }
                 }
 
@@ -340,8 +346,9 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
                     const bool stereo = clip.audio->getNumChannels() >= 2;
                     const float* srcL = clip.audio->getReadPointer (0, srcOffset);
                     const float* srcR = clip.audio->getReadPointer (stereo ? 1 : 0, srcOffset);
-                    const float gainL = gain * (stereo ? balL : panL);
-                    const float gainR = gain * (stereo ? balR : panR);
+                    const float clipGain = gain * clip.gain; // 素材のトリム → 曲中のバランスの順
+                    const float gainL = clipGain * (stereo ? balL : panL);
+                    const float gainR = clipGain * (stereo ? balR : panR);
 
                     if (canProcess)
                     {

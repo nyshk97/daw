@@ -3,10 +3,14 @@
 #include <cmath>
 #include <juce_audio_basics/juce_audio_basics.h>
 
-// サンプル音源のGAIN（トリム）のスケール定義。
+// 素材トリム（GAIN）のスケール定義。使うのは2箇所で、値域・刻み・見た目の作法を共通にしている:
+//   - サンプル音源のGAIN（Track::sampleGain）
+//   - オーディオリージョンのゲイン（Clip::gain）
+// どちらも「素材の音量ばらつきを吸収する」トリムで、曲の中でのバランスを決めるフェーダーとは別物。
 //
-// 「スライダーの値 = dB」「モデル（Track::sampleGain）= 線形倍率」という対応をここに集約し、
-// UI（InstrumentDetailView）と読み込みクランプ（Project.cpp）が同じ値域を見るようにする。
+// 「スライダーの値 = dB」「モデル = 線形倍率」という対応をここに集約し、
+// UI（InstrumentDetailView・リージョンゲインの吹き出し）と読み込みクランプ（Project.cpp）が
+// 同じ値域を見るようにする。
 //
 // 素材ごとの音量ばらつきを吸収するトリムなので、無音（-∞）は持たせない（消音はミュート/フェーダーの仕事。
 // トリムに無音域を割くと、実際に使う±数dB付近の解像度が無駄になる）。
@@ -36,8 +40,9 @@ inline float toLinear (double db)
 
 // 読み込み時のクランプ。UIが表現できない値をモデルに残すと「表示は-12dBなのに-20dBで鳴る」という
 // 表示と実音の乖離になるため、範囲外は読み込んだ時点で寄せる。
-// 保存側では使わない（sampleGain への代入経路はスライダー・新規作成の1.0f・読み込みの3つだけで、
-// undo/redoはTrackのコピーなので新たな値を生まない＝この3経路が範囲を保証する）
+// 保存側では使わない。sampleGain / Clip::gain のどちらも代入経路はスライダー・新規作成の1.0f・
+// 読み込みの3つだけで、undo/redoはTrackのコピー、リージョンの分割・複製・ループもClipのコピーなので
+// 新たな値を生まない＝この3経路が範囲を保証する
 inline float clampLinear (float linear)
 {
     return juce::jlimit (minLinear(), maxLinear(), linear);

@@ -30,6 +30,10 @@ struct Clip
     // 本体の後ろに何回繰り返すか（0 = ループなし）。元を編集すると繰り返し全部に反映される
     // ＝実体は1つ。長さは本体長の整数倍のみ（中途半端な終端を作らない）
     int loopCount = 0;
+    // リージョン単位のゲイン（線形倍率。値域は GainScale = ±12dB 相当の約0.251..3.981）。
+    // 素材の一部だけを均すトリムで、Track::sampleGain と同じスケール・同じ流儀。
+    // 波形の描画振幅にも掛ける（「見た目＝出る音」を保つため）
+    float gain = 1.0f;
     std::shared_ptr<juce::AudioBuffer<float>> audio; // 1ch=モノ（録音）/ 2ch=ステレオ（取り込み）。メモリ常駐
     std::vector<float> peakCache;                    // samplesPerPeak ごとの絶対値ピーク（参照範囲のみ。ステレオはL/Rのmax合成）
 
@@ -206,8 +210,9 @@ public:
     // v4: pan・sends・固定バス3本・Master / v5: サイクル（ループ範囲）/
     // v6: ステレオクリップ（ch数はJSONに持たずWAV自体から判定）・クリップ表示名（取り込み用）/
     // v7: プロジェクトメモ / v8: サンプル音源（instrument・sample*）/
-    // v9: リージョン/クリップのループ（loopCount。欠損＝ループなし）
-    static constexpr int currentVersion = 9;
+    // v9: リージョン/クリップのループ（loopCount。欠損＝ループなし）/
+    // v10: オーディオリージョンのゲイン（clips[].gain。線形倍率・欠損＝1.0）
+    static constexpr int currentVersion = 10;
 
     juce::File directory;
     double bpm = 120.0;
@@ -246,7 +251,18 @@ public:
 
     juce::File nextClipFile() const;       // clip-NNN.wav の空き連番
     juce::File nextInstrumentFile() const; // instr-NNN.wav の空き連番（サンプル音源）
-    std::unique_ptr<PlaybackSnapshot> buildSnapshot() const;
+    // スナップショットに載せる PlaybackSnapshot::midiGeneration の進め方。
+    // エンジンはこの世代が変わったときだけ「全ノートオフ＋跨ぎノート再発音」を行う。
+    // - midiStructure（既定・安全側）: リアルタイムエンジンへ渡す。MIDI構成が変わったかもしれない → 進める
+    // - audioValuesOnly: リアルタイムエンジンへ渡すが、ノート・リージョン・トラック構成・音源を
+    //   一切変えていないと呼び出し側が保証できるとき（リージョンゲインの調整）→ 据え置く。
+    //   誤って据え置くと「削除したノートのオフが失われて鳴りっぱなし」が起きる
+    // - offlineRender: エンジンへ渡さない構築（⌘Bのバウンス用）→ 世代に触らない。
+    //   ここで進めてしまうと、次の audioValuesOnly のpushが「世代が変わった」と誤認され、
+    //   鳴っているMIDIが消音＋再発音される（バウンス後にゲインを動かすと起きる）
+    enum class SnapshotChange { midiStructure, audioValuesOnly, offlineRender };
+
+    std::unique_ptr<PlaybackSnapshot> buildSnapshot (SnapshotChange change = SnapshotChange::midiStructure);
 
     static juce::File projectsRoot(); // ~/Music/daw
 
@@ -258,6 +274,9 @@ public:
 
 private:
     juce::uint64 nextId = 1; // 永続化される採番カウンタ
+    // MIDI構成の世代。単調増加させるだけで永続化しない（エンジン側の初期値0を「未受信」に残すため
+    // 最初の buildSnapshot で1になる）
+    juce::uint64 midiGeneration = 0;
 
     static std::shared_ptr<TrackParams> unityParams()
     {

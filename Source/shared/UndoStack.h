@@ -21,8 +21,11 @@ public:
     // - sampleValue: サンプル音源の値だけ（音量・ルート音・頭カット）。ノート・クリップ・トラック構成は
     //   変わらないので**スナップショットの再pushが不要**＝発音中の音を切らずに戻せる
     //   （再pushすると差し替え検出で全ノートオフ＋跨ぎノート再発音が走り、頭から鳴り直す）
+    // - clipValue: オーディオクリップの値だけ（リージョンゲイン）。sampleValue と違い atomic ミラーでなく
+    //   スナップショット経由で鳴るので**再pushは必要**。ただしMIDI構成は変わらないので
+    //   「MIDI世代を据え置く push」（MainComponent::pushAudioValueSnapshot）を使って発音を乱さない
     // - structure: それ以外。音程モードの変更もこちら（停止要求＋resoundの経路が必要なため）
-    enum class EditKind { structure, sampleValue };
+    enum class EditKind { structure, sampleValue, clipValue };
 
     // 編集操作の直前に呼ぶ。redo履歴は破棄される
     void begin (const Project& project, EditKind kind = EditKind::structure)

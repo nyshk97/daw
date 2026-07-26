@@ -267,6 +267,17 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         setDirty (true);
         timeline.refresh();
     };
+    // リージョンゲインは経路を分ける: ドラッグ中も音へ反映したいが、通常の pushSnapshot だと
+    // 差し替え検出で鳴っているMIDIが消音＋再発音されてしまう（頭から鳴り直す）。
+    // MIDI構成は変わらないので、世代を据え置く push を使う。undoは種別 clipValue で積み、
+    // 復元時（afterHistoryRestore）も同じ据え置きpushが選ばれる
+    timeline.onWillEditClipGain = [this]
+    { undoStack.begin (*project, UndoStack::EditKind::clipValue); };
+    timeline.onClipGainEdited = [this]
+    {
+        pushAudioValueSnapshot();
+        setDirty (true);
+    };
     // サイクル範囲はundo対象外（音量・ミュートと同じ扱い。Logicもサイクル操作はundoしない）なので
     // onWillEditModel/onModelEdited でなく専用コールバックで Transport同期とdirty化だけ行う
     timeline.onCycleChanged = [this]
@@ -736,6 +747,9 @@ void MainComponent::startRecordingFlow()
 {
     seekResumePending = false; // 録音はカウントイン込みで自前のトランスポート制御を行う
     numSeekKeyCodes = 0;
+    // 録音の終了でクリップが増える＝リージョンゲインの吹き出しが保持しているindexが失効するため、
+    // 開きっぱなしにしない（吹き出し表示中はモーダルなので、ここへ来るのは⌘.等の経路）
+    timeline.dismissGainCallout();
 
     if (selectedTrack < 0 || selectedTrack >= (int) project->tracks.size())
     {
@@ -1084,6 +1098,12 @@ void MainComponent::afterHistoryRestore (UndoStack::EditKind kind)
         if (synthBank.sync (*project, transport.sampleRate.load(), transport.blockSizeExpected.load()))
             pushSnapshot(); // 想定外に構成変更が検知されたときだけ追従
         pianoRoll.refreshFromModel(); // ルート音の復元で固定行（forcedPitch）が動く
+    }
+    else if (kind == UndoStack::EditKind::clipValue)
+    {
+        // クリップ値（リージョンゲイン）の復元。スナップショット経由で鳴る値なので再pushは必要だが、
+        // MIDI構成は変わっていないので世代を据え置いて発音を乱さない（ドラッグ中の更新と同じ経路）
+        pushAudioValueSnapshot();
     }
     else
     {
@@ -1605,7 +1625,10 @@ void MainComponent::beginBounce (const juce::File& target)
         anySolo = anySolo || track.params->solo.load();
 
     const double tps = Ppq::ticksPerSample (request.bpm, sr);
-    auto snapshot = project->buildSnapshot(); // クリップ参照とノートのフラット化を再利用（synthは空のまま）
+    // クリップ参照とノートのフラット化を再利用（synthは空のまま）。エンジンへは渡さないので
+    // MIDI世代は進めない（進めると、この後のリージョンゲイン調整でエンジンが世代変更と誤認して
+    // 鳴っているMIDIを消音＋再発音してしまう）
+    auto snapshot = project->buildSnapshot (Project::SnapshotChange::offlineRender);
     juce::int64 endSample = 0;
 
     for (size_t i = 0; i < snapshot->tracks.size() && i < project->tracks.size(); ++i)
@@ -2252,15 +2275,28 @@ void MainComponent::pushSnapshot()
     // sampleRate 未確定の間は synth が null のまま（timerCallback の sync が確定後に再pushする）
     synthBank.sync (*project, transport.sampleRate.load(), transport.blockSizeExpected.load());
 
-    auto snapshot = project->buildSnapshot();
+    pushSnapshotWithChange (Project::SnapshotChange::midiStructure);
+
+    // モデルが変わった可能性があるのでピアノロールも同期（対象リージョンが消えていれば閉じる）
+    pianoRoll.refreshFromModel();
+}
+
+// オーディオ側の値（クリップゲイン）だけの差し替え。MIDI構成の世代を据え置くことで、
+// エンジン側の消音＋跨ぎノート再発音（PlaybackEngine の snapshotChanged 判定）を起こさない。
+// synthBank.sync() も呼ばない（音源の作り直しは不要で、ドラッグ中に毎イベント走らせたくない）
+void MainComponent::pushAudioValueSnapshot()
+{
+    pushSnapshotWithChange (Project::SnapshotChange::audioValuesOnly);
+}
+
+void MainComponent::pushSnapshotWithChange (Project::SnapshotChange change)
+{
+    auto snapshot = project->buildSnapshot (change);
     for (size_t i = 0; i < project->tracks.size() && i < snapshot->tracks.size(); ++i)
         if (project->tracks[i].type == TrackType::midi)
             snapshot->tracks[i].synth = synthBank.get (project->tracks[i].id);
 
     snapshots.push (std::move (snapshot));
-
-    // モデルが変わった可能性があるのでピアノロールも同期（対象リージョンが消えていれば閉じる）
-    pianoRoll.refreshFromModel();
 }
 
 // ---- キーボード ----

@@ -110,10 +110,11 @@ private:
     // 伝えるフラグ。立っているセグメントは消音＋跨ぎノート再発音＋クリック拍リセットを行う
     bool cycleWrapPending = false;
 
-    // 再生中のノート編集（スナップショット差し替え）検出用。差し替え時は消音→跨ぎノート再発音で
+    // 再生中のノート編集（MIDI構成の差し替え）検出用。差し替え時は消音→跨ぎノート再発音で
     // 「削除されたノートのオフが新スナップショットに存在せず鳴りっぱなし」になるのを防ぐ。
-    // 比較にしか使わない（参照はしない。旧スナップショットは解放済みの可能性がある）
-    const PlaybackSnapshot* lastSeenSnapshot = nullptr;
+    // ポインタでなく PlaybackSnapshot::midiGeneration を見るので、オーディオ側だけの差し替え
+    // （リージョンゲインのドラッグ）では発音を乱さない。0 = まだ何も受け取っていない
+    juce::uint64 lastSeenMidiGeneration = 0;
     juce::int64 lastBeatIndex = 0;
     double clickPhase = 0.0;
     double clickFreq = 880.0;
