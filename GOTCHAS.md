@@ -54,6 +54,15 @@ macのpeerは**⌘押下時に `textCharacter` を0にする**（`juce_NSViewCom
 
 x, y, width, height は `getSliderThumbRadius` ぶん両端を詰めたトラック領域で、Sliderコンポーネントのboundsより小さい。スライダーの溝を隣に並べる自前コンポーネント（メーター等）と端揃えするときは、同じ詰め幅を定数で共有する（`StereoMeter::wellInsetY` = つまみ半径、が実例）。片方だけ固定マージンで詰めると上下端がズレる。
 
+### Sliderの値をundo対象にするなら区切りは「クリック列の先頭」で入れる
+
+`onDragStart` を「編集開始」に使うと、1回のダブルクリックでundoが2〜3件に割れる。JUCEは `mouseDown` ごとに `ScopedDragNotification` を作り（`juce_Slider.cpp:900`）、ダブルクリック確定時にも別の通知を出す（同`:1121`）ためで、さらにつまみ以外をクリックすると値がその位置へ飛ぶので、**最初の⌘Zが元の値でなく中間値へ戻る**。
+
+- 区切りは `mouseDown` を override して `e.getNumberOfClicks() <= 1` のときだけ入れる（`>= 2` はJUCE自身が `mouseDoubleClick` の発火条件に使う判定＝`juce_Component.cpp:2325` の裏返し）。実装例は `ui/GainControls.h` の `GainSlider::onNewClickSequence`
+- undoを積むのは「値が実際に動いた最初の1回」。`setValue` には同値ガード（`juce_Slider.cpp:218`）があるので、値が動かないクリックでは `onValueChange` が来ない＝ゴミが積まれない
+- `onDragEnd` で区切りをリセットしてはいけない（ダブルクリックの2回目の `mouseDown` より前に挟まるため、また2件に割れる）
+- **ホイールは `mouseDown` を伴わない**ので区切りが漏れ、「ドラッグ後にホイールで微調整すると⌘Zがドラッグ前まで戻る」。区切りを増やすより `setScrollWheelEnabled (false)` で経路を絞るほうが単純（ホイールは1回転で複数イベントが来るので、素直に区切ると1目盛りごとに積まれる）
+
 ### PopupMenuは「全画面×画面端」に隣接表示できない
 
 PopupMenuの表示位置はOSの「使用可能画面領域」（Dock除け）にクランプされる。全画面表示ではウィンドウがDock領域まで覆うのに、画面最下部のボタン直上には出せない: デスクトップウィンドウ方式（既定）はDock上端まで押し上げられて余白ができ、`withParentComponent` でもターゲット矩形が使用可能領域との交差で空になり左上に飛ぶ。画面端に置いたボタンのメニューは、ウィンドウ内に自前描画するオーバーレイで作る（`ui/AddTrackOverlay.h` が実例。位置計算にOSの画面情報を使わないので全画面/通常で挙動が一致する）。なおPopupMenuはアプリ非アクティブになると即閉じるため、AXPressで開いて背面スクショで確認する検証もできない（自前オーバーレイなら可能）。
@@ -75,6 +84,13 @@ PopupMenuの表示位置はOSの「使用可能画面領域」（Dock除け）�
 - 閉じる経路は `closeButtonPressed()`（×）・`escapeKeyPressed()`（Esc）を override して1関数に集約し、所有者へ通知するだけにする。実際の破棄は所有者側が `MessageManager::callAsync` で行う（→「コールバック実行中のComponentを自己破棄しない」）
 - **そのウィンドウにフォーカスがある間は `MainComponent::keyPressed` にキーが来ない**。開閉ショートカットはウィンドウ側でも `keyPressed` を override し `Shortcuts::matches()` で拾う。全キーをメインへ転送するかは画面の性格で決める（ミキサーは転送して再生・m/sを効かせる／デバイス設定は⌘,だけ拾い、設定中に `r` で録音が走らないようにする）
 - モーダルでなくなる＝危険な同時操作が可能になる。競合する操作（録音開始とデバイス変更等）は開始側から明示的に閉じる
+
+### CallOutBoxは「非同期だがモーダル」・アンカー矩形は可視領域と交差させる
+
+`CallOutBox::launchAsynchronously` は内部で `callout.enterModalState (true, this)` を呼ぶ（`juce_CallOutBox.cpp:71`）。表示中はキー入力も⌘Zもボックスが取り、外部クリックは閉じてから下のコンポーネントへ渡る。つまり表示中にユーザー操作でモデルが変わることはなく、保持したindexが失効する経路は録音完了のような非同期処理とプロジェクト破棄だけに絞れる。ドラッグ中の再描画・タイマーは通常どおり走る。
+
+- 位置決めと矢印の向きはJUCEが自動でやる（`updatePosition`）ので、渡すのは「指し示す矩形」だけ。ただし**矩形の中央と各辺が矢印の候補**になるため、Viewport内の長いアイテムを指すときは可視領域（`viewport->getBounds()`）との交差を渡す。そのまま渡すとスクロール状態次第で画面外を指す
+- 交差を取る元は「クリックできる範囲全体」にする（ループ反復部分なども含む）。本体だけにすると「本体は画面外・反復だけ表示中」で交差が空になる
 
 ### AudioAppComponent はアプリ内1個が前提
 
@@ -246,6 +262,14 @@ private:
 - **`prepareToPlay()` で全確保、`releaseResources()` で解放**。この2つはコールバックが走っていない状態で呼ばれることが保証されている
 - コールバック内で必要になるバッファ・FIFO・一時領域は、想定される最大ブロックサイズ（`prepareToPlay`の引数`samplesPerBlockExpected`）を基準に確保しておく
 - 「再生開始ボタンでバッファを作る」のような遅延確保はしない。UIイベント→確保→atomicポインタ差し替え、という形にする場合も、**解放は必ずメッセージスレッド側**で行う（オーディオスレッドが触っている可能性のあるメモリを即deleteしない）
+
+### スナップショットのpushはMIDIの消音＋再発音を伴う
+
+`PlaybackEngine` はスナップショットの差し替えを検出すると全ノートオフ＋跨ぎノート再発音を行う（再生中の編集でノートオフが失われて鳴りっぱなしになるのを防ぐ安全機構）。そのため「値を1つ変えたので push」を毎イベント行うと、鳴っているMIDIが連打される。オーディオ側の値だけが変わったときは `Project::SnapshotChange::audioValuesOnly` でMIDI構成の世代を据え置く。
+
+- **こうしたフラグは既定を安全側にして、呼び出し側が例外を明示する形にする**。世代カウンタを `Project` に持たせて `buildSnapshot()` の既定引数で進めているのは、カウンタを呼び出し側（`MainComponent`）に持たせると `buildSnapshot()` を直接使う経路（テスト等）が世代を進めず、安全機構が黙って壊れるため
+- **エンジンへ渡さない構築（バウンス用）は世代に触らない**（`offlineRender`）。ここで進めると、次の据え置きpushが「世代が変わった」と誤認される
+- **テストで同じ `SnapshotExchange` に3回以上pushするなら、間に `deleteRetired()` を挟む**。`acquire()` は retired が空のときだけ pending を取り込むため（`PlaybackSnapshot.h`）、掃除しないと3回目以降が反映されず「実装が効いていない」ように見える
 
 ### パターン4: 録音のディスク書き込みは第3のスレッドへ
 
