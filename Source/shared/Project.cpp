@@ -78,12 +78,24 @@ bool splitClip (const Clip& clip, juce::int64 splitSample, Clip& left, Clip& rig
 
     left = clip; // fileName/audio は共有参照
     left.lengthSamples = leftLength;
+    // ループは解除する（左右どちらに繰り返しを引き継ぐか自明でない）。**フェードのクランプより
+    // 先に**0にすること: 元の loopCount 込みの全長でクランプしてから呼び出し側が解除すると、
+    // フェードが分割後の全長を超えて残る（描画は未クランプ値・再生は防御クランプ値を使うため
+    // 見た目と音が食い違い、保存→再読込でも値が変わる）
+    left.loopCount = 0;
+    // フェードは外側だけ継承する（内側＝分割点側は0）。丸ごとコピーのままだと
+    // 左が元のフェードアウトを、右が元のフェードインを引き継ぎ、分割点にフェードが移動してしまう
+    left.fadeOutSamples = 0;
+    left.clampFades(); // 継承した fadeIn を左の長さへ収める
     left.buildPeakCache();
 
     right = clip;
     right.startSample = splitSample;
     right.offsetSamples = clip.offsetSamples + leftLength;
     right.lengthSamples = clip.lengthSamples - leftLength;
+    right.loopCount = 0;
+    right.fadeInSamples = 0;
+    right.clampFades(); // 継承した fadeOut を右の長さへ収める
     right.buildPeakCache();
     return true;
 }
@@ -118,12 +130,23 @@ void appendClipPlaybacks (const Clip& clip, std::vector<ClipPlayback>& out)
     if (length <= 0)
         return;
 
+    // フェードは「連なり全体」の両端に掛かる（繰り返しの間はシームレス）。絶対位置で持つので
+    // 反復をまたぐ長さでもそのまま表現でき、全反復に同じ値を載せてよい。
+    // モデル側の不変条件（fadeIn + fadeOut <= 全長）が破れていても区間が交差しないよう頭打ちする
+    const auto chainStart = clip.startSample;
+    const auto chainEnd = chainStart + clip.totalLengthSamples();
+    const auto fadeIn = juce::jlimit ((juce::int64) 0, chainEnd - chainStart, clip.fadeInSamples);
+    const auto fadeOut = juce::jlimit ((juce::int64) 0, chainEnd - chainStart - fadeIn, clip.fadeOutSamples);
+    const auto fadeInEnd = chainStart + fadeIn;
+    const auto fadeOutStart = chainEnd - fadeOut;
+
     // 反復の間隔はクランプ後の length でなくモデルの lengthSamples。描画も lengthSamples 基準なので、
     // 異常値でクランプが効いたときに見た目と鳴りがズレないようにする
     const int reps = 1 + juce::jmax (0, clip.loopCount);
     for (int r = 0; r < reps; ++r)
         out.push_back ({ clip.audio, clip.startSample + (juce::int64) r * clip.lengthSamples,
-                         offset, length, clip.gain });
+                         offset, length, clip.gain,
+                         chainStart, fadeInEnd, fadeOutStart, chainEnd });
 }
 
 bool splitMidiRegion (const MidiRegion& region, juce::int64 splitPpq, MidiRegion& left, MidiRegion& right)
@@ -325,6 +348,10 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
                     clipObj->setProperty ("loopCount", clip.loopCount);
                 if (clip.gain != 1.0f) // ユニティはJSONを汚さない（loopCountと同じ流儀）
                     clipObj->setProperty ("gain", (double) clip.gain);
+                if (clip.fadeInSamples > 0) // フェードなしはJSONを汚さない（同上）
+                    clipObj->setProperty ("fadeInSamples", clip.fadeInSamples);
+                if (clip.fadeOutSamples > 0)
+                    clipObj->setProperty ("fadeOutSamples", clip.fadeOutSamples);
                 clipsArray.add (juce::var (clipObj));
             }
             trackObj->setProperty ("clips", clipsArray);
@@ -521,6 +548,10 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
                         // v9以前は無い（欠損＝ユニティ）。UIが表現できない値を残さないようクランプする
                         clip.gain = GainScale::clampLinear (
                             (float) (double) clipVar.getProperty ("gain", 1.0));
+                        // v10以前は無い（欠損＝フェードなし）。不変条件の強制は
+                        // 参照範囲の確定後に clampFades() で行う（全長が要るため）
+                        clip.fadeInSamples = (juce::int64) clipVar.getProperty ("fadeInSamples", 0);
+                        clip.fadeOutSamples = (juce::int64) clipVar.getProperty ("fadeOutSamples", 0);
 
                         const auto cached = wavCache.find (clip.fileName);
                         if (cached != wavCache.end())
@@ -549,6 +580,7 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
                             continue;
                         }
 
+                        clip.clampFades(); // 全長（ループ込み）が確定した後に不変条件を強制する
                         clip.buildPeakCache();
                         track.clips.push_back (std::move (clip));
                     }

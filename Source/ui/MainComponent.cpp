@@ -275,13 +275,13 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         setDirty (true);
         timeline.refresh();
     };
-    // リージョンゲインは経路を分ける: ドラッグ中も音へ反映したいが、通常の pushSnapshot だと
-    // 差し替え検出で鳴っているMIDIが消音＋再発音されてしまう（頭から鳴り直す）。
-    // MIDI構成は変わらないので、世代を据え置く push を使う。undoは種別 clipValue で積み、
-    // 復元時（afterHistoryRestore）も同じ据え置きpushが選ばれる
-    timeline.onWillEditClipGain = [this]
+    // クリップのオーディオ値（リージョンゲイン・フェード）は経路を分ける: ドラッグ中も音へ
+    // 反映したいが、通常の pushSnapshot だと差し替え検出で鳴っているMIDIが消音＋再発音される
+    // （頭から鳴り直す）。MIDI構成は変わらないので、世代を据え置く push を使う。
+    // undoは種別 clipValue で積み、復元時（afterHistoryRestore）も同じ据え置きpushが選ばれる
+    timeline.onWillEditClipValue = [this]
     { undoStack.begin (*project, UndoStack::EditKind::clipValue); };
-    timeline.onClipGainEdited = [this]
+    timeline.onClipValueEdited = [this]
     {
         pushAudioValueSnapshot();
         setDirty (true);

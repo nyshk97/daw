@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <vector>
 
+#include "../shared/ClipFade.h"
 #include "../shared/Pan.h"
 #include "../shared/Ppq.h"
 #include "../shared/Project.h"
@@ -267,8 +268,13 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
 
                 const int destOffset = (int) (overlapStart - pos);
                 const int srcOffset = (int) (clip.offsetSamples + (overlapStart - clip.startSample));
-                const int count = (int) (overlapEnd - overlapStart);
                 const bool stereo = clip.audio->getNumChannels() >= 2;
+
+                // フェードの区間分割（RTのprocessと共通のヘルパー。フェードなしなら
+                // 1区間・ゲイン1.0＝既存の addFrom 1回に戻り、書き出しはビット一致する）
+                ClipFade::Segment segs[ClipFade::maxSegments];
+                const int numSegs = ClipFade::segments (clip, overlapStart, overlapEnd, pos, segs);
+
                 for (int ch = 0; ch < 2; ++ch)
                 {
                     const float* src = clip.audio->getReadPointer (stereo ? ch : 0, srcOffset);
@@ -276,10 +282,17 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
                     // ユニティ(1.0f)なら track.gain と厳密に同値＝既存の書き出しは変わらない
                     const float gain = track.gain * clip.gain * (stereo ? (ch == 0 ? balL : balR)
                                                                        : (ch == 0 ? panL : panR));
-                    mix.addFrom (ch, destOffset, src, count, gain);
-                    for (int b = 0; b < numSendBuses; ++b)
-                        if (track.sends[b] > 0.0f)
-                            busMix[(size_t) b].addFrom (ch, destOffset, src, count, gain * track.sends[b]);
+                    for (int s = 0; s < numSegs; ++s)
+                    {
+                        const auto& seg = segs[s];
+                        const float* segSrc = src + (seg.destOffset - destOffset);
+                        ClipFade::addSegment (mix, ch, seg.destOffset, segSrc, seg, gain);
+                        // sendにも同じフェードが掛かる（post-fader＝聴こえている信号のコピー）
+                        for (int b = 0; b < numSendBuses; ++b)
+                            if (track.sends[b] > 0.0f)
+                                ClipFade::addSegment (busMix[(size_t) b], ch, seg.destOffset, segSrc, seg,
+                                                      gain * track.sends[b]);
+                    }
                 }
             }
 

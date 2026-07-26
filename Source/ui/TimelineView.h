@@ -39,6 +39,15 @@ public:
     // 掴もうとしてループが伸びることは起きない（1クリック目が必ず選択になる）
     static constexpr int loopHandleHeight = 6;
     static constexpr int loopHandleWidth = 40;
+    // フェードハンドル（選択中アイテムの上辺・左右）。ループハンドルと同じ「選択中のみ」規則。
+    // ヒット領域10×14px・見えている部分は上辺の8pxで、モックを実マウスでドラッグして決めた寸法
+    // （合成クリックでは操作性を検証できないため）
+    static constexpr int fadeHandleWidth = 10;
+    static constexpr int fadeHandleHeight = 14;
+    static constexpr int fadeHandleVisibleHeight = 8;
+    // 連なり全体（ループ終端まで）がこれ未満の幅ならフェードハンドルを出さない
+    // （10pxハンドル2つ＋移動用の余白20pxを確保。ゲインバッジの56px閾値と同じ考え方）
+    static constexpr int fadeHandleMinWidth = 40;
     static constexpr int topHeight = rulerHeight + markerLaneHeight; // レーン上端（ヘッダ側の高さ合わせ用）
 
     explicit TimelineView (TransportState& transportState);
@@ -68,10 +77,11 @@ public:
     std::function<void (int, int)> onOpenRegion;     // リージョンをダブルクリック（track, region）
     std::function<void (int, int)> onDeleteItemRequested; // 右クリックメニューの削除（track, クリップorリージョンindex）
     std::function<void (int, int)> onExportItemRequested; // 右クリックメニューの書き出し（同上）
-    // リージョンゲイン専用の編集通知。通常の onModelEdited（pushSnapshot）を使うとMIDIが
-    // 消音＋再発音されてしまうため、経路を分けている（MainComponent::pushAudioValueSnapshot へ繋ぐ）
-    std::function<void()> onWillEditClipGain; // ドラッグ開始・リセット直前（undoは1操作=1件）
-    std::function<void()> onClipGainEdited;   // 値の変更ごと（ドラッグ中も呼ばれる）
+    // 「クリップのオーディオ値」（リージョンゲイン・フェード）専用の編集通知。通常の
+    // onModelEdited（pushSnapshot）を使うとMIDIが消音＋再発音されてしまうため、経路を分けている
+    // （MainComponent::pushAudioValueSnapshot へ繋ぐ）
+    std::function<void()> onWillEditClipValue; // ドラッグ開始直前（undoは1操作=1件）
+    std::function<void()> onClipValueEdited;   // 値の変更ごと（ドラッグ中も呼ばれる）
     // 構造編集を受け付けてよいか（録音中は不可）。TimelineViewはPlaybackEngineを知らず
     // TransportState::recordArmed は録音待機であって録音中と別物なので、MainComponentから渡してもらう。
     // 未設定なら常に編集可（TrackHeadersView::canReorder と同じ形）
@@ -101,6 +111,39 @@ public:
     // ループハンドルの矩形（描画とヒットテストで同じものを使う）。itemX/itemRight はループ終端まで
     // 含めたアイテムの左右端、laneY はそのトラック行の上端（いずれもコンテンツ座標）
     juce::Rectangle<int> loopHandleRect (int itemX, int itemRight, int laneY) const;
+
+    // フェードハンドルの矩形（描画とヒットテストで同じものを使う）。基準は本体ではなく
+    // **連なり全体**（フェードは連なりの両端に掛かるため）。laneY はトラック行の上端。
+    // 連なりが fadeHandleMinWidth 未満なら false（ハンドルを出さない）
+    bool fadeHandleRects (const Clip& clip, int laneY, juce::Rectangle<int>& fadeInHandle,
+                          juce::Rectangle<int>& fadeOutHandle) const;
+
+    // ハンドル1つの矩形。フェード終端（fadeEndX）の上にセンタリングし、連なりの内側へクランプする
+    static juce::Rectangle<int> fadeHandleRectAt (int chainX, int chainRight, int laneY, int fadeEndX)
+    {
+        const int x = juce::jlimit (chainX, chainRight - fadeHandleWidth,
+                                    fadeEndX - fadeHandleWidth / 2);
+        return { x, laneY + 4, fadeHandleWidth, fadeHandleHeight };
+    }
+
+    // 2つのハンドル矩形とクリック位置から掴んだ方を返す（0 = フェードイン / 1 = フェードアウト / -1 = 外れ）。
+    // fadeIn + fadeOut が全長に近づくと2つの矩形は重なり、上限では完全に一致するので
+    // **クリック位置に近い方（等距離ならフェードイン）**で決める。固定順だと片方が掴めなくなる。
+    // 詰まないことの保証: フェードインを縮めればフェードアウトのハンドルが必ず露出する
+    static int pickFadeHandle (const juce::Rectangle<int>& fadeInHandle,
+                               const juce::Rectangle<int>& fadeOutHandle,
+                               juce::Point<int> pos)
+    {
+        const bool hitIn = fadeInHandle.contains (pos);
+        const bool hitOut = fadeOutHandle.contains (pos);
+        if (! hitIn && ! hitOut)
+            return -1;
+        if (hitIn != hitOut)
+            return hitIn ? 0 : 1;
+        const auto distance = [&pos] (const juce::Rectangle<int>& handle)
+        { return std::abs (handle.getCentreX() - pos.x); };
+        return distance (fadeInHandle) <= distance (fadeOutHandle) ? 0 : 1;
+    }
 
     void scrollVertically (float wheelDeltaY);       // ヘッダ上のホイールを転送してもらう
     void zoomBy (double factor);                     // 横ズーム（アンカー: 再生ヘッド or ビュー中央）
@@ -154,6 +197,10 @@ private:
     juce::int64 snapSampleToGrid (juce::int64 sample) const; // 表示中の最小グリッドの最近傍へ（リージョン移動と同じ規則）
     int hitTestRegion (int trackIndex, int x) const; // 見つからなければ-1（重なりは後勝ち）
     int hitTestClip (int trackIndex, int x) const;   // 同上（オーディオトラック用）
+    // フェードハンドルのヒットテスト。0 = フェードイン / 1 = フェードアウト / -1 = 外れ。
+    // 2つの矩形は fadeIn + fadeOut が全長に近づくと重なり、上限では完全に一致するので
+    // 「クリック位置に近い方（等距離ならフェードイン）」で決める（固定順だと片方が掴めなくなる）
+    int hitTestFadeHandle (const Clip& clip, int laneY, juce::Point<int> pos) const;
     void showItemMenu (int trackIndex, int itemIndex); // 右クリックメニュー（ミュート/複製/削除）
     void showClipGainCallout (int trackIndex, int itemIndex); // メニューの「ゲイン…」→ 吹き出し
     void applyClipGain (int trackIndex, int itemIndex, float gain); // 値の適用（index範囲を再検証する）
@@ -192,16 +239,26 @@ private:
     // クリックしただけで元と完全に重なった見えない複製が残る事故になるため）
     struct RegionDrag
     {
-        enum class Mode { none, move, resize, loop };
+        enum class Mode { none, move, resize, loop, fadeIn, fadeOut };
         Mode mode = Mode::none;
         bool isMidi = false;        // true = midiRegions / false = clips を対象にする
         int track = -1, item = -1;  // item は clips or midiRegions のindex
         juce::int64 origStartPpq = 0, origLengthPpq = 0; // MIDI用
         juce::int64 origStartSample = 0;                 // オーディオ用
         int origLoopCount = 0;      // ループ伸縮の基準（ドラッグはループ終端を掴んでいる）
+        // フェード長の基準。ループのドラッグでも使う: ループを縮めると連なり全長が縮んで
+        // フェードの再クランプが必要になるが、毎イベント「現在値」からクランプすると
+        // 縮めすぎてから戻したときにフェードが復元されない（1ジェスチャー内で値が削られる）。
+        // 毎イベント「元値を代入 → clampFades()」で再計算する
+        juce::int64 origFadeInSamples = 0, origFadeOutSamples = 0;
         int startX = 0;
         bool duplicateOnDrag = false; // ⌥ドラッグ: 最初の移動時に複製してから動かす
-        bool edited = false;          // 実際に動いた時点で onWillEditModel を一度だけ呼ぶ
+        // 実際に動いた時点で編集開始通知を一度だけ呼ぶ（フェードは onWillEditClipValue、
+        // それ以外は onWillEditModel）
+        bool edited = false;
+
+        // フェード長のドラッグか（undo種別・スナップショットの経路が構造編集と別）
+        bool isFadeDrag() const { return mode == Mode::fadeIn || mode == Mode::fadeOut; }
     };
     RegionDrag regionDrag;
 

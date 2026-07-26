@@ -54,6 +54,13 @@ struct ClipPlayback
     juce::int64 offsetSamples = 0;  // ソースバッファ内の読み出し開始位置（buildSnapshotでバッファ範囲内を保証済み）
     juce::int64 lengthSamples = 0;  // 再生長
     float gain = 1.0f;              // リージョン単位のゲイン（線形倍率。Clip::gain のコピー。値域は GainScale）
+
+    // フェードの境目（すべて絶対サンプル位置。ループ展開した全反復に同じ値が入る）。
+    // 相対長で持たないのは、フェードが「連なり全体の両端」に掛かるため複数の ClipPlayback を
+    // またぐことがあるから（例: 1小節×4ループに2小節のフェードアウト）。
+    // 空区間（end <= start）＝そのフェードなし。エンベロープの評価と区間分割は shared/ClipFade.h
+    juce::int64 fadeInStart = 0,  fadeInEnd = 0;
+    juce::int64 fadeOutStart = 0, fadeOutEnd = 0;
 };
 
 // MIDIトラックの音源1インスタンス＋オーディオスレッド専用の発音状態。

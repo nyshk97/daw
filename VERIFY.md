@@ -287,6 +287,7 @@ EOF
   - **メニュー表示中に別プロセスのCLIツール（AppKitをリンクしたswift製など）を起動するとメニューが閉じる**。検証は「Ctrl+左クリックで開く → CGWindowListで owner=LaLa-dev・name=menu のウィンドウboundsを取る → bounds高さを項目数で等分して対象項目の中心を左クリック」までを**1プロセス内**で完結させる（各操作の間に1秒程度sleep）。着弾はアプリログ（`region.split` / `region.mute` 等）で裏取りする
   - 分割の確認例: ルーラークリックでシーク → リージョンをCtrl+左クリック → 「再生ヘッド位置で分割」 → 保存後のproject.jsonで オーディオは同一`file`参照2クリップの `offsetSamples`/`lengthSamples` が連続すること、MIDIは右リージョンのノート `startPpq` が相対シフトされていることを確認
   - ループの確認例: リージョンを1回クリックして選択（**ハンドルは選択中しか出ない**）→ 下辺の右寄り40px×6px（`loopHandleRect`）をCGEvent合成でドラッグ → ログ `region.loop ... count=` と保存後のproject.jsonの `loopCount` で裏取り。ループ中は右端8pxのリサイズが無効になるので、長さを変えたいときは先にCtrl+左クリック →「ループ解除」。再生に乗っているかは⌘Bの出力WAV長を `afinfo` で見るのが確実（ループ終端まで伸びる）
+  - フェードの確認例（オーディオリージョンのみ）: リージョンを1回クリックして選択（**ハンドルは選択中しか出ない**）→ **上辺**の左右のハンドル（10px×14px・`fadeHandleRects`。位置はフェード終端に追従し、連なり全体の幅が40px未満なら出ない）をドラッグ → ログ `region.fade which=in|out ... samples=` と保存後のproject.jsonの `fadeInSamples` / `fadeOutSamples`（0のときは書かれない）で裏取り。音に乗っているかは⌘Bの出力WAVの先頭/末尾サンプルを見る（`python3` で読んで最終サンプルが≒0）。ドラッグ中の追従・ポップアップの見た目はオフスクリーン描画（下記「アプリを起動せずに描画を確認する」の合成MouseEvent）で先に潰せる
   - スクロールが必要な確認（ピアノロールの鍵盤帯域移動等）はCGEventの `scrollWheelEvent2Source`（units: .pixel）を対象座標に連打すればViewportに効く。横スクロールは `wheelCount: 2` で `wheel2` に値を渡す（タイムラインの後方マーカー確認等で使用）。ピアノロールを開いた直後は最上部（pitch 127側）表示なので、GMドラム名の確認は下方向へスクロールしてから撮る
 - 座標の目安（ウィンドウ位置 X,Y・デフォルトズーム pxPerBar=80）: タイムライン左端 = X+200、
   マーカーレーン中心 = Y+28(タイトルバー)+54(トランスポート)+26(ルーラー)+9、
@@ -390,6 +391,37 @@ view.paintEntireComponent (g, false);
 ```
 
 - 出力先は環境変数で受けて `if (getenv("...") != nullptr) { render(); return 0; }` と main の先頭で分岐させると、通常のテスト実行を汚さずに撮れる
+- **選択中のみ出る装飾を複数ケース並べたいときは「ケースごとに描いて該当行だけ切り出し、1枚へ縦に積む」**。選択は1つしか持てないので、7ケース＝7回描いて `cg.drawImage` で行を貼る（画像1枚で全ケースを見られる）
+
+**ドラッグ中の見た目とドラッグのロジックは、レーンへ合成MouseEventを送って確認できる**（実機・合成マウス不要。フェードハンドルのドラッグ検証に使用）:
+
+```cpp
+// lanes は private なので Viewport 経由で取り出す
+juce::Component* lanes = nullptr;
+for (int i = 0; i < view.getNumChildComponents(); ++i)
+    if (auto* vp = dynamic_cast<juce::Viewport*> (view.getChildComponent (i)))
+        lanes = vp->getViewedComponent();
+
+const auto source = juce::Desktop::getInstance().getMainMouseSource(); // 参照で受けると束縛エラー
+auto ev = [&] (juce::Point<int> pos, juce::Point<int> down)
+{
+    return juce::MouseEvent (source, pos.toFloat(), juce::ModifierKeys(),
+                             juce::MouseInputSource::defaultPressure,
+                             juce::MouseInputSource::defaultOrientation,
+                             juce::MouseInputSource::defaultRotation,
+                             juce::MouseInputSource::defaultTiltX,
+                             juce::MouseInputSource::defaultTiltY,
+                             lanes, lanes, juce::Time::getCurrentTime(),
+                             down.toFloat(), juce::Time::getCurrentTime(), 1, false);
+};
+lanes->mouseDown (ev (start, start));
+lanes->mouseDrag (ev (start.translated (120, 0), start)); // down位置を渡すと閾値判定が効く
+view.paintEntireComponent (g, false);                     // ドラッグ中の状態で撮れる（ポップアップも出る）
+lanes->mouseUp (ev (start.translated (120, 0), start));
+```
+
+- **pass/fail はスクショの目視でなくモデルの値で裏取りする**（例: フェードを上限まで引いて `fadeIn == 全長 - fadeOut` かつ相手が変わっていないこと、ループを縮めてから同じジェスチャー内で戻すとフェードが元の長さへ復元されること）
+- 1ジェスチャー内で複数の `mouseDrag` を送れるので、「縮めてから戻す」ような**経路依存のバグ**（現在値クランプ vs 元値クランプ）もここで捕まえられる
 
 ## サンプルレート自動追従の確認（CLI）
 

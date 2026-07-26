@@ -2,6 +2,7 @@
 
 #include <cmath>
 
+#include "../shared/ClipFade.h"
 #include "../shared/Pan.h"
 #include "AudioFilePreview.h"
 
@@ -254,7 +255,9 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
                 // 重なりクリップの加算順序・sendの乗算順序が変わり、既存プロジェクトの出力との
                 // ビット一致が崩れる（回帰確認は testMonoRenderRegressionHash のハッシュ比較）。
                 // リージョンゲインは「トラックゲインの手前に1回掛ける」形で足しており、
-                // ユニティ(1.0f)なら gain と厳密に同値なので既存の出力は変わらない
+                // ユニティ(1.0f)なら gain と厳密に同値なので既存の出力は変わらない。
+                // フェードも同じ約束で足している: フェードなしなら ClipFade::segments が
+                // 「1区間・ゲイン1.0f」に落ち、addFrom 1回（clipGain * 1.0f == clipGain）へ戻る
                 if (canProcess)
                     trackScratch.clear (0, 0, segLen); // 全トラックで再利用するため毎回必ずclear
 
@@ -270,27 +273,37 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
 
                     const int destOffset = (int) (overlapStart - segPos);
                     const int srcOffset = (int) (clip.offsetSamples + (overlapStart - clip.startSample));
-                    const int count = (int) (overlapEnd - overlapStart);
                     const float* src = clip.audio->getReadPointer (0, srcOffset);
                     const float clipGain = gain * clip.gain; // 素材のトリム → 曲中のバランスの順
 
+                    // フェードの傾斜を表現するため重なり範囲を最大3区間へ割る（フェードなしなら1区間）
+                    ClipFade::Segment segs[ClipFade::maxSegments];
+                    const int numSegs = ClipFade::segments (clip, overlapStart, overlapEnd, segPos, segs);
+
                     // 重なったクリップは加算再生（メーターは加算後ピークを測る必要があるため
                     // 一旦モノスクラッチへ合算し、pan分配は後でまとめて行う）
-                    if (canProcess)
+                    for (int s = 0; s < numSegs; ++s)
                     {
-                        trackScratch.addFrom (0, destOffset, src, count, clipGain);
-                    }
-                    else if (buffer.getNumChannels() >= 2)
-                    {
-                        // フォールバックの縮退はsend/メーターのみ。出力ルール（ch0/1・1chダウンミックス）と
-                        // pan・Masterは本編と揃える
-                        buffer.addFrom (0, outOffset + destOffset, src, count, clipGain * panL * masterGain);
-                        buffer.addFrom (1, outOffset + destOffset, src, count, clipGain * panR * masterGain);
-                    }
-                    else
-                    {
-                        buffer.addFrom (0, outOffset + destOffset, src, count,
-                                        clipGain * 0.5f * (panL + panR) * masterGain);
+                        const auto& seg = segs[s];
+                        const float* segSrc = src + (seg.destOffset - destOffset);
+                        if (canProcess)
+                        {
+                            ClipFade::addSegment (trackScratch, 0, seg.destOffset, segSrc, seg, clipGain);
+                        }
+                        else if (buffer.getNumChannels() >= 2)
+                        {
+                            // フォールバックの縮退はsend/メーターのみ。出力ルール（ch0/1・1chダウンミックス）と
+                            // pan・Masterは本編と揃える
+                            ClipFade::addSegment (buffer, 0, outOffset + seg.destOffset, segSrc, seg,
+                                                  clipGain * panL * masterGain);
+                            ClipFade::addSegment (buffer, 1, outOffset + seg.destOffset, segSrc, seg,
+                                                  clipGain * panR * masterGain);
+                        }
+                        else
+                        {
+                            ClipFade::addSegment (buffer, 0, outOffset + seg.destOffset, segSrc, seg,
+                                                  clipGain * 0.5f * (panL + panR) * masterGain);
+                        }
                     }
                 }
 
@@ -342,7 +355,6 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
 
                     const int destOffset = (int) (overlapStart - segPos);
                     const int srcOffset = (int) (clip.offsetSamples + (overlapStart - clip.startSample));
-                    const int count = (int) (overlapEnd - overlapStart);
                     const bool stereo = clip.audio->getNumChannels() >= 2;
                     const float* srcL = clip.audio->getReadPointer (0, srcOffset);
                     const float* srcR = clip.audio->getReadPointer (stereo ? 1 : 0, srcOffset);
@@ -350,20 +362,33 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
                     const float gainL = clipGain * (stereo ? balL : panL);
                     const float gainR = clipGain * (stereo ? balR : panR);
 
-                    if (canProcess)
+                    // フェードの区間分割はモノ経路と共通（フェードなしなら1区間・ゲイン1.0）
+                    ClipFade::Segment segs[ClipFade::maxSegments];
+                    const int numSegs = ClipFade::segments (clip, overlapStart, overlapEnd, segPos, segs);
+
+                    for (int s = 0; s < numSegs; ++s)
                     {
-                        trackScratch.addFrom (0, destOffset, srcL, count, gainL);
-                        trackScratch.addFrom (1, destOffset, srcR, count, gainR);
-                    }
-                    else if (buffer.getNumChannels() >= 2)
-                    {
-                        buffer.addFrom (0, outOffset + destOffset, srcL, count, gainL * masterGain);
-                        buffer.addFrom (1, outOffset + destOffset, srcR, count, gainR * masterGain);
-                    }
-                    else
-                    {
-                        buffer.addFrom (0, outOffset + destOffset, srcL, count, gainL * 0.5f * masterGain);
-                        buffer.addFrom (0, outOffset + destOffset, srcR, count, gainR * 0.5f * masterGain);
+                        const auto& seg = segs[s];
+                        const int rel = seg.destOffset - destOffset;
+                        if (canProcess)
+                        {
+                            ClipFade::addSegment (trackScratch, 0, seg.destOffset, srcL + rel, seg, gainL);
+                            ClipFade::addSegment (trackScratch, 1, seg.destOffset, srcR + rel, seg, gainR);
+                        }
+                        else if (buffer.getNumChannels() >= 2)
+                        {
+                            ClipFade::addSegment (buffer, 0, outOffset + seg.destOffset, srcL + rel, seg,
+                                                  gainL * masterGain);
+                            ClipFade::addSegment (buffer, 1, outOffset + seg.destOffset, srcR + rel, seg,
+                                                  gainR * masterGain);
+                        }
+                        else
+                        {
+                            ClipFade::addSegment (buffer, 0, outOffset + seg.destOffset, srcL + rel, seg,
+                                                  gainL * 0.5f * masterGain);
+                            ClipFade::addSegment (buffer, 0, outOffset + seg.destOffset, srcR + rel, seg,
+                                                  gainR * 0.5f * masterGain);
+                        }
                     }
                 }
 

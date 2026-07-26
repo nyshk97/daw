@@ -18,6 +18,7 @@
 #include "shared/UndoStack.h"
 #include "shared/AudioFileTypes.h"
 #include "shared/AudioBrowserNavigation.h"
+#include "shared/ClipFade.h"
 #include "shared/GainScale.h"
 #include "shared/SpawnedProcess.h"
 #include "shared/TempDirSweep.h"
@@ -29,6 +30,7 @@
 #include "ui/PreviewPolicy.h"
 #include "ui/ProjectThumbnails.h"
 #include "ui/Shortcuts.h"
+#include "ui/TimelineView.h" // フェードハンドルの矩形計算・掴み分け（staticヘルパー）の検証用
 
 namespace
 {
@@ -994,6 +996,164 @@ void testClipGainRoundtrip()
     dir.deleteRecursively();
 }
 
+// ---- ClipFade: エンベロープの定義と区間分割 ----
+// エンジンを動かす前にヘッダ単体で潰せる範囲をここで検証する
+namespace
+{
+// フェード境目を絶対位置で持つ ClipPlayback を作る（ループなしの1実体）
+ClipPlayback makeFadePlayback (juce::int64 start, juce::int64 length,
+                               juce::int64 fadeIn, juce::int64 fadeOut)
+{
+    ClipPlayback clip;
+    clip.startSample = start;
+    clip.lengthSamples = length;
+    clip.fadeInStart = start;
+    clip.fadeInEnd = start + fadeIn;
+    clip.fadeOutStart = start + length - fadeOut;
+    clip.fadeOutEnd = start + length;
+    return clip;
+}
+
+// JUCE の addFromWithRamp が区間内サンプル i に**実際に適用する**ゲイン
+// （juce_AudioSampleBuffer.h: startGain + i / numSamples * (endGain - startGain)）
+float appliedGain (const ClipFade::Segment& segment, int i)
+{
+    if (! segment.ramp)
+        return segment.startGain;
+    return segment.startGain
+           + (float) i / (float) segment.count * (segment.endGain - segment.startGain);
+}
+}
+
+void testClipFadeSegments()
+{
+    beginTest ("ClipFade envelope and segments");
+
+    ClipFade::Segment segs[ClipFade::maxSegments];
+
+    // フェードなし → 1区間・ゲイン1.0・平坦（呼び出し側が既存の addFrom 1回へ戻れること）
+    {
+        ClipPlayback clip;
+        clip.startSample = 0;
+        clip.lengthSamples = 500;
+        const int n = ClipFade::segments (clip, 100, 300, 50, segs);
+        expect (n == 1, "フェードなしは1区間");
+        expect (segs[0].destOffset == 50 && segs[0].count == 200, "destOffsetはsegPos基準・countは重なり長");
+        expect (! segs[0].ramp && juce::exactlyEqual (segs[0].startGain, 1.0f)
+                    && juce::exactlyEqual (segs[0].endGain, 1.0f),
+                "フェードなしはゲイン1.0の平坦区間");
+    }
+
+    // 閉区間定義の両端: 先頭が厳密に0・n-1番目が厳密に1／フェードアウトの最終サンプルが0
+    {
+        const auto clip = makeFadePlayback (0, 1000, 240, 240);
+        expect (juce::exactlyEqual (ClipFade::fadeInGainAt (clip, 0), 0.0f), "フェードインの先頭サンプルが0");
+        expect (std::abs (ClipFade::fadeInGainAt (clip, 239) - 1.0f) < 1.0e-6f,
+                "フェードインの n-1 番目が1（閉区間）");
+        expect (juce::exactlyEqual (ClipFade::fadeOutGainAt (clip, 999), 0.0f),
+                "フェードアウトの最終サンプルが0（閉区間）");
+        expect (std::abs (ClipFade::fadeOutGainAt (clip, 760) - 1.0f) < 1.0e-6f,
+                "フェードアウトの先頭サンプルが1");
+        // 排他端の外挿値はクランプしない（addFromWithRamp の endGain に渡す値）
+        expect (ClipFade::fadeInGainAt (clip, 240) > 1.0f, "フェードイン区間の排他端は1を超えること");
+        expect (ClipFade::fadeOutGainAt (clip, 1000) < 0.0f, "フェードアウト区間の排他端は負になること");
+    }
+
+    // 1サンプル・2サンプルのフェード（ゼロ除算のガードと端点）
+    {
+        const auto one = makeFadePlayback (0, 100, 1, 1);
+        expect (juce::exactlyEqual (ClipFade::fadeInGainAt (one, 0), 0.0f),
+                "1サンプルのフェードインはそのサンプルが無音");
+        expect (juce::exactlyEqual (ClipFade::fadeOutGainAt (one, 99), 0.0f), "1サンプルのフェードアウトも同じ");
+        const auto two = makeFadePlayback (0, 100, 2, 2);
+        expect (juce::exactlyEqual (ClipFade::fadeInGainAt (two, 0), 0.0f)
+                    && juce::exactlyEqual (ClipFade::fadeInGainAt (two, 1), 1.0f),
+                "2サンプルのフェードインは 0, 1");
+        expect (juce::exactlyEqual (ClipFade::fadeOutGainAt (two, 98), 1.0f)
+                    && juce::exactlyEqual (ClipFade::fadeOutGainAt (two, 99), 0.0f),
+                "2サンプルのフェードアウトは 1, 0");
+    }
+
+    // ブロックが1区間に完全に収まるケース（フェードイン部／平坦部／フェードアウト部）
+    {
+        const auto clip = makeFadePlayback (0, 1000, 500, 200);
+        int n = ClipFade::segments (clip, 0, 100, 0, segs);
+        expect (n == 1 && segs[0].ramp && juce::exactlyEqual (segs[0].startGain, 0.0f),
+                "フェードイン内のブロックは1傾斜区間");
+        n = ClipFade::segments (clip, 600, 700, 0, segs);
+        expect (n == 1 && ! segs[0].ramp && juce::exactlyEqual (segs[0].startGain, 1.0f),
+                "平坦部のブロックは平坦区間");
+        n = ClipFade::segments (clip, 850, 950, 0, segs);
+        expect (n == 1 && segs[0].ramp && segs[0].startGain < 1.0f && segs[0].endGain < segs[0].startGain,
+                "フェードアウト内のブロックは下る傾斜区間");
+    }
+
+    // 3区間すべてにまたがるブロック（短いクリップ＋長いフェード）
+    {
+        const auto clip = makeFadePlayback (0, 100, 30, 40);
+        const int n = ClipFade::segments (clip, 0, 100, 0, segs);
+        expect (n == 3, "3区間に割れること");
+        if (n == 3)
+        {
+            expect (segs[0].destOffset == 0 && segs[0].count == 30 && segs[0].ramp, "1区間目=フェードイン部");
+            expect (segs[1].destOffset == 30 && segs[1].count == 30 && ! segs[1].ramp, "2区間目=平坦部");
+            expect (segs[2].destOffset == 60 && segs[2].count == 40 && segs[2].ramp, "3区間目=フェードアウト部");
+            // 区間種別をまたぐ境界は「実際に適用されるゲイン」で連続する
+            // （パラメータは一致しない: フェードイン排他端の外挿値は n/(n-1) > 1 で、平坦部の 1.0 と違う）
+            expect (std::abs (appliedGain (segs[0], 29) - 1.0f) < 1.0e-6f,
+                    "フェードイン部の最終サンプルが厳密に1（次の平坦部と連続）");
+            expect (std::abs (appliedGain (segs[1], 29) - appliedGain (segs[2], 0)) < 1.0e-6f,
+                    "平坦部の最終サンプルとフェードアウト部の先頭サンプルが連続すること");
+            expect (std::abs (appliedGain (segs[2], 39)) < 1.0e-6f,
+                    "フェードアウト部の最終サンプルが0（段差が消える条件）");
+        }
+    }
+
+    // 同一傾斜内でブロック分割したときは**パラメータが一致する**（絶対位置から評価し直すため）
+    {
+        const auto clip = makeFadePlayback (0, 1000, 500, 0);
+        ClipFade::Segment first[ClipFade::maxSegments], second[ClipFade::maxSegments];
+        ClipFade::segments (clip, 0, 64, 0, first);
+        ClipFade::segments (clip, 64, 128, 64, second);
+        expect (juce::exactlyEqual (first[0].endGain, second[0].startGain),
+                "同一傾斜内の分割では前ブロックのendGainと次のstartGainが一致すること");
+    }
+
+    // フェードインの終端とフェードアウトの開始が接するケース（fadeIn + fadeOut == 全長）
+    {
+        const auto clip = makeFadePlayback (0, 100, 40, 60);
+        const int n = ClipFade::segments (clip, 0, 100, 0, segs);
+        expect (n == 2, "平坦部が消えて2区間になること");
+        if (n == 2)
+            expect (segs[0].count == 40 && segs[1].count == 60, "境目がちょうど接すること");
+    }
+
+    // ループ展開: フェードが反復をまたぐ（絶対位置で持つ設計の要）。
+    // 本体100×4反復（連なり 0..400）に 250サンプルのフェードアウト
+    {
+        ClipPlayback rep2, rep3;
+        rep2.startSample = 100;
+        rep3.startSample = 200;
+        for (auto* clip : { &rep2, &rep3 })
+        {
+            clip->lengthSamples = 100;
+            clip->fadeInStart = clip->fadeInEnd = 0; // フェードインなし
+            clip->fadeOutStart = 150;
+            clip->fadeOutEnd = 400;
+        }
+        int n = ClipFade::segments (rep2, 100, 200, 100, segs);
+        expect (n == 2 && ! segs[0].ramp && segs[1].ramp,
+                "フェードアウトの開始をまたぐ反復は 平坦→傾斜 の2区間になること");
+        const float lastOfRep2 = n == 2 ? appliedGain (segs[1], segs[1].count - 1) : 0.0f;
+
+        n = ClipFade::segments (rep3, 200, 300, 200, segs);
+        expect (n == 1 && segs[0].ramp, "フェードアウトの途中に入る反復は1傾斜区間");
+        const float firstOfRep3 = n == 1 ? appliedGain (segs[0], 0) : 0.0f;
+        expect (firstOfRep3 < lastOfRep2 && firstOfRep3 > 0.0f,
+                "反復をまたいでも1.0へ戻らず単調に下がり続けること");
+    }
+}
+
 // ---- リージョンゲインがスナップショットへ載ること（ループ展開の各反復にも同じ値） ----
 void testClipGainSnapshot()
 {
@@ -1020,6 +1180,262 @@ void testClipGainSnapshot()
     for (size_t i = 0; i < clips.size(); ++i)
         expect (std::abs (clips[i].gain - GainScale::toLinear (-6.0)) < 1.0e-6f,
                 "展開された各実体に同じゲインが載ること");
+}
+
+// ---- フェードの不変条件（Clip::clampFades）。規則は「fadeIn を先に頭打ち → 残りで fadeOut」----
+// この非対称性が意味を持つのはループ縮小のとき（どちらかを削るしかない場面）で、
+// フェード自身のドラッグはこの関数を直接通さない（相手を押しのけてしまうため）
+void testClipFadeClamp()
+{
+    beginTest ("clip fade clamp rules");
+
+    Clip clip;
+    clip.lengthSamples = 100;
+
+    clip.fadeInSamples = 80;
+    clip.fadeOutSamples = 40;
+    clip.clampFades();
+    expect (clip.fadeInSamples == 80 && clip.fadeOutSamples == 20,
+            "全長を超える分は fadeOut だけが削られること（fadeIn 優先）");
+
+    clip.fadeInSamples = 500; // fadeIn 単体が全長超え
+    clip.fadeOutSamples = 30;
+    clip.clampFades();
+    expect (clip.fadeInSamples == 100 && clip.fadeOutSamples == 0,
+            "fadeIn が全長で頭打ちになり fadeOut は0になること");
+
+    clip.fadeInSamples = -5;
+    clip.fadeOutSamples = -1;
+    clip.clampFades();
+    expect (clip.fadeInSamples == 0 && clip.fadeOutSamples == 0, "負値は0へ寄せること");
+
+    // 判定はループ込みの全長（totalLengthSamples）。収まっていれば触らない
+    clip.loopCount = 3; // 全長 400
+    clip.fadeInSamples = 150;
+    clip.fadeOutSamples = 200;
+    clip.clampFades();
+    expect (clip.fadeInSamples == 150 && clip.fadeOutSamples == 200,
+            "ループ込みの全長に収まっていれば変えないこと");
+
+    // ループを減らすと全長が縮む → 再クランプが要る（ループ縮小・ループ解除の経路）
+    clip.loopCount = 1; // 全長 200
+    clip.clampFades();
+    expect (clip.fadeInSamples == 150 && clip.fadeOutSamples == 50,
+            "ループ縮小で全長が縮んだら fadeOut が削られること");
+    clip.loopCount = 0; // 全長 100
+    clip.clampFades();
+    expect (clip.fadeInSamples == 100 && clip.fadeOutSamples == 0,
+            "さらに縮めば fadeIn も全長で頭打ちになること");
+}
+
+// ---- フェードのドラッグ規則（相手を押しのけない／ループ伸縮での元値方式／ハンドルの掴み分け）----
+void testClipFadeDragRules()
+{
+    beginTest ("clip fade drag rules");
+
+    // 相手を押しのけない: 全長100・fadeOut=40 のとき fadeIn は60で止まる（逆向きも同様）。
+    // clampFades() を直接通す実装に戻すと fadeIn=80 / fadeOut=20 になって落ちる
+    {
+        Clip clip;
+        clip.lengthSamples = 100;
+        clip.fadeInSamples = 0;
+        clip.fadeOutSamples = 40;
+        expect (clip.clampedFadeIn (80) == 60, "フェードインは相手の手前で止まること");
+        expect (clip.clampedFadeIn (-10) == 0, "負方向は0で止まること");
+
+        clip.fadeInSamples = 40;
+        clip.fadeOutSamples = 0;
+        expect (clip.clampedFadeOut (80) == 60, "フェードアウトも相手の手前で止まること");
+
+        // 適用してみて相手が変わっていないことを確かめる（押しのけていない証明）
+        clip.fadeInSamples = 0;
+        clip.fadeOutSamples = 40;
+        clip.fadeInSamples = clip.clampedFadeIn (80);
+        clip.clampFades(); // 保険。ここで相手が削られてはいけない
+        expect (clip.fadeInSamples == 60 && clip.fadeOutSamples == 40,
+                "ドラッグ後も相手のフェードが元の長さのままであること");
+    }
+
+    // ループのドラッグ: 毎イベント「元値を代入 → clampFades()」で再計算するので、
+    // 縮めすぎてから戻すとフェードが元の長さに復元される（現在値からクランプすると復元されない）
+    {
+        Clip clip;
+        clip.lengthSamples = 100;
+        clip.loopCount = 3; // 全長 400
+        const juce::int64 origIn = 150, origOut = 200;
+        clip.fadeInSamples = origIn;
+        clip.fadeOutSamples = origOut;
+
+        const auto applyLoopDrag = [&clip, origIn, origOut] (int loopCount)
+        {
+            clip.loopCount = loopCount;
+            clip.fadeInSamples = origIn;   // 元値方式（RegionDrag::origFade*Samples 相当）
+            clip.fadeOutSamples = origOut;
+            clip.clampFades();
+        };
+
+        applyLoopDrag (1); // 全長200まで縮める → fadeOut が削られる
+        expect (clip.fadeInSamples == 150 && clip.fadeOutSamples == 50, "縮めた途中では削られること");
+        applyLoopDrag (0); // さらに縮める
+        expect (clip.fadeInSamples == 100 && clip.fadeOutSamples == 0, "限界まで縮めると両方削られること");
+        applyLoopDrag (3); // 元へ戻す
+        expect (clip.fadeInSamples == origIn && clip.fadeOutSamples == origOut,
+                "同じジェスチャー内で戻せばフェードが元の長さに復元されること");
+
+        // 現在値からクランプする実装だと復元されない（この差を明示しておく）
+        clip.loopCount = 0;
+        clip.clampFades();
+        clip.loopCount = 3;
+        clip.clampFades();
+        expect (clip.fadeInSamples == 100 && clip.fadeOutSamples == 0,
+                "現在値クランプでは戻しても復元されないこと（元値方式が必要な理由）");
+    }
+
+    // ハンドルの掴み分け: 重なったら近い方・等距離ならフェードイン
+    {
+        const auto inHandle = TimelineView::fadeHandleRectAt (0, 200, 0, 100);
+        const auto outHandle = TimelineView::fadeHandleRectAt (0, 200, 0, 100);
+        expect (inHandle == outHandle, "フェード終端が一致すると矩形も完全に一致すること");
+        const int centreX = inHandle.getCentreX();
+        const int y = inHandle.getCentreY();
+        expect (TimelineView::pickFadeHandle (inHandle, outHandle, { centreX, y }) == 0,
+                "完全に重なったときはフェードインを掴むこと");
+
+        // 少しずれた2つ: クリック位置に近い方を選ぶ
+        const auto left = TimelineView::fadeHandleRectAt (0, 200, 0, 100);
+        const auto right = TimelineView::fadeHandleRectAt (0, 200, 0, 106);
+        expect (left != right, "終端がずれれば矩形もずれること");
+        expect (TimelineView::pickFadeHandle (left, right, { left.getCentreX(), y }) == 0,
+                "左寄りのクリックはフェードイン側");
+        expect (TimelineView::pickFadeHandle (left, right, { right.getCentreX(), y }) == 1,
+                "右寄りのクリックはフェードアウト側");
+        expect (TimelineView::pickFadeHandle (left, right, { left.getX() - 5, y }) == -1,
+                "どちらの矩形の外なら掴まないこと");
+
+        // 連なりの内側へのクランプ（端では矩形がはみ出さない）
+        const auto atStart = TimelineView::fadeHandleRectAt (10, 210, 0, 10);
+        const auto atEnd = TimelineView::fadeHandleRectAt (10, 210, 0, 210);
+        expect (atStart.getX() == 10, "左端では連なりの内側に収まること");
+        expect (atEnd.getRight() == 210, "右端でも連なりの内側に収まること");
+    }
+
+    // undo: clipValue 種別でフェードが往復すること（履歴は Clip のコピーなので値が乗る）
+    {
+        Project project;
+        Track track;
+        track.id = 1;
+        Clip clip;
+        clip.lengthSamples = 1000;
+        clip.fadeInSamples = 100;
+        track.clips.push_back (std::move (clip));
+        project.tracks.push_back (std::move (track));
+
+        UndoStack undo;
+        undo.begin (project, UndoStack::EditKind::clipValue);
+        project.tracks[0].clips[0].fadeInSamples = 400;
+
+        UndoStack::EditKind kind {};
+        expect (undo.undo (project, kind), "undoできること");
+        expect (kind == UndoStack::EditKind::clipValue, "種別が clipValue で戻ること（発音を乱さない経路）");
+        expect (project.tracks[0].clips[0].fadeInSamples == 100, "フェード長が戻ること");
+        expect (undo.redo (project, kind) && project.tracks[0].clips[0].fadeInSamples == 400,
+                "redoで再適用されること");
+    }
+}
+
+// ---- フェードの保存・読み込み。0のときは書かないので、出来上がるJSONはv10以前と同じ形 ----
+void testClipFadeRoundtrip()
+{
+    beginTest ("clip fade roundtrip, clamp and legacy default");
+    const auto dir = makeTempDir();
+
+    juce::String error;
+    auto project = Project::createNew (dir.getChildFile ("proj"), error);
+    expect (project != nullptr, "createNewできること");
+    if (project == nullptr)
+        { dir.deleteRecursively(); return; }
+
+    const auto wavFile = project->directory.getChildFile ("clip-001.wav");
+    expect (writeTestWav (wavFile, 4410), "テストWAVを書けること");
+    Clip clip;
+    clip.fileName = "clip-001.wav";
+    clip.audio = Project::loadWav (wavFile);
+    clip.lengthSamples = clip.audio != nullptr ? clip.audio->getNumSamples() : 0;
+    clip.fadeInSamples = 1000;
+    clip.fadeOutSamples = 500;
+    project->tracks[0].clips.push_back (std::move (clip));
+
+    expect (project->save (error), "保存できること");
+    const auto jsonFile = project->directory.getChildFile ("project.json");
+    const auto clipHasFadeKeys = [&jsonFile]
+    {
+        const auto parsed = juce::JSON::parse (jsonFile.loadFileAsString());
+        if (auto* tracks = parsed.getProperty ("tracks", {}).getArray())
+            if (! tracks->isEmpty())
+                if (auto* clips = (*tracks)[0].getProperty ("clips", {}).getArray())
+                    if (! clips->isEmpty())
+                        return (*clips)[0].hasProperty ("fadeInSamples")
+                               || (*clips)[0].hasProperty ("fadeOutSamples");
+        return false;
+    };
+    expect (clipHasFadeKeys(), "フェードありはJSONに書かれること");
+
+    juce::StringArray warnings;
+    auto reloaded = Project::load (project->directory, warnings, error);
+    expect (reloaded != nullptr, "再読込できること");
+    if (reloaded == nullptr)
+        { dir.deleteRecursively(); return; }
+    expect (reloaded->tracks[0].clips.size() == 1
+                && reloaded->tracks[0].clips[0].fadeInSamples == 1000
+                && reloaded->tracks[0].clips[0].fadeOutSamples == 500,
+            "フェード長が復元されること");
+
+    reloaded->tracks[0].clips[0].fadeInSamples = 0;
+    reloaded->tracks[0].clips[0].fadeOutSamples = 0;
+    expect (reloaded->save (error), "フェードなしで保存できること");
+    expect (! clipHasFadeKeys(), "フェードなしはJSONに書かれないこと（旧形式と同じ形）");
+
+    auto legacy = Project::load (project->directory, warnings, error);
+    expect (legacy != nullptr, "旧形式相当のJSONを読めること");
+    if (legacy != nullptr)
+        expect (legacy->tracks[0].clips[0].fadeInSamples == 0
+                    && legacy->tracks[0].clips[0].fadeOutSamples == 0,
+                "欠損時はフェードなし");
+
+    // 手編集JSONの範囲外は読込時にクランプする（不変条件が破れたモデルを持ち回らない）
+    {
+        const auto outOfRange = makeTempDir();
+        expect (writeTestWav (outOfRange.getChildFile ("clip-001.wav"), 4410), "テストWAVを書けること");
+        const char* json = R"({
+            "version": 11, "bpm": 120.0, "sampleRate": 44100.0, "nextId": 2,
+            "tracks": [
+                { "id": 1, "type": "audio", "name": "X",
+                  "clips": [
+                    { "file": "clip-001.wav", "startSample": 0, "lengthSamples": 4410,
+                      "fadeInSamples": 99999, "fadeOutSamples": 5000 },
+                    { "file": "clip-001.wav", "startSample": 0, "lengthSamples": 4410,
+                      "fadeInSamples": -10, "fadeOutSamples": -20 },
+                    { "file": "clip-001.wav", "startSample": 0, "lengthSamples": 1000, "loopCount": 3,
+                      "fadeInSamples": 1500, "fadeOutSamples": 3000 }
+                  ] }
+            ]
+        })";
+        outOfRange.getChildFile ("project.json").replaceWithText (json);
+        auto clamped = Project::load (outOfRange, warnings, error);
+        expect (clamped != nullptr && clamped->tracks[0].clips.size() == 3, "読込めること");
+        if (clamped != nullptr && clamped->tracks[0].clips.size() == 3)
+        {
+            const auto& clips = clamped->tracks[0].clips;
+            expect (clips[0].fadeInSamples == 4410 && clips[0].fadeOutSamples == 0,
+                    "過大値は全長で頭打ち（fadeIn 優先で fadeOut は0）");
+            expect (clips[1].fadeInSamples == 0 && clips[1].fadeOutSamples == 0, "負値は0へ");
+            expect (clips[2].fadeInSamples == 1500 && clips[2].fadeOutSamples == 2500,
+                    "ループ込みの全長(4000)で判定されること");
+        }
+        outOfRange.deleteRecursively();
+    }
+
+    dir.deleteRecursively();
 }
 
 
@@ -1416,6 +1832,43 @@ void testSplitClip()
     if (! right.peakCache.empty())
         expect (juce::approximatelyEqual (right.peakCache[0], 449.0f), // max(|150..449|)
                 "右のpeakCacheが自分の参照範囲から作られること");
+
+    // フェードは外側だけ継承する（内側＝分割点側は0）。丸ごとコピーだと分割点にフェードが移動する
+    {
+        Clip faded = clip;
+        faded.fadeInSamples = 40;
+        faded.fadeOutSamples = 60;
+        Clip fl, fr;
+        expect (splitClip (faded, 1100, fl, fr), "フェード付きも分割できること");
+        expect (fl.fadeInSamples == 40 && fl.fadeOutSamples == 0,
+                "左は fadeIn を継承し fadeOut は0（分割点にフェードを作らない）");
+        expect (fr.fadeInSamples == 0 && fr.fadeOutSamples == 60,
+                "右は fadeOut を継承し fadeIn は0");
+
+        // 継承側も自分の長さでクランプする（左は100サンプルしかない）
+        faded.fadeInSamples = 300;
+        expect (splitClip (faded, 1100, fl, fr), "長いフェード付きも分割できること");
+        expect (fl.fadeInSamples == 100, "継承した fadeIn が左の長さへ収まること");
+    }
+
+    // ループ済みクリップの分割: ループは解除して返す。**解除はフェードのクランプより先**に
+    // 行わないと、元のループ込み全長で通したフェードが分割後の全長を超えて残る
+    // （描画は未クランプ値・再生は防御クランプ値を使うため見た目と音が食い違う）
+    {
+        Clip looped = clip;
+        looped.lengthSamples = 400;
+        looped.loopCount = 3;          // 連なり 1600
+        looped.fadeInSamples = 900;    // どちらも本体長(400)より長い
+        looped.fadeOutSamples = 600;
+        Clip ll, lr;
+        expect (splitClip (looped, 1100, ll, lr), "ループ済みクリップも分割できること");
+        expect (ll.loopCount == 0 && lr.loopCount == 0, "分割でループが解除されること");
+        expect (ll.fadeInSamples + ll.fadeOutSamples <= ll.totalLengthSamples()
+                    && lr.fadeInSamples + lr.fadeOutSamples <= lr.totalLengthSamples(),
+                "左右のフェードが分割後の全長に収まること（不変条件が破れないこと）");
+        expect (ll.fadeInSamples == 100 && lr.fadeOutSamples == 300,
+                "継承したフェードがそれぞれの長さで頭打ちになること");
+    }
 
     Clip unused1, unused2;
     expect (! splitClip (clip, 1000, unused1, unused2), "開始境界ちょうどはno-op");
@@ -2410,6 +2863,14 @@ void testAudioValuesOnlySnapshot()
         snapshots.deleteRetired();
         snapshots.push (project.buildSnapshot (Project::SnapshotChange::audioValuesOnly));
         expect (std::abs (measure() - 0.2f) < 0.001f, "世代据え置きでもクリップゲインが音に反映されること");
+
+        // フェードも同じ経路で音へ届く（ドラッグ中の反映に使う）。ブロック全体を覆う
+        // フェードインなので、測定ブロックのピークは末尾サンプル ≒ 0.2 * (511/1023)
+        project.tracks[0].clips[0].fadeInSamples = blockSize * 2;
+        snapshots.deleteRetired();
+        snapshots.push (project.buildSnapshot (Project::SnapshotChange::audioValuesOnly));
+        expect (std::abs (measure() - 0.2f * 511.0f / 1023.0f) < 0.002f,
+                "世代据え置きでもフェードが音に反映されること");
 
         snapshots.deleteRetired();
     }
@@ -4922,6 +5383,223 @@ void testEngineClipGain()
     snapshots.deleteRetired();
 }
 
+// ---- フェードの境目がスナップショット・⌘E用レンダリング要求へ載ること ----
+// 「連なり全体の両端」なので全反復に同じ絶対位置が入る（ここ1箇所で再生・⌘E・⌘Bの3経路に効く）
+void testClipFadeSnapshot()
+{
+    beginTest ("clip fade in snapshot and item render");
+
+    Project project;
+    Track track;
+    track.id = 1;
+    Clip clip;
+    clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, 2000);
+    clip.audio->clear();
+    clip.startSample = 500;
+    clip.lengthSamples = 250;
+    clip.loopCount = 3; // 連なり = 500..1500
+    clip.fadeInSamples = 100;
+    clip.fadeOutSamples = 400; // 反復をまたぐ長さ（250 < 400）
+    track.clips.push_back (std::move (clip));
+    project.tracks.push_back (std::move (track));
+
+    auto snapshot = project.buildSnapshot();
+    expect (snapshot != nullptr && snapshot->tracks.size() == 1, "スナップショットが作れること");
+    if (snapshot == nullptr || snapshot->tracks.empty())
+        return;
+    const auto& clips = snapshot->tracks[0].clips;
+    expect (clips.size() == 4, "ループ分が展開されること");
+    for (const auto& playback : clips)
+        expect (playback.fadeInStart == 500 && playback.fadeInEnd == 600
+                    && playback.fadeOutStart == 1100 && playback.fadeOutEnd == 1500,
+                "各反復に連なり全体の両端が絶対位置で載ること");
+
+    // ⌘E（リージョン単体書き出し）も同じヘルパーを通る
+    BounceRenderer::TrackRender render;
+    juce::int64 rangeStart = 0, rangeEnd = 0;
+    expect (BounceRenderer::buildItemRender (project.tracks[0], 0, 120.0, 48000.0,
+                                            render, rangeStart, rangeEnd),
+            "buildItemRenderが成功すること");
+    expect (render.clips.size() == 4 && render.clips[0].fadeInEnd == 600
+                && render.clips[3].fadeOutStart == 1100,
+            "⌘E用のレンダリング要求にもフェードの境目が載ること");
+
+    // モデルの不変条件が破れていても、展開時に頭打ちして区間が交差しないようにする
+    project.tracks[0].clips[0].fadeInSamples = 99999;
+    project.tracks[0].clips[0].fadeOutSamples = 99999;
+    auto defensive = project.buildSnapshot();
+    if (defensive != nullptr && ! defensive->tracks.empty() && ! defensive->tracks[0].clips.empty())
+    {
+        const auto& playback = defensive->tracks[0].clips[0];
+        expect (playback.fadeInEnd == 1500 && playback.fadeOutStart == 1500,
+                "異常値でもフェードイン優先で連なり内に収まること");
+    }
+}
+
+// ---- フェードが再生に効くこと（モノ経路・ステレオ経路・ループまたぎ・ゲイン併用・ブロック境界）----
+void testEngineClipFade()
+{
+    beginTest ("engine applies clip fades");
+
+    constexpr double sr = 48000.0;
+    constexpr int totalSamples = 2048;
+
+    // 指定ブロックサイズで totalSamples ぶんレンダリングする（ブロック境界の影響を見るため可変）
+    const auto render = [&] (Project& project, int blockSize)
+    {
+        juce::AudioBuffer<float> out (2, totalSamples);
+        out.clear();
+        TransportState transport;
+        SnapshotExchange snapshots;
+        PreviewFifo previewFifo;
+        PlaybackEngine engine (transport, snapshots, previewFifo);
+        engine.prepareToPlay (blockSize, sr);
+        snapshots.push (project.buildSnapshot());
+        transport.seekRequest.store (0);
+        engine.play();
+
+        juce::AudioBuffer<float> buffer (2, blockSize);
+        for (int pos = 0; pos < totalSamples; pos += blockSize)
+        {
+            buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+            engine.process (info);
+            const int n = juce::jmin (blockSize, totalSamples - pos);
+            for (int ch = 0; ch < 2; ++ch)
+                out.copyFrom (ch, pos, buffer, ch, 0, n);
+        }
+        engine.stop();
+        snapshots.deleteRetired();
+        return out;
+    };
+    const auto makeProject = [] (int channels, float value, juce::int64 fadeIn, juce::int64 fadeOut,
+                                 float gain, int loopCount, juce::int64 length)
+    {
+        auto project = std::make_unique<Project>();
+        Track track;
+        track.id = 1;
+        track.params->gain.store (1.0f); // panセンター・トラックゲイン1.0で素の振幅を見る
+        Clip clip;
+        clip.audio = std::make_shared<juce::AudioBuffer<float>> (channels, (int) length);
+        for (int ch = 0; ch < channels; ++ch)
+            for (int i = 0; i < (int) length; ++i)
+                clip.audio->setSample (ch, i, ch == 0 ? value : value * 0.5f); // ステレオはL:R = 2:1
+        clip.lengthSamples = length;
+        clip.loopCount = loopCount;
+        clip.gain = gain;
+        clip.fadeInSamples = fadeIn;
+        clip.fadeOutSamples = fadeOut;
+        track.clips.push_back (std::move (clip));
+        project->tracks.push_back (std::move (track));
+        return project;
+    };
+
+    // ---- モノ経路: 240サンプル（5ms）のフェードイン/アウト ----
+    {
+        auto project = makeProject (1, 0.5f, 240, 240, 1.0f, 0, totalSamples);
+        const auto out = render (*project, 512);
+        expect (std::abs (out.getSample (0, 0)) <= 1.0e-4f, "フェードインの先頭サンプルが無音とみなせること");
+        expect (std::abs (out.getSample (0, 119) - 0.5f * 119.0f / 239.0f) < 0.002f,
+                "フェードイン中間がおよそ半分の振幅になること");
+        expect (std::abs (out.getSample (0, 239) - 0.5f) < 0.002f, "フェードイン終端でフル振幅になること");
+        // 厳密一致にはしない: panセンターのゲイン（cos(π/4)*√2）がfloatで 1.0 にわずかに満たない
+        expect (std::abs (out.getSample (0, 1000) - 0.5f) < 1.0e-6f, "平坦部は素の振幅（乗算なし）であること");
+        // 段差が消える条件。半開区間へ退行すると 4.2e-3（-47.6dB）になるのでこの閾値で検出できる
+        expect (std::abs (out.getSample (0, totalSamples - 1)) <= 1.0e-4f,
+                "フェードアウトの最終サンプルが無音とみなせること（許容 -80dB）");
+        expect (std::abs (out.getSample (0, totalSamples - 240) - 0.5f) < 0.002f,
+                "フェードアウト開始でフル振幅であること");
+        for (int i = 0; i < totalSamples; ++i)
+            if (! std::isfinite (out.getSample (0, i)))
+            {
+                expect (false, "出力にNaN/Infが出ないこと");
+                break;
+            }
+    }
+
+    // ---- ステレオ経路: L/Rのバランスを保ったまま傾斜すること ----
+    {
+        auto project = makeProject (2, 0.4f, 240, 240, 1.0f, 0, totalSamples);
+        const auto out = render (*project, 512);
+        expect (std::abs (out.getSample (0, 0)) <= 1.0e-4f && std::abs (out.getSample (1, 0)) <= 1.0e-4f,
+                "ステレオも先頭が無音とみなせること");
+        expect (std::abs (out.getSample (0, 120) - out.getSample (1, 120) * 2.0f) < 1.0e-5f,
+                "フェード中もL:R = 2:1が保たれること");
+        expect (std::abs (out.getSample (0, 1000) - 0.4f) < 1.0e-6f
+                    && std::abs (out.getSample (1, 1000) - 0.2f) < 1.0e-6f,
+                "平坦部は素のL/R振幅であること");
+        expect (std::abs (out.getSample (1, totalSamples - 1)) <= 1.0e-4f,
+                "ステレオのRも最終サンプルが無音とみなせること");
+    }
+
+    // ---- ループまたぎ: 反復の切れ目で1.0へ戻らず単調減少すること ----
+    {
+        // 本体256×4反復 = 1024。フェードアウト600（2反復ぶんをまたぐ）
+        auto project = makeProject (1, 0.5f, 0, 600, 1.0f, 3, 256);
+        const auto out = render (*project, 512);
+        const int chainEnd = 1024;
+        const int fadeStart = chainEnd - 600;
+        bool monotonic = true;
+        for (int i = fadeStart + 1; i < chainEnd; ++i)
+            if (out.getSample (0, i) > out.getSample (0, i - 1) + 1.0e-6f)
+                monotonic = false;
+        expect (monotonic, "フェードアウト中は反復境界でも増加しないこと");
+        // 反復の切れ目（512 = 2反復目の終わり）でフル振幅へ戻っていないこと
+        expect (out.getSample (0, 512) < 0.5f * 0.9f, "反復の切れ目でフル振幅へ戻らないこと");
+        expect (std::abs (out.getSample (0, chainEnd - 1)) <= 1.0e-4f, "連なり末尾が無音とみなせること");
+        expect (std::abs (out.getSample (0, 100) - 0.5f) < 1.0e-6f,
+                "フェードの外（連なり前半）は素の振幅であること");
+    }
+
+    // ---- リージョンゲインとの併用: 両方が掛かること ----
+    {
+        auto project = makeProject (1, 0.4f, 240, 0, 0.5f, 0, totalSamples);
+        const auto out = render (*project, 512);
+        expect (std::abs (out.getSample (0, 1000) - 0.2f) < 1.0e-6f, "平坦部はゲインぶんだけ下がること");
+        expect (std::abs (out.getSample (0, 119) - 0.2f * 119.0f / 239.0f) < 0.002f,
+                "フェード中もゲインが掛かること");
+    }
+
+    // ---- 1〜2サンプルのフェード（境界条件。段差が消えることは主張しない）----
+    {
+        auto project = makeProject (1, 0.5f, 1, 1, 1.0f, 0, totalSamples);
+        const auto out = render (*project, 512);
+        expect (juce::exactlyEqual (out.getSample (0, 0), 0.0f), "1サンプルのフェードインは先頭が0");
+        expect (std::abs (out.getSample (0, 1) - 0.5f) < 1.0e-6f, "その次はフル振幅（n=1の仕様）");
+        expect (std::abs (out.getSample (0, totalSamples - 1)) < 1.0e-6f,
+                "1サンプルのフェードアウトは最終サンプルが0");
+        expect (std::abs (out.getSample (0, totalSamples - 2) - 0.5f) < 1.0e-6f, "その手前はフル振幅");
+
+        auto two = makeProject (1, 0.5f, 2, 2, 1.0f, 0, totalSamples);
+        const auto outTwo = render (*two, 512);
+        expect (std::abs (outTwo.getSample (0, 0)) < 1.0e-6f
+                    && std::abs (outTwo.getSample (0, 1) - 0.5f) < 1.0e-6f,
+                "2サンプルのフェードインは 0, フル振幅");
+        expect (std::abs (outTwo.getSample (0, totalSamples - 1)) < 1.0e-6f
+                    && std::abs (outTwo.getSample (0, totalSamples - 2) - 0.5f) < 1.0e-6f,
+                "2サンプルのフェードアウトは フル振幅, 0");
+    }
+
+    // ---- ブロック境界をまたぐフェード: ブロックサイズを変えても出力が一致すること ----
+    // ランプの継ぎ目にギャップが無いことの証明。float累積のしかたが変わるのでビット一致はしない
+    // （240サンプルのフェード × B=64/256/1024 の実測差は 3.13e-6）
+    {
+        auto a = makeProject (1, 0.5f, 240, 240, 1.0f, 0, totalSamples);
+        auto b = makeProject (1, 0.5f, 240, 240, 1.0f, 0, totalSamples);
+        auto c = makeProject (1, 0.5f, 240, 240, 1.0f, 0, totalSamples);
+        const auto out64 = render (*a, 64);
+        const auto out256 = render (*b, 256);
+        const auto out1024 = render (*c, 1024);
+        float maxDiff = 0.0f;
+        for (int i = 0; i < totalSamples; ++i)
+        {
+            maxDiff = juce::jmax (maxDiff, std::abs (out64.getSample (0, i) - out1024.getSample (0, i)));
+            maxDiff = juce::jmax (maxDiff, std::abs (out256.getSample (0, i) - out1024.getSample (0, i)));
+        }
+        expect (maxDiff < 1.0e-5f, "ブロックサイズ違いでも許容誤差内で一致すること");
+    }
+}
+
 // ---- エンジンとバウンスの一致: 同一のモノ＋ステレオ混在構成でL/Rサンプルが一致すること ----
 void testEngineBounceStereoConsistency()
 {
@@ -4952,6 +5630,9 @@ void testEngineBounceStereoConsistency()
         clip.audio = makeAudio (2, totalSamples, 0.4f);
         clip.lengthSamples = totalSamples;
         clip.gain = GainScale::toLinear (-3.0); // 2経路の一致をクリップゲイン込みで見る
+        // フェードも2経路で一致することを見る（区間分割が engine=512 / bounce=1024 で変わる条件）
+        clip.fadeInSamples = 240;
+        clip.fadeOutSamples = 1500;
         track.clips.push_back (std::move (clip));
         project.tracks.push_back (std::move (track));
     }
@@ -4965,6 +5646,8 @@ void testEngineBounceStereoConsistency()
         clip.startSample = 1000;
         clip.lengthSamples = totalSamples - 1000;
         clip.gain = GainScale::toLinear (2.0);
+        clip.fadeInSamples = 500;
+        clip.fadeOutSamples = 800;
         track.clips.push_back (std::move (clip));
         project.tracks.push_back (std::move (track));
     }
@@ -5873,9 +6556,11 @@ void testTempDirSweep()
 
 } // namespace
 
+
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit; // MessageManager 初期化（AUインスタンス化に必要）
+
 
     testV1ToV2Roundtrip();
     testMidiRoundtrip();
@@ -5898,6 +6583,11 @@ int main()
     testLoopRoundtrip();
     testClipGainRoundtrip();
     testClipGainSnapshot();
+    testClipFadeClamp();
+    testClipFadeDragRules();
+    testClipFadeRoundtrip();
+    testClipFadeSegments();
+    testClipFadeSnapshot();
     testSpreadLoopedBins();
     testBuildSnapshotFlattensNotes();
     testSynthBank();
@@ -5927,6 +6617,7 @@ int main()
     testStereoClipLoadAndV6();
     testEngineStereoPan();
     testEngineClipGain();
+    testEngineClipFade();
     testEngineBounceStereoConsistency();
     testAudioImporter();
     testAudioFilePreview();

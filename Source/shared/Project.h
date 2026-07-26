@@ -34,11 +34,52 @@ struct Clip
     // 素材の一部だけを均すトリムで、Track::sampleGain と同じスケール・同じ流儀。
     // 波形の描画振幅にも掛ける（「見た目＝出る音」を保つため）
     float gain = 1.0f;
+    // フェードイン/アウト長（サンプル単位・絶対時間。BPM変更の影響を受けない）。
+    // 掛かるのは「ループの連なり全体」の先頭と末尾だけで、繰り返しの間はシームレス
+    // （各反復に掛けると繰り返すたびに音量が抜けてポンプするため）。カーブはリニア固定。
+    // 不変条件: 0 <= fadeInSamples, 0 <= fadeOutSamples,
+    //           fadeInSamples + fadeOutSamples <= totalLengthSamples()（clampFades が強制する）
+    juce::int64 fadeInSamples = 0;
+    juce::int64 fadeOutSamples = 0;
     std::shared_ptr<juce::AudioBuffer<float>> audio; // 1ch=モノ（録音）/ 2ch=ステレオ（取り込み）。メモリ常駐
     std::vector<float> peakCache;                    // samplesPerPeak ごとの絶対値ピーク（参照範囲のみ。ステレオはL/Rのmax合成）
 
     // ループを含む総再生長（描画・ヒットテスト・終端計算はこちらを見る）
     juce::int64 totalLengthSamples() const { return lengthSamples * (1 + juce::jmax (0, loopCount)); }
+
+    // フェードの不変条件をモデル層で強制する（MidiRegion::clampNote と同じ立ち位置）。
+    // 規則は「fadeIn を先に頭打ち → 残りで fadeOut を頭打ち」。読込・splitClip・
+    // ループ解除・ループのドラッグから通す。
+    //
+    // 比率維持にしないのは、フェード長がユーザーが絶対時間（ms）で決めた値であり、
+    // 全長が変わるたびに勝手に伸縮すると意図が壊れるため。単純な頭打ちなら決定的で、
+    // どの経路からでも同じ関数を通せる。
+    //
+    // ⚠️ フェード自体のドラッグはここを直接通さないこと。この関数は fadeIn 優先なので
+    // fadeIn を伸ばすと fadeOut が押し縮められる（＝「相手を押しのけない」規則に反する）。
+    // ドラッグ側で先に `total - 相手のフェード` へ制限してから通す（通した時点で no-op になる）
+    void clampFades()
+    {
+        const auto total = totalLengthSamples();
+        fadeInSamples = juce::jlimit ((juce::int64) 0, total, fadeInSamples);
+        fadeOutSamples = juce::jlimit ((juce::int64) 0, total - fadeInSamples, fadeOutSamples);
+    }
+
+    // ハンドルのドラッグで狙った長さ（samples）を、**相手のフェードを押しのけない**範囲へ収める。
+    // 適用はしない（呼び出し側が代入する）ので、ドラッグ中の「値が実際に変わったか」判定にも使える。
+    // ここが clampFades() と別に要るのは、clampFades が fadeIn 優先だから
+    // （fadeIn を伸ばすと fadeOut が押し縮められ、ドラッグの規則に反する）
+    juce::int64 clampedFadeIn (juce::int64 samples) const
+    {
+        const auto limit = juce::jmax ((juce::int64) 0, totalLengthSamples() - fadeOutSamples);
+        return juce::jlimit ((juce::int64) 0, limit, samples);
+    }
+
+    juce::int64 clampedFadeOut (juce::int64 samples) const
+    {
+        const auto limit = juce::jmax ((juce::int64) 0, totalLengthSamples() - fadeInSamples);
+        return juce::jlimit ((juce::int64) 0, limit, samples);
+    }
 
     void buildPeakCache();
 };
@@ -57,7 +98,11 @@ struct PeakRange
 std::vector<PeakRange> buildFullPeakCache (const juce::AudioBuffer<float>& audio);
 
 // クリップを splitSample（絶対サンプル位置）で左右に分ける。左右は同じソースWAVを共有参照する。
-// 分割点が内側（開始 < 分割点 < 終端）にないときは false（境界ちょうどは分割しない）
+// 分割点が内側（開始 < 分割点 < 終端）にないときは false（境界ちょうどは分割しない）。
+// フェードは外側だけを継承する（左: fadeIn / 右: fadeOut）。内側を0にしないと
+// 分割点にフェードが移動してしまう。
+// ループは解除して返す（左右どちらに繰り返しを引き継ぐか自明でないため）。解除はフェードの
+// クランプより先に行うので、返ってきた左右は不変条件を満たしている
 bool splitClip (const Clip& clip, juce::int64 splitSample, Clip& left, Clip& right);
 
 // MIDIノート。startPpq はリージョン相対。
@@ -211,8 +256,9 @@ public:
     // v6: ステレオクリップ（ch数はJSONに持たずWAV自体から判定）・クリップ表示名（取り込み用）/
     // v7: プロジェクトメモ / v8: サンプル音源（instrument・sample*）/
     // v9: リージョン/クリップのループ（loopCount。欠損＝ループなし）/
-    // v10: オーディオリージョンのゲイン（clips[].gain。線形倍率・欠損＝1.0）
-    static constexpr int currentVersion = 10;
+    // v10: オーディオリージョンのゲイン（clips[].gain。線形倍率・欠損＝1.0）/
+    // v11: オーディオリージョンのフェード（clips[].fadeInSamples / fadeOutSamples。欠損＝0）
+    static constexpr int currentVersion = 11;
 
     juce::File directory;
     double bpm = 120.0;

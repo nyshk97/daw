@@ -439,6 +439,9 @@ public:
             }
         }
 
+        // フェードドラッグ中の数値ポップアップ（音量ドラッグと同じ流儀。常設の数値表示は置かない）
+        drawFadeDragPopup (g);
+
         // 再生ヘッド
         const int playheadX = owner.sampleToX (owner.transport.playheadSamplePos.load());
         if (playheadX >= clip.getX() - 1 && playheadX <= clip.getRight() + 1)
@@ -578,7 +581,10 @@ private:
         // 狭いリージョンでは振幅の変化だけで示す（名前とバッジを詰め込まない）
         if (std::abs (GainScale::toDb (gain)) < 0.05 || rect.getWidth() < 56)
             return 0;
-        return 34; // バッジ30px＋右マージン4px
+        // バッジ30px＋右マージン14px。マージンを4pxから広げているのはフェードアウトハンドル
+        // （fadeOut=0 のとき右端10px）との重なりを避けるため。選択状態で動くとちらつくので
+        // 条件分岐にせず常時10px左へ寄せる
+        return 44;
     }
 
     // リージョンゲインのdB値。0dBのときは何も描かない（デフォルトは沈黙、逸脱だけ主張）。
@@ -592,12 +598,124 @@ private:
 
         const auto db = GainScale::toDb (gain);
         const auto label = (db > 0.0 ? "+" : "") + juce::String (db, 1);
-        const auto badge = juce::Rectangle<int> (rect.getRight() - 34, rect.getY() + 3, 30, 13);
+        const auto badge = juce::Rectangle<int> (rect.getRight() - 44, rect.getY() + 3, 30, 13);
         g.setColour (juce::Colours::black.withAlpha (0.34f));
         g.fillRoundedRectangle (badge.toFloat(), 3.0f);
         g.setColour (juce::Colours::white.withAlpha (dimmed ? 0.45f : 0.9f));
         g.setFont (Fonts::small());
         g.drawText (label, badge, juce::Justification::centred);
+    }
+
+    // フェードの見え方: 斜線を引き、線より上を暗く落とす（Logic流）。波形は素のまま。
+    // リージョンゲイン（波形の振幅をスケール）とは流儀が違うが、フェードは「区間の形」であって
+    // 「一律の倍率」ではないので、区間を面で示す方が読める。
+    // クリップ範囲は **chainRect**（連なり全体）。本体rectでクリップすると2反復目以降の
+    // フェードアウトが音には掛かるのに画面に出ない
+    void drawFades (juce::Graphics& g, const Clip& clip, const juce::Rectangle<int>& chainRect,
+                    bool dimmed)
+    {
+        const double spp = owner.samplesPerPixel();
+        const int inPx = (int) std::llround ((double) clip.fadeInSamples / spp);
+        const int outPx = (int) std::llround ((double) clip.fadeOutSamples / spp);
+        if (inPx <= 0 && outPx <= 0)
+            return;
+
+        juce::Graphics::ScopedSaveState state (g);
+        juce::Path chain;
+        chain.addRoundedRectangle (chainRect.toFloat(), 4.0f);
+        g.reduceClipRegion (chain);
+
+        const auto left = (float) chainRect.getX();
+        const auto right = (float) chainRect.getRight();
+        const auto top = (float) chainRect.getY();
+        const auto bottom = (float) chainRect.getBottom();
+        const auto shade = juce::Colours::black.withAlpha (dimmed ? 0.24f : 0.42f);
+        const auto lineColour = juce::Colours::white.withAlpha (dimmed ? 0.5f : 0.92f);
+
+        if (inPx > 0)
+        {
+            juce::Path above; // 斜線より上（三角形）を暗く落とす
+            above.startNewSubPath (left, top);
+            above.lineTo (left + (float) inPx, top);
+            above.lineTo (left, bottom);
+            above.closeSubPath();
+            g.setColour (shade);
+            g.fillPath (above);
+            g.setColour (lineColour);
+            g.drawLine (left, bottom, left + (float) inPx, top, 1.4f);
+        }
+        if (outPx > 0)
+        {
+            juce::Path above;
+            above.startNewSubPath (right, top);
+            above.lineTo (right - (float) outPx, top);
+            above.lineTo (right, bottom);
+            above.closeSubPath();
+            g.setColour (shade);
+            g.fillPath (above);
+            g.setColour (lineColour);
+            g.drawLine (right - (float) outPx, top, right, bottom, 1.4f);
+        }
+    }
+
+    // フェードハンドル（選択中のみ・連なり全体の上辺。位置はフェード終端に追従）。
+    // 矩形はヒットテストと共有する（owner.fadeHandleRects）ので、見えている場所＝掴める場所になる
+    void drawFadeHandles (juce::Graphics& g, const Clip& clip, int y, bool isSelected)
+    {
+        if (! isSelected)
+            return;
+        juce::Rectangle<int> fadeInHandle, fadeOutHandle;
+        if (! owner.fadeHandleRects (clip, y, fadeInHandle, fadeOutHandle))
+            return;
+
+        g.setColour (juce::Colours::white.withAlpha (0.8f));
+        for (const auto& handle : { fadeInHandle, fadeOutHandle })
+            g.fillRoundedRectangle (handle.withHeight (fadeHandleVisibleHeight).toFloat(), 2.0f);
+    }
+
+    // ドラッグ中のフェード長（ms。1000ms以上は秒・小数2桁）。Logicのフェード表示と同じ単位で、
+    // 数値の常設表示は置かない（設計ドキュメント「数値表示なし・ドラッグ中ポップアップのみ」）
+    void drawFadeDragPopup (juce::Graphics& g)
+    {
+        const auto& drag = owner.regionDrag;
+        if (! drag.isFadeDrag() || owner.project == nullptr)
+            return;
+        if (drag.track < 0 || drag.track >= (int) owner.project->tracks.size())
+            return;
+        const auto& track = owner.project->tracks[(size_t) drag.track];
+        if (track.type != TrackType::audio || drag.item < 0 || drag.item >= (int) track.clips.size())
+            return;
+
+        const auto& clip = track.clips[(size_t) drag.item];
+        juce::Rectangle<int> fadeInHandle, fadeOutHandle;
+        if (! owner.fadeHandleRects (clip, drag.track * trackHeight, fadeInHandle, fadeOutHandle))
+            return;
+
+        const bool isFadeIn = drag.mode == RegionDrag::Mode::fadeIn;
+        const auto handle = isFadeIn ? fadeInHandle : fadeOutHandle;
+        const auto samples = isFadeIn ? clip.fadeInSamples : clip.fadeOutSamples;
+        const double sr = juce::jmax (1.0, owner.effectiveSampleRate());
+        const double ms = (double) samples * 1000.0 / sr;
+        const auto label = ms >= 1000.0 ? juce::String (ms / 1000.0, 2) + " s"
+                                        : juce::String ((int) std::llround (ms)) + " ms";
+
+        const auto font = Fonts::small();
+        const int w = juce::GlyphArrangement::getStringWidthInt (font, label) + 14;
+        const int h = 18;
+        // 見えている範囲（viewport の表示エリア）からはみ出さないよう寄せる
+        const auto visible = owner.viewport->getViewArea();
+        const int x = juce::jlimit (visible.getX() + 2,
+                                    juce::jmax (visible.getX() + 2, visible.getRight() - w - 2),
+                                    handle.getCentreX() - w / 2);
+        const auto box = juce::Rectangle<int> (x, handle.getBottom() + 4, w, h);
+
+        g.setColour (Theme::popupBg);
+        g.fillRoundedRectangle (box.toFloat(), 3.0f);
+        g.setColour (Theme::popupBorder);
+        g.drawRoundedRectangle (box.toFloat().reduced (0.5f), 3.0f, 1.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.92f));
+        g.setFont (font);
+        g.drawText (label, box, juce::Justification::centred);
     }
 
     void drawClip (juce::Graphics& g, const Clip& clip, int y, bool isSelected,
@@ -611,7 +729,11 @@ private:
         if (x > clipRegion.getRight() || loopRight < clipRegion.getX())
             return;
 
+        // rect（本体1反復分）は波形・表示名・バッジ用。フェードの描画とハンドルは
+        // 連なり全体（chainRect = drawLoopBand が敷く帯と同じ矩形）を基準にする
         const auto rect = juce::Rectangle<int> (x, y + 4, w, trackHeight - 8);
+        const auto chainRect = juce::Rectangle<int> (x, y + 4, juce::jmax (w, loopRight - x),
+                                                     trackHeight - 8);
         // ミュート中（リージョン単位 or トラック単位・ソロ含む）はグレー減光（Logic準拠）
         const bool dimmed = clip.muted || trackDimmed;
         const auto base = dimmed ? (isSelected ? Theme::clipMutedSelected : Theme::clipMuted)
@@ -663,7 +785,10 @@ private:
                 g.drawVerticalLine (px, midY - h, midY + h);
             }
         }
+        // フェードは波形の上に描く（斜線＝痕跡は未選択でも出す。ハンドルだけが選択中のみ）
+        drawFades (g, clip, chainRect, dimmed);
         drawLoopHandle (g, x, loopRight, y, isSelected);
+        drawFadeHandles (g, clip, y, isSelected);
 
         // 表示名（取り込みクリップのみ。録音クリップは空=無ラベル）。
         // 強弱方針: リージョン本体より控えめ（波形と同程度のアルファ）
@@ -1221,27 +1346,37 @@ void TimelineView::handleLaneMouseDown (const juce::MouseEvent& e)
                 regionSelection.clear();
                 const auto& clip = track.clips[(size_t) ci];
 
-                // オーディオは移動とループのみ（リサイズ＝トリムはTier 1スコープ外）。⌥ドラッグで複製。
-                // ループハンドルは選択中しか出ない（MIDIリージョンと同じ規則）
+                // オーディオは移動・ループ・フェードのみ（リサイズ＝トリムはTier 1スコープ外）。
+                // ⌥ドラッグで複製。判定順は フェードハンドル（上辺）→ ループハンドル（下辺）→ 移動で、
+                // どちらのハンドルも選択中しか出ない（MIDIリージョンと同じ規則）
                 const int itemX = sampleToX (clip.startSample);
                 const int itemRight = sampleToX (clip.startSample + clip.totalLengthSamples());
-                const bool onHandle = wasSelected && ! e.mods.isAltDown()
+                const bool grabbable = wasSelected && ! e.mods.isAltDown();
+                const int fadeHandle = grabbable ? hitTestFadeHandle (clip, row * trackHeight,
+                                                                     { e.x, e.y })
+                                                 : -1;
+                const bool onHandle = fadeHandle < 0 && grabbable
                                       && loopHandleRect (itemX, itemRight, row * trackHeight)
                                              .contains (e.x, e.y);
-                // 録音中はループ編集しない（移動へ落とさず選択だけで終える。MIDIと同じ規則）
-                if (onHandle && canEdit != nullptr && ! canEdit())
+                // 録音中はループ・フェード編集しない（移動へ落とさず選択だけで終える。MIDIと同じ規則）
+                if ((onHandle || fadeHandle >= 0) && canEdit != nullptr && ! canEdit())
                 {
                     if (onSelectionChanged)
                         onSelectionChanged();
                     lanes->repaint();
                     return;
                 }
-                regionDrag.mode = onHandle ? RegionDrag::Mode::loop : RegionDrag::Mode::move;
+                regionDrag.mode = fadeHandle == 0   ? RegionDrag::Mode::fadeIn
+                                  : fadeHandle == 1 ? RegionDrag::Mode::fadeOut
+                                  : onHandle        ? RegionDrag::Mode::loop
+                                                    : RegionDrag::Mode::move;
                 regionDrag.isMidi = false;
                 regionDrag.track = row;
                 regionDrag.item = ci;
                 regionDrag.origStartSample = clip.startSample;
                 regionDrag.origLoopCount = clip.loopCount;
+                regionDrag.origFadeInSamples = clip.fadeInSamples;
+                regionDrag.origFadeOutSamples = clip.fadeOutSamples;
                 regionDrag.startX = e.x;
                 regionDrag.duplicateOnDrag = e.mods.isAltDown();
 
@@ -1290,6 +1425,20 @@ void TimelineView::handleLaneMouseDrag (const juce::MouseEvent& e)
     // スナップ後の時間位置・長さを先に計算する（編集開始の「実際に値が変わるか」の判定にも使う）
     juce::int64 snappedStart = 0, snappedLength = 0;
     int snappedLoopCount = regionDrag.origLoopCount;
+    juce::int64 draggedFadeIn = regionDrag.origFadeInSamples;
+    juce::int64 draggedFadeOut = regionDrag.origFadeOutSamples;
+    if (regionDrag.isFadeDrag())
+    {
+        // フェードはスナップしない（平滑化であって音楽的位置ではない）。
+        // クランプは clampFades() を直接使わず「全長 - 相手のフェード」で止める
+        // （clampFades は fadeIn 優先なので、そのまま通すと相手を押しのけてしまう）
+        const auto& clip = sourceTrack.clips[(size_t) regionDrag.item];
+        const auto deltaSamples = xToSample (e.x) - xToSample (regionDrag.startX);
+        if (regionDrag.mode == RegionDrag::Mode::fadeIn)
+            draggedFadeIn = clip.clampedFadeIn (regionDrag.origFadeInSamples + deltaSamples);
+        else // フェードアウトのハンドルは右へ動かすほど短くなる
+            draggedFadeOut = clip.clampedFadeOut (regionDrag.origFadeOutSamples - deltaSamples);
+    }
     if (regionDrag.isMidi)
     {
         const auto grid = juce::jmax ((juce::int64) 1, gridPpq());
@@ -1315,6 +1464,10 @@ void TimelineView::handleLaneMouseDrag (const juce::MouseEvent& e)
                                  ? snappedLength != regionDrag.origLengthPpq
                              : regionDrag.mode == RegionDrag::Mode::loop
                                  ? snappedLoopCount != regionDrag.origLoopCount
+                             : regionDrag.mode == RegionDrag::Mode::fadeIn
+                                 ? draggedFadeIn != regionDrag.origFadeInSamples
+                             : regionDrag.mode == RegionDrag::Mode::fadeOut
+                                 ? draggedFadeOut != regionDrag.origFadeOutSamples
                                  : snappedStart != (regionDrag.isMidi ? regionDrag.origStartPpq
                                                                       : regionDrag.origStartSample);
 
@@ -1336,8 +1489,17 @@ void TimelineView::handleLaneMouseDrag (const juce::MouseEvent& e)
         // の変化）。同一レーン内の縦ぶれ・スナップに満たない横ぶれでは undo登録も⌥複製もしない
         if (e.getDistanceFromDragStart() < 4 || (! timeChanged && ! trackChanged))
             return;
-        if (onWillEditModel)
+        // フェードは「クリップのオーディオ値」なのでundo種別・push経路が構造編集と別
+        // （通常の pushSnapshot だと鳴っているMIDIが消音＋再発音される）
+        if (regionDrag.isFadeDrag())
+        {
+            if (onWillEditClipValue)
+                onWillEditClipValue();
+        }
+        else if (onWillEditModel)
+        {
             onWillEditModel();
+        }
         regionDrag.edited = true;
 
         // ⌥ドラッグ: 動き始めた今、複製を作ってドラッグ対象を差し替える
@@ -1406,13 +1568,36 @@ void TimelineView::handleLaneMouseDrag (const juce::MouseEvent& e)
     {
         auto& clip = track.clips[(size_t) regionDrag.item];
         if (regionDrag.mode == RegionDrag::Mode::loop)
+        {
             clip.loopCount = snappedLoopCount;
+            // ループを縮めると連なり全長が縮むのでフェードの再クランプが要る。基準は
+            // 「ドラッグ開始時に控えた元値」（現在値からだと縮めすぎて戻したときに復元されない）
+            clip.fadeInSamples = regionDrag.origFadeInSamples;
+            clip.fadeOutSamples = regionDrag.origFadeOutSamples;
+            clip.clampFades();
+        }
+        else if (regionDrag.mode == RegionDrag::Mode::fadeIn)
+        {
+            clip.fadeInSamples = draggedFadeIn;
+            clip.clampFades(); // 保険（全長が別要因で変わっていた場合のみ効く）
+        }
+        else if (regionDrag.mode == RegionDrag::Mode::fadeOut)
+        {
+            clip.fadeOutSamples = draggedFadeOut;
+            clip.clampFades();
+        }
         else
+        {
             clip.startSample = snappedStart;
+        }
     }
     // ループ伸長中もコンテンツ幅を広げる（確定時だけだとハンドルを右へ引き続けられない）
     if (regionDrag.mode == RegionDrag::Mode::loop)
         updateContentSize();
+    // フェードはドラッグ中も音へ反映する（「見た目＝出る音」を崩さない）。
+    // 通常の onModelEdited は使わない（MIDIが鳴り直すため）
+    if (regionDrag.isFadeDrag() && onClipValueEdited)
+        onClipValueEdited();
     lanes->repaint();
 }
 
@@ -1420,6 +1605,32 @@ void TimelineView::handleLaneMouseUp (const juce::MouseEvent&)
 {
     if (regionDrag.mode != RegionDrag::Mode::none && regionDrag.edited)
     {
+        // フェードは値の反映（onClipValueEdited）をドラッグ中に済ませているので、確定では
+        // ログだけ残す。onModelEdited を呼ぶと鳴っているMIDIが消音＋再発音される
+        if (regionDrag.isFadeDrag())
+        {
+            juce::int64 samples = -1;
+            if (project != nullptr && regionDrag.track >= 0
+                && regionDrag.track < (int) project->tracks.size())
+            {
+                const auto& track = project->tracks[(size_t) regionDrag.track];
+                if (regionDrag.item >= 0 && regionDrag.item < (int) track.clips.size())
+                {
+                    const auto& clip = track.clips[(size_t) regionDrag.item];
+                    samples = regionDrag.mode == RegionDrag::Mode::fadeIn ? clip.fadeInSamples
+                                                                         : clip.fadeOutSamples;
+                }
+            }
+            Log::info ("region.fade",
+                       juce::String (regionDrag.mode == RegionDrag::Mode::fadeIn ? "which=in"
+                                                                                : "which=out")
+                           + " track=" + juce::String (regionDrag.track)
+                           + " item=" + juce::String (regionDrag.item)
+                           + " samples=" + juce::String (samples));
+            regionDrag = {};
+            lanes->repaint(); // ドラッグ中のポップアップを消す
+            return;
+        }
         if (regionDrag.mode == RegionDrag::Mode::loop)
         {
             int count = -1;
@@ -1530,6 +1741,14 @@ int TimelineView::hitTestClip (int trackIndex, int x) const
             return ci;
     }
     return -1;
+}
+
+int TimelineView::hitTestFadeHandle (const Clip& clip, int laneY, juce::Point<int> pos) const
+{
+    juce::Rectangle<int> fadeInHandle, fadeOutHandle;
+    if (! fadeHandleRects (clip, laneY, fadeInHandle, fadeOutHandle))
+        return -1;
+    return pickFadeHandle (fadeInHandle, fadeOutHandle, pos);
 }
 
 void TimelineView::showItemMenu (int trackIndex, int itemIndex)
@@ -1645,7 +1864,7 @@ void TimelineView::showClipGainCallout (int trackIndex, int itemIndex)
     juce::Component::SafePointer<TimelineView> safe (this);
     auto panel = std::make_unique<RegionGainPanel> (
         clip.gain,
-        [safe] { if (safe != nullptr && safe->onWillEditClipGain) safe->onWillEditClipGain(); },
+        [safe] { if (safe != nullptr && safe->onWillEditClipValue) safe->onWillEditClipValue(); },
         [safe, trackIndex, itemIndex] (float gain)
         { if (safe != nullptr) safe->applyClipGain (trackIndex, itemIndex, gain); });
 
@@ -1663,8 +1882,8 @@ void TimelineView::applyClipGain (int trackIndex, int itemIndex, float gain)
         return;
 
     track.clips[(size_t) itemIndex].gain = GainScale::clampLinear (gain);
-    if (onClipGainEdited)
-        onClipGainEdited();
+    if (onClipValueEdited)
+        onClipValueEdited();
     lanes->repaint(); // 波形の振幅とバッジを追従させる（ドラッグ中もここを通る）
 }
 
@@ -1718,6 +1937,9 @@ void TimelineView::clearLoopAt (int trackIndex, int itemIndex)
     if (onWillEditModel)
         onWillEditModel();
     loopCount = 0;
+    // 連なり全長が縮むのでフェードの再クランプが要る（ループのドラッグと同じ規則）
+    if (! isMidi)
+        track.clips[(size_t) itemIndex].clampFades();
     Log::info ("region.loop", juce::String (isMidi ? "type=midi" : "type=audio")
                                   + " track=" + juce::String (trackIndex)
                                   + " item=" + juce::String (itemIndex) + " count=0");
@@ -1732,6 +1954,23 @@ juce::Rectangle<int> TimelineView::loopHandleRect (int itemX, int itemRight, int
     // 短いアイテムでははみ出さないよう幅を詰める（最低8px。それ未満ならアイテム幅どおり）
     const int w = juce::jmin (loopHandleWidth, juce::jmax (8, itemRight - itemX));
     return { itemRight - w, laneY + 4 + (trackHeight - 8) - loopHandleHeight, w, loopHandleHeight };
+}
+
+bool TimelineView::fadeHandleRects (const Clip& clip, int laneY,
+                                   juce::Rectangle<int>& fadeInHandle,
+                                   juce::Rectangle<int>& fadeOutHandle) const
+{
+    const int x = sampleToX (clip.startSample);
+    const int right = sampleToX (clip.startSample + clip.totalLengthSamples());
+    if (right - x < fadeHandleMinWidth)
+        return false; // ハンドル2つ＋移動用の余白が取れない幅では出さない
+
+    fadeInHandle = fadeHandleRectAt (x, right, laneY,
+                                     sampleToX (clip.startSample + clip.fadeInSamples));
+    fadeOutHandle = fadeHandleRectAt (x, right, laneY,
+                                      sampleToX (clip.startSample + clip.totalLengthSamples()
+                                                 - clip.fadeOutSamples));
+    return true;
 }
 
 void TimelineView::selectItem (int trackIndex, int itemIndex, bool isMidi)
@@ -1836,7 +2075,8 @@ void TimelineView::splitAtPlayhead (int trackIndex, int itemIndex)
             return;
         if (onWillEditModel)
             onWillEditModel();
-        left.loopCount = right.loopCount = 0; // 分割はループを解除（MIDIと同じ規則）
+        // ループ解除（MIDIと同じ規則）は splitClip 側で済んでいる。ここで解除すると
+        // フェードのクランプが解除前の全長で行われ、不変条件が破れる
         track.clips[(size_t) itemIndex] = std::move (left);
         track.clips.push_back (std::move (right));
         selection = { trackIndex, itemIndex };
