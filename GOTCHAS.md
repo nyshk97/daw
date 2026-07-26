@@ -6,6 +6,8 @@
 
 `juce::String(const char*)` はUTF-8を解釈しない。日本語に限らず em-dash（—）や ● などの記号も対象で、生リテラルのまま `String` と連結すると文字化けする（`"daw — "` が「daw â」になった実例あり）。UI文言・タイトル・ダイアログの全てで `fromUTF8` を徹底する。
 
+文字化けだけでなく **Debug assertion も発火する**（`String(const char*)` に非ASCIIバイト検査の `jassert` がある）。デバッガ無しの実行では静かに通過するので気づきにくい — `lldb -b -o run -o quit ./daw_tests` で走らせて `stop reason = EXC_BREAKPOINT` が出ないかを見る。また `const char*` を受け取るAPI（`daw_tests` の `expect` の説明文など）は `juce::String` を経由させず**UTF-8リテラルをそのまま渡す**（`std::cout` にはそのまま流れる）。
+
 ### 警告ゼロ基準で引っかかりやすいコンパイラ警告
 
 - **浮動小数の `==` / `!=` は `-Wfloat-equal` で弾かれる**: 等値判定は `juce::approximatelyEqual (a, b)` を使う
@@ -138,6 +140,26 @@ PlaybackEngine（RT）とBounceRenderer（オフライン）は同じ規則で�
 ### WindowedSincInterpolatorはレイテンシ補償と終端ゼロパディングが必須
 
 ① 入力100サンプルのアルゴリズム遅延を持つ（`WindowedSincTraits::algorithmicLatency`）。補償しないと出力全体が100入力サンプル分後ろへずれ、末尾が同じ分欠落する。「先頭の遅延分を捨て、その分余計に生成」で補償する（AudioImporter参照）② `process(available, wrapAround=0)` は「入力が尽きたらゼロを供給」に見えるが、**available==0でも境界判定より先に入力ポインタを1サンプル読む**（`interpolateImpl` が `input[numUsed++]` を先に実行）ため境界外読みになる。ソースバッファ末尾にゼロパディングを確保し、渡すポインタとavailable（≥1）を常にバッファ実体内に収める ③ 検証は「末尾1サンプルのパルスが出力末尾に残るか」＋「中間パルスが換算位置±2サンプルに出るか」のテストで固定する（testAudioImporter参照）
+
+### 外部プロセスを起動するなら `juce::ChildProcess` を使わない
+
+`juce_SharedCode_posix.h` の実装に3つの問題がある。① `read()` が内部で `fread()` を呼ぶ**ブロッキング実装**（`:1193`）で、出力が止まるとキャンセル要求を観測できず終了が固まる ② `killProcess()` が `::kill(childPID)` だけで子を `setpgid` しないため、**子が spawn した孫（yt-dlp → ffmpeg 等）が孤児化する**（子はアプリと同じプロセスグループに入るので `killpg` すると自分を巻き込む） ③ デストラクタが子を待たない／killしない（ヘッダにも "deleting this object won't terminate the child process" と明記）。
+
+代わりに `Source/shared/SpawnedProcess` のように `posix_spawn` ＋ `POSIX_SPAWN_SETPGROUP` ＋ `posix_spawnattr_setpgroup(&attr, 0)` で子を新プロセスグループのリーダーにし、`O_NONBLOCK` パイプ＋タイムアウト付き `poll()` で読む。副次効果として **stdout/stderr を別パイプで取れる**（JUCE版は両方を同一パイプにマージするため分離不可）。`posix_spawn` は PATH を検索しない（するのは `posix_spawnp`）ので実行ファイルは絶対パスで渡す。`.app` は launchd 起動で PATH が最小限になるため、Homebrew のツールを呼ぶなら `/opt/homebrew/bin/...` を明示的に探すこと。
+
+**`killpg` する側の注意**: 「直接の子を `waitpid` で回収できたら終わり」にすると、**SIGTERM を無視する孫が残る**（子が先に終了するケースがある）。PGID を `childPid` とは別に保持し、`killpg(pgid, 0)` でグループの消滅を確認しながら SIGTERM → 猶予 → SIGKILL と進める。未回収の子（ゾンビ）もプロセスとして数えられるので、**生存確認の前に必ず `waitpid(WNOHANG)` で回収する**。検証は名前（`pgrep -f ffmpeg` 等）ではなく **PGID** で数える（ユーザーが別用途で動かしている同名プロセスを誤検知する）。
+
+### `getSpecialLocation(tempDirectory)` は `$TMPDIR` を返さない
+
+macOS では **`~/Library/Caches/<実行ファイル名>/`**（`juce_Files_mac.mm`）。`$TMPDIR` を前提にシェルから検証すると空振りする。都合の良い副作用として、dev版（`LaLa-dev`）とRelease版（`LaLa`）で自動的に別ディレクトリになるため、並走しても一時ファイルが混ざらない。
+
+### pull型ワーカー（`juce::Thread` + atomic status）を追加するときの3点
+
+- **`currentStatus.store(terminal)` は `run()` の最後の1文にする**。先に公開すると、まだ `run()` の中に居るうちに呼び出し側が `takeResult()` を呼ぶ
+- **`takeResult()` は `waitForThreadToExit(-1)` してから result を move する**。`run()` の最終行で status を公開しても、JUCEがスレッドハンドルを閉じるのは `run()` から戻った後で、その隙間では `isThreadRunning()` がまだ true（`jassert(! isThreadRunning())` だけでは防げない）
+- **`startThread()` は `bool` を返す**。無視して `return true` すると、スレッド作成失敗時に status が running のまま残り、進捗オーバーレイが永久に閉じない
+
+既存の `AudioImporter` / `BounceRenderer` は後者2点が未対応（`startThread()` の戻り値を見ておらず、`takeResult()` は `jassert` のみ）。触るときに合わせて直す。
 
 ## オーディオコールバック内の禁止事項
 

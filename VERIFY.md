@@ -136,6 +136,7 @@ cmake --build build --target daw_tests && ctest --test-dir build --output-on-fai
 - モデル（保存/読込・ID・PPQ境界・undo・WAV GC保護）、GM音源（DLSMusicDevice）、
   再生エンジン（MIDI再生・シーク再発音・停止消音・ミュート時のイベント継続・プレビュー経路）をGUIなしで検証する
 - テストは一時ディレクトリのみ使用（`~/Music/daw` には触れない）
+- **Debug assertion はデバッガ無しでは見逃す**: `timeout 700 lldb -b -o run -o quit build/daw_tests_artefacts/Debug/daw_tests` で走らせ、`stop reason = EXC_BREAKPOINT` が出ないことを確認する（出たら `jassert` に引っかかっている。通常実行では静かに通過して `all tests passed` になるため、テストが緑でも潜んでいることがある）
 
 ## URLからの取り込み（yt-dlp）の確認
 
