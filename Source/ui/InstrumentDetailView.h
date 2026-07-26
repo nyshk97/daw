@@ -52,6 +52,37 @@ private:
     class WaveDisplay;
     friend class WaveDisplay; // 波形側から頭カットの書き換え・試聴・undo通知を行う
 
+    // 値の意味はdB（モデルの Track::sampleGain は線形倍率。変換は GainScale が持つ）。
+    // ドラッグ中だけ0dB付近へ吸着させたいので snapValue を差し替える。プログラムからの同期や
+    // 数値クリック／ダブルクリックでのリセットは既にちょうど0dBを渡してくるので吸着させない
+    class GainSlider : public juce::Slider
+    {
+    public:
+        double snapValue (double attemptedValue, DragMode dragMode) override;
+    };
+
+    // GAINの現在値（常設表示）。リセット専用ボタンを増やさずに済むよう、この表示自体が
+    // 「0 dBに戻す」ボタンを兼ねる（ホバーで薄い枠を出して押せることを示す）。
+    // GAINは頻繁に触る場所ではないので、ダブルクリックだけだと操作を忘れて戻せなくなる
+    class GainValueLabel : public juce::Component,
+                           public juce::SettableTooltipClient
+    {
+    public:
+        GainValueLabel();
+        void setDb (double db);
+        std::function<void()> onReset;
+
+        void paint (juce::Graphics& g) override;
+        void mouseEnter (const juce::MouseEvent&) override { hovered = true; repaint(); }
+        void mouseExit (const juce::MouseEvent&) override { hovered = false; repaint(); }
+        void mouseDown (const juce::MouseEvent&) override;
+        void enablementChanged() override { repaint(); }
+
+    private:
+        double valueDb = 0.0;
+        bool hovered = false;
+    };
+
     void applyPitchMode (bool follow);
     void applyRootNote (int note);
     void applyMono (bool mono);
@@ -66,7 +97,8 @@ private:
     juce::TextButton followButton { juce::String::fromUTF8 (u8"追従") };
     juce::TextButton monoButton { "Mono" };
     juce::ComboBox rootBox;
-    juce::Slider gainSlider;
+    GainSlider gainSlider;
+    GainValueLabel gainValueLabel;
     juce::Label trimLabel;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (InstrumentDetailView)

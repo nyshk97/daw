@@ -129,7 +129,9 @@ public:
     // 音量バー（Logicのストリップ準拠）:
     // 水平（トラックヘッダー・ベロシティ）= 暗いカプセル＋グレーの球つまみ。音量スライダーは
     //   カプセル内にL/R 2レーンのメーター＋ピークホールドの目印が乗る（meterL/R・holdL/Rプロパティ。
-    //   スケールはカプセル全体=-60dB..0dBFS固定で、つまみ位置とは独立＝大きい信号は球を追い越す）
+    //   スケールはカプセル全体=-60dB..0dBFS固定で、つまみ位置とは独立＝大きい信号は球を追い越す）。
+    //   centerFillプロパティが立っているものはメーターの代わりに中央起点の帯を描く
+    //   （サンプル音源のGAIN。中央=0dBで、そこから左右へどれだけ動かしたかを形で示す）
     // 垂直（ミキサー・FXパネルのフェーダー）= 左に目盛り＋細い溝＋シルバーの刻み入りキャップ。
     //   メーターは持たない（隣のStereoMeterが担当）
     void drawLinearSlider (juce::Graphics& g, int x, int y, int width, int height,
@@ -162,6 +164,25 @@ public:
         g.setColour (Theme::faderSlotBg);
         g.fillRoundedRectangle (pill, r);
 
+        if (slider.getProperties().getWithDefault ("centerFill", false))
+        {
+            // 中央（=既定値。サンプル音源のGAINなら0dB）を起点に、上げれば右・下げれば左へ伸びる帯。
+            // 既定値のときは何も描かない＝「素のまま」が形で分かる（FXパネルのPanノブと同じ読み方）
+            const float centreX = pill.getCentreX();
+            const float w = std::abs (sliderPos - centreX);
+            if (w > 0.5f)
+            {
+                juce::Graphics::ScopedSaveState save (g);
+                juce::Path pillPath;
+                pillPath.addRoundedRectangle (pill, r);
+                g.reduceClipRegion (pillPath);
+
+                g.setColour (Theme::accent);
+                g.fillRect (juce::Rectangle<float> (juce::jmin (centreX, sliderPos), pill.getY(),
+                                                    w, pill.getHeight()));
+            }
+        }
+        else
         {
             // レーン塗りは矩形のまま、カプセルの角丸パスでクリップ
             juce::Graphics::ScopedSaveState save (g);

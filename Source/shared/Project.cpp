@@ -4,6 +4,8 @@
 #include <limits>
 #include <map>
 
+#include "GainScale.h"
+
 namespace
 {
 juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
@@ -515,8 +517,10 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
                 track.samplePitchFollow = (bool) trackVar.getProperty ("samplePitchFollow", false);
                 track.sampleMono = (bool) trackVar.getProperty ("sampleMono", false); // 欠損=OFF（重ねる）
                 track.sampleRootNote = juce::jlimit (0, 127, (int) trackVar.getProperty ("sampleRootNote", 60));
-                track.sampleGain = juce::jlimit (0.0f, 2.0f,
-                                                 (float) (double) trackVar.getProperty ("sampleGain", 1.0));
+                // 範囲外はここで寄せる（UIが表現できない値をモデルに残すと
+                // 「表示は-12dBなのに-20dBで鳴る」という表示と実音の乖離になる）
+                track.sampleGain = GainScale::clampLinear (
+                    (float) (double) trackVar.getProperty ("sampleGain", 1.0));
                 track.sampleStartOffset = juce::jmax ((juce::int64) 0,
                                                      (juce::int64) trackVar.getProperty ("sampleStartOffset", 0));
                 // 元SRはまずJSONの記録値を復元しておく（WAVが欠けていても診断用の値を失わず、

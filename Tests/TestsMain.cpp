@@ -15,6 +15,8 @@
 #include "shared/UndoStack.h"
 #include "shared/AudioFileTypes.h"
 #include "shared/AudioBrowserNavigation.h"
+#include "shared/GainScale.h"
+#include "ui/AppLookAndFeel.h"
 #include "ui/FileSortOrder.h"
 #include "ui/PreviewPolicy.h"
 
@@ -384,6 +386,115 @@ void testFileSortOrder()
 
     expect (FileSortOrder::sortedIndices ({}, FileSortOrder::Mode::dateAdded).isEmpty(),
             "空の一覧でも壊れないこと");
+}
+
+// ---- サンプル音源GAINのスケール（dB ⇄ 線形倍率・クランプ・吸着） ----
+void testGainScale()
+{
+    beginTest ("gain scale");
+
+    // dB ⇄ 倍率。UIはdBで持ち、モデルは倍率で持つのでここが唯一の変換点になる
+    expect (std::abs (GainScale::toLinear (0.0) - 1.0f) < 1.0e-6f, "0dB = 等倍であること");
+    expect (std::abs (GainScale::toLinear (6.0) - 1.9953f) < 1.0e-3f, "+6dB ≒ 1.995倍であること");
+    expect (std::abs (GainScale::toLinear (-6.0) - 0.5012f) < 1.0e-3f, "-6dB ≒ 0.501倍であること");
+    expect (std::abs (GainScale::toDb (1.0f)) < 1.0e-6, "等倍 = 0dBであること");
+    expect (std::abs (GainScale::toDb (GainScale::toLinear (3.5)) - 3.5) < 1.0e-3, "往復して値が保たれること");
+
+    // 無音は -∞ でなく下端に落ちる（トリムに無音域は持たせない。消音はミュートの仕事）
+    expect (std::abs (GainScale::toDb (0.0f) + GainScale::rangeDb) < 1.0e-6, "倍率0が-∞でなく-12dBになること");
+    expect (std::abs (GainScale::toDb (100.0f) - GainScale::rangeDb) < 1.0e-6, "範囲を超える倍率が+12dBで頭打ちになること");
+
+    // 読み込み時のクランプ（UIが表現できない値をモデルに残さない）
+    expect (std::abs (GainScale::clampLinear (9.0f) - GainScale::maxLinear()) < 1.0e-6f,
+            "上限を超える値が+12dB相当へクランプされること");
+    expect (std::abs (GainScale::clampLinear (0.05f) - GainScale::minLinear()) < 1.0e-6f,
+            "下限を下回る値が-12dB相当へクランプされること");
+    expect (std::abs (GainScale::clampLinear (0.0f) - GainScale::minLinear()) < 1.0e-6f,
+            "無音(0.0)も下限へクランプされること");
+    expect (std::abs (GainScale::clampLinear (0.775f) - 0.775f) < 1.0e-6f, "範囲内の値は変わらないこと");
+    expect (GainScale::minLinear() > 0.25f && GainScale::minLinear() < 0.26f, "下限が約0.251倍であること");
+    expect (GainScale::maxLinear() > 3.98f && GainScale::maxLinear() < 3.99f, "上限が約3.981倍であること");
+
+    // 0dB付近の吸着はドラッグ中だけ。プログラム同期やリセットで勝手に丸めない
+    expect (GainScale::snapDb (0.2, true) == 0.0, "ドラッグ中は0dB付近が吸着すること");
+    expect (GainScale::snapDb (-0.2, true) == 0.0, "下げ側からでも吸着すること");
+    expect (std::abs (GainScale::snapDb (0.2, false) - 0.2) < 1.0e-9, "ドラッグ中でなければ吸着しないこと");
+    expect (std::abs (GainScale::snapDb (1.0, true) - 1.0) < 1.0e-9, "吸着幅の外は動かさないこと");
+    expect (std::abs (GainScale::snapDb (-6.0, true) + 6.0) < 1.0e-9, "離れた値はそのまま通ること");
+
+    // 表示文字列（上げ側は符号を明示。-0.0 dB を出さない）
+    expect (GainScale::text (0.0) == "0.0 dB", "0dBの表記");
+    expect (GainScale::text (6.0) == "+6.0 dB", "上げ側に+が付くこと");
+    expect (GainScale::text (-3.5) == "-3.5 dB", "下げ側の表記");
+    expect (GainScale::text (-0.02) == "0.0 dB", "ごく小さい負の値が -0.0 dB にならないこと");
+}
+
+// ---- GAINスライダーの描画: 中央(0dB)起点の帯。トラックヘッダーの音量バーには出さない ----
+void testGainSliderCenterFill()
+{
+    beginTest ("gain slider center fill");
+
+    AppLookAndFeel laf;
+    constexpr int w = 240, h = 26;
+    const float centreX = w * 0.5f;
+
+    // dB → 球の中心x。検証したいのは「中央を起点に左右へ伸びる」ことだけなので単純な線形写像で置く
+    auto posFor = [] (double db)
+    { return (float) ((db + GainScale::rangeDb) / (2.0 * GainScale::rangeDb) * w); };
+
+    auto render = [&] (double db, bool centerFill)
+    {
+        juce::Slider slider;
+        slider.setSliderStyle (juce::Slider::LinearHorizontal);
+        if (centerFill)
+            slider.getProperties().set ("centerFill", true);
+
+        juce::Image img (juce::Image::ARGB, w, h, true);
+        {
+            juce::Graphics g (img);
+            laf.drawLinearSlider (g, 0, 0, w, h, posFor (db), 0.0f, (float) w,
+                                  juce::Slider::LinearHorizontal, slider);
+        }
+        return img;
+    };
+
+    // 帯（Theme::accent）が横方向のどこに何列あるか
+    struct Span { int first = -1, last = -1, columns = 0; };
+    auto accentSpan = [&] (const juce::Image& img)
+    {
+        Span s;
+        for (int x = 0; x < w; ++x)
+            for (int y = 0; y < h; ++y)
+                if (img.getPixelAt (x, y).getARGB() == Theme::accent.getARGB())
+                {
+                    ++s.columns;
+                    if (s.first < 0)
+                        s.first = x;
+                    s.last = x;
+                    break;
+                }
+        return s;
+    };
+
+    expect (accentSpan (render (0.0, true)).columns == 0,
+            "0dBでは帯を描かないこと（素のままが一目で分かる）");
+
+    const auto up = accentSpan (render (6.0, true));
+    expect (up.columns > 0, "上げたときに帯が出ること");
+    expect ((float) up.first >= centreX - 1.0f, "上げた帯が中央から始まること");
+    expect ((float) up.last > centreX && up.last < w, "上げた帯が中央より右へ伸びること");
+
+    const auto down = accentSpan (render (-6.0, true));
+    expect (down.columns > 0, "下げたときに帯が出ること");
+    expect ((float) down.last <= centreX + 1.0f, "下げた帯が中央で終わること");
+    expect (down.first > 0 && (float) down.first < centreX, "下げた帯が中央より左へ伸びること");
+
+    expect (std::abs (up.columns - down.columns) <= 2,
+            "同じ量なら上げ下げで帯の長さが揃うこと（中央が基準として読める）");
+
+    // トラックヘッダーの音量バーは centerFill を立てないので、見た目は従来どおり（帯は出ない）
+    expect (accentSpan (render (6.0, false)).columns == 0,
+            "centerFillを立てないスライダーには帯を描かないこと");
 }
 
 // ---- v1プロジェクト読込 → v2保存 → 再読込のラウンドトリップ ----
@@ -1787,9 +1898,49 @@ void testSamplerProjectRoundtrip()
         {
             const auto& track = loaded->tracks[0];
             expect (track.sampleRootNote == 127, "sampleRootNoteが0..127へクランプされること");
-            expect (std::abs (track.sampleGain - 2.0f) < 1.0e-6f, "sampleGainが0..2へクランプされること");
+            expect (std::abs (track.sampleGain - GainScale::maxLinear()) < 1.0e-6f,
+                    "sampleGainが+12dB相当へクランプされること");
             expect (track.sampleStartOffset < (juce::int64) track.sampleAudio->getNumSamples(),
                     "sampleStartOffsetがバッファ長へクランプされること");
+        }
+    }
+
+    // ---- 下限のクランプ（UIが表現できない小さい値を残すと表示と実音が食い違う）----
+    {
+        auto text = dir.getChildFile ("project.json").loadFileAsString()
+                        .replace ("\"sampleGain\": 9.0", "\"sampleGain\": 0.05");
+        dir.getChildFile ("project.json").replaceWithText (text);
+
+        juce::StringArray warnings;
+        juce::String error;
+        auto loaded = Project::load (dir, warnings, error);
+        expect (loaded != nullptr && ! loaded->tracks.empty(), "下限クランプ検証用に読めること");
+        if (loaded != nullptr && ! loaded->tracks.empty())
+            expect (std::abs (loaded->tracks[0].sampleGain - GainScale::minLinear()) < 1.0e-6f,
+                    "sampleGainが-12dB相当へクランプされること");
+    }
+
+    // ---- GAIN範囲の端が保存→読込で変わらないこと ----
+    {
+        juce::StringArray warnings;
+        juce::String error;
+        auto loaded = Project::load (dir, warnings, error);
+        expect (loaded != nullptr && ! loaded->tracks.empty(), "ラウンドトリップ検証用に読めること");
+        if (loaded != nullptr && ! loaded->tracks.empty())
+        {
+            for (const float gain : { GainScale::minLinear(), 1.0f, GainScale::maxLinear() })
+            {
+                loaded->tracks[0].sampleGain = gain;
+                juce::String saveError;
+                expect (loaded->save (saveError), "GAINを変えて保存できること");
+
+                juce::StringArray warnings2;
+                auto reloaded = Project::load (dir, warnings2, saveError);
+                expect (reloaded != nullptr && ! reloaded->tracks.empty(), "保存したものを再読込できること");
+                if (reloaded != nullptr && ! reloaded->tracks.empty())
+                    expect (std::abs (reloaded->tracks[0].sampleGain - gain) < 1.0e-6f,
+                            "±12dBの端がクランプで削られずに復元されること");
+            }
         }
     }
 
@@ -4294,6 +4445,8 @@ int main()
     testAudioFilePreview();
     testPreviewPolicy();
     testFileSortOrder();
+    testGainScale();
+    testGainSliderCenterFill();
     testMonoRenderRegressionHash();
 
     if (failureCount > 0)

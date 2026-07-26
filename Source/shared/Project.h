@@ -159,7 +159,7 @@ struct Track
     // 長い音（808等）を連打すると重なって濁る・出力がクリップするため、その回避用。既定OFF＝重ねる
     bool sampleMono = false;
     int sampleRootNote = 60;            // 追従時の基準ノート（既定 C3=60）
-    float sampleGain = 1.0f;            // サンプル音量 0..2
+    float sampleGain = 1.0f;            // サンプル音量（線形倍率。値域は GainScale = ±12dB 相当の約0.251..3.981）
     juce::int64 sampleStartOffset = 0;  // 頭の無音カット位置（バッファ内サンプル）
     double sampleSourceRate = 0.0;      // ファイル自体のSR（再生比率 sourceRate/deviceRate の計算に必要）
     std::shared_ptr<juce::AudioBuffer<float>> sampleAudio; // メモリ常駐（Clip::audio と同じ寿命規則）

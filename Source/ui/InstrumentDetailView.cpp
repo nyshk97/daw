@@ -5,8 +5,8 @@
 #include <memory>
 #include <vector>
 
+#include "../shared/GainScale.h"
 #include "Fonts.h"
-#include "StereoMeter.h"
 #include "Theme.h"
 
 namespace
@@ -267,11 +267,14 @@ InstrumentDetailView::InstrumentDetailView()
 
     addAndMakeVisible (gainSlider);
     gainSlider.setSliderStyle (juce::Slider::LinearHorizontal);
-    gainSlider.setRange (0.0, 2.0);
+    // 値はdB（モデルの sampleGain は線形倍率）。倍率を等間隔に並べると耳に対して等間隔にならず、
+    // 下げ側だけ詰まって微調整できなくなるため、スライダー位置に対して等間隔にするのはdBの方
+    gainSlider.setRange (-GainScale::rangeDb, GainScale::rangeDb, 0.1);
     gainSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
-    gainSlider.setDoubleClickReturnValue (true, 1.0);
-    gainSlider.textFromValueFunction = [] (double v) { return Meters::dbText ((float) v) + " dB"; };
+    gainSlider.setDoubleClickReturnValue (true, 0.0);
+    gainSlider.textFromValueFunction = [] (double v) { return GainScale::text (v); };
     gainSlider.setPopupDisplayEnabled (true, false, nullptr); // ドラッグ中だけdB表示（ヘッダーと同じ流儀）
+    gainSlider.getProperties().set ("centerFill", true);      // 0dB起点で左右に伸びる帯（Panノブと同じ読み方）
     gainSlider.setWantsKeyboardFocus (false);
     gainSlider.setMouseClickGrabsKeyboardFocus (false);
     // undoの粒度: ドラッグ開始で1回積み、値変更ごとには積まない（確定はドラッグ終了時）
@@ -279,9 +282,25 @@ InstrumentDetailView::InstrumentDetailView()
     gainSlider.onValueChange = [this]
     {
         if (track != nullptr)
-            track->sampleGain = (float) gainSlider.getValue();
+            track->sampleGain = GainScale::toLinear (gainSlider.getValue());
+        gainValueLabel.setDb (gainSlider.getValue()); // ドラッグ中も常設表示を追従させる
     };
     gainSlider.onDragEnd = [this] { if (onValueEdited) onValueEdited(); };
+
+    // 現在値の常設表示。リセット専用ボタンを増やさず、この表示自体が「0 dBに戻す」を兼ねる
+    // （ダブルクリックでも戻せるが、GAINは頻繁に触る場所ではないので操作を覚えていなくても戻せるように）
+    addAndMakeVisible (gainValueLabel);
+    gainValueLabel.onReset = [this]
+    {
+        if (track == nullptr || ! track->usesSampler() || gainSlider.getValue() == 0.0)
+            return;
+        // undo・確定通知の粒度はドラッグと揃える（ダブルクリックはJUCE側がドラッグ通知で包むので同じ経路になる）
+        if (onWillEdit)
+            onWillEdit (true);
+        gainSlider.setValue (0.0, juce::sendNotificationSync); // onValueChange経由でモデルと表示が揃う
+        if (onValueEdited)
+            onValueEdited();
+    };
 
     addAndMakeVisible (trimLabel);
     trimLabel.setFont (Fonts::small());
@@ -293,6 +312,61 @@ InstrumentDetailView::InstrumentDetailView()
 }
 
 InstrumentDetailView::~InstrumentDetailView() = default;
+
+double InstrumentDetailView::GainSlider::snapValue (double attemptedValue, DragMode dragMode)
+{
+    return GainScale::snapDb (attemptedValue, dragMode != notDragging);
+}
+
+// ---- GAINの現在値表示（クリックで0 dBに戻す）---------------------------------
+
+InstrumentDetailView::GainValueLabel::GainValueLabel()
+{
+    setTooltip (jp (u8"クリックで 0 dB に戻す"));
+    setMouseCursor (juce::MouseCursor::PointingHandCursor);
+    setWantsKeyboardFocus (false);
+}
+
+void InstrumentDetailView::GainValueLabel::setDb (double db)
+{
+    if (std::abs (db - valueDb) < 1.0e-9)
+        return;
+    valueDb = db;
+    repaint();
+}
+
+void InstrumentDetailView::GainValueLabel::mouseDown (const juce::MouseEvent&)
+{
+    if (isEnabled() && onReset != nullptr)
+        onReset();
+}
+
+void InstrumentDetailView::GainValueLabel::paint (juce::Graphics& g)
+{
+    const bool atDefault = std::abs (valueDb) < 0.05;
+    const bool active = isEnabled();
+
+    if (hovered && active) // 押せることはホバーで示す（常設の枠は置かない）
+    {
+        const auto area = getLocalBounds().toFloat().reduced (0.5f);
+        g.setColour (juce::Colours::white.withAlpha (0.07f));
+        g.fillRoundedRectangle (area, 4.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.13f));
+        g.drawRoundedRectangle (area, 4.0f, 1.0f);
+    }
+
+    // 0dB（既定）のときは他の見出しと同じ静かさ、外れているときだけ明るくする
+    auto colour = atDefault ? Theme::lcdLabel : juce::Colours::white.withAlpha (0.85f);
+    if (! active)
+        colour = colour.withMultipliedAlpha (0.4f);
+    else if (hovered)
+        colour = juce::Colours::white;
+
+    g.setColour (colour);
+    g.setFont (Fonts::small());
+    g.drawText (GainScale::text (valueDb), getLocalBounds().reduced (5, 0),
+                juce::Justification::centredRight);
+}
 
 void InstrumentDetailView::setTrack (Track* trackToShow)
 {
@@ -322,7 +396,11 @@ void InstrumentDetailView::refreshFromModel()
     rootBox.setEnabled (follow); // ルート音は追従モードのときだけ効く
     rootBox.setAlpha (follow ? 1.0f : 0.4f);
 
-    gainSlider.setValue (hasSample ? track->sampleGain : 1.0f, juce::dontSendNotification);
+    // モデルは線形倍率、スライダーはdB。setValue は通知なしなので snapValue は通らない（吸着はドラッグ中だけ）
+    const double gainDb = hasSample ? GainScale::toDb (track->sampleGain) : 0.0;
+    gainSlider.setValue (gainDb, juce::dontSendNotification);
+    gainValueLabel.setDb (gainDb);
+    gainValueLabel.setEnabled (hasSample);
     gainSlider.setEnabled (hasSample);
 
     trimLabel.setText (trimText(), juce::dontSendNotification);
@@ -425,5 +503,9 @@ void InstrumentDetailView::resized()
     controls.removeFromLeft (14);
     trimLabel.setBounds (controls.removeFromRight (140));
     controls.removeFromRight (14);
+    // GAINは「スライダー＋現在値」で1組。値はスライダーのすぐ右に置く
+    // （頭カット側に寄せるとGAINの値に見えない）。字送りと色は頭カットに合わせる
     gainSlider.setBounds (controls.removeFromLeft (juce::jmin (240, controls.getWidth())));
+    controls.removeFromLeft (6);
+    gainValueLabel.setBounds (controls.removeFromLeft (juce::jmin (66, controls.getWidth())));
 }
