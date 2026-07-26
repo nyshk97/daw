@@ -48,6 +48,8 @@ enum class ID
     zoomHorizontal,
     toggleMixer,
     toggleFxEditor,
+    toggleBottomPanel,
+    bottomHistory,
     toggleNotes,
     toggleFiles,
     browserHistory,
@@ -223,6 +225,20 @@ inline const Entry table[] = {
     { ID::toggleFxEditor, Category::view, u8"FXパネルを表示/隠す", u8"I",
       [] (const juce::KeyPress& k)
       { return detail::noCmdCtrlAlt (k) && k.getTextCharacter() == 'i'; } },
+    // Logic準拠: E = Show/Hide Editor（本アプリでは下部エリア＝ピアノロール／FX詳細）。
+    // 閉じても「何を見ていたか」は履歴に残るので、同じEで戻せる
+    { ID::toggleBottomPanel, Category::view, u8"エディタ（下部）を表示/隠す", u8"E",
+      [] (const juce::KeyPress& k)
+      { return detail::noCmdCtrlAlt (k) && k.getTextCharacter() == 'e'; } },
+    // Logicには「エディタの履歴を戻る」概念がない（Logicは下部エディタをタブで切り替える）ため
+    // ここは本アプリ独自。⌘[ / ⌘] がファイルパネルの戻る/進むなので、⌘の有無で対象が分かれる形にした
+    // （Shift併用時は文字が {} になるので、textCharacter比較なら browserHistory とも誤爆しない）
+    { ID::bottomHistory, Category::view, u8"エディタ（下部）の戻る/進む", u8"[ / ]",
+      [] (const juce::KeyPress& k)
+      {
+          const auto tc = k.getTextCharacter();
+          return detail::noCmdCtrlAlt (k) && (tc == '[' || tc == ']');
+      } },
     // メモ欄はTextEditorなので修飾なし1文字（X/I方式）だと入力中に文字が挿入されて閉じられない。
     // ⌘付きならmacのpeerがtextCharacterを0にする（juce_NSViewComponentPeer_mac.mm）ため
     // TextEditorが消費せず親まで届き、フォーカスがメモにあるままトグルできる

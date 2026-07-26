@@ -5,6 +5,7 @@
 
 #include "../shared/GmInstruments.h"
 #include "Fonts.h"
+#include "Shortcuts.h"
 #include "Theme.h"
 
 namespace
@@ -320,6 +321,9 @@ PianoRollView::PianoRollView (TransportState& transportState)
         if (onCloseRequested)
             onCloseRequested();
     };
+    // 同じキーで開き直せる（閉じても履歴に残る）ことを知る手掛かりをここに置く
+    closeButton.setTooltip (jp (u8"閉じる") + " ("
+                            + Shortcuts::keyText (Shortcuts::ID::toggleBottomPanel) + ")");
 
     for (auto* c : std::initializer_list<juce::Component*> { &gridBox, &closeButton, &velocitySlider })
     {

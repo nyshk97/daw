@@ -4,6 +4,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include "AddTrackOverlay.h"
+#include "BottomPanelHistory.h"
 #include "BounceOverlay.h"
 #include "DeviceSettingsWindow.h"
 #include "FxDetailView.h"
@@ -105,6 +106,16 @@ private:
     void closeFxDetail();
     void syncFxDetail();                 // FXパネルの表示対象変更に下部詳細を追従（不整合なら閉じる）
     void updateFxDetailBody();           // 表示中スロットに応じて下部詳細の中身を載せ替える
+    // ---- 下部エリアの表示トグル・履歴（E / [ / ]）----
+    void toggleBottomPanel();                    // E: 開いていれば閉じ、閉じていれば直前の中身を復元
+    void navigateBottomHistory (int direction);  // [ / ]: 履歴を戻る（-1）/進む（+1）
+    // 履歴エントリを実際に開く。成功でtrue。既存のopen系関数を再利用するため、
+    // 復元中は suppressHistoryPush で積み直しを止める
+    bool restoreBottomEntry (const BottomPanelHistory::Entry& entry);
+    bool bottomEntryIsValid (const BottomPanelHistory::Entry& entry) const; // 対象がまだ存在するか
+    BottomPanelHistory::Entry currentPianoRollEntry() const;                // 表示中のピアノロール→エントリ
+    BottomPanelHistory::Entry currentFxDetailEntry (int slot) const;        // 表示中のFX詳細→エントリ
+    int trackIndexForId (juce::uint64 trackId) const;                       // 見つからなければ -1
     void toggleRightPanel (RightPanel::Mode mode);
     void closeRightPanel();
     void toggleDeviceSettings (const char* source); // 歯車ボタン／⌘,（開いていれば閉じる。sourceはログ用）
@@ -157,6 +168,12 @@ private:
     InstrumentDetailView instrumentDetail;
     int fxDetailSlot = -1;        // 詳細が表示中のスロット（FXパネルの並びに対応）
     juce::String fxDetailKey;     // 詳細が対象にしているチャンネル（fxEditor.targetKey()と比較して追従判定）
+
+    // 下部エリアで何を見ていたかの履歴（E で復元・[ / ] で行き来）。セッション内のみ保持。
+    // suppressHistoryPush は履歴からの復元中だけ立てる（復元は既存のopen系関数を再利用するので、
+    // そのままだと復元自体が履歴に積まれてしまう）
+    BottomPanelHistory bottomHistory;
+    bool suppressHistoryPush = false;
 
     // 下部パネル（ピアノロール/FX詳細）の高さを変えるドラッグハンドル（パネル上端の細い帯）。
     // 高さは両パネル共通・セッション内で保持

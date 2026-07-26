@@ -17,8 +17,10 @@
 #include "shared/AudioBrowserNavigation.h"
 #include "shared/GainScale.h"
 #include "ui/AppLookAndFeel.h"
+#include "ui/BottomPanelHistory.h"
 #include "ui/FileSortOrder.h"
 #include "ui/PreviewPolicy.h"
+#include "ui/Shortcuts.h"
 
 namespace
 {
@@ -427,6 +429,181 @@ void testGainScale()
     expect (GainScale::text (6.0) == "+6.0 dB", "上げ側に+が付くこと");
     expect (GainScale::text (-3.5) == "-3.5 dB", "下げ側の表記");
     expect (GainScale::text (-0.02) == "0.0 dB", "ごく小さい負の値が -0.0 dB にならないこと");
+}
+
+// ---- 下部エリアの履歴（E / [ / ]）----
+// カーソル操作は「findValid で非破壊に探す → 復元 → 成功したら commit」の順で使う前提なので、
+// findValid が呼んだだけでカーソルを動かさないことと、候補なしでカーソルが維持されることを見る
+void testBottomPanelHistory()
+{
+    beginTest ("bottom panel history");
+
+    using Entry = BottomPanelHistory::Entry;
+    auto pianoRoll = [] (juce::uint64 trackId, juce::uint64 regionId)
+    {
+        Entry e;
+        e.kind = Entry::Kind::pianoRoll;
+        e.trackId = trackId;
+        e.regionId = regionId;
+        return e;
+    };
+    auto fxDetail = [] (const juce::String& channelKey, juce::uint64 trackId, int slot)
+    {
+        Entry e;
+        e.kind = Entry::Kind::fxDetail;
+        e.channelKey = channelKey;
+        e.trackId = trackId;
+        e.slot = slot;
+        return e;
+    };
+    auto anyEntry = [] (const Entry&) { return true; };
+
+    // 同じものを開き直しても履歴は伸びない
+    {
+        BottomPanelHistory h;
+        h.push (pianoRoll (1, 10));
+        h.push (pianoRoll (1, 10));
+        expect (h.size() == 1, "同一エントリの連続pushで伸びないこと");
+        h.push (fxDetail ("track", 1, 3));
+        h.push (fxDetail ("track", 1, 3));
+        expect (h.size() == 2, "種別違いは積まれ、その連続pushでは伸びないこと");
+    }
+
+    // 戻った状態でpushすると進む側が破棄される（ブラウザ型）
+    {
+        BottomPanelHistory h;
+        h.push (pianoRoll (1, 10));
+        h.push (pianoRoll (1, 20));
+        h.push (pianoRoll (1, 30));
+        h.commit (h.findValid (-1, anyEntry));
+        expect (h.current() == pianoRoll (1, 20), "1つ戻れること");
+        expect (h.findValid (1, anyEntry) == 2, "戻った後は進む先があること");
+        h.push (pianoRoll (1, 40));
+        expect (h.size() == 3, "戻った後のpushで進む側が破棄されること");
+        expect (h.findValid (1, anyEntry) < 0, "破棄後は進めないこと");
+        expect (h.current() == pianoRoll (1, 40), "pushしたものが現在地になること");
+    }
+
+    // 上限を超えると古い方から捨てる
+    {
+        BottomPanelHistory h;
+        for (int i = 0; i < BottomPanelHistory::maxEntries + 4; ++i)
+            h.push (pianoRoll (1, (juce::uint64) (i + 1)));
+        expect (h.size() == BottomPanelHistory::maxEntries, "上限で頭打ちになること");
+        expect (h.entryAt (0) == pianoRoll (1, 5), "古い方から捨てられること");
+        expect (h.current() == pianoRoll (1, BottomPanelHistory::maxEntries + 4),
+                "最新が現在地のままであること");
+    }
+
+    // replaceCurrent はカーソルを動かさず内容だけ差し替える（トラック選択への追従用）
+    {
+        BottomPanelHistory h;
+        h.push (pianoRoll (1, 10));
+        h.push (fxDetail ("track", 2, 3));
+        const int before = h.currentPosition();
+        h.replaceCurrent (fxDetail ("track", 7, 3));
+        expect (h.currentPosition() == before, "replaceCurrentでカーソルが動かないこと");
+        expect (h.size() == 2, "replaceCurrentで履歴が伸びないこと");
+        expect (h.current() == fxDetail ("track", 7, 3), "現在エントリが差し替わること");
+        expect (h.entryAt (0) == pianoRoll (1, 10), "手前のエントリが壊れないこと");
+    }
+
+    // findValid は非破壊。無効な候補は飛ばし、候補がなければカーソルを維持したまま -1
+    {
+        BottomPanelHistory h;
+        h.push (pianoRoll (1, 10));
+        h.push (pianoRoll (1, 20)); // これだけ「消えた」ことにする
+        h.push (pianoRoll (1, 30));
+        auto alive = [] (const Entry& e) { return e.regionId != 20; };
+
+        const int position = h.findValid (-1, alive);
+        expect (position == 0, "無効なエントリを飛ばして次の有効なものを返すこと");
+        expect (h.currentPosition() == 2, "findValidがカーソルを動かさないこと");
+        expect (h.entryAt (position) == pianoRoll (1, 10), "entryAtがカーソルと無関係に読めること");
+
+        h.commit (position);
+        expect (h.currentPosition() == 0 && h.current() == pianoRoll (1, 10),
+                "commitで初めてカーソルが移ること");
+        expect (h.findValid (-1, alive) < 0, "端まで有効な候補がなければ-1");
+        expect (h.currentPosition() == 0, "候補なしでもカーソルが維持されること");
+        expect (h.findValid (1, alive) == 2, "commit後のfindValidがそこ起点で探すこと");
+    }
+
+    // 有効な候補が1つもない場合
+    {
+        BottomPanelHistory h;
+        h.push (pianoRoll (1, 10));
+        h.push (pianoRoll (1, 20));
+        auto none = [] (const Entry&) { return false; };
+        expect (h.findValid (-1, none) < 0 && h.findValid (1, none) < 0, "全滅なら両方向とも-1");
+        expect (h.currentPosition() == 1, "全滅でもカーソルが維持されること");
+    }
+
+    // 空の履歴を触っても壊れない
+    {
+        BottomPanelHistory h;
+        expect (! h.hasCurrent(), "空なら現在地なし");
+        expect (h.findValid (-1, anyEntry) < 0 && h.findValid (1, anyEntry) < 0, "空なら候補なし");
+        h.replaceCurrent (pianoRoll (1, 10));
+        expect (h.size() == 0, "空へのreplaceCurrentが積まないこと");
+    }
+}
+
+// ---- 下部エリアのショートカットが既存キーと誤爆しないこと ----
+// E は ⌘E（リージョン書き出し）と、[ / ] は ⌘[ / ⌘]（ファイルパネルの履歴）と1文字違いなので、
+// 修飾の有無で確実に分かれることを固定する
+void testBottomPanelShortcuts()
+{
+    beginTest ("bottom panel shortcuts");
+
+    const auto none = juce::ModifierKeys();
+    const auto cmd = juce::ModifierKeys (juce::ModifierKeys::commandModifier);
+    const auto shift = juce::ModifierKeys (juce::ModifierKeys::shiftModifier);
+
+    const juce::KeyPress plainE ('e', none, 'e');
+    const juce::KeyPress cmdE ('e', cmd, 0);
+    expect (Shortcuts::matches (plainE, Shortcuts::ID::toggleBottomPanel), "E で下部エリアのトグル");
+    expect (! Shortcuts::matches (plainE, Shortcuts::ID::exportRegion), "E が⌘E（書き出し）に化けないこと");
+    expect (Shortcuts::matches (cmdE, Shortcuts::ID::exportRegion), "⌘E は従来どおり書き出し");
+    expect (! Shortcuts::matches (cmdE, Shortcuts::ID::toggleBottomPanel),
+            "⌘E が下部エリアのトグルに化けないこと");
+
+    const juce::KeyPress openBracket ('[', none, '[');
+    const juce::KeyPress closeBracket (']', none, ']');
+    const juce::KeyPress cmdOpenBracket ('[', cmd, 0);
+    expect (Shortcuts::matches (openBracket, Shortcuts::ID::bottomHistory), "[ で下部エリアの履歴");
+    expect (Shortcuts::matches (closeBracket, Shortcuts::ID::bottomHistory), "] で下部エリアの履歴");
+    expect (! Shortcuts::matches (openBracket, Shortcuts::ID::browserHistory),
+            "[ がファイルパネルの履歴に化けないこと");
+    expect (Shortcuts::matches (cmdOpenBracket, Shortcuts::ID::browserHistory),
+            "⌘[ は従来どおりファイルパネルの履歴");
+    expect (! Shortcuts::matches (cmdOpenBracket, Shortcuts::ID::bottomHistory),
+            "⌘[ が下部エリアの履歴に化けないこと");
+
+    // Shift併用は {} になるので拾わない（noCmdCtrlAlt はShiftを許容するため、文字で弾けているかを見る）
+    expect (! Shortcuts::matches (juce::KeyPress ('[', shift, '{'), Shortcuts::ID::bottomHistory),
+            "Shift+[ ({) を拾わないこと");
+
+    // テーブル全走査で「そのKeyPressにマッチする項目がちょうど1件」（VERIFY.md のキー衝突チェック）。
+    // 個別の対を並べるより強く、今後キーを追加したときの衝突もここで落ちる
+    auto hits = [] (const juce::KeyPress& k)
+    {
+        int n = 0;
+        for (const auto& e : Shortcuts::table)
+            if (e.matcher (k))
+                ++n;
+        return n;
+    };
+    expect (hits (plainE) == 1, "E にマッチする項目がちょうど1件");
+    expect (hits (openBracket) == 1, "[ にマッチする項目がちょうど1件");
+    expect (hits (closeBracket) == 1, "] にマッチする項目がちょうど1件");
+    expect (hits (cmdE) == 1, "⌘E にマッチする項目がちょうど1件");
+    expect (hits (cmdOpenBracket) == 1, "⌘[ にマッチする項目がちょうど1件");
+
+    // ⌘?一覧はテーブル走査で作られるので、載っている＝一覧に出る
+    expect (Shortcuts::keyText (Shortcuts::ID::toggleBottomPanel) == "E", "Eの表記");
+    expect (Shortcuts::keyText (Shortcuts::ID::bottomHistory) == juce::String::fromUTF8 (u8"[ / ]"),
+            "[ / ]の表記");
 }
 
 // ---- GAINスライダーの描画: 中央(0dB)起点の帯。トラックヘッダーの音量バーには出さない ----
@@ -4393,6 +4570,7 @@ void testMonoRenderRegressionHash()
     }
 }
 
+
 } // namespace
 
 int main()
@@ -4445,6 +4623,8 @@ int main()
     testAudioFilePreview();
     testPreviewPolicy();
     testFileSortOrder();
+    testBottomPanelHistory();
+    testBottomPanelShortcuts();
     testGainScale();
     testGainSliderCenterFill();
     testMonoRenderRegressionHash();

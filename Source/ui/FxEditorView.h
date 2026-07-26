@@ -47,11 +47,16 @@ public:
     void remapTrack (int newIndex);
 
     // ---- 下部詳細エディタとの連携（状態管理はMainComponent側）----
+    static constexpr int maxSlots = 4;
+    // 番号はミキサー側（0=EQ / 1=Comp / 2=Ext）と共有するため、Instrumentは末尾に置いて
+    // 既存の番号を動かさない（画面上の並びは Instrument が先頭。resized/rebind の slotOrder 参照）。
+    // 下部エリアの履歴（BottomPanelHistory）が、表示対象を変えずにスロット種別を判定するために参照する
+    static constexpr int instrumentSlot = 3;
+
     int numSlots() const { return slotCount; }
     juce::String slotName (int slot) const;   // "EQ" / "Comp" / "Reverb" 等（範囲外は空）
     // Instrumentスロットか（下部エディタに載せる中身を切り替えるためMainComponentが見る）。
-    // 番号はミキサー側（0=EQ / 1=Comp / 2=Ext）と共有するため、Instrumentは末尾に置いて
-    // 既存の番号を動かさない（画面上の並びは Instrument が先頭。resized/rebind の slotOrder 参照）
+    // 「いま表示しているチャンネル」基準の判定なので、バス/Master表示中は常にfalse
     bool isInstrumentSlot (int slot) const { return target == Target::track && slot == instrumentSlot; }
     juce::String channelName() const { return titleName; }
     juce::String targetKey() const;           // "track" / "bus0".."bus2" / "master"（詳細の追従判定用）
@@ -97,8 +102,6 @@ private:
     //   バス・Master = 0:Reverb|Delay|Limiter
     // 画面上の並びは slotOrder が決める（Instrumentは音源なので一番上）。番号と並びを分離しているのは、
     // ミキサー側の slot 番号（0=EQ固定）と互換を保ちながらInstrumentを追加するため
-    static constexpr int maxSlots = 4;
-    static constexpr int instrumentSlot = 3;
     SlotPill slotPills[maxSlots];
     juce::String slotNames[maxSlots];
     int slotCount = 0;

@@ -4,6 +4,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "Fonts.h"
+#include "Shortcuts.h"
 #include "Theme.h"
 
 // 下部のFX詳細エディタ。左のFXパネル（FxEditorView）のスロットクリックで開き、
@@ -23,6 +24,9 @@ public:
         closeButton.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
         closeButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white.withAlpha (0.55f));
         closeButton.onClick = [this] { if (onCloseRequested) onCloseRequested(); };
+        // 同じキーで開き直せる（閉じても履歴に残る）ことを知る手掛かりをここに置く
+        closeButton.setTooltip (juce::String::fromUTF8 (u8"閉じる") + " ("
+                                + Shortcuts::keyText (Shortcuts::ID::toggleBottomPanel) + ")");
         closeButton.setWantsKeyboardFocus (false);
         closeButton.setMouseClickGrabsKeyboardFocus (false);
         setWantsKeyboardFocus (false);

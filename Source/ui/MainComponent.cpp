@@ -1110,6 +1110,8 @@ void MainComponent::openPianoRoll (int trackIndex, int regionIndex)
     pianoRoll.openRegion (track.id, region.id);
     resized();                      // ここで初めてピアノロールにboundsが付く（閉じている間は更新されない）
     pianoRoll.applyPendingScroll(); // 確定した高さでスクロール位置を決める
+    if (! suppressHistoryPush)
+        bottomHistory.push (currentPianoRollEntry());
 }
 
 void MainComponent::closePianoRoll()
@@ -1205,6 +1207,9 @@ void MainComponent::toggleFxDetailSlot (int slot)
     fxEditor.setActiveSlot (slot);
     updateFxDetailBody();
     resized();
+    // updateFxDetailBody は中身のないエディタを閉じることがあるので、開けたときだけ積む
+    if (! suppressHistoryPush && fxDetail.isOpen())
+        bottomHistory.push (currentFxDetailEntry (slot));
 }
 
 void MainComponent::closeFxDetail()
@@ -1235,6 +1240,11 @@ void MainComponent::syncFxDetail()
         fxDetail.show (fxEditor.slotName (fxDetailSlot), fxEditor.channelName());
         fxEditor.setActiveSlot (fxDetailSlot);
         updateFxDetailBody();
+        // 追従は「ユーザーが下部エリアを開く操作をした」わけではないので履歴を1件消費させない。
+        // ただし現在地の内容は実表示に合わせて差し替える（放置すると E で復元したときに
+        // 追従前のトラックが戻ってしまう）
+        if (fxDetail.isOpen())
+            bottomHistory.replaceCurrent (currentFxDetailEntry (fxDetailSlot));
         return;
     }
     closeFxDetail();
@@ -1271,6 +1281,171 @@ void MainComponent::updateFxDetailBody()
 
     instrumentDetail.setTrack (nullptr);
     fxDetail.setBody (nullptr);
+}
+
+// ---- 下部エリアの表示トグル・履歴（E / [ / ]）----
+//
+// 復元は openPianoRoll / toggleFxDetailSlot をそのまま再利用する。両者が排他close・状態設定・
+// resized・applyPendingScroll をすべて含んでいるので、ここで同じ処理を書き直すと二重管理になる。
+// 積み直しは suppressHistoryPush で止める。
+//
+// カーソル操作は「findValid で非破壊に探す → 復元 → 成功したら commit」の順で行う。
+// 先にcommitすると、復元に失敗したとき表示だけ据え置きでカーソルが進むズレが残る。
+
+int MainComponent::trackIndexForId (juce::uint64 trackId) const
+{
+    for (size_t i = 0; i < project->tracks.size(); ++i)
+        if (project->tracks[i].id == trackId)
+            return (int) i;
+    return -1;
+}
+
+BottomPanelHistory::Entry MainComponent::currentPianoRollEntry() const
+{
+    BottomPanelHistory::Entry entry;
+    entry.kind = BottomPanelHistory::Entry::Kind::pianoRoll;
+    entry.trackId = pianoRoll.currentTrackId();
+    entry.regionId = pianoRoll.currentRegionId();
+    return entry;
+}
+
+BottomPanelHistory::Entry MainComponent::currentFxDetailEntry (int slot) const
+{
+    BottomPanelHistory::Entry entry;
+    entry.kind = BottomPanelHistory::Entry::Kind::fxDetail;
+    entry.channelKey = fxEditor.targetKey();
+    entry.slot = slot;
+    const int index = fxEditor.shownTrack();
+    if (index >= 0 && index < (int) project->tracks.size())
+        entry.trackId = project->tracks[(size_t) index].id;
+    return entry;
+}
+
+bool MainComponent::bottomEntryIsValid (const BottomPanelHistory::Entry& entry) const
+{
+    const int trackIndex = trackIndexForId (entry.trackId);
+
+    if (entry.kind == BottomPanelHistory::Entry::Kind::pianoRoll)
+    {
+        if (trackIndex < 0)
+            return false;
+        for (const auto& region : project->tracks[(size_t) trackIndex].midiRegions)
+            if (region.id == entry.regionId)
+                return true;
+        return false; // リージョンが削除された
+    }
+
+    if (entry.channelKey == "track")
+    {
+        if (trackIndex < 0)
+            return false; // トラックが削除された
+        // Instrumentスロットはサンプルを持つトラックにしか無い（GMへ戻した・undoで割り当てが
+        // 消えた場合はここで弾いてスキップさせる）。fxEditor.isInstrumentSlot は「いま表示中の
+        // チャンネル」基準なので使えず、スロット番号そのもので判定する
+        if (entry.slot == FxEditorView::instrumentSlot
+            && ! project->tracks[(size_t) trackIndex].usesSampler())
+            return false;
+        return true;
+    }
+
+    // バス/Masterのチャンネル自体は常に存在する。スロット番号がそのチャンネルに実在するかは
+    // 表示対象を切り替えないと分からないので、復元側（restoreBottomEntry）で確認する
+    return entry.slot >= 0 && entry.slot < FxEditorView::maxSlots;
+}
+
+bool MainComponent::restoreBottomEntry (const BottomPanelHistory::Entry& entry)
+{
+    if (! bottomEntryIsValid (entry))
+        return false;
+
+    const juce::ScopedValueSetter<bool> guard (suppressHistoryPush, true);
+
+    if (entry.kind == BottomPanelHistory::Entry::Kind::pianoRoll)
+    {
+        // すでに同じリージョンを表示中なら呼ばない（openPianoRoll は同一リージョンで閉じるトグル）
+        if (! pianoRoll.isShowingRegion (entry.trackId, entry.regionId))
+        {
+            const int trackIndex = trackIndexForId (entry.trackId);
+            const auto& regions = project->tracks[(size_t) trackIndex].midiRegions;
+            int regionIndex = -1;
+            for (size_t i = 0; i < regions.size(); ++i)
+                if (regions[i].id == entry.regionId)
+                    regionIndex = (int) i;
+            if (regionIndex < 0)
+                return false;
+            openPianoRoll (trackIndex, regionIndex);
+        }
+        return pianoRoll.isOpen();
+    }
+
+    // FX詳細は「左パネルの表示対象を先に合わせてから」スロットを開く。
+    // 逆にすると toggleFxDetailSlot が拾う fxEditor.targetKey() が古い対象のままになる
+    openFxEditor();
+    if (entry.channelKey == "track")
+        fxEditor.showTrack (trackIndexForId (entry.trackId));
+    else if (entry.channelKey.startsWith ("bus"))
+        fxEditor.showBus (entry.channelKey.substring (3).getIntValue());
+    else
+        fxEditor.showMaster();
+
+    if (entry.slot >= fxEditor.numSlots())
+        return false; // そのチャンネルには無いスロット（構成が変わった場合の保険）
+
+    // すでに同じチャンネル・同じスロットを表示中なら呼ばない（同上のトグル対策）
+    if (! (fxDetail.isOpen() && fxDetailSlot == entry.slot && fxDetailKey == fxEditor.targetKey()))
+        toggleFxDetailSlot (entry.slot);
+    return fxDetail.isOpen();
+}
+
+void MainComponent::toggleBottomPanel()
+{
+    if (pianoRoll.isOpen() || fxDetail.isOpen())
+    {
+        Log::info ("bottom.toggle", "action=close");
+        if (pianoRoll.isOpen())
+            closePianoRoll();
+        else
+            closeFxDetail();
+        return;
+    }
+
+    // 閉じている: まず現在地を復元する（カーソルは元からそこなのでcommit不要）
+    if (bottomHistory.hasCurrent() && restoreBottomEntry (bottomHistory.current()))
+    {
+        Log::info ("bottom.toggle", "action=restore pos="
+                                        + juce::String (bottomHistory.currentPosition()));
+        return;
+    }
+
+    // 現在地が無効（対象が消えた）なら後ろ方向に有効なものを探す
+    const int position = bottomHistory.findValid (-1, [this] (const BottomPanelHistory::Entry& e)
+                                                  { return bottomEntryIsValid (e); });
+    if (position >= 0 && restoreBottomEntry (bottomHistory.entryAt (position)))
+    {
+        bottomHistory.commit (position);
+        Log::info ("bottom.toggle", "action=restore pos=" + juce::String (position));
+        return;
+    }
+    Log::info ("bottom.toggle", "action=none");
+}
+
+void MainComponent::navigateBottomHistory (int direction)
+{
+    const int position = bottomHistory.findValid (direction, [this] (const BottomPanelHistory::Entry& e)
+                                                  { return bottomEntryIsValid (e); });
+    if (position < 0)
+    {
+        Log::info ("bottom.history", "dir=" + juce::String (direction) + " result=none");
+        return;
+    }
+    if (! restoreBottomEntry (bottomHistory.entryAt (position)))
+    {
+        Log::info ("bottom.history", "dir=" + juce::String (direction) + " result=failed");
+        return;
+    }
+    bottomHistory.commit (position);
+    Log::info ("bottom.history", "dir=" + juce::String (direction)
+                                     + " pos=" + juce::String (position));
 }
 
 void MainComponent::selectTrack (int index)
@@ -2125,8 +2300,9 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
             return true;
         }
         if (is (SC::shortcutList) || is (SC::toggleMixer) || is (SC::toggleFxEditor)
-            || is (SC::toggleNotes) || is (SC::toggleFiles))
-            return true; // オーバーレイは高々1枚: AddTrack表示中の⌘?/X/B/⌘N/Fは無視
+            || is (SC::toggleNotes) || is (SC::toggleFiles)
+            || is (SC::toggleBottomPanel) || is (SC::bottomHistory))
+            return true; // オーバーレイは高々1枚: AddTrack表示中の⌘?/X/I/⌘N/F/E/[]は無視
     }
     // Logic準拠: X = ミキサー。表示中もモーダルにしない（Space再生・シーク等はそのまま効く）
     if (is (SC::toggleMixer))
@@ -2153,6 +2329,18 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (is (SC::toggleFxEditor))
     {
         toggleFxEditor();
+        return true;
+    }
+    // Logic準拠: E = Show/Hide Editor（下部エリア）。閉じても履歴に残るので同じEで戻せる
+    if (is (SC::toggleBottomPanel))
+    {
+        toggleBottomPanel();
+        return true;
+    }
+    // [ / ] = 下部エリアの履歴を戻る/進む（⌘付きはファイルパネルの履歴で別物）
+    if (is (SC::bottomHistory))
+    {
+        navigateBottomHistory (key.getTextCharacter() == '[' ? -1 : 1);
         return true;
     }
     // ⌘N = 右ドックのメモ。開くとメモ欄にフォーカスが移るが、⌘付きなのでTextEditorに

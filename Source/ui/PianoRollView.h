@@ -32,6 +32,7 @@ public:
         return open && shownTrackId == trackId && shownRegionId == regionId;
     }
     juce::uint64 currentTrackId() const { return shownTrackId; }
+    juce::uint64 currentRegionId() const { return shownRegionId; }
 
     // モデル変更（undo・リージョン削除等）後に呼ぶ。対象が消えていたら onCloseRequested を呼ぶ
     void refreshFromModel();
