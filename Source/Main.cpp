@@ -19,12 +19,13 @@ juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
 // DawApplication::perform経由で実行される（keyPressed側の同判定はフォールバック）
 namespace MenuCommands
 {
-    enum : juce::CommandID { save = 1, importAudio, bounce, closeProject };
+    enum : juce::CommandID { save = 1, importAudio, importUrl, bounce, closeProject };
 
     struct Item { juce::CommandID command; Shortcuts::ID shortcut; };
     inline constexpr Item items[] = {
         { save, Shortcuts::ID::save },
         { importAudio, Shortcuts::ID::importAudio },
+        { importUrl, Shortcuts::ID::importUrl },
         { bounce, Shortcuts::ID::bounce },
         { closeProject, Shortcuts::ID::openChooser },
     };
@@ -47,6 +48,7 @@ public:
         {
             menu.addCommandItem (&commandManager, MenuCommands::save);
             menu.addCommandItem (&commandManager, MenuCommands::importAudio);
+            menu.addCommandItem (&commandManager, MenuCommands::importUrl);
             menu.addCommandItem (&commandManager, MenuCommands::bounce);
             menu.addSeparator();
             menu.addCommandItem (&commandManager, MenuCommands::closeProject);
@@ -76,6 +78,10 @@ public:
         Log::init (getApplicationVersion());
         lookAndFeel = std::make_unique<AppLookAndFeel>();
         juce::LookAndFeel::setDefaultLookAndFeel (lookAndFeel.get());
+
+        // 前回クラッシュ等で残ったURL取り込みの一時ディレクトリを片付ける
+        // （MainComponentのコンストラクタではなくここ。起動直後は選択画面でMainComponentが無い）
+        MainComponent::sweepStaleUrlTempDirs();
 
         // Fileメニューのコマンド登録とkeyEquivalent（メニュー構築より先に済ませる）
         commandManager.registerAllCommandsForTarget (this);
@@ -140,7 +146,8 @@ public:
     void getCommandInfo (juce::CommandID id, juce::ApplicationCommandInfo& info) override
     {
         auto* mainComp = mainWindow != nullptr ? mainWindow->currentMainComponent() : nullptr;
-        const bool ready = mainComp != nullptr && ! mainComp->isBouncing() && ! mainComp->isImporting();
+        const bool ready = mainComp != nullptr && ! mainComp->isBouncing()
+                           && ! mainComp->isImporting() && ! mainComp->isUrlImporting();
 
         switch (id)
         {
@@ -150,6 +157,10 @@ public:
                 return;
             case MenuCommands::importAudio:
                 info.setInfo (Shortcuts::name (Shortcuts::ID::importAudio) + jp (u8"…"), {}, "File", 0);
+                info.setActive (ready);
+                return;
+            case MenuCommands::importUrl:
+                info.setInfo (Shortcuts::name (Shortcuts::ID::importUrl) + jp (u8"…"), {}, "File", 0);
                 info.setActive (ready);
                 return;
             case MenuCommands::bounce:
@@ -170,7 +181,8 @@ public:
     {
         // メニューのenable状態はNSMenu構築時のもので古いことがあるため、ここでも必ずガードする
         auto* mainComp = mainWindow != nullptr ? mainWindow->currentMainComponent() : nullptr;
-        const bool ready = mainComp != nullptr && ! mainComp->isBouncing() && ! mainComp->isImporting();
+        const bool ready = mainComp != nullptr && ! mainComp->isBouncing()
+                           && ! mainComp->isImporting() && ! mainComp->isUrlImporting();
 
         switch (info.commandID)
         {
@@ -181,6 +193,10 @@ public:
             case MenuCommands::importAudio:
                 if (ready)
                     mainComp->startImportFlow();
+                return true;
+            case MenuCommands::importUrl:
+                if (ready)
+                    mainComp->startUrlImportFlow();
                 return true;
             case MenuCommands::bounce:
                 if (ready)
@@ -347,6 +363,7 @@ private:
             // バウンス・取り込み中の閉じる/終了（バツボタン・⌘Q。メニューはdisabled）は
             // キャンセル→ワーカーjoin→一時ファイル削除を待ってから進める
             mainComp->cancelBounceForClose();
+            mainComp->cancelUrlImportForClose(); // 取り込みより先に。DL成功直後の未回収分も畳む
             mainComp->cancelImportForClose();
             mainComp->finishRecordingForClose();
 

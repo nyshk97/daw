@@ -58,6 +58,7 @@ enum class ID
     // プロジェクト
     save,
     importAudio,
+    importUrl,
     bounce,
     openChooser,
     audioSettings,
@@ -293,6 +294,15 @@ inline const Entry table[] = {
                                                | juce::ModifierKeys::shiftModifier, 0);
       },
       juce::KeyPress ('i', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0) },
+    // Logicに該当機能が無いので独自。⇧⌘Iと同じIを共有して修飾キーだけ変える
+    //（「読み込み系は⌘I、どこから引っ張るかは修飾キーで分ける」で覚えられる）
+    { ID::importUrl, Category::project, u8"URLから読み込む", u8"⌥⌘I",
+      [] (const juce::KeyPress& k)
+      {
+          return k == juce::KeyPress ('i', juce::ModifierKeys::commandModifier
+                                               | juce::ModifierKeys::altModifier, 0);
+      },
+      juce::KeyPress ('i', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0) },
     { ID::bounce, Category::project, u8"書き出し", u8"⌘B",
       [] (const juce::KeyPress& k)
       { return k == juce::KeyPress ('b', juce::ModifierKeys::commandModifier, 0); },

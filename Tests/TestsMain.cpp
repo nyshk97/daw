@@ -2,6 +2,8 @@
 // GUIなしで動くもの（データモデル・保存/読込・DLSMusicDeviceのオフラインレンダリング）だけを検証する。
 // テストは一時ディレクトリのみを使い、~/Music/daw には一切触れない。
 
+#include <unistd.h> // getpid（TempDirSweep の現PIDケース）
+
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_formats/juce_audio_formats.h>
 
@@ -10,12 +12,16 @@
 #include "audio/BounceRenderer.h"
 #include "audio/PlaybackEngine.h"
 #include "audio/SamplerEngine.h"
+#include "audio/UrlDownloader.h"
 #include "shared/Project.h"
 #include "shared/SynthBank.h"
 #include "shared/UndoStack.h"
 #include "shared/AudioFileTypes.h"
 #include "shared/AudioBrowserNavigation.h"
 #include "shared/GainScale.h"
+#include "shared/SpawnedProcess.h"
+#include "shared/TempDirSweep.h"
+#include "shared/YtDlpOutput.h"
 #include "ui/AppLookAndFeel.h"
 #include "ui/BottomPanelHistory.h"
 #include "ui/GainControls.h"
@@ -5375,6 +5381,495 @@ void testMonoRenderRegressionHash()
     }
 }
 
+// yt-dlp の出力パース。ケースは yt-dlp 2026.07.04 の実出力から採っている
+void testYtDlpOutput()
+{
+    beginTest ("YtDlpOutput");
+
+    // ---- 進捗行 ----
+    {
+        // 実測: 総サイズが判っている動画では total_bytes 側だけが入り estimate は NA
+        const auto p = YtDlpOutput::parseProgress ("LALA_PROGRESS 130048 252182 NA");
+        expect (p.has_value(), "実測の進捗行が読める");
+        expect (p.has_value() && std::abs (*p - 130048.0f / 252182.0f) < 1.0e-6f, "進捗の比率が正しい");
+    }
+    {
+        // 逆に total_bytes が NA で estimate だけ入るケースは分母を estimate から取る
+        const auto p = YtDlpOutput::parseProgress ("LALA_PROGRESS 500 NA 1000");
+        expect (p.has_value() && std::abs (*p - 0.5f) < 1.0e-6f, "total_bytes が NA なら estimate を使う");
+    }
+    expect (! YtDlpOutput::parseProgress ("LALA_PROGRESS 500 NA NA").has_value(),
+            "分母が両方 NA なら進捗にしない");
+    expect (! YtDlpOutput::parseProgress ("LALA_PROGRESS 500 0 NA").has_value(),
+            "分母0は進捗にしない");
+    expect (! YtDlpOutput::parseProgress ("LALA_PROGRESS 500").has_value(),
+            "トークン不足は進捗にしない");
+    expect (! YtDlpOutput::parseProgress ("[download] Destination: audio.webm").has_value(),
+            "進捗以外の行は無視する");
+    expect (! YtDlpOutput::parseProgress ("").has_value(), "空行は無視する");
+    {
+        // 分母を超えた値が来てもバーが飛び出さない
+        const auto p = YtDlpOutput::parseProgress ("LALA_PROGRESS 2000 1000 NA");
+        expect (p.has_value() && *p <= 1.0f, "1.0 を超えない");
+    }
+
+    // ---- メタ情報 ----
+    {
+        const juce::String out =
+            "[youtube] Extracting URL: https://www.youtube.com/watch?v=jNQXAC9IVRw\n"
+            "LALA_META:{\"title\": \"Me at the zoo\", \"duration\": 19, \"is_live\": false}\n";
+        const auto meta = YtDlpOutput::parseMetadata (out);
+        expect (meta.ok, "実測のメタ行が読める");
+        expect (meta.title == "Me at the zoo", "タイトルが取れる");
+        expect (meta.hasDuration && std::abs (meta.durationSeconds - 19.0) < 1.0e-9, "長さが取れる");
+        expect (! meta.isLive, "is_live=false が読める");
+    }
+    {
+        // 平文フィールド方式なら壊れるケース: タイトルに改行・引用符・prefix文字列が入る。
+        // JSONならエスケープされて1行に収まるので読める
+        const juce::String out =
+            "LALA_META:{\"title\": \"a\\nb \\\"q\\\" LALA_META: x\", \"duration\": 5, \"is_live\": false}";
+        const auto meta = YtDlpOutput::parseMetadata (out);
+        expect (meta.ok, "タイトルに改行・引用符・prefixが入っても読める");
+        expect (meta.title.contains ("LALA_META:") && meta.title.contains ("q"), "タイトルの中身が保たれる");
+        expect (meta.hasDuration, "同じ行の duration も読める");
+    }
+    {
+        const auto meta = YtDlpOutput::parseMetadata (
+            "LALA_META:{\"title\": \"live\", \"duration\": null, \"is_live\": true}");
+        expect (meta.ok, "duration が null でも行としては読める");
+        expect (! meta.hasDuration, "duration が null なら長さ無しとして扱う");
+        expect (meta.isLive, "is_live=true が読める");
+    }
+    {
+        const auto meta = YtDlpOutput::parseMetadata (
+            "WARNING: something\nLALA_META:{\"title\": \"t\", \"duration\": 3, \"is_live\": false}\nbye");
+        expect (meta.ok && meta.title == "t", "前後に警告行が混ざっても読める");
+    }
+    expect (! YtDlpOutput::parseMetadata ("ERROR: nope").ok, "prefix行が無ければ ok=false");
+    expect (! YtDlpOutput::parseMetadata ("LALA_META:{broken").ok, "壊れたJSONは ok=false");
+    {
+        const auto meta = YtDlpOutput::parseMetadata (
+            "LALA_META:{\"title\": \"t\", \"duration\": -5, \"is_live\": false}");
+        expect (! meta.hasDuration, "負の duration は長さ無しとして扱う");
+    }
+
+    // ---- 長さ上限の閾値 ----
+    // UrlDownloader は duration×48000 を AudioImporter::maxInputFrames と比べてDL前に弾く。
+    // 中間WAVの実SRは事前に判らないが、YouTube由来は48kで実測されており、44.1kソースには
+    // 安全側（実フレーム数はこれより少ない）に働く。maxInputFrames を動かしたらここで気づける
+    {
+        const double limitSeconds = (double) AudioImporter::maxInputFrames
+                                    / UrlDownloader::assumedSampleRate;
+        expect (limitSeconds > 2000.0 && limitSeconds < 2100.0,
+                "長さ上限は約2083秒（34分台）");
+        expect (5.0 * UrlDownloader::assumedSampleRate < (double) AudioImporter::maxInputFrames,
+                "5秒の動画は通る");
+        expect (3600.0 * UrlDownloader::assumedSampleRate > (double) AudioImporter::maxInputFrames,
+                "1時間の動画は弾かれる");
+    }
+
+    // ---- エラー行の抽出 ----
+    expect (YtDlpOutput::extractErrorLine ("ERROR: [youtube] AAAAAAAAAAA: Video unavailable")
+                == "ERROR: [youtube] AAAAAAAAAAA: Video unavailable",
+            "実測のERROR行を取り出せる");
+    expect (YtDlpOutput::extractErrorLine ("WARNING: a\nERROR: first\nERROR: second")
+                == "ERROR: first",
+            "ERROR行が複数なら最初の1行");
+    expect (YtDlpOutput::extractErrorLine ("just a note\nlast line\n") == "last line",
+            "ERROR行が無ければ末尾の非空行");
+    expect (YtDlpOutput::extractErrorLine ("").isEmpty(), "空入力なら空");
+
+    // ---- URLのマスク ----
+    {
+        // 漏れ方①: stdout の scheme 付きURL
+        const auto r = YtDlpOutput::redactUrls (
+            "[youtube] Extracting URL: https://www.youtube.com/watch?v=jNQXAC9IVRw");
+        expect (! r.contains ("v=jNQXAC9IVRw"), "queryが消える");
+        expect (r.contains ("https://www.youtube.com/watch"), "scheme+host+先頭パスは残る");
+    }
+    {
+        // 漏れ方②: stderr の scheme も host も落ちた形。元URL既知の置換で消す
+        const juce::String original = "https://example.com/foo?token=SECRET123#frag";
+        const auto r = YtDlpOutput::redactUrls (
+            "ERROR: [generic] foo?token=SECRET123#frag: Unable to download webpage", original);
+        expect (! r.contains ("SECRET123"), "scheme無しで漏れたトークンも消える");
+    }
+    {
+        const auto r = YtDlpOutput::redactUrls (
+            "a https://x.test/p/q?k=1 b http://y.test/z?k=2 c");
+        expect (! r.contains ("k=1") && ! r.contains ("k=2"), "URLが複数でも全部伏せる");
+        expect (r.startsWith ("a ") && r.endsWith (" c"), "URL以外の本文は保たれる");
+    }
+    expect (YtDlpOutput::redactUrls ("no urls here") == "no urls here",
+            "URLを含まない本文は変わらない");
+    {
+        const auto r = YtDlpOutput::redactUrls ("see https://a.test/p?x=1.");
+        expect (! r.contains ("x=1"), "末尾に句読点が付いていても伏せる");
+    }
+    {
+        // query が無く fragment だけに機密が載るURL。"?" 以降だけを見ていると素通りする
+        const juce::String original = "https://example.com/foo#SECRET";
+        const auto r = YtDlpOutput::redactUrls (
+            "ERROR: [generic] foo#SECRET: Unable to download webpage", original);
+        expect (! r.contains ("SECRET"), "fragmentだけの機密値も消える");
+    }
+    {
+        // query と fragment の両方があるケースでどちらも残らない
+        const juce::String original = "https://example.com/foo?k=Q1#F2";
+        const auto r = YtDlpOutput::redactUrls ("ERROR: foo?k=Q1#F2: nope", original);
+        expect (! r.contains ("Q1") && ! r.contains ("F2"), "query と fragment の両方が消える");
+    }
+    {
+        // userinfo（user:password@）付きURL。host は残してよいが認証情報は残してはいけない
+        const auto r = YtDlpOutput::redactUrls (
+            "[generic] Extracting URL: https://alice:hunter2@example.com/p?x=1");
+        expect (! r.contains ("alice") && ! r.contains ("hunter2"), "URLの認証情報が消える");
+        expect (r.contains ("example.com"), "ホスト名は残る（どのサイトか分かる情報は要る）");
+    }
+    {
+        // userinfo が無いURLでホスト名が壊れないこと
+        const auto r = YtDlpOutput::redactUrls ("see https://example.com/p/q");
+        expect (r.contains ("https://example.com/p"), "userinfo が無ければ従来どおり");
+    }
+}
+
+// 指定プロセスグループに属するプロセス数を数える（キャンセルで孫まで死んだかの裏取り用）。
+// pgrep -f は名前で拾うのでユーザーが別用途で動かしている同名プロセスと衝突する。PGIDで見る
+int countProcessesInGroup (int pgid)
+{
+    SpawnedProcess ps;
+    if (! ps.start ({ "/bin/ps", "-o", "pgid=", "-ax" }))
+        return -1;
+
+    int count = 0;
+    ps.readUntilFinished (nullptr,
+                          [&count, pgid] (const juce::String& line)
+                          {
+                              if (line.trim().getIntValue() == pgid)
+                                  ++count;
+                          },
+                          nullptr);
+    return count;
+}
+
+// 外部プロセスの起動・行読み・キャンセル
+void testSpawnedProcess()
+{
+    beginTest ("SpawnedProcess");
+
+    // ---- stdout が行単位に取れる ----
+    {
+        SpawnedProcess proc;
+        expect (proc.start ({ "/bin/echo", "hello" }), "/bin/echo を起動できる");
+
+        juce::StringArray lines;
+        const bool finished = proc.readUntilFinished (
+            nullptr, [&lines] (const juce::String& l) { lines.add (l); }, nullptr);
+
+        expect (finished, "最後まで読み切れる");
+        expect (lines.size() == 1 && lines[0] == "hello", "stdout の1行が取れる");
+        expect (proc.exitCode() == 0, "正常終了の exit code は0");
+    }
+
+    // ---- 複数行 ----
+    {
+        SpawnedProcess proc;
+        proc.start ({ "/bin/sh", "-c", "printf 'a\\nb\\nc\\n'" });
+
+        juce::StringArray lines;
+        proc.readUntilFinished (nullptr, [&lines] (const juce::String& l) { lines.add (l); }, nullptr);
+        expect (lines.size() == 3 && lines[2] == "c", "複数行が順に取れる");
+    }
+
+    // ---- stdout と stderr が分離して取れる（JUCE版は同一pipeにマージされて分離できない）----
+    {
+        SpawnedProcess proc;
+        proc.start ({ "/bin/sh", "-c", "echo out; echo err >&2" });
+
+        juce::StringArray outLines, errLines;
+        proc.readUntilFinished (nullptr,
+                                [&outLines] (const juce::String& l) { outLines.add (l); },
+                                [&errLines] (const juce::String& l) { errLines.add (l); });
+
+        expect (outLines.size() == 1 && outLines[0] == "out", "stdout だけが stdout に来る");
+        expect (errLines.size() == 1 && errLines[0] == "err", "stderr だけが stderr に来る");
+    }
+
+    // ---- 異常終了の exit code ----
+    {
+        SpawnedProcess proc;
+        proc.start ({ "/bin/sh", "-c", "exit 42" });
+        proc.readUntilFinished (nullptr, nullptr, nullptr);
+        expect (proc.exitCode() == 42, "終了コードを拾える");
+    }
+
+    // ---- 出力を出さないプロセスでもキャンセルが即座に効く ----
+    // （JUCE の ChildProcess::read() は fread() でブロックするのでここが固まる）
+    {
+        SpawnedProcess proc;
+        expect (proc.start ({ "/bin/sleep", "60" }), "/bin/sleep を起動できる");
+
+        const auto startMs = juce::Time::getMillisecondCounter();
+        const bool finished = proc.readUntilFinished (
+            [startMs] { return juce::Time::getMillisecondCounter() - startMs > 500; },
+            nullptr, nullptr);
+        const auto elapsed = juce::Time::getMillisecondCounter() - startMs;
+
+        expect (! finished, "キャンセルされたら false を返す");
+        expect (elapsed < 3000, "無出力でも数秒以内に返る（ブロッキング読みで固まらない）");
+    }
+
+    // ---- キャンセルで孫プロセスまで死ぬ ----
+    {
+        SpawnedProcess proc;
+        // sh が sleep を2つ持つ。killpg が効かないと孫の sleep が孤児として残る
+        expect (proc.start ({ "/bin/sh", "-c", "sleep 30 & sleep 30; wait" }), "子を持つプロセスを起動できる");
+
+        const int pgid = proc.pgid();
+        expect (pgid > 0, "PGIDが取れる");
+
+        // 孫が起動するのを待ってから、撃つ前の頭数を確認する。
+        // これが無いと「そもそも起動していない」ケースでもテストが通ってしまう
+        juce::Thread::sleep (400);
+        const int before = countProcessesInGroup (pgid);
+        expect (before >= 2, "撃つ前はグループに親と子（孫のsleep）が居る");
+
+        proc.readUntilFinished ([] { return true; }, nullptr, nullptr);
+
+        // SIGKILL 後にプロセステーブルから消えるまでの猶予を見てリトライする
+        int remaining = -1;
+        for (int attempt = 0; attempt < 20; ++attempt)
+        {
+            remaining = countProcessesInGroup (pgid);
+            if (remaining == 0)
+                break;
+            juce::Thread::sleep (50);
+        }
+        expect (remaining == 0,
+                "キャンセル後、そのプロセスグループに属するプロセスが残らない（孫まで終了）");
+    }
+
+    // ---- 子が先に終了し、孫がSIGTERMを無視するケースでも取り逃さない ----
+    // 「直接の子を回収できたら終わり」にすると、TERMを無視する孫（ffmpeg等）が孤児として残る
+    {
+        SpawnedProcess proc;
+        // sh は即 exit し、孫のサブシェルは TERM を無視して生き続ける
+        expect (proc.start ({ "/bin/sh", "-c", "(trap '' TERM; sleep 30) & exit 0" }),
+                "「子が先に死ぬ」プロセスを起動できる");
+
+        const int pgid = proc.pgid();
+        juce::Thread::sleep (500);
+        expect (countProcessesInGroup (pgid) >= 1, "撃つ前は孫が生きている");
+
+        proc.readUntilFinished ([] { return true; }, nullptr, nullptr);
+
+        int remaining = -1;
+        for (int attempt = 0; attempt < 40; ++attempt)
+        {
+            remaining = countProcessesInGroup (pgid);
+            if (remaining == 0)
+                break;
+            juce::Thread::sleep (50);
+        }
+        expect (remaining == 0,
+                "子が先に終了していても、TERMを無視する孫までSIGKILLで終了する");
+    }
+}
+
+// 実ネットワークを使うURLダウンロードの通し確認。ネットに繋がらない環境やCIで落ちないよう、
+// 環境変数 LALA_VERIFY_URL が指定されたときだけ走る（GUIを介さずワーカー単体を検証する）:
+//   LALA_VERIFY_URL=https://www.youtube.com/watch?v=... ./daw_tests
+//   LALA_VERIFY_LONG_URL=... を足すと「長すぎる動画をDL前に弾く」も確認する
+void testUrlDownloaderLive()
+{
+    const auto url = juce::SystemStats::getEnvironmentVariable ("LALA_VERIFY_URL", {});
+    if (url.isEmpty())
+        return;
+
+    beginTest ("UrlDownloader (live)");
+
+    const auto ytDlp = UrlDownloader::findYtDlp();
+    expect (ytDlp != juce::File(), "yt-dlp が見つかる");
+    if (ytDlp == juce::File())
+        return;
+
+    // ---- スキーム違いは即 failed（ネットに出ない） ----
+    {
+        UrlDownloader downloader;
+        UrlDownloader::Request request;
+        request.url = "--exec=touch /tmp/pwned";
+        expect (downloader.start (std::move (request)), "start できる");
+        while (downloader.status() == UrlDownloader::Status::running)
+            juce::Thread::sleep (20);
+
+        const auto result = downloader.takeResult();
+        expect (result.status == UrlDownloader::Status::failed, "http(s)以外のURLは failed");
+        expect (result.tempDirectory == juce::File(), "失敗時は一時ディレクトリを持たない");
+        expect (! juce::File ("/tmp/pwned").existsAsFile(), "オプション文字列が実行されない");
+    }
+
+    // ---- 存在しない動画 ----
+    {
+        UrlDownloader downloader;
+        UrlDownloader::Request request;
+        request.url = "https://www.youtube.com/watch?v=AAAAAAAAAAA";
+        downloader.start (std::move (request));
+        while (downloader.status() == UrlDownloader::Status::running)
+            juce::Thread::sleep (50);
+
+        const auto result = downloader.takeResult();
+        expect (result.status == UrlDownloader::Status::failed, "存在しない動画は failed");
+        expect (result.errorMessage.isNotEmpty(), "理由が入っている");
+        expect (result.tempDirectory == juce::File(), "失敗時は一時ディレクトリを持たない");
+    }
+
+    // ---- 長すぎる動画はダウンロード前に弾く ----
+    if (const auto longUrl = juce::SystemStats::getEnvironmentVariable ("LALA_VERIFY_LONG_URL", {});
+        longUrl.isNotEmpty())
+    {
+        UrlDownloader downloader;
+        UrlDownloader::Request request;
+        request.url = longUrl;
+        const auto startMs = juce::Time::getMillisecondCounter();
+        downloader.start (std::move (request));
+        while (downloader.status() == UrlDownloader::Status::running)
+            juce::Thread::sleep (50);
+        const auto elapsed = juce::Time::getMillisecondCounter() - startMs;
+
+        const auto result = downloader.takeResult();
+        expect (result.status == UrlDownloader::Status::failed, "長すぎる動画は failed");
+        expect (result.errorMessage.contains (juce::String::fromUTF8 (u8"長すぎ")), "長さ超過の理由が出る");
+        // メタ取得だけなら数秒。ダウンロードまで走っていたらこれより遥かに長くなる
+        expect (elapsed < 30000, "ダウンロードを始める前に弾いている");
+        std::cout << "     （長さ判定までの所要: " << elapsed << "ms）" << std::endl;
+    }
+
+    // ---- キャンセルで一時ディレクトリもプロセスも残らない ----
+    {
+        UrlDownloader downloader;
+        UrlDownloader::Request request;
+        request.url = url;
+        downloader.start (std::move (request));
+
+        juce::Thread::sleep (2500); // メタ取得を抜けてダウンロードに入るまで待つ
+        downloader.cancelAndWait();
+
+        const auto result = downloader.takeResult();
+        expect (result.status == UrlDownloader::Status::cancelled
+                    || result.status == UrlDownloader::Status::success,
+                "キャンセルは cancelled（間に合わず完了した場合は success）");
+        if (result.status == UrlDownloader::Status::cancelled)
+            expect (result.tempDirectory == juce::File(), "キャンセル時は worker が一時ディレクトリを消す");
+        else
+            result.tempDirectory.deleteRecursively(); // 完了していたら後片付け
+
+        // yt-dlp / ffmpeg が孤児として残っていないこと。
+        // 名前で数えるとユーザーが別用途で動かしているffmpeg等を誤検知するのでPGIDで見る
+        const int pgid = downloader.pgid();
+        expect (pgid > 0, "ダウンロードのPGIDが記録されている");
+        int remaining = -1;
+        for (int attempt = 0; attempt < 20 && pgid > 0; ++attempt)
+        {
+            remaining = countProcessesInGroup (pgid);
+            if (remaining == 0)
+                break;
+            juce::Thread::sleep (50);
+        }
+        expect (remaining == 0, "そのプロセスグループに yt-dlp / ffmpeg が残っていない");
+    }
+
+    // ---- 通常のダウンロード ----
+    {
+        UrlDownloader downloader;
+        UrlDownloader::Request request;
+        request.url = url;
+        downloader.start (std::move (request));
+
+        float maxProgress = 0.0f;
+        while (downloader.status() == UrlDownloader::Status::running)
+        {
+            maxProgress = juce::jmax (maxProgress, downloader.progress());
+            juce::Thread::sleep (50);
+        }
+
+        auto result = downloader.takeResult();
+        expect (result.status == UrlDownloader::Status::success, "ダウンロードが成功する");
+        if (result.status != UrlDownloader::Status::success)
+        {
+            std::cout << "     失敗理由: " << result.errorMessage << std::endl;
+            return;
+        }
+
+        expect (result.title.isNotEmpty(), "動画タイトルが取れる");
+        expect (result.audioFile.existsAsFile(), "WAVが出来ている");
+        expect (result.tempDirectory.isDirectory(), "一時ディレクトリの所有権を受け取る");
+        expect (result.audioFile.getParentDirectory() == result.tempDirectory,
+                "WAVは一時ディレクトリの中にある");
+        expect (maxProgress > 0.0f, "進捗が動く");
+
+        // 出来たWAVが実際に読めること（この後 AudioImporter に渡せるか）
+        juce::AudioFormatManager formats;
+        formats.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> reader (
+            formats.createReaderFor (result.audioFile));
+        expect (reader != nullptr, "WAVをデコードできる");
+        if (reader != nullptr)
+        {
+            expect (reader->sampleRate > 0.0, "サンプルレートが読める");
+            expect (reader->lengthInSamples > 0, "長さがある");
+            std::cout << "     取得: \"" << result.title << "\" "
+                      << reader->numChannels << "ch " << (int) reader->sampleRate << "Hz "
+                      << (double) reader->lengthInSamples / reader->sampleRate << "s" << std::endl;
+        }
+        reader.reset();
+
+        // take した側が消す責任を負う（MainComponent では cleanupUrlTempDir が担う）
+        result.tempDirectory.deleteRecursively();
+        expect (! result.tempDirectory.exists(), "take した側で削除できる");
+    }
+}
+
+// 一時ディレクトリの残骸掃除の判定
+void testTempDirSweep()
+{
+    beginTest ("TempDirSweep");
+
+    constexpr int alivePid = 4242;
+    constexpr int deadPid  = 4243;
+    auto isAlive = [] (int pid) { return pid == alivePid; };
+
+    juce::StringArray names {
+        TempDirSweep::makeDirName (alivePid, "aaaa"), // 別インスタンスが作業中
+        TempDirSweep::makeDirName (deadPid,  "bbbb"), // 持ち主が居ない残骸
+        "lala-url-abc-cccc",                          // PIDが数字でない
+        "lala-url-",                                  // PID部もuuid部も無い
+        "lala-url-999",                               // uuid部が無い
+        "lala-url--dddd",                             // PID部が空
+        "some-other-dir"                              // 無関係
+    };
+
+    const auto stale = TempDirSweep::selectStaleTempDirs (names, isAlive);
+
+    expect (stale.size() == 1, "削除対象は1件だけ");
+    expect (stale.contains (TempDirSweep::makeDirName (deadPid, "bbbb")),
+            "持ち主が居ないものだけ削除対象になる");
+    expect (! stale.contains (TempDirSweep::makeDirName (alivePid, "aaaa")),
+            "生存中PIDのディレクトリは残す");
+    // 注意: expect の説明は const char* をそのまま渡す。日本語リテラルを juce::String(const char*)
+    // に通すと ASCII 扱いで Debug assertion が飛ぶ（JUCEの String(const char*) は Latin-1 想定）
+    for (const auto& bad : { "lala-url-abc-cccc", "lala-url-", "lala-url-999",
+                             "lala-url--dddd", "some-other-dir" })
+        expect (! stale.contains (bad), "不正な名前のディレクトリには触らない");
+
+    // 自分自身のPIDのディレクトリは（生きているので）残る
+    const int selfPid = (int) ::getpid();
+    const auto selfName = TempDirSweep::makeDirName (selfPid, "self");
+    const auto staleWithSelf = TempDirSweep::selectStaleTempDirs (
+        { selfName }, [selfPid] (int pid) { return pid == selfPid; });
+    expect (staleWithSelf.isEmpty(), "現PIDのディレクトリは削除対象にしない");
+}
+
 
 } // namespace
 
@@ -5442,6 +5937,10 @@ int main()
     testGainScale();
     testGainSliderIgnoresScrollWheel();
     testGainSliderCenterFill();
+    testYtDlpOutput();
+    testSpawnedProcess();
+    testTempDirSweep();
+    testUrlDownloaderLive(); // LALA_VERIFY_URL が無ければ何もしない
     testMonoRenderRegressionHash();
 
     if (failureCount > 0)

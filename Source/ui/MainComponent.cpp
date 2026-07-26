@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <errno.h>
+#include <signal.h> // kill(pid, 0) による一時ディレクトリの持ち主判定
 
 #include "../shared/Log.h"
+#include "../shared/TempDirSweep.h"
 #include "Fonts.h"
 #include "Shortcuts.h"
 #include "Theme.h"
@@ -11,6 +14,10 @@
 namespace
 {
 juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
+
+// URL取り込みの進捗バーの内訳。前半をダウンロード、残りを取り込み（AudioImporter）に割り当てる。
+// オーバーレイは1枚を通しで使うので、切り替わりでバーが戻らない
+constexpr float downloadProgressShare = 0.7f;
 
 // ユーザーに見せるエラーは必ずログにも残す（ダイアログは閉じたら消えるため）
 void showAlert (const juce::String& title, const juce::String& message)
@@ -108,6 +115,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     addChildComponent (shortcutOverlay); // ⌘?表示中のみ可視
     addChildComponent (bounceOverlay);   // バウンス中のみ可視
     addChildComponent (importOverlay);   // 取り込み中のみ可視
+    addChildComponent (urlOverlay);      // URL入力中のみ可視
     addAndMakeVisible (lcd);
     addChildComponent (srWarningLabel); // 不一致時のみ表示
 
@@ -547,6 +555,7 @@ void MainComponent::timerCallback()
     }
 
     pollBounce();
+    pollUrlImport(); // ダウンロード完了時にそのまま pollImport 側の取り込みへ引き渡す
     pollImport();
 
     // サイクル範囲のサンプル換算はBPM・サンプルレートに依存するため毎tick同期する
@@ -1551,7 +1560,7 @@ void MainComponent::applyBpmText()
 
 void MainComponent::startBounceFlow()
 {
-    if (bounceActive || engine.isRecording())
+    if (bounceActive || engine.isRecording() || importActive || isUrlImporting())
         return;
 
     // 素材が何も無ければ入口で弾く（mute/soloを踏まえた正確な判定はbeginBounceで行う）
@@ -1952,40 +1961,53 @@ void MainComponent::startImportFlow()
     });
 }
 
-void MainComponent::startImport (const juce::File& source, int targetTrack, juce::int64 startSample,
-                                 bool othersSkipped)
+// プロジェクトSRの確定（最初の録音「または取り込み」時にデバイスレートで確定。
+// SR確定はundo対象外 — UndoStackが戻すのはtracks/markersのみで、録音による確定と同じ扱い）。
+// URL取り込みでも同じ確定を通すため切り出してある（呼ぶのは「URLが確定してから」で、
+// 入力オーバーレイを開いてキャンセルしただけでdirtyにならないようにする）
+bool MainComponent::ensureProjectSampleRate (double& targetRate)
 {
-    if (importActive || bounceActive || engine.isRecording())
-        return;
+    targetRate = project->sampleRate;
+    if (targetRate > 0.0)
+        return true;
+
+    const double deviceRate = transport.sampleRate.load();
+    if (deviceRate <= 0.0)
+    {
+        showAlert (jp (u8"取り込めません"), jp (u8"オーディオデバイスが準備できていません。"));
+        return false;
+    }
+
+    project->sampleRate = deviceRate;
+    setDirty (true);
+    targetRate = deviceRate;
+    return true;
+}
+
+bool MainComponent::startImport (const juce::File& source, int targetTrack, juce::int64 startSample,
+                                 bool othersSkipped, const juce::String& displayName)
+{
+    // URL取り込みからの引き渡しでは、呼ぶ前に urlStage を idle に戻してある
+    //（そうしないと自分の状態で自分を弾いて必ず false になる）
+    if (importActive || bounceActive || engine.isRecording() || isUrlImporting())
+        return false;
     rightPanel.fileBrowser().cancelPreview(); // 予約中のオートプレビューごと畳む
 
-    // プロジェクトSRの確定（最初の録音「または取り込み」時にデバイスレートで確定。
-    // SR確定はundo対象外 — UndoStackが戻すのはtracks/markersのみで、録音による確定と同じ扱い）
-    double targetRate = project->sampleRate;
-    if (targetRate <= 0.0)
-    {
-        const double deviceRate = transport.sampleRate.load();
-        if (deviceRate <= 0.0)
-        {
-            showAlert (jp (u8"取り込めません"), jp (u8"オーディオデバイスが準備できていません。"));
-            return;
-        }
-        project->sampleRate = deviceRate;
-        setDirty (true);
-        targetRate = deviceRate;
-    }
+    double targetRate = 0.0;
+    if (! ensureProjectSampleRate (targetRate))
+        return false;
 
     importIsInstrument = false;
     importTargetTrack = targetTrack;
     importStartSample = juce::jmax ((juce::int64) 0, startSample);
-    beginImportWorker (source, targetRate, othersSkipped);
+    return beginImportWorker (source, targetRate, othersSkipped, displayName);
 }
 
 // ブラウザ／FinderからMIDIトラックへのドロップ = サンプル音源の割り当て。
 // クリップ取り込みと同じ一時ファイル→リネーム方式（排他も importActive を共用）
 void MainComponent::startInstrumentImport (const juce::File& source, int trackIndex, bool othersSkipped)
 {
-    if (importActive || bounceActive || engine.isRecording())
+    if (importActive || bounceActive || engine.isRecording() || isUrlImporting())
         return;
     if (trackIndex < 0 || trackIndex >= (int) project->tracks.size()
         || project->tracks[(size_t) trackIndex].type != TrackType::midi)
@@ -1997,16 +2019,20 @@ void MainComponent::startInstrumentImport (const juce::File& source, int trackIn
     importStartSample = 0;
     // targetSampleRate = 0 = 元のSRを保つ。サンプルは再生時に sourceRate/deviceRate の比で
     // 読み進めるので変換が不要で、デバイスSRを変えても追従できる（プロジェクトSRも確定させない）
-    beginImportWorker (source, 0.0, othersSkipped);
+    beginImportWorker (source, 0.0, othersSkipped, {});
 }
 
 // 取り込みワーカーの起動（クリップ・サンプル共通の尻尾）。完了はpollImport()が拾う
-void MainComponent::beginImportWorker (const juce::File& source, double targetRate, bool othersSkipped)
+bool MainComponent::beginImportWorker (const juce::File& source, double targetRate, bool othersSkipped,
+                                       const juce::String& displayName)
 {
     // 一時名はGCパターン（clip-*.wav / instr-*.wav）に掛からない名前。最終名の採番は
     // 完了処理のリネーム時に行う（nextClipFile()は予約できないため、録音完了との採番競合を構造的に防ぐ）
     importTempFile = project->directory.getChildFile (".import-" + juce::Uuid().toString() + ".wav.tmp");
-    importDisplayName = source.getFileNameWithoutExtension();
+    // URL取り込みでは動画タイトルが渡る。空ならこれまで通り元ファイル名から作る
+    //（一時ファイル名が新規トラック名になってしまうのを防ぐ）
+    importDisplayName = displayName.isNotEmpty() ? displayName
+                                                 : source.getFileNameWithoutExtension();
 
     AudioImporter::Request request;
     request.sourceFile = source;
@@ -2015,7 +2041,7 @@ void MainComponent::beginImportWorker (const juce::File& source, double targetRa
     if (! audioImporter.start (std::move (request)))
     {
         showAlert (jp (u8"取り込めません"), jp (u8"前回の取り込みが終了していません。"));
-        return;
+        return false;
     }
 
     Log::info ("import.start", "source=" + source.getFullPathName()
@@ -2034,6 +2060,7 @@ void MainComponent::beginImportWorker (const juce::File& source, double targetRa
     importOverlay.setBounds (getLocalBounds());
     importOverlay.show();
     refreshMacMenu(); // 取り込み中はFileメニューをdisabledにする
+    return true;
 }
 
 void MainComponent::pollImport()
@@ -2045,7 +2072,8 @@ void MainComponent::pollImport()
     if (! importActive)
         return;
 
-    importOverlay.setProgress (audioImporter.progress());
+    // URL取り込みではダウンロード分を前半に取っているので、後半の帯に写像する
+    importOverlay.setProgress (importProgressBase + importProgressSpan * audioImporter.progress());
     if (audioImporter.status() == AudioImporter::Status::running)
         return;
 
@@ -2071,6 +2099,12 @@ void MainComponent::pollImport()
             showAlert (jp (u8"取り込みに失敗しました"), result.errorMessage);
             break;
     }
+
+    // 成功・失敗・キャンセルのいずれでも、URLからの取り込みならここで一時ディレクトリを畳む
+    // （finishImport の中で return する経路も通るので、分岐の外側に置く）
+    cleanupUrlTempDir();
+    importProgressBase = 0.0f;
+    importProgressSpan = 1.0f;
     refreshMacMenu();
 }
 
@@ -2218,8 +2252,189 @@ void MainComponent::cancelImportForClose()
     importActive = false;
     (void) audioImporter.takeResult();
     importOverlay.dismiss();
+    cleanupUrlTempDir(); // URL取り込みの途中だった場合の後片付け
     refreshMacMenu();
     Log::info ("import.cancelled", "reason=close");
+}
+
+// ---- URLからの取り込み（yt-dlp） ----
+
+void MainComponent::cleanupUrlTempDir()
+{
+    if (urlTempDir == juce::File())
+        return;
+
+    urlTempDir.deleteRecursively();
+    urlTempDir = juce::File();
+}
+
+// 前回クラッシュ等で残った一時ディレクトリを起動時に掃除する。
+// dev版とRelease版は並走できるので、名前に埋めたPIDが生きているものは他インスタンスの
+// 作業中とみなして残す（PID再利用時は消し損ねるだけで、他インスタンスを壊さない）
+void MainComponent::sweepStaleUrlTempDirs()
+{
+    const auto root = TempDirSweep::rootDirectory();
+
+    juce::StringArray names;
+    for (const auto& dir : root.findChildFiles (juce::File::findDirectories, false,
+                                               juce::String (TempDirSweep::namePrefix) + "*"))
+        names.add (dir.getFileName());
+
+    const auto stale = TempDirSweep::selectStaleTempDirs (
+        names, [] (int pid) { return ::kill ((pid_t) pid, 0) == 0 || errno == EPERM; });
+
+    for (const auto& name : stale)
+        root.getChildFile (name).deleteRecursively();
+
+    if (! stale.isEmpty())
+        Log::info ("url.tempdir.swept", "count=" + juce::String (stale.size()));
+}
+
+void MainComponent::startUrlImportFlow()
+{
+    // 録音中に入力だけ通してしまうと、ダウンロードが終わった時点で引き渡しに失敗する。
+    // 入口で弾いておく（他の取り込み・書き出しと同じ扱い）
+    if (importActive || bounceActive || engine.isRecording() || isUrlImporting())
+        return;
+
+    // yt-dlp が無いなら入力させる前に案内する
+    if (UrlDownloader::findYtDlp() == juce::File())
+    {
+        showAlert (jp (u8"yt-dlp が見つかりません"),
+                   jp (u8"URLからの取り込みには yt-dlp が必要です。\n"
+                       "Brewfile に brew 'yt-dlp' を追加して brew bundle を実行してください。"));
+        return;
+    }
+
+    urlStage = UrlStage::enteringUrl;
+
+    urlOverlay.onCancel = [this]
+    {
+        urlStage = UrlStage::idle;
+        refreshMacMenu();
+    };
+
+    urlOverlay.onSubmit = [this] (juce::String url)
+    {
+        // SRの確定はURLが確定してから（オーバーレイを開いて閉じただけでdirtyにしない）
+        double targetRate = 0.0;
+        if (! ensureProjectSampleRate (targetRate))
+        {
+            urlStage = UrlStage::idle;
+            refreshMacMenu();
+            return;
+        }
+
+        UrlDownloader::Request request;
+        request.url = url;
+
+        urlStage = UrlStage::downloading;
+        importProgressBase = downloadProgressShare;
+        importProgressSpan = 1.0f - downloadProgressShare;
+
+        importOverlay.setLabels (jp (u8"ダウンロード中…"), jp (u8"取り込みが完了しました"));
+        importOverlay.setBounds (getLocalBounds());
+        importOverlay.show();
+        importDoneTicks = 0;
+
+        if (! urlDownloader.start (std::move (request)))
+        {
+            // 開始できなかったら表示も状態も元に戻す
+            urlStage = UrlStage::idle;
+            importOverlay.dismiss();
+            importProgressBase = 0.0f;
+            importProgressSpan = 1.0f;
+            cleanupUrlTempDir();
+            refreshMacMenu();
+            showAlert (jp (u8"取り込めません"), jp (u8"前回のダウンロードが終了していません。"));
+            return;
+        }
+
+        refreshMacMenu();
+    };
+
+    urlOverlay.setBounds (getLocalBounds());
+    urlOverlay.show();
+    refreshMacMenu(); // URL入力中もFileメニューはdisabledにする
+}
+
+void MainComponent::pollUrlImport()
+{
+    if (urlStage != UrlStage::downloading)
+        return;
+
+    // ダウンロードは進捗バーの前半（0〜downloadProgressShare）を使う
+    importOverlay.setProgress (downloadProgressShare * urlDownloader.progress());
+    if (urlDownloader.status() == UrlDownloader::Status::running)
+        return;
+
+    auto result = urlDownloader.takeResult();
+
+    // startImport() のガードに isUrlImporting() が入っているので、渡す前に idle に戻す
+    urlStage = UrlStage::idle;
+
+    if (result.status == UrlDownloader::Status::success)
+    {
+        // 一時ディレクトリの所有権をここで受け取る（以降の削除は cleanupUrlTempDir が担う）
+        urlTempDir = result.tempDirectory;
+
+        importOverlay.setLabels (jp (u8"取り込み中…"), jp (u8"取り込みが完了しました"));
+        if (startImport (result.audioFile, -1, 0, false, result.title))
+            return; // 続きは pollImport() が拾う
+
+        // ガードに掛かった（録音が始まった等）・SR未確定・ワーカー開始失敗
+        importOverlay.dismiss();
+        importProgressBase = 0.0f;
+        importProgressSpan = 1.0f;
+        cleanupUrlTempDir();
+        refreshMacMenu();
+        return;
+    }
+
+    importOverlay.dismiss();
+    importProgressBase = 0.0f;
+    importProgressSpan = 1.0f;
+    cleanupUrlTempDir(); // 失敗・キャンセル時は worker が消しているので通常は空（保険）
+
+    if (result.status == UrlDownloader::Status::cancelled)
+        Log::info ("url.cancelled");
+    else if (result.ytDlpMissing)
+        showAlert (jp (u8"yt-dlp が見つかりません"),
+                   jp (u8"URLからの取り込みには yt-dlp が必要です。\n"
+                       "Brewfile に brew 'yt-dlp' を追加して brew bundle を実行してください。"));
+    else
+        showAlert (jp (u8"取り込めません"),
+                   result.errorMessage + "\n\n"
+                       + jp (u8"yt-dlp が古い場合は brew upgrade yt-dlp を試してください。"));
+
+    refreshMacMenu();
+}
+
+void MainComponent::cancelUrlImportForClose()
+{
+    if (urlStage == UrlStage::idle)
+        return;
+
+    if (urlStage == UrlStage::downloading)
+    {
+        Log::info ("url.cancel_requested", "source=close");
+        urlDownloader.cancelAndWait(); // プロセスグループごと終了してから戻る
+
+        // ダウンロードが成功した直後（pollUrlImport が拾う前）に閉じられた場合、
+        // 一時ディレクトリはまだ worker 側の Result が持っている。ここで回収して消す
+        auto result = urlDownloader.takeResult();
+        if (result.tempDirectory != juce::File())
+            result.tempDirectory.deleteRecursively();
+    }
+
+    urlStage = UrlStage::idle;
+    cleanupUrlTempDir();
+    urlOverlay.dismiss();
+    importOverlay.dismiss();
+    importProgressBase = 0.0f;
+    importProgressSpan = 1.0f;
+    refreshMacMenu();
+    Log::info ("url.cancelled", "reason=close");
 }
 
 void MainComponent::refreshMacMenu()
@@ -2329,6 +2544,26 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
             Log::info ("import.cancel_requested", "source=escape");
             audioImporter.cancel(); // 非同期。完了はpollImport()が拾う
         }
+        return true;
+    }
+
+    // URLのダウンロード中もモーダル（取り込み中と同じ扱い）
+    if (urlStage == UrlStage::downloading)
+    {
+        if (escape)
+        {
+            Log::info ("url.cancel_requested", "source=escape");
+            urlDownloader.cancel(); // 非同期。完了はpollUrlImport()が拾う
+        }
+        return true;
+    }
+
+    // URL入力中はTextEditorがフォーカスを持つのでキーはここに来ないのが通常だが、
+    // 入力欄の外をクリックした後などに来ることがあるので同じくモーダルにしておく
+    if (urlStage == UrlStage::enteringUrl)
+    {
+        if (escape)
+            urlOverlay.dismissWithCancel();
         return true;
     }
 
@@ -3048,4 +3283,6 @@ void MainComponent::resized()
         bounceOverlay.setBounds (getLocalBounds());
     if (importOverlay.isVisible())
         importOverlay.setBounds (getLocalBounds());
+    if (urlOverlay.isVisible())
+        urlOverlay.setBounds (getLocalBounds());
 }

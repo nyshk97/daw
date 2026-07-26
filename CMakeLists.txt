@@ -92,8 +92,10 @@ target_sources(daw PRIVATE
     Source/audio/PlaybackEngine.cpp
     Source/audio/Recorder.cpp
     Source/audio/SamplerEngine.cpp
+    Source/audio/UrlDownloader.cpp
     Source/shared/Log.cpp
     Source/shared/Project.cpp
+    Source/shared/SpawnedProcess.cpp
     Source/shared/SynthBank.cpp
     Source/ui/FxEditorView.cpp
     Source/ui/InstrumentDetailView.cpp
@@ -219,8 +221,10 @@ target_sources(daw_tests PRIVATE
     Source/audio/PlaybackEngine.cpp
     Source/audio/Recorder.cpp
     Source/audio/SamplerEngine.cpp
+    Source/audio/UrlDownloader.cpp
     Source/shared/Log.cpp
     Source/shared/Project.cpp
+    Source/shared/SpawnedProcess.cpp
     Source/shared/SynthBank.cpp
 )
 

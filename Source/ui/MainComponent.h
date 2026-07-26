@@ -18,10 +18,12 @@
 #include "TimelineView.h"
 #include "TrackHeadersView.h"
 #include "TransportLcd.h"
+#include "UrlImportOverlay.h"
 #include "../audio/AudioImporter.h"
 #include "../audio/AudioFilePreview.h"
 #include "../audio/BounceRenderer.h"
 #include "../audio/PlaybackEngine.h"
+#include "../audio/UrlDownloader.h"
 #include "../shared/PreviewFifo.h"
 #include "../shared/PlaybackSnapshot.h"
 #include "../shared/Project.h"
@@ -60,6 +62,15 @@ public:
     void startImportFlow();
     bool isImporting() const { return importActive; }
     void cancelImportForClose(); // 取り込み中ならキャンセル→ワーカーjoin→一時ファイル削除まで待つ
+
+    // URLからの取り込み（yt-dlp）。URL入力中とダウンロード中の両方を isUrlImporting() が指す
+    // （どちらの状態でも他の取り込み・書き出しを弾き、Fileメニューをdisableにする）
+    void startUrlImportFlow();
+    bool isUrlImporting() const { return urlStage != UrlStage::idle; }
+    void cancelUrlImportForClose(); // DL中ならキャンセル→join→一時ディレクトリ削除まで待つ
+    // 前回クラッシュ等で残った一時ディレクトリの掃除。アプリ起動時に1回呼ぶ
+    // （MainComponent生成前＝選択画面の時点で走らせたいので static かつ public）
+    static void sweepStaleUrlTempDirs();
     juce::String windowTitle() const;
     std::function<void (const juce::String&)> onTitleChanged;
     std::function<void()> onOpenChooserRequested; // ⌘O: プロジェクトを閉じて選択画面へ（未保存確認はMainWindow側）
@@ -132,14 +143,21 @@ private:
     bool startBounceRequest (BounceRenderer::Request&& request); // レンダラー起動＋オーバーレイ表示（共通の尻尾）
     void pollBounce();                           // Timerからの完了ポーリング・進捗反映
     // 取り込みの実体。targetTrack = -1 で新規オーディオトラックを作成して配置。
-    // othersSkipped = 複数ドロップの先頭のみ処理したとき（完了表示の文言に反映）
-    void startImport (const juce::File& source, int targetTrack, juce::int64 startSample,
-                      bool othersSkipped = false);
+    // othersSkipped = 複数ドロップの先頭のみ処理したとき（完了表示の文言に反映）。
+    // displayName = 空でファイル名から作る（URL取り込みでは動画タイトルを渡す）。
+    // 戻り値 = ワーカーを開始できたか（ガードに掛かった・SR未確定・開始失敗で false）
+    bool startImport (const juce::File& source, int targetTrack, juce::int64 startSample,
+                      bool othersSkipped = false, const juce::String& displayName = {});
     // MIDIトラックへのサンプル音源の割り当て（元のSRを保って取り込む）
     void startInstrumentImport (const juce::File& source, int trackIndex, bool othersSkipped = false);
     // 取り込みワーカーの起動（クリップ・サンプル共通の尻尾）。targetRate <= 0 で元SR保持
-    void beginImportWorker (const juce::File& source, double targetRate, bool othersSkipped);
+    bool beginImportWorker (const juce::File& source, double targetRate, bool othersSkipped,
+                            const juce::String& displayName);
+    // プロジェクトSRの確定（未確定ならデバイスレートで決める）。デバイス未準備なら false
+    bool ensureProjectSampleRate (double& targetRate);
     void pollImport();                                    // Timerからの完了ポーリング・進捗反映
+    void pollUrlImport();                                 // 同上（URLダウンロード）
+    void cleanupUrlTempDir();                             // URL取り込みの一時ディレクトリを畳む
     void finishImport (const AudioImporter::Result& result); // 成功時: リネーム→クリップ/トラック追加→保存
     void finishInstrumentImport (const AudioImporter::Result& result); // 同上（サンプル音源の割り当て）
     static void refreshMacMenu();                // Fileメニューのenable状態を組み直させる
@@ -326,6 +344,20 @@ private:
     int importTargetTrack = -1;     // -1 = 新規トラックを作成（サンプル割り当てでは必ず既存MIDIトラック）
     juce::int64 importStartSample = 0;
     std::unique_ptr<juce::FileChooser> importChooser; // 非同期ダイアログの生存保持
+    // 進捗バーの割り当て。通常の取り込みは 0.0〜1.0、URL取り込みではダウンロード分を
+    // 前半に取るので 0.7〜1.0 を AudioImporter に割り当てる（オーバーレイは1枚を通しで使う）
+    float importProgressBase = 0.0f;
+    float importProgressSpan = 1.0f;
+
+    // URLからの取り込み（yt-dlp）。DL完了後は落ちてきたWAVを startImport() に渡すだけで、
+    // 取り込み自体は既存経路（AudioImporter → finishImport）に相乗りする
+    enum class UrlStage { idle, enteringUrl, downloading };
+    UrlStage urlStage = UrlStage::idle;
+    UrlDownloader urlDownloader;
+    UrlImportOverlay urlOverlay;
+    // ダウンロード成果物の置き場。worker から所有権を受け取ってから、取り込みが
+    // 終わる（成功・失敗・キャンセルいずれでも）まで MainComponent が持つ
+    juce::File urlTempDir;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };

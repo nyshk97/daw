@@ -137,6 +137,31 @@ cmake --build build --target daw_tests && ctest --test-dir build --output-on-fai
   再生エンジン（MIDI再生・シーク再発音・停止消音・ミュート時のイベント継続・プレビュー経路）をGUIなしで検証する
 - テストは一時ディレクトリのみ使用（`~/Music/daw` には触れない）
 
+## URLからの取り込み（yt-dlp）の確認
+
+`yt-dlp` は Brewfile 経由で入れる（`brew 'yt-dlp'` → `brew bundle`）。アプリは
+`/opt/homebrew/bin/yt-dlp` → `/usr/local/bin/yt-dlp` の順に**絶対パスで探す**（`.app` は launchd 起動で PATH が最小限のため）。
+
+```sh
+# GUIを介さずワーカー単体で通し確認（ネットに出るので環境変数を渡したときだけ走る）
+LALA_VERIFY_URL='https://www.youtube.com/watch?v=jNQXAC9IVRw' build/daw_tests_artefacts/Debug/daw_tests
+# 長すぎる動画がDL前に弾かれるかも見るなら:
+LALA_VERIFY_URL='…' LALA_VERIFY_LONG_URL='<34分超の動画>' build/daw_tests_artefacts/Debug/daw_tests
+```
+
+このテストで見ているもの: 成功時のタイトル取得・WAV生成（`2ch 48000Hz`）・一時ディレクトリの所有権受け渡し・進捗の更新・デコード可否／`--exec…` のようなオプション文字列が実行されないこと／存在しない動画で理由付き失敗／DL中キャンセルで一時ディレクトリが消え yt-dlp・ffmpeg のプロセスが残らないこと。
+
+- **一時ディレクトリは `$TMPDIR` ではなく `~/Library/Caches/<実行ファイル名>/`**（JUCEの `tempDirectory` の実体。dev版は `LaLa-dev`、Release版は `LaLa` で自動的に分かれる）。`lala-url-<pid>-<uuid>/` という名前で作られ、取り込み完了・失敗・キャンセルのいずれでも消える
+- **起動時の残骸掃除**は名前に埋めたPIDの生存で判定する。検証は偽の残骸を置いてから起動する:
+  ```sh
+  C=~/Library/Caches/LaLa-dev; nohup sleep 400 >/dev/null 2>&1 & P=$!; disown
+  mkdir -p "$C/lala-url-$P-alive" "$C/lala-url-99997-dead" "$C/lala-url-notanumber-x" "$C/lala-url-"
+  open -g build/daw_artefacts/Debug/LaLa-dev.app; sleep 6; ls "$C"; kill $P
+  # → dead だけ消え、他3つは残る。ログに url.tempdir.swept count=1
+  ```
+  **Bash tool のシェルはコマンドごとにPIDが変わる**ので、`$$` を「生きているPID」の検証に使うと次のコマンド実行時には死んでいて誤判定する。`nohup sleep` 等の長命プロセスを使う
+- **ログにフルURLを残さない**（query/fragment に署名トークンを載せるサイトがあるため）。`Log::` と `showAlert` に渡す文字列は全て `YtDlpOutput::redactUrls()` を通す。yt-dlp のエラー本文は `[generic] foo?token=…:` のように scheme も host も落ちた形でクエリだけ出すことがあるので、パターンマッチだけでなく「渡した元URLの `?` 以降を直接伏せる」2段構えになっている
+
 ## エンジン/バウンスの数値回帰確認（ビット一致）
 
 ```sh
