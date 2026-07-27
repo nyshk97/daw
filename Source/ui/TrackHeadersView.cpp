@@ -279,10 +279,14 @@ void TrackHeaderComponent::resized()
 
 void TrackHeaderComponent::mouseDrag (const juce::MouseEvent& e)
 {
-    // 並び替えドラッグはヘッダ背景・種別アイコン領域から開始したときだけ。
-    // nameLabelから転送されたイベント（addMouseListener経由）は originalComponent で除外し、
-    // M/S・スライダー・楽器の上は子コンポーネントがイベントを取るのでそもそも届かない
-    if (e.originalComponent != this || e.mods.isPopupMenu())
+    // 並び替えドラッグはヘッダ背景・種別アイコン・トラック名から開始できる（Logicも名前の上を掴める）。
+    // nameLabelのイベントは addMouseListener 経由で転送される。リネーム編集中のTextEditorは
+    // nameLabelのnested childで、addMouseListenerを wantsEventsForAllNestedChildComponents=false で
+    // 張っているため転送対象外（加えて Label::showEditor がモーダル状態に入る）。
+    // M/S・スライダー・楽器セレクタの上は子コンポーネントがイベントを取るのでそもそも届かない。
+    // 許可を列挙型にしているのは、後から addMouseListener する子が増えたとき暗黙にドラッグ源に
+    // ならないようにするため
+    if ((e.originalComponent != this && e.originalComponent != &nameLabel) || e.mods.isPopupMenu())
         return;
     if (! reorderDragging)
     {

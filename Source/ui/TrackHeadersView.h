@@ -34,8 +34,8 @@ public:
     std::function<void()> onWillChangeStructure; // リネーム・楽器変更の直前（undoスナップショット用）
     std::function<void()> onInstrumentChanged;   // 楽器変更の確定後（pushSnapshotで音源差し替え）
 
-    // ドラッグ並び替え。開始できるのはヘッダ背景＋種別アイコン領域のみ（nameLabel・M/S・
-    // 音量・楽器の上からは開始しない）。Yは親（container）座標
+    // ドラッグ並び替え。開始できるのはヘッダ背景＋種別アイコン＋トラック名（nameLabel）から。
+    // M/S・音量・楽器セレクタの上からは開始しない。Yは親（container）座標
     std::function<bool()> canReorder;        // 録音中はfalseが返る（判定はMainComponent）
     std::function<void (int)> onReorderDrag; // 並び替えドラッグ中（挿入インジケータ更新用）
     std::function<void (int)> onReorderDrop; // ドロップ（並び替えの確定要求）
