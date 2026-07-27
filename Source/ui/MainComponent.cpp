@@ -140,7 +140,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     rightPanel.fileBrowser().onImportRequested = [this] (const juce::File& file)
     {
         startImport (file, -1, // 試聴の停止・予約の取り消しは startImport 側で畳む
-                     timeline.snapSampleToVisibleGrid (transport.playheadSamplePos.load()));
+                     timeline.snapSampleToVisibleGrid (timeline.editPositionSample()));
     };
     mixerWindow.content().setProject (project.get());
     mixerWindow.content().onSelectTrack = [this] (int index) { selectTrackFromUser (index); };
@@ -260,10 +260,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     timeline.onSeek = [this] (juce::int64 samplePos)
     {
         if (! engine.isRecording())
-        {
-            transport.seekRequest.store (samplePos);
-            playStartSample = samplePos; // 再生中のクリックシークでも停止時の戻り先を更新する
-        }
+            locate (samplePos); // クリック＝「ここから聴きたい」なのでヘッドと開始位置を揃える
     };
     timeline.onTrackSelected = [this] (int index) { selectTrackFromUser (index); };
     timeline.onVerticalScroll = [this] (int y) { headers.setViewY (y); };
@@ -697,6 +694,24 @@ void MainComponent::pollAudioAnomalies()
     }
 }
 
+// ---- 再生位置 ----
+
+// ヘッドと開始位置を同時に動かす。「ここから聴きたい」という意思表示（クリック・キーシーク）は
+// 必ずこちらを通す。片方だけ動かすと、マーカーの位置と実際に鳴る位置が食い違う
+void MainComponent::locate (juce::int64 samplePos)
+{
+    transport.seekRequest.store (samplePos);
+    setPlayStart (samplePos);
+}
+
+// 開始位置だけを動かす。録音まわり専用で、ヘッドは PlaybackEngine 側が動かす
+// （録音開始はカウントイン分だけ手前へシークするので、ここでヘッドに触ると1小節分が消える）
+void MainComponent::setPlayStart (juce::int64 samplePos)
+{
+    playStartSample = samplePos;
+    timeline.setPlayStartSample (samplePos);
+}
+
 // ---- 再生・録音 ----
 
 void MainComponent::togglePlay()
@@ -714,18 +729,17 @@ void MainComponent::togglePlay()
     }
     else if (transport.isPlaying.load())
     {
+        // ヘッドは止めた場所に残す（そこが⌘T分割・⌘V貼り付けの基準になる）。
+        // 次にどこから鳴るかは開始位置マーカーが示しているので、ここで巻き戻さない
         engine.stop();
-        transport.seekRequest.store (playStartSample); // 停止したら再生開始位置に戻す（Logicのデフォルト挙動）
         Log::info ("transport.stop", "pos=" + juce::String (transport.playheadSamplePos.load())
-                                         + " returnTo=" + juce::String (playStartSample));
+                                         + " startPos=" + juce::String (playStartSample));
     }
     else
     {
-        // 直前のシークがまだオーディオスレッドに適用されていなければ、そちらが実際の開始位置
-        const auto pendingSeek = transport.seekRequest.load();
-        playStartSample = pendingSeek != TransportState::kNoSeek
-                              ? pendingSeek
-                              : juce::jmax ((juce::int64) 0, transport.playheadSamplePos.load());
+        // 開始位置マーカーの場所から鳴らす。停止中はヘッドがマーカーから離れていることがあるので、
+        // ヘッドの位置ではなくマーカーを信じてそこへ飛ばす
+        transport.seekRequest.store (playStartSample);
 
         // サイクルON時に範囲外（終端ちょうど含む）から再生を始めるときは範囲頭へジャンプ（Logic準拠）
         if (project->cycleEnabled && project->hasCycleRange())
@@ -733,10 +747,7 @@ void MainComponent::togglePlay()
             const auto cycleStart = timeline.sixteenthStartSample (project->cycleStartSixteenths);
             const auto cycleEnd = timeline.sixteenthStartSample (project->cycleEndSixteenths);
             if (playStartSample < cycleStart || playStartSample >= cycleEnd)
-            {
-                playStartSample = cycleStart;
-                transport.seekRequest.store (cycleStart);
-            }
+                locate (cycleStart);
         }
         Log::info ("transport.play", "pos=" + juce::String (playStartSample));
         engine.play();
@@ -790,10 +801,11 @@ void MainComponent::startRecordingFlow()
         return;
     }
 
-    // 録音開始位置 = 再生ヘッドがいる小節の頭（シークは小節スナップ済みなので通常は一致する）
+    // 録音開始位置 = 開始位置マーカーがいる小節の頭（シークは小節スナップ済みなので通常は一致する）。
+    // ヘッドではなくマーカー基準にすることで、「聴いて止めた場所」ではなく
+    // 「さっきと同じ場所」から録り直せる（テイクを重ねるときの前提）
     const double barLen = timeline.barLengthSamples();
-    const auto playhead = juce::jmax ((juce::int64) 0, transport.playheadSamplePos.load());
-    const auto bar = (juce::int64) std::floor ((double) playhead / barLen);
+    const auto bar = (juce::int64) std::floor ((double) playStartSample / barLen);
     const auto punchIn = (juce::int64) std::llround ((double) bar * barLen);
 
     pendingRecordFile = project->nextClipFile();
@@ -807,9 +819,14 @@ void MainComponent::startRecordingFlow()
         showAlert (jp (u8"録音できません"), jp (u8"録音ファイルを作成できませんでした。"));
         return;
     }
+    // 小節頭へ丸めた結果をマーカーへ反映（マーカーと実際の録音開始をズラさない）。
+    // ヘッドは engine.startRecording がカウントイン分だけ手前へ飛ばしているので、ここでは触らない
+    setPlayStart (punchIn);
+
     Log::info ("record.start", "file=" + pendingRecordFile.getFileName()
                                    + " track=" + juce::String (selectedTrack)
                                    + " punchIn=" + juce::String (punchIn)
+                                   + " countInStart=" + juce::String (punchIn - (juce::int64) std::llround (barLen))
                                    + " sr=" + juce::String (deviceRate, 0));
     closeDeviceSettings(); // デバイス設定は非モーダルなので、録音中に触られないよう閉じる
     updateTransportButtons();
@@ -819,10 +836,16 @@ void MainComponent::finishRecording()
 {
     engine.stopRecording();
     engine.stop();
-    playStartSample = pendingPunchIn;
-    transport.seekRequest.store (pendingPunchIn); // 停止で録音開始小節の頭に戻し、テイクをすぐ聴き直せるようにする
+    // 開始位置は録音開始小節の頭のまま＝Spaceでテイクを頭から聴き直せる／rで同じ場所へ録り直せる。
+    // ヘッドは録り終わった場所に残す（そこで切る・貼るができる）
+    setPlayStart (pendingPunchIn);
 
     const auto recordedLength = transport.recordedSamples.load();
+
+    // カウントイン中に止めた（ヘッドがpunchInより手前＝負のこともある）／何も録れていない場合は
+    // ヘッドを置き去りにせず録音開始位置へ寄せる
+    if (recordedLength <= 0 || transport.playheadSamplePos.load() < pendingPunchIn)
+        transport.seekRequest.store (pendingPunchIn);
 
     if (recordedLength <= 0)
     {
@@ -1734,10 +1757,10 @@ void MainComponent::stopPlaybackForBounce()
     {
         seekResumePending = false;
         numSeekKeyCodes = 0;
-        engine.stop();
-        transport.seekRequest.store (playStartSample);
+        engine.stop(); // ヘッドは止めた場所に残す（再生停止と同じ扱い）
         updateTransportButtons();
-        Log::info ("transport.stop", "reason=bounce pos=" + juce::String (playStartSample));
+        Log::info ("transport.stop", "reason=bounce pos=" + juce::String (transport.playheadSamplePos.load())
+                                         + " startPos=" + juce::String (playStartSample));
     }
 }
 
@@ -2846,7 +2869,7 @@ void MainComponent::seekByStep (int direction, bool wholeBar, int keyCode)
     pauseForKeySeek (keyCode);
 
     const double stepLen = timeline.barLengthSamples() / (wholeBar ? 1.0 : 4.0);
-    const auto pos = juce::jmax ((juce::int64) 0, transport.playheadSamplePos.load());
+    const auto pos = timeline.editPositionSample();
     auto step = (juce::int64) std::floor ((double) pos / stepLen);
 
     if (direction > 0)
@@ -2863,8 +2886,7 @@ void MainComponent::seekByStep (int direction, bool wholeBar, int keyCode)
     }
 
     const auto target = (juce::int64) std::llround ((double) step * stepLen);
-    transport.seekRequest.store (target);
-    playStartSample = target; // シーク先が新しい戻り先になる（自動再開後の停止でもここへ戻る）
+    locate (target);
 }
 
 void MainComponent::seekToSection (int direction, int keyCode)
@@ -2873,7 +2895,7 @@ void MainComponent::seekToSection (int direction, int keyCode)
         return;
 
     // 前=厳密に前の境界、次=厳密に次の境界。境界ちょうどに居るときも1つ進む/戻る（1拍/1小節シークと同じ流儀）
-    const auto pos = juce::jmax ((juce::int64) 0, transport.playheadSamplePos.load());
+    const auto pos = timeline.editPositionSample();
     juce::int64 target = -1;
     for (const auto& marker : project->markers)
     {
@@ -2897,8 +2919,7 @@ void MainComponent::seekToSection (int direction, int keyCode)
         return; // 前/次のセクションがなければno-op
 
     pauseForKeySeek (keyCode);
-    transport.seekRequest.store (target);
-    playStartSample = target;
+    locate (target);
 }
 
 void MainComponent::toggleCycle()
@@ -3068,7 +3089,7 @@ bool MainComponent::pasteItemAtPlayhead()
     if (wantMidi != (track.type == TrackType::midi))
         return false; // 型不一致（MIDIリージョンをオーディオトラックへ等）は何もしない
 
-    const auto playhead = juce::jmax ((juce::int64) 0, transport.playheadSamplePos.load());
+    const auto playhead = timeline.editPositionSample();
     undoStack.begin (*project);
 
     int pastedIndex = 0;
@@ -3147,7 +3168,7 @@ void MainComponent::updateTransportButtons()
 void MainComponent::updateLcdTime()
 {
     const double sr = timeline.effectiveSampleRate();
-    const auto playhead = juce::jmax ((juce::int64) 0, transport.playheadSamplePos.load());
+    const auto playhead = timeline.editPositionSample();
     const double seconds = (double) playhead / sr;
     const int minutes = (int) (seconds / 60.0);
 

@@ -108,6 +108,14 @@ public:
     // 録音の終了ではクリップが増えて保持中のindexが失効するため、録音開始時に閉じてもらう
     void dismissGainCallout();
 
+    // 再生開始位置（＝次に鳴る場所）。ルーラーに三角マーカーとして描くだけで、
+    // 実際の位置管理は MainComponent が持つ（locate() / setPlayStart() から通知される）
+    void setPlayStartSample (juce::int64 samplePos);
+
+    // 編集（分割・貼り付け・取り込み）の基準位置。保留中のシークを含む論理位置を0以上に丸めたもの。
+    // 「クリックした場所で切れる」を保証するため、生の再生位置ではなくこちらを使う
+    juce::int64 editPositionSample() const;
+
     // ループハンドルの矩形（描画とヒットテストで同じものを使う）。itemX/itemRight はループ終端まで
     // 含めたアイテムの左右端、laneY はそのトラック行の上端（いずれもコンテンツ座標）
     juce::Rectangle<int> loopHandleRect (int itemX, int itemRight, int laneY) const;
@@ -317,6 +325,7 @@ private:
     std::unique_ptr<LaneViewport> viewport;
     std::unique_ptr<LaneContent> lanes;
 
+    juce::int64 playStartSample = 0;   // 描画用のコピー（真の値は MainComponent 側）
     juce::int64 lastPaintedPlayhead = -1;
     juce::uint64 lastPaintedTrackDimMask = 0;
 

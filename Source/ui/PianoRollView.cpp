@@ -572,7 +572,7 @@ juce::int64 PianoRollView::playheadRegionPpq() const
                           ? project->sampleRate
                           : (transport.sampleRate.load() > 0.0 ? transport.sampleRate.load() : 48000.0);
     const auto absPpq = (juce::int64) std::llround (
-        (double) transport.playheadSamplePos.load() * Ppq::ticksPerSample (bpm, sr));
+        (double) transport.uiPositionSample() * Ppq::ticksPerSample (bpm, sr));
     return absPpq - region->startPpq;
 }
 
@@ -944,7 +944,9 @@ void PianoRollView::timerCallback()
 {
     if (! open)
         return;
-    const auto playhead = transport.playheadSamplePos.load();
+    // 白線と同じ論理位置（保留中シーク込み）で判定する。生の再生位置だと、クリック直後の
+    // 1バッファ分だけ白線が旧位置に残る
+    const auto playhead = transport.uiPositionSample();
     if (playhead == lastPaintedPlayhead && ! transport.isPlaying.load())
         return;
     lastPaintedPlayhead = playhead;

@@ -68,6 +68,7 @@
 - [feature-scope.md](docs/design/feature-scope.md) — 制作スコープの3層と機能の要否判断（使用頻度×恒常的な複雑さの税金）。**機能追加を検討・提案する前に必ず読む**
 - [ui-principles.md](docs/design/ui-principles.md) — 情報の強弱・画面の性格別の方針・日英混在のフォントサイズ・**意図的な見送りリスト**。UI追加時とUIレビュー対応時に読む
 - [grid-resolution.md](docs/design/grid-resolution.md) — グリッド解像度の上限（タイムライン1/16・マーカーは拍・将来のピアノロールの要件）
+- [transport-playhead.md](docs/design/transport-playhead.md) — 再生ヘッド（今いる場所＝編集の基準）と再生開始位置（次に鳴る場所）の分離。停止・録音・シークで両者がどう動くか。**トランスポートや「止めた場所」に関わる機能を触る前に読む**
 - [mixer-fx.md](docs/design/mixer-fx.md) — Tier 2 ミキサー・FXの確定設計（画面構成・チャンネル構成・6スライス）
 - [region-settings.md](docs/design/region-settings.md) — リージョン設定UIの割り当て方針
 

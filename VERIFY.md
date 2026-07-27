@@ -325,6 +325,15 @@ EOF
 - **⌘B連動**: サイクルON時の `bounce.start` に `startSample=`（範囲頭）が出て、`bounce.done samples=` が範囲サンプル長と一致（テールなし）
 - 旧プロジェクト（v4以前）は cycle キーなし → 範囲なし・OFFで開ける（保存するとv5になる）
 
+## 再生ヘッドと再生開始位置の分離の確認
+
+仕様は [docs/design/transport-playhead.md](docs/design/transport-playhead.md)。位置の算出は CTest（`TransportState::uiPositionSample`）が担う。アプリ統合の確認:
+
+- **停止でヘッドが残る**: 再生 → Space で停止すると `transport.stop pos=<止めた位置> startPos=<開始位置>` が出る。**pos と startPos が違う値になる**のが分離できている証拠（以前は `returnTo=` で巻き戻していた）。続けて再生すると `transport.play pos=` が startPos と一致する
+- **止めた位置で切れる**: 停止後に ⌘T（または右クリック → 分割）で `region.split pos=` が停止位置と一致する
+- **録音は開始位置から**: `r` の `record.start` に `punchIn=`（開始位置を小節頭へ丸めた値）と `countInStart=`（punchIn の1小節前）が出る。**録音 → 停止 → もう一度録音で同じ `punchIn` が出る**ことが「同じ場所へ録り直せる」の裏取り。`countInStart` が `punchIn - 1小節` であることでカウントインが生きていると分かる（`playheadSamplePos` の直接観測は一瞬しか成立しないので使わない）
+- **マーカーの描画**: ルーラー上端に中抜きの三角が出る。重なっているときはヘッドの塗りに隠れて1本に見えるのが正しい。オフスクリーンで撮るなら `TimelineView` を daw_tests に一時追加し（「アプリを起動せずに描画を確認する」参照）、`view.setPlayStartSample()` とヘッド位置を別々に与えて2状態を並べる
+
 ## トラックレベルメーターの確認
 
 再生中にトラックヘッダの音量バー（カプセル）内へL/R 2本の緑レーン（固定dBスケール・緑→黄→赤・ピークホールド付き）が点灯する。**再生ヘッドがリージョン/クリップを通過中にしか点灯しない**ので、`click button "再生"` の直後 0.5〜1.5 秒でスクショを撮る。リージョン通過後・停止後に消灯すること、クリップの無いトラックに出ないことも同じ流れで確認できる。FXパネル（VOLUME区画）とミキサーのdB数値ボックス右側（ピーク保持）は**停止後も値が残る**のが正しい（次の再生開始でリセット）。

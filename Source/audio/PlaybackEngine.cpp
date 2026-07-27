@@ -69,12 +69,10 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
     const double beatLen = sr * 60.0 / bpm;
 
     // ---- シーク適用と再生開始検出（クリックの拍トラッキングもここでリセット）----
-    const auto seek = transport.seekRequest.exchange (TransportState::kNoSeek);
-    if (seek != TransportState::kNoSeek)
-        transport.playheadSamplePos.store (seek);
+    const bool seeked = transport.applyPendingSeek();
 
     const bool playing = transport.isPlaying.load();
-    const bool startedOrSeeked = seek != TransportState::kNoSeek || (playing && ! prevPlaying);
+    const bool startedOrSeeked = seeked || (playing && ! prevPlaying);
     const bool stoppedNow = ! playing && prevPlaying;
     if (startedOrSeeked)
     {

@@ -46,6 +46,9 @@ inline const juce::Colour rulerTickBeat { 0xff4a4a4f };  // 拍目盛り
 inline const juce::Colour rulerTickSub  { 0xff3c3c41 };  // 細分目盛り（1/8・1/16）
 inline const juce::Colour rulerLabel    { 0xffd3d3d3 };  // 小節番号（lightgrey）
 inline const juce::Colour playhead      { 0xffffffff };
+// 再生開始位置（次に鳴る場所）のマーカー。ヘッドと同じ白だが輪郭のみで描くため、
+// 塗りのヘッドより自然に沈む（色ではなく描き方で強弱を付けている）
+inline const juce::Colour playStartMarker { 0xd9ffffff };
 // 小節>拍>細分の明度差をはっきり付ける（差が小さいと階層が目に効かず「均一な縦縞」に見える）
 inline const juce::Colour gridLineBar   { 0xff3a3a40 };  // タイムラインの小節線
 inline const juce::Colour gridLineBeat  { 0xff28282c };  // 拍線

@@ -251,6 +251,27 @@ void timerCallback() override
 - `static_assert(std::atomic<T>::is_always_lock_free)` を書いておく。lock-freeでない型（大きなstruct）を`std::atomic`に入れるとミューテックスにフォールバックして禁止事項違反になる
 - 複数の値をまとめて整合性を持って渡したい場合はatomicを並べてもダメ（バラバラに読まれる）。その場合はFIFOで構造体ごと送る
 
+### 「要求」と「結果」の2つのatomicは、更新順序を中間状態が安全な向きに倒す
+
+`seekRequest`（UI→オーディオの要求）と `playheadSamplePos`（結果）のように**対になる2つのatomic**は一体で更新できない。必ずどちらか一方だけが新しい瞬間があり、UI がそこを読む。**どちらに転んでも正しい方の順序を選ぶ**こと。
+
+```cpp
+// NG: 先に要求を消すと「要求なし＋旧位置」の一瞬が生まれ、UIが旧位置を読む
+const auto seek = seekRequest.exchange (kNoSeek);
+if (seek != kNoSeek) playheadSamplePos.store (seek);
+
+// OK: 先に結果を公開してから、自分が読んだ要求だけをCASで消す
+const auto seek = seekRequest.load();
+if (seek == kNoSeek) return false;
+playheadSamplePos.store (seek);          // 中間状態は「要求あり＋新位置」＝どちらを読んでも新位置
+auto expected = seek;
+seekRequest.compare_exchange_strong (expected, kNoSeek);
+```
+
+`exchange` でなく CAS にするのは、適用中に UI が**新しい**要求を積んだ場合にそれを消さないため（CASが失敗し、次のコールバックで適用される）。UI 側は「要求があればそれ、なければ結果」を返すヘルパー（`TransportState::uiPositionSample()`）を経由して読み、生の結果atomicを直接見ない。
+
+**症状**: クリック直後に ⌘T で切ると、まれに1つ前の位置で切れる。窓が数命令ぶんしかないので再現しづらく、テストも「両方の更新後」しか観測できないため取りこぼす。設計時に順序で潰すしかない。
+
 ### パターン2: `juce::AbstractFifo` で波形データを渡す
 
 `AbstractFifo`はロックフリーFIFOの**インデックス管理だけ**を行うクラス（データは持たない）。**シングルライター・シングルリーダー専用**——「オーディオスレッドが書き、UIスレッドが読む」の1対1でのみ使う。リングバッファなので読み書きが2ブロックに分割されることがあり、`blockSize1` / `blockSize2` の両方を必ず処理する。

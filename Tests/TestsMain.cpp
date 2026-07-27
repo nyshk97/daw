@@ -1800,6 +1800,47 @@ void testEngineReadsClipOffsets()
     snapshots.deleteRetired();
 }
 
+// 再生ヘッド（今いる場所）と再生開始位置（次に鳴る場所）の分離に伴い、編集操作は
+// 「保留中シークを含む論理位置」を見る。seekRequest はオーディオコールバックで
+// 初めて playheadSamplePos に反映されるため、生の再生位置だとクリック直後の1バッファ分だけ
+// 旧位置で切れてしまう
+void testUiPositionSample()
+{
+    beginTest ("TransportState::uiPositionSample");
+
+    TransportState transport;
+    transport.playheadSamplePos.store (48000);
+    expect (transport.uiPositionSample() == 48000, "保留中シークが無ければ再生位置を返す");
+
+    transport.seekRequest.store (96000);
+    expect (transport.uiPositionSample() == 96000,
+            "保留中シークがあれば、まだ適用されていなくてもシーク先を返す");
+
+    // 適用はオーディオスレッドの applyPendingSeek が行う（PlaybackEngine::process と同じ手順）。
+    // 「ヘッドを公開してから要求を消す」順序なので、適用の前後どちらで読んでもシーク先を指す
+    expect (transport.applyPendingSeek(), "保留中シークを適用したら true");
+    expect (transport.playheadSamplePos.load() == 96000, "ヘッドがシーク先へ移る");
+    expect (transport.seekRequest.load() == TransportState::kNoSeek, "適用した要求は消える");
+    expect (transport.uiPositionSample() == 96000, "適用後もシーク先を指し続ける");
+
+    expect (! transport.applyPendingSeek(), "保留中シークが無ければ false（ヘッドは動かさない）");
+    expect (transport.playheadSamplePos.load() == 96000, "空振りでヘッドが巻き戻らない");
+
+    // 適用の途中で新しい要求が入った場合はCASが失敗して要求が残り、次のコールバックで適用される。
+    // ここでは「適用直後に新しい要求が来た」状況を模して、要求が消されないことを見る
+    transport.seekRequest.store (192000);
+    expect (transport.uiPositionSample() == 192000, "新しい要求は適用前でもUIから見える");
+    expect (transport.applyPendingSeek() && transport.playheadSamplePos.load() == 192000,
+            "次のコールバックで新しい要求が適用される");
+
+    // カウントイン中は負。ここでクランプすると白線が小節1に張り付いて開始位置マーカーと重なる
+    transport.playheadSamplePos.store (-96000);
+    expect (transport.uiPositionSample() == -96000, "カウントイン中の負位置をクランプしない");
+
+    transport.seekRequest.store (-48000);
+    expect (transport.uiPositionSample() == -48000, "保留中シークが負でもクランプしない");
+}
+
 // ---- splitClip: 左右のoffset/length・バッファ共有・境界no-op ----
 void testSplitClip()
 {
@@ -6571,6 +6612,7 @@ int main()
     testSharedWavBufferOnLoad();
     testBuildSnapshotClipOffsets();
     testEngineReadsClipOffsets();
+    testUiPositionSample();
     testSplitClip();
     testSplitMidiRegion();
     testSectionMarkers();

@@ -200,7 +200,19 @@ public:
             }
         }
 
-        const int playheadX = owner.sampleToX (owner.transport.playheadSamplePos.load());
+        // 再生開始位置（＝次に鳴る場所）。ヘッドと同じ形・同じ大きさを「塗らずに輪郭だけ」で描く。
+        // 塗り＝今いる場所 / 中抜き＝次に鳴る場所、という対比にすると2つの関係が読み取りやすく、
+        // 重なっているとき（＝ほとんどの時間）はヘッドの塗りに隠れて1本に見える。
+        // ヘッドより先に描くことで、重なったときはヘッドが上に来る
+        {
+            const float sx = (float) owner.sampleToX (owner.playStartSample) + 0.5f;
+            juce::Path marker;
+            marker.addTriangle (sx - 5.0f, 0.0f, sx + 5.0f, 0.0f, sx, 7.0f);
+            g.setColour (Theme::playStartMarker);
+            g.strokePath (marker.createPathWithRoundedCorners (1.5f), juce::PathStrokeType (1.0f));
+        }
+
+        const int playheadX = owner.sampleToX (owner.transport.uiPositionSample());
         g.setColour (Theme::playhead);
         g.drawVerticalLine (playheadX, 0.0f, (float) getHeight());
 
@@ -280,7 +292,7 @@ public:
         }
 
         // 再生ヘッド（ルーラー・レーンの縦線と繋がって見えるように同じ白）
-        const int playheadX = owner.sampleToX (owner.transport.playheadSamplePos.load());
+        const int playheadX = owner.sampleToX (owner.transport.uiPositionSample());
         g.setColour (Theme::playhead);
         g.drawVerticalLine (playheadX, 0.0f, (float) getHeight());
     }
@@ -443,7 +455,7 @@ public:
         drawFadeDragPopup (g);
 
         // 再生ヘッド
-        const int playheadX = owner.sampleToX (owner.transport.playheadSamplePos.load());
+        const int playheadX = owner.sampleToX (owner.transport.uiPositionSample());
         if (playheadX >= clip.getX() - 1 && playheadX <= clip.getRight() + 1)
         {
             g.setColour (Theme::playhead.withAlpha (0.8f));
@@ -973,7 +985,7 @@ int TimelineView::gridDivisionsPerBar() const
 void TimelineView::zoomBy (double factor)
 {
     const auto view = viewport->getViewArea();
-    const int playheadX = sampleToX (transport.playheadSamplePos.load());
+    const int playheadX = sampleToX (transport.uiPositionSample());
     const int anchorX = (playheadX >= view.getX() && playheadX <= view.getRight())
                             ? playheadX
                             : view.getCentreX();
@@ -1138,7 +1150,9 @@ void TimelineView::paint (juce::Graphics& g)
 
 void TimelineView::timerCallback()
 {
-    const auto playhead = transport.playheadSamplePos.load();
+    // 描画と同じ論理位置（保留中シーク込み）で判定する。生の再生位置を見ると、
+    // クリック直後の1バッファ分だけ白線が旧位置に取り残される
+    const auto playhead = transport.uiPositionSample();
     const bool active = transport.isPlaying.load() || transport.recordArmed.load();
     // トラックの減光表示（ミュート・ソロ）は、ヘッダ・ミキサー・m/sキーの
     // どの経路で変わってもここで拾う（pull型）
@@ -1189,7 +1203,7 @@ void TimelineView::updateContentSize()
 {
     const double barLen = barLengthSamples();
 
-    juce::int64 maxSample = juce::jmax ((juce::int64) 0, transport.playheadSamplePos.load());
+    juce::int64 maxSample = editPositionSample();
     if (project != nullptr)
     {
         const double spt = samplesPerTick();
@@ -1775,7 +1789,7 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
     else
     {
         const auto& clip = track.clips[(size_t) itemIndex];
-        const auto playhead = transport.playheadSamplePos.load();
+        const auto playhead = editPositionSample();
         canSplit = playhead > clip.startSample && playhead < clip.startSample + clip.lengthSamples;
     }
 
@@ -2045,7 +2059,7 @@ void TimelineView::splitAtPlayhead (int trackIndex, int itemIndex)
     if (project == nullptr || trackIndex < 0 || trackIndex >= (int) project->tracks.size())
         return;
     auto& track = project->tracks[(size_t) trackIndex];
-    const auto playhead = transport.playheadSamplePos.load();
+    const auto playhead = editPositionSample();
 
     // 左は元のindexを上書き、右は末尾に追加する（既存indexが動かないので選択の維持が単純になる。
     // 左右は重ならないため描画順が変わっても見た目に影響しない。duplicateAtと同じ方針）
@@ -2095,7 +2109,22 @@ void TimelineView::splitAtPlayhead (int trackIndex, int itemIndex)
 
 juce::int64 TimelineView::playheadPpq() const
 {
-    return (juce::int64) std::llround ((double) transport.playheadSamplePos.load() / samplesPerTick());
+    return (juce::int64) std::llround ((double) editPositionSample() / samplesPerTick());
+}
+
+// 編集の基準位置。保留中のシークを含む論理位置を 0 以上に丸めたもの（分割・貼り付け用）
+juce::int64 TimelineView::editPositionSample() const
+{
+    return juce::jmax ((juce::int64) 0, transport.uiPositionSample());
+}
+
+void TimelineView::setPlayStartSample (juce::int64 samplePos)
+{
+    if (playStartSample == samplePos)
+        return;
+
+    playStartSample = samplePos;
+    ruler->repaint(); // マーカーはルーラーにしか描かない
 }
 
 void TimelineView::seekFromX (int x)

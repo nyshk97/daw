@@ -82,6 +82,9 @@ private:
     void toggleRecord();
     void startRecordingFlow();
     void finishRecording();
+    // ---- 再生位置（ヘッド＝今いる場所・編集の基準 / 開始位置＝次に鳴る場所）----
+    void locate (juce::int64 samplePos);       // 両方を同時に動かす（クリックシーク・キーシーク・サイクル頭補正）
+    void setPlayStart (juce::int64 samplePos); // 開始位置だけ動かす（録音まわり専用。ヘッドはエンジンが動かす）
     void seekByStep (int direction, bool wholeBar, int keyCode);  // ,/.キー: 1拍（Shiftで1小節）単位で再生ヘッドを移動
     void seekToSection (int direction, int keyCode);              // ⌥,/.キー: 前/次のセクション頭へ（厳密に前/次の境界）
     void pauseForKeySeek (int keyCode);  // キーシーク共通: 再生中なら一時停止し、自動再開の監視キーに登録する
@@ -300,7 +303,9 @@ private:
     bool seekResumePending = false;
     juce::uint32 lastSeekKeyMs = 0;
 
-    // 停止時に戻る再生開始位置（Logicのlast locate position相当）。シーク・録音でも更新される
+    // 次に再生・録音が始まる位置（ルーラーに三角マーカーで表示される）。再生ヘッドとは別物で、
+    // 停止してもここは動かない＝ヘッドは止めた場所に残り、次の再生はここから始まる。
+    // 直接代入せず locate() / setPlayStart() を通す（片方だけ動かす漏れを防ぐため）
     juce::int64 playStartSample = 0;
     static constexpr int maxSeekKeyCodes = 4;
     int seekKeyCodes[maxSeekKeyCodes] = {};
