@@ -74,6 +74,7 @@ x, y, width, height は `getSliderThumbRadius` ぶん両端を詰めたトラッ
 PopupMenuの表示位置はOSの「使用可能画面領域」（Dock除け）にクランプされる。全画面表示ではウィンドウがDock領域まで覆うのに、画面最下部のボタン直上には出せない: デスクトップウィンドウ方式（既定）はDock上端まで押し上げられて余白ができ、`withParentComponent` でもターゲット矩形が使用可能領域との交差で空になり左上に飛ぶ。画面端に置いたボタンのメニューは、ウィンドウ内に自前描画するオーバーレイで作る（`ui/AddTrackOverlay.h` が実例。位置計算にOSの画面情報を使わないので全画面/通常で挙動が一致する）。なおPopupMenuはアプリ非アクティブになると即閉じるため、AXPressで開いて背面スクショで確認する検証もできない（自前オーバーレイなら可能）。
 
 - **メニュー項目のショートカット表記は `PopupMenu::Item::shortcutKeyDescription`**: setterのない公開フィールドに直接代入して `addItem (item)`。ApplicationCommandManager無しで表示できる（描画はLookAndFeel任せ）。`setShortcutKeyDescription` という setter は存在しない（8.0.9で確認）
+- **`withTargetComponent` をスクロールするコンテンツに使わない**: ルーラー・マーカーレーンのように「viewport の外に置いて `setTopLeftPosition (-viewPositionX, …)` で横スクロールへ手動追従させる」コンポーネントは、原点がスクロール量ぶん画面外の左にあり幅も全コンテンツぶんある。これを渡すとメニューがウィンドウの遥か左に出る（メニュー自体は出るので原因が見えにくい）。マウス位置に出すなら**素の `Options()`**（タイムライン内の他メニューと同じ）
 
 ### `JUCE_APPLICATION_NAME_STRING` は JuceHeader 生成時のみ定義される
 
