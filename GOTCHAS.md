@@ -180,6 +180,16 @@ macOS では **`~/Library/Caches/<実行ファイル名>/`**（`juce_Files_mac.m
 
 既存の `AudioImporter` / `BounceRenderer` は後者2点が未対応（`startThread()` の戻り値を見ておらず、`takeResult()` は `jassert` のみ）。触るときに合わせて直す。
 
+### 標準AboutパネルにObjCから options を渡すなら `WithOptions:` の方
+
+`[NSApp orderFrontStandardAboutPanel: @{...}]` はコンパイルも実行も通るが**辞書は黙って無視される**（このセレクタの引数は sender）。options 版は `orderFrontStandardAboutPanelWithOptions:` で、Swift の `orderFrontStandardAboutPanel(options:)` はこちらにマップされるため、Swiftの小さなプローブで検証すると「効いた」と誤認する。
+
+バージョン行の組み立ては `"Version <A> (<B>)"`（A=`NSAboutPanelOptionApplicationVersion` / B=`NSAboutPanelOptionVersion`。キー名の語感と逆）。挙動:
+
+- **A を指定すると "Version" ラベルごと置き換わる**（ラベルが要るなら自前で `Version %@` と組む）
+- **B に空文字を渡すと括弧ごと消える**
+- daw は `CFBundleShortVersionString` と `CFBundleVersion` の両方に `PROJECT_VERSION` を入れているため、素のパネルだと `Version 0.7.0 (0.7.0)` と同じ数字が二重に出る。上の2点で1つに畳んでいる（`Source/mac/AboutPanel.mm`）
+
 ## オーディオコールバック内の禁止事項
 
 ### 前提: なぜ厳しいのか

@@ -540,6 +540,13 @@ JUCEアプリには合成キーストロークが届かないため、ショー�
   grep "update.check_started" ~/Library/Logs/daw/"$(ls -t ~/Library/Logs/daw | head -1)"   # 着弾の裏取り
   ```
   dev 版は SUFeedURL 未設定なので、クリック後に Sparkle のエラーダイアログが出るのが正常（出たら手で閉じる）
+- **バージョン表示（AIで自動確認可）**: 出る場所は2つ。①プロジェクト選択画面の `PROJECTS` 行の右端に `v<PROJECT_VERSION>`（背面キャプチャで目視） ②アプリメニュー `About LaLa-dev` の標準パネル。パネルはタイトルなしウィンドウとして出るので、CGWindowListで**名前が空のonscreenウィンドウ**を拾って撮る:
+  ```sh
+  osascript -e 'tell application "System Events" to tell process "LaLa-dev" to click menu item "About LaLa-dev" of menu 1 of menu bar item 2 of menu bar 1' -e 'delay 1.5'
+  screencapture -x -o -l <windowID> /tmp/about.png   # 「Version 0.7.0」が1つだけ（括弧の二重表示がない）こと
+  osascript -e 'tell application "System Events" to tell process "LaLa-dev" to click button 1 of window 1'   # 閉じる
+  ```
+  メニューの並び自体は押さずに読める: `get name of menu items of menu 1 of menu bar item 2 of menu bar 1`（`menu bar item 1` はAppleメニュー・`2` がアプリメニュー）
 - **署名の確認（clean build 直後に行う）**: インクリメンタルビルドでは順序バグがあっても偶然通るため、`--clean-first` 直後で見る:
   ```sh
   cmake --build build --target daw --clean-first

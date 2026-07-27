@@ -128,6 +128,7 @@ juce::String formatModified (const juce::Time& t)
 ProjectChooserComponent::ProjectChooserComponent()
 {
     addAndMakeVisible (titleLabel);
+    addAndMakeVisible (versionLabel);
     addChildComponent (hero); // 可視状態はrefreshList()がエントリ有無で決める
     addAndMakeVisible (listBox);
     addAndMakeVisible (emptyLabel);
@@ -139,6 +140,14 @@ ProjectChooserComponent::ProjectChooserComponent()
     titleLabel.setText ("PROJECTS", juce::dontSendNotification);
     titleLabel.setFont (Fonts::bodyStrong().withHeight (12.0f).withExtraKerningFactor (0.12f));
     titleLabel.setColour (juce::Label::textColourId, Theme::chooserTitleText);
+
+    // 見出し行の右端にアプリバージョン（起動のたび0クリックで目に入る場所）。
+    // 更新が当たったかの確認用なので、見出しよりさらに沈めてメタ情報の扱いにする
+    versionLabel.setText (juce::String ("v") + DAW_APP_VERSION, juce::dontSendNotification);
+    versionLabel.setFont (Fonts::small());
+    versionLabel.setColour (juce::Label::textColourId, Theme::chooserMetaText);
+    versionLabel.setJustificationType (juce::Justification::centredRight);
+    versionLabel.setInterceptsMouseClicks (false, false);
 
     listBox.setRowHeight (48);
     listBox.setColour (juce::ListBox::backgroundColourId, juce::Colours::transparentBlack);
@@ -655,7 +664,9 @@ void ProjectChooserComponent::resized()
                                             juce::jmin (getHeight(), designHeight))
                     .reduced (24);
 
-    titleLabel.setBounds (area.removeFromTop (22).withTrimmedLeft (2));
+    auto titleRow = area.removeFromTop (22);
+    versionLabel.setBounds (titleRow.removeFromRight (70).withTrimmedRight (2));
+    titleLabel.setBounds (titleRow.withTrimmedLeft (2));
     area.removeFromTop (10);
 
     if (hero.isVisible())

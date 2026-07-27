@@ -1,6 +1,7 @@
 #include <exception>
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "mac/AboutPanel.h"
 #include "mac/SparkleBridge.h"
 #include "shared/Log.h"
 #include "ui/AppLookAndFeel.h"
@@ -218,6 +219,10 @@ private:
             menuModel = std::make_unique<AppMenuModel> (commandManager);
 
         juce::PopupMenu extraAppleMenuItems;
+        // "About LaLa" → macOS標準パネル。バージョン確認の導線として
+        // "Check for Updates…" の直上に置く（mac標準の並び順）
+        extraAppleMenuItems.addItem (juce::String ("About ") + DAW_APP_NAME,
+                                     [] { AboutPanel::show(); });
         juce::PopupMenu::Item checkItem (jp (u8"Check for Updates…"));
         checkItem.isEnabled = canCheckForUpdates;
         checkItem.action = []

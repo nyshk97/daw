@@ -85,6 +85,7 @@ juce_add_gui_app(daw
 
 target_sources(daw PRIVATE
     Source/Main.cpp
+    Source/mac/AboutPanel.mm
     Source/mac/SparkleBridge.mm
     Source/audio/AudioImporter.cpp
     Source/audio/AudioFilePreview.cpp

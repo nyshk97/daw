@@ -99,7 +99,7 @@ private:
     bool dragHover = false; // プロジェクトフォルダをドラッグで重ねている間のハイライト
     juce::Rectangle<int> listPanelArea;
 
-    juce::Label titleLabel, emptyLabel, errorLabel;
+    juce::Label titleLabel, versionLabel, emptyLabel, errorLabel;
     HeroCard hero;
     juce::ListBox listBox { {}, this };
     juce::TextButton newButton;
