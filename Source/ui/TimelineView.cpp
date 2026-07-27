@@ -9,6 +9,7 @@
 #include "../shared/AudioFileTypes.h"
 #include "../shared/GainScale.h"
 #include "../shared/Log.h"
+#include "../shared/SongFade.h"
 
 namespace
 {
@@ -128,6 +129,61 @@ private:
     TimelineView& owner;
 };
 
+// 曲末フェードのカーブ帯。設定されているときだけ現れる（未設定なら1pxも占めない）。
+// ルーラー・マーカーレーンと同じく viewport の外に置き、横スクロールに手動で追従させる。
+//
+// レーンの暗幕でカーブを描くと、高さがトラック数に比例するため下端（＝無音の位置）が
+// 画面外へ出て「まだ落ちていない」と誤読する。固定高さの帯へ集約すると、トラック数にも
+// 縦スクロールにも影響されずカーブ全体が読める
+class TimelineView::SongFadeBandContent : public juce::Component
+{
+public:
+    explicit SongFadeBandContent (TimelineView& o) : owner (o) { setInterceptsMouseClicks (false, false); }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto* proj = owner.project;
+        if (proj == nullptr || ! proj->hasFadeOut())
+            return;
+
+        const int h = getHeight();
+        g.fillAll (Theme::songFadeBandBg);
+        g.setColour (Theme::gridLineSub);
+        g.fillRect (0, h - 1, getWidth(), 1);
+
+        const int x0 = owner.sixteenthToX (proj->fadeOutStartSixteenths);
+        const int x1 = owner.sixteenthToX (proj->fadeOutEndSixteenths);
+        const auto clip = g.getClipBounds();
+
+        // カーブ。左端（フェード前＝ユニティ）から終端まで引き、終端以後は底に張り付く。
+        // 描画にも SongFade::gainAt を使い、聴こえるカーブと一致させる
+        const float top = 3.0f, bottom = (float) h - 4.0f;
+        const auto yAt = [&] (int x)
+        {
+            return top + (1.0f - SongFade::gainAt (x, x0, x1)) * (bottom - top);
+        };
+
+        juce::Path curve;
+        curve.startNewSubPath ((float) clip.getX(), yAt (clip.getX()));
+        for (int x = juce::jmax (clip.getX(), x0); x < juce::jmin (clip.getRight(), x1); x += 2)
+            curve.lineTo ((float) x, yAt (x));
+        curve.lineTo ((float) clip.getRight(), yAt (clip.getRight()));
+
+        auto fill = curve;
+        fill.lineTo ((float) clip.getRight(), top);
+        fill.lineTo ((float) clip.getX(), top);
+        fill.closeSubPath();
+        g.setColour (Theme::songFadeHandle.withAlpha (0.13f));
+        g.fillPath (fill);
+
+        g.setColour (Theme::songFadeHandle.withAlpha (0.95f));
+        g.strokePath (curve, juce::PathStrokeType (1.5f));
+    }
+
+private:
+    TimelineView& owner;
+};
+
 class TimelineView::RulerContent : public juce::Component
 {
 public:
@@ -197,6 +253,30 @@ public:
                 g.fillRect (x0, 0, x1 - x0, 4);       // 上端の帯（Logicのサイクルストリップ）
                 g.fillRect (x0, 0, 2, getHeight());   // 両端の縦線（リサイズの掴み所の手掛かり）
                 g.fillRect (x1 - 2, 0, 2, getHeight());
+            }
+        }
+
+        // 曲末フェードの両端ハンドル。**サイクル帯と同じ文法**（範囲の薄塗り＋帯＋全高の
+        // 両端縦線）にして、帯の位置（サイクル=上端／フェード=下端）と色（黄・グレー／寒色）
+        // だけで区別する。掴み方が同じなので、サイクルで覚えた操作がそのまま通じる。
+        // 縦線を全高にするのは必須: 下端だけの小さなハンドルにしていたとき「どこを掴めるのか
+        // 分からない」で操作にたどり着けなかった（当たり判定はルーラー全高なのに見た目が
+        // 下端8pxしかなく、掴める範囲が伝わっていなかった）
+        if (auto* proj = owner.project; proj != nullptr && proj->hasFadeOut())
+        {
+            const int x0 = owner.sixteenthToX (proj->fadeOutStartSixteenths);
+            const int x1 = owner.sixteenthToX (proj->fadeOutEndSixteenths);
+            if (x1 > clip.getX() && x0 < clip.getRight())
+            {
+                const int h = getHeight();
+                g.setColour (Theme::songFadeHandle.withAlpha (0.14f));
+                g.fillRect (x0, 0, x1 - x0, h);
+                g.setColour (Theme::songFadeHandle.withAlpha (0.95f));
+                g.fillRect (x0, h - 4, x1 - x0, 4);  // 下端の帯（サイクルは上端）
+                // 縦線は3px。⌃Fで作った直後は開始端が再生ヘッド（1pxの白線）と必ず重なるため、
+                // 2pxだと隠れて見えなくなる（左右に1pxずつ残す）
+                g.fillRect (x0, 0, 3, h);
+                g.fillRect (x1 - 3, 0, 3, h);
             }
         }
 
@@ -453,6 +533,9 @@ public:
 
         // フェードドラッグ中の数値ポップアップ（音量ドラッグと同じ流儀。常設の数値表示は置かない）
         drawFadeDragPopup (g);
+
+        // 曲末フェードの暗幕（リージョンより上・再生ヘッドより下。落ちた音量ぶんだけ上から暗くする）
+        owner.drawSongFadeShade (g, clip, numTracks * trackHeight);
 
         // 再生ヘッド
         const int playheadX = owner.sampleToX (owner.transport.uiPositionSample());
@@ -886,6 +969,7 @@ TimelineView::TimelineView (TransportState& transportState)
 {
     ruler = std::make_unique<RulerContent> (*this);
     markerLane = std::make_unique<MarkerLaneContent> (*this);
+    songFadeBand = std::make_unique<SongFadeBandContent> (*this);
     lanes = std::make_unique<LaneContent> (*this);
     viewport = std::make_unique<LaneViewport> (*this);
 
@@ -895,6 +979,7 @@ TimelineView::TimelineView (TransportState& transportState)
     addAndMakeVisible (*viewport);
     addAndMakeVisible (*ruler);
     addAndMakeVisible (*markerLane);
+    addChildComponent (*songFadeBand); // 表示はフェード設定時のみ（laneTop/resizedが切り替える）
 
     startTimerHz (30); // GOTCHAS.md: 通知はpush型でなくpull型（Timerポーリング）
 }
@@ -918,10 +1003,22 @@ void TimelineView::setSelectedTrack (int index)
 
 void TimelineView::refresh()
 {
+    // フェード帯の出入りでレーン上端が変わったらレイアウトを組み直す
+    // （ヘッダ側の高さ合わせも必要なので onLaneTopChanged で外へ伝える）
+    const bool bandVisible = project != nullptr && project->hasFadeOut();
+    if (bandVisible != lastFadeBandVisible)
+    {
+        lastFadeBandVisible = bandVisible;
+        resized();
+        if (onLaneTopChanged)
+            onLaneTopChanged();
+    }
+
     updateContentSize();
     lanes->repaint();
     ruler->repaint();
     markerLane->repaint();
+    songFadeBand->repaint();
 }
 
 void TimelineView::clearSelection()
@@ -1136,9 +1233,18 @@ int TimelineView::xToCycleSixteenths (int x) const
     return juce::jmax (0, (int) std::llround ((double) x / unitPx)) * unit;
 }
 
+int TimelineView::laneTop() const
+{
+    return topHeight + (project != nullptr && project->hasFadeOut() ? songFadeBandHeight : 0);
+}
+
 void TimelineView::resized()
 {
-    viewport->setBounds (0, topHeight, getWidth(), getHeight() - topHeight);
+    const int top = laneTop();
+    const bool bandVisible = top > topHeight;
+    songFadeBand->setVisible (bandVisible); // 幅は updateContentSize がコンテンツ幅へ合わせる
+
+    viewport->setBounds (0, top, getWidth(), getHeight() - top);
     updateContentSize();
     syncScroll();
 }
@@ -1223,6 +1329,10 @@ void TimelineView::updateContentSize()
         // サイクル範囲も同様（素材より先に範囲を描いたときに見切れない）
         if (project->hasCycleRange())
             maxSample = juce::jmax (maxSample, sixteenthStartSample (project->cycleEndSixteenths));
+        // 曲末フェードの終端も同様。これが無いと、後方のマーカーやサイクルを頼りに終端を
+        // 素材より先へ置いた後でそれらを消したとき、幅が縮んで終端ハンドルを掴めなくなる
+        if (project->hasFadeOut())
+            maxSample = juce::jmax (maxSample, sixteenthStartSample (project->fadeOutEndSixteenths));
     }
     if (transport.recordArmed.load())
         maxSample = juce::jmax (maxSample,
@@ -1240,12 +1350,15 @@ void TimelineView::updateContentSize()
         ruler->setSize (contentWidth, rulerHeight);
     if (contentWidth != markerLane->getWidth() || markerLane->getHeight() != markerLaneHeight)
         markerLane->setSize (contentWidth, markerLaneHeight);
+    if (contentWidth != songFadeBand->getWidth() || songFadeBand->getHeight() != songFadeBandHeight)
+        songFadeBand->setSize (contentWidth, songFadeBandHeight);
 }
 
 void TimelineView::syncScroll()
 {
     ruler->setTopLeftPosition (-viewport->getViewPositionX(), 0);
     markerLane->setTopLeftPosition (-viewport->getViewPositionX(), rulerHeight);
+    songFadeBand->setTopLeftPosition (-viewport->getViewPositionX(), topHeight);
     if (onVerticalScroll)
         onVerticalScroll (viewport->getViewPositionY());
 }
@@ -2153,19 +2266,79 @@ int TimelineView::hitTestCycleEdge (int x) const
     return -1;
 }
 
+int TimelineView::sampleToSnappedSixteenths (juce::int64 samplePos) const
+{
+    // xToCycleSixteenths と同じ規則（表示中の最小グリッドへ最近傍・1/16上限）を、
+    // ピクセルではなくサンプル位置に適用する
+    const int unit = 16 / gridDivisionsPerBar();
+    const double unitSamples = barLengthSamples() / 16.0 * unit;
+    if (unitSamples <= 0.0)
+        return 0;
+    return juce::jmax (0, (int) std::llround ((double) samplePos / unitSamples)) * unit;
+}
+
+int TimelineView::hitTestFadeEdge (int x) const
+{
+    if (project == nullptr || ! project->hasFadeOut())
+        return -1;
+
+    const int d0 = std::abs (x - sixteenthToX (project->fadeOutStartSixteenths));
+    const int d1 = std::abs (x - sixteenthToX (project->fadeOutEndSixteenths));
+    if (d0 <= 4 && d0 <= d1)
+        return 0;
+    if (d1 <= 4)
+        return 1;
+    return -1;
+}
+
+void TimelineView::drawSongFadeShade (juce::Graphics& g, const juce::Rectangle<int>& clipBounds,
+                                      int laneHeight) const
+{
+    if (project == nullptr || ! project->hasFadeOut() || laneHeight <= 0)
+        return;
+
+    // レーン側はカーブを描かない（高さがトラック数に比例するため、下端＝無音の位置が画面外へ
+    // 出て「まだ落ちていない」と誤読する）。ここは「この区間は音量が落ちている」ことを
+    // 一様な濃さで示すだけにして、カーブは固定高さのフェード帯に読ませる
+    const int x0 = sixteenthToX (project->fadeOutStartSixteenths);
+    const int x1 = sixteenthToX (project->fadeOutEndSixteenths);
+    const float h = (float) laneHeight;
+
+    const int from = juce::jmax (x0, clipBounds.getX());
+    if (from < clipBounds.getRight())
+    {
+        g.setColour (Theme::songFadeShade);
+        g.fillRect ((float) from, 0.0f, (float) (clipBounds.getRight() - from), h);
+    }
+
+    // 終端の縦線。「ここから先は鳴らない」を縦スクロール位置によらず確定させる
+    if (x1 >= clipBounds.getX() - 1 && x1 <= clipBounds.getRight() + 1)
+    {
+        g.setColour (Theme::songFadeHandle.withAlpha (0.9f));
+        g.fillRect ((float) x1 - 1.0f, 0.0f, 2.0f, h);
+    }
+}
+
 void TimelineView::handleRulerMouseDown (const juce::MouseEvent& e)
 {
     cycleDrag = {};
-    if (project == nullptr || e.mods.isPopupMenu())
-        return; // ルーラーの右クリックは未割り当て
+    if (project == nullptr)
+        return;
+    if (e.mods.isPopupMenu())
+    {
+        showRulerMenu (e.x);
+        return;
+    }
 
     cycleDrag.startX = e.x;
     cycleDrag.origStart = project->cycleStartSixteenths;
     cycleDrag.origEnd = project->cycleEndSixteenths;
 
-    // 端±4px = リサイズ、既存範囲の内側 = 移動、それ以外 = 新規作成。
+    // 判定順は「サイクル端 → フェード端 → サイクル範囲内移動 → サイクル新規作成」。
+    // サイクルを先に見るのは使用頻度が高いため（重なったときはサイクルが勝つ）。
     // どれもドラッグが動くまで何もせず、動かさず離したらシーク（mouseUpで判定）
     const int edge = hitTestCycleEdge (e.x);
+    const int fadeEdge = edge >= 0 ? -1 : hitTestFadeEdge (e.x);
     if (edge == 0)
     {
         cycleDrag.mode = CycleDrag::Mode::resizeStart;
@@ -2173,6 +2346,12 @@ void TimelineView::handleRulerMouseDown (const juce::MouseEvent& e)
     else if (edge == 1)
     {
         cycleDrag.mode = CycleDrag::Mode::resizeEnd;
+    }
+    else if (fadeEdge >= 0)
+    {
+        cycleDrag.mode = fadeEdge == 0 ? CycleDrag::Mode::fadeStart : CycleDrag::Mode::fadeEnd;
+        cycleDrag.origStart = project->fadeOutStartSixteenths;
+        cycleDrag.origEnd = project->fadeOutEndSixteenths;
     }
     else if (project->hasCycleRange()
              && e.x > sixteenthToX (project->cycleStartSixteenths)
@@ -2193,6 +2372,34 @@ void TimelineView::handleRulerMouseDrag (const juce::MouseEvent& e)
         return;
     if (! cycleDrag.edited && e.getDistanceFromDragStart() < 4)
         return;
+
+    // 曲末フェードの端。undo対象なので、値を動かす前に一度だけスナップショットを積む
+    if (cycleDrag.isFade())
+    {
+        const int at = xToCycleSixteenths (e.x);
+        int newStart = cycleDrag.origStart;
+        int newEnd = cycleDrag.origEnd;
+        if (cycleDrag.mode == CycleDrag::Mode::fadeStart)
+            newStart = juce::jmin (at, cycleDrag.origEnd);
+        else
+            newEnd = juce::jmax (at, cycleDrag.origStart);
+
+        if (newStart == project->fadeOutStartSixteenths && newEnd == project->fadeOutEndSixteenths)
+            return;
+
+        if (! cycleDrag.edited && onWillEditClipValue)
+            onWillEditClipValue(); // 1操作＝1件（ドラッグ開始で1回だけ）
+        cycleDrag.edited = true;
+        project->fadeOutStartSixteenths = newStart;
+        project->fadeOutEndSixteenths = newEnd;
+        // refresh() を通す: フェード帯は独立コンポーネントなので個別に repaint しないと
+        // カーブが古いまま残る。潰し切って hasFadeOut() が false になったときの
+        // 帯の消滅（＝レイアウト再構成）もここが検出する
+        refresh();
+        if (onClipValueEdited)
+            onClipValueEdited(); // ドラッグ中も音へ反映（MIDI世代は据え置き）
+        return;
+    }
 
     int newStart = cycleDrag.origStart;
     int newEnd = cycleDrag.origEnd;
@@ -2246,6 +2453,34 @@ void TimelineView::handleRulerMouseUp (const juce::MouseEvent& e)
         return;
     }
 
+    if (cycleDrag.isFade())
+    {
+        if (cycleDrag.edited)
+        {
+            // 幅ゼロまで潰した＝フェード削除
+            if (! project->hasFadeOut())
+            {
+                project->fadeOutStartSixteenths = 0;
+                project->fadeOutEndSixteenths = 0;
+                Log::info ("song_fade.clear", "reason=drag_collapsed");
+            }
+            else
+            {
+                Log::info ("song_fade.range", "start=" + juce::String (project->fadeOutStartSixteenths)
+                                                  + " end=" + juce::String (project->fadeOutEndSixteenths));
+            }
+            refresh(); // updateContentSize＋全再描画＋帯の出入り検出（潰し切りで解除したときに要る）
+            if (onClipValueEdited)
+                onClipValueEdited();
+        }
+        else
+        {
+            seekFromX (e.x); // 動かさず離した＝クリック → シーク（サイクルと同じ流儀）
+        }
+        cycleDrag = {};
+        return;
+    }
+
     if (cycleDrag.mode != CycleDrag::Mode::none && cycleDrag.edited)
     {
         if (! project->hasCycleRange())
@@ -2276,9 +2511,35 @@ void TimelineView::handleRulerMouseUp (const juce::MouseEvent& e)
 
 void TimelineView::handleRulerMouseMove (const juce::MouseEvent& e)
 {
-    ruler->setMouseCursor (hitTestCycleEdge (e.x) >= 0
+    ruler->setMouseCursor (hitTestCycleEdge (e.x) >= 0 || hitTestFadeEdge (e.x) >= 0
                                ? juce::MouseCursor::LeftRightResizeCursor
                                : juce::MouseCursor::NormalCursor);
+}
+
+void TimelineView::showRulerMenu (int x)
+{
+    if (project == nullptr)
+        return;
+
+    // 開始点は再生ヘッドではなく右クリックした位置。⌃Fと同じ規則でグリッドへ丸める
+    const int atSixteenths = xToCycleSixteenths (x);
+
+    juce::PopupMenu menu;
+    menu.addItem (1, jp (u8"ここから曲末までフェードアウト")
+                         + " (" + Shortcuts::keyText (Shortcuts::ID::songFadeOut) + ")");
+    menu.addItem (2, jp (u8"フェードアウトを解除"), project->hasFadeOut());
+
+    // ルーラーは横スクロールするコンテンツ（原点がスクロール量ぶん画面外の左にあり、幅は全小節ぶん）
+    // なので withTargetComponent を使ってはいけない — メニューがウィンドウの遥か左に出る。
+    // 素の Options() ＝マウス位置（他のタイムライン内メニューと同じ流儀）
+    menu.showMenuAsync (juce::PopupMenu::Options(),
+                        [this, atSixteenths] (int result)
+                        {
+                            if (result == 1 && onSongFadeRequested)
+                                onSongFadeRequested (atSixteenths);
+                            else if (result == 2 && onSongFadeClearRequested)
+                                onSongFadeClearRequested();
+                        });
 }
 
 // ---- セクションマーカー -------------------------------------------------

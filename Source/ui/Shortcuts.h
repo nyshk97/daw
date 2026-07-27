@@ -36,6 +36,7 @@ enum class ID
     muteRegion,
     deleteItem,
     exportRegion,
+    songFadeOut,
     // トラック
     addAudioTrack,
     addMidiTrack,
@@ -177,6 +178,11 @@ inline const Entry table[] = {
     { ID::exportRegion, Category::editing, u8"リージョン/クリップを書き出す", u8"⌘E",
       [] (const juce::KeyPress& k)
       { return k == juce::KeyPress ('e', juce::ModifierKeys::commandModifier, 0); } },
+    // Logicに対応する既定キーは無い（あちらは曲末フェード＝マスターのオートメーション or
+    // バウンスダイアログの Fade Out）。⌃M（リージョンのミュート）と同じ ⌃ 系に置いた
+    { ID::songFadeOut, Category::editing, u8"再生ヘッド位置から曲末フェードアウト", u8"⌃F",
+      [] (const juce::KeyPress& k)
+      { return k == juce::KeyPress ('f', juce::ModifierKeys::ctrlModifier, 0); } },
 
     // ---- トラック ----
     { ID::addAudioTrack, Category::track, u8"オーディオトラックを追加", u8"⌘⌥A",

@@ -48,7 +48,13 @@ public:
     // 連なり全体（ループ終端まで）がこれ未満の幅ならフェードハンドルを出さない
     // （10pxハンドル2つ＋移動用の余白20pxを確保。ゲインバッジの56px閾値と同じ考え方）
     static constexpr int fadeHandleMinWidth = 40;
-    static constexpr int topHeight = rulerHeight + markerLaneHeight; // レーン上端（ヘッダ側の高さ合わせ用）
+    static constexpr int topHeight = rulerHeight + markerLaneHeight; // ルーラー＋マーカーレーン
+    // 曲末フェードのカーブ帯。**フェードが設定されているときだけ現れる**（未設定なら1pxも占めない）。
+    // レーンの暗幕でカーブを描くとトラック数と縦スクロールで見え方が変わる（下端＝無音の位置が
+    // 画面外へ出て「まだ落ちてない」と誤読する）ため、カーブを読む場所を固定高さの帯に集約した
+    static constexpr int songFadeBandHeight = 44;
+    // レーン上端。曲末フェード帯のぶん可変（ヘッダ側の高さ合わせもこれを使う）
+    int laneTop() const;
 
     explicit TimelineView (TransportState& transportState);
     ~TimelineView() override;
@@ -74,6 +80,11 @@ public:
     std::function<void()> onWillEditModel;           // 編集の直前（undoスナップショット用）
     std::function<void()> onModelEdited;             // 編集の確定後（pushSnapshot・dirty用）
     std::function<void()> onCycleChanged;            // サイクル範囲の変更（undo対象外。Transport同期・dirty用）
+    // ルーラー右クリックの曲末フェード操作（引数＝グリッドへ丸め済みの16分音符位置）
+    std::function<void(int)> onSongFadeRequested;
+    std::function<void()> onSongFadeClearRequested;
+    // フェード帯の出入りでレーン上端が変わったとき（ヘッダ側の高さを合わせ直すため）
+    std::function<void()> onLaneTopChanged;
     std::function<void (int, int)> onOpenRegion;     // リージョンをダブルクリック（track, region）
     std::function<void (int, int)> onDeleteItemRequested; // 右クリックメニューの削除（track, クリップorリージョンindex）
     std::function<void (int, int)> onExportItemRequested; // 右クリックメニューの書き出し（同上）
@@ -181,12 +192,17 @@ public:
     // MainComponentのTransport同期・再生開始ジャンプからも使う
     juce::int64 sixteenthStartSample (int sixteenths) const;
 
+    // サンプル位置を「表示中の最小グリッド」へ最近傍で吸着させた16分音符値
+    // （xToCycleSixteenths と同じ規則）。⌃Fの開始点をここで丸める
+    int sampleToSnappedSixteenths (juce::int64 samplePos) const;
+
     void resized() override;
     void paint (juce::Graphics& g) override;
 
 private:
     class RulerContent;
     class MarkerLaneContent;
+    class SongFadeBandContent;
     class LaneContent;
     class LaneViewport;
 
@@ -217,10 +233,16 @@ private:
     int sixteenthToX (int sixteenths) const;
     int xToCycleSixteenths (int x) const;            // 最近傍の表示グリッド線へスナップ（1/16上限）。>= 0
     int hitTestCycleEdge (int x) const;              // 端±4px。0=開始端・1=終了端・-1=なし
+
+    // 曲末フェード。レーン側は「区間を一様に薄く覆う＋終端に縦線」だけにして、
+    // 音量カーブの表示はフェード帯（SongFadeBandContent）に任せる
+    void drawSongFadeShade (juce::Graphics& g, const juce::Rectangle<int>& clipBounds, int laneHeight) const;
+    int hitTestFadeEdge (int x) const;               // 端±4px。0=開始端・1=終了端・-1=なし
     void handleRulerMouseDown (const juce::MouseEvent& e);
     void handleRulerMouseDrag (const juce::MouseEvent& e);
     void handleRulerMouseUp (const juce::MouseEvent& e);
     void handleRulerMouseMove (const juce::MouseEvent& e);
+    void showRulerMenu (int x);                      // 右クリック: 曲末フェードの作成・解除
 
     // セクションマーカー（マーカーレーンの操作。モデル編集は SectionMarkers ヘルパー経由）
     int hitTestMarker (int x) const;                 // xが属するマーカー区間のindex（最初のマーカーより前は-1）
@@ -285,14 +307,18 @@ private:
     // サイクル範囲のドラッグ状態。ルーラー上のドラッグで作成（create）、既存範囲の端で
     // リサイズ、内側で移動。動かさず離したときだけシーク（マーカーレーンと同じ mouseUp 判定）。
     // サイクルはundo対象外なので onWillEditModel は呼ばず、確定時に onCycleChanged を呼ぶ
+    // ルーラー上のドラッグ。サイクル範囲と曲末フェードを1つの状態で扱う（同じ場所を奪い合うため、
+    // 判定順を1箇所に集めたい）。fadeStart/fadeEnd だけundo対象＝確定の経路が違う点に注意
     struct CycleDrag
     {
-        enum class Mode { none, create, moveRange, resizeStart, resizeEnd };
+        enum class Mode { none, create, moveRange, resizeStart, resizeEnd, fadeStart, fadeEnd };
         Mode mode = Mode::none;
         int startX = 0;
         int anchorSixteenths = 0; // create: ドラッグ開始点のスナップ位置
         int origStart = 0, origEnd = 0;
         bool edited = false;      // 実際に値が変わった時点でtrue（クリック判定と repaint 抑制用）
+
+        bool isFade() const { return mode == Mode::fadeStart || mode == Mode::fadeEnd; }
     };
     CycleDrag cycleDrag;
 
@@ -319,6 +345,8 @@ private:
 
     std::unique_ptr<RulerContent> ruler;
     std::unique_ptr<MarkerLaneContent> markerLane;
+    std::unique_ptr<SongFadeBandContent> songFadeBand;
+    bool lastFadeBandVisible = false; // 帯の出入りを検出してレイアウトを組み直すため
     // リージョンゲインの吹き出し（非同期に閉じられるので SafePointer で追う）
     juce::Component::SafePointer<juce::CallOutBox> gainCallout;
 

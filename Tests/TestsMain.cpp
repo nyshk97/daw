@@ -20,6 +20,7 @@
 #include "shared/AudioBrowserNavigation.h"
 #include "shared/ClipFade.h"
 #include "shared/GainScale.h"
+#include "shared/SongFade.h"
 #include "shared/SpawnedProcess.h"
 #include "shared/TempDirSweep.h"
 #include "shared/YtDlpOutput.h"
@@ -5975,6 +5976,585 @@ void testAudioImporter()
 
 
 
+// ---- 曲末フェード: カーブ関数の境界 ----
+void testSongFadeGainCurve()
+{
+    beginTest ("song fade gain curve boundaries");
+
+    // 未設定（0/0）は全位置でユニティ。ここが0を返すと未設定プロジェクトが全部無音になる
+    expect (SongFade::gainAt (0, 0, 0) == 1.0f, "未設定(0/0)・位置0でユニティ");
+    expect (SongFade::gainAt (1, 0, 0) == 1.0f, "未設定(0/0)・正の位置でユニティ");
+    expect (SongFade::gainAt (100000, 0, 0) == 1.0f, "未設定(0/0)・遠い位置でユニティ");
+    expect (SongFade::gainAt (500, 1000, 1000) == 1.0f, "start==endでユニティ");
+    expect (SongFade::gainAt (500, 2000, 1000) == 1.0f, "start>end（不正）でユニティ");
+
+    // 有効区間 [1000, 2000)
+    expect (SongFade::gainAt (0, 1000, 2000) == 1.0f, "開始より前はユニティ");
+    expect (SongFade::gainAt (1000, 1000, 2000) == 1.0f, "開始点ちょうどはユニティ");
+    expect (SongFade::gainAt (2000, 1000, 2000) == 0.0f, "終了点ちょうどは厳密に0");
+    expect (SongFade::gainAt (2001, 1000, 2000) == 0.0f, "終了点より後は厳密に0");
+    expect (SongFade::gainAt (100000, 1000, 2000) == 0.0f, "遠い後方も厳密に0");
+
+    // S字（raised cosine）: 中点で0.5、単調減少、両端の傾きが0（＝端の変化が緩やか）
+    expect (std::abs (SongFade::gainAt (1500, 1000, 2000) - 0.5f) < 1.0e-6f, "中点で0.5");
+    float prev = 1.0f;
+    bool monotonic = true;
+    for (int i = 0; i <= 100; ++i)
+    {
+        const float g = SongFade::gainAt (1000 + i * 10, 1000, 2000);
+        if (g > prev + 1.0e-6f)
+            monotonic = false;
+        prev = g;
+    }
+    expect (monotonic, "区間内は単調減少");
+    const float nearStart = SongFade::gainAt (1010, 1000, 2000); // 1%進んだ点
+    const float nearMid = SongFade::gainAt (1510, 1000, 2000);   // 中点から1%進んだ点
+    expect ((1.0f - nearStart) < std::abs (0.5f - nearMid),
+            "端の傾きは中央より緩やか（S字である証拠）");
+}
+
+// ---- 曲末フェード: 保存/読込・undo・終端算出 ----
+void testSongFadeRoundtrip()
+{
+    beginTest ("song fade roundtrip, undo and auto end");
+    const auto dir = makeTempDir();
+
+    juce::String error;
+    auto project = Project::createNew (dir.getChildFile ("proj"), error);
+    expect (project != nullptr, "createNewできること");
+    if (project == nullptr)
+        { dir.deleteRecursively(); return; }
+
+    expect (! project->hasFadeOut(), "新規プロジェクトはフェード未設定");
+
+    project->fadeOutStartSixteenths = 64;
+    project->fadeOutEndSixteenths = 128;
+    expect (project->save (error), "保存できること");
+
+    const auto saved = juce::JSON::parse (project->directory.getChildFile ("project.json").loadFileAsString());
+    expect ((int) saved.getProperty ("version", 0) == Project::currentVersion, "現行バージョン(v12)で保存されること");
+    const auto fadeVar = saved.getProperty ("fadeOut", {});
+    expect (fadeVar.isObject() && (int) fadeVar.getProperty ("start", -1) == 64
+                && (int) fadeVar.getProperty ("end", -1) == 128,
+            "fadeOut が start/end で保存されること");
+
+    juce::StringArray warnings;
+    auto reloaded = Project::load (project->directory, warnings, error);
+    expect (reloaded != nullptr && reloaded->fadeOutStartSixteenths == 64
+                && reloaded->fadeOutEndSixteenths == 128,
+            "再読込で復元されること");
+
+    // v11以前（fadeOutキーなし）は未設定として読む
+    {
+        auto legacy = juce::JSON::parse (project->directory.getChildFile ("project.json").loadFileAsString());
+        auto* obj = legacy.getDynamicObject();
+        expect (obj != nullptr, "JSONオブジェクトを取れること");
+        if (obj != nullptr)
+        {
+            obj->removeProperty ("fadeOut");
+            obj->setProperty ("version", 11);
+            project->directory.getChildFile ("project.json").replaceWithText (juce::JSON::toString (legacy));
+        }
+        auto old = Project::load (project->directory, warnings, error);
+        expect (old != nullptr && ! old->hasFadeOut(), "v11以前は未設定として読むこと");
+    }
+
+    // 不正値（start >= end）は未設定へ落とす
+    {
+        auto bad = juce::JSON::parse (project->directory.getChildFile ("project.json").loadFileAsString());
+        if (auto* obj = bad.getDynamicObject())
+        {
+            auto* fadeObj = new juce::DynamicObject();
+            fadeObj->setProperty ("start", 200);
+            fadeObj->setProperty ("end", 100);
+            obj->setProperty ("fadeOut", juce::var (fadeObj));
+            project->directory.getChildFile ("project.json").replaceWithText (juce::JSON::toString (bad));
+        }
+        auto loaded = Project::load (project->directory, warnings, error);
+        expect (loaded != nullptr && ! loaded->hasFadeOut(), "start>=end は未設定へ落とすこと");
+    }
+
+    // undo/redo: UndoStack::State はtracks/markers以外も往復させる必要がある
+    {
+        Project p;
+        UndoStack stack;
+        p.fadeOutStartSixteenths = 10;
+        p.fadeOutEndSixteenths = 20;
+
+        stack.begin (p, UndoStack::EditKind::clipValue);
+        p.fadeOutStartSixteenths = 30;
+        p.fadeOutEndSixteenths = 40;
+
+        UndoStack::EditKind kind = UndoStack::EditKind::structure;
+        expect (stack.undo (p, kind), "undoできること");
+        expect (kind == UndoStack::EditKind::clipValue, "種別 clipValue が返ること");
+        expect (p.fadeOutStartSixteenths == 10 && p.fadeOutEndSixteenths == 20, "undoで元の値へ戻ること");
+
+        expect (stack.redo (p, kind), "redoできること");
+        expect (p.fadeOutStartSixteenths == 30 && p.fadeOutEndSixteenths == 40, "redoで戻ること");
+
+        // 既存のundo対象（tracks）が壊れていないことも確認する（State拡張の回帰）
+        stack.begin (p, UndoStack::EditKind::structure);
+        Track t;
+        t.id = 7;
+        p.tracks.push_back (std::move (t));
+        expect (stack.undo (p, kind), "tracksのundoができること");
+        expect (p.tracks.empty(), "tracksが巻き戻ること");
+    }
+
+    // ⌃F／右クリックの終端解決（UIから切り離した判断そのもの）
+    {
+        constexpr double sr = 48000.0;
+        Project p;
+        p.bpm = 120.0;
+
+        // アイテムが無ければ no-op
+        expect (p.resolveSongFadeEnd (0, sr) == 0, "アイテムが無ければ0");
+
+        // **既存フェードが残っていても** アイテムが無ければ no-op。
+        // ここを「既存フェードがあれば終端を使う」と書くと、全アイテムを消した後に
+        // ⌃F で開始点だけ動かせてしまう
+        p.fadeOutStartSixteenths = 8;
+        p.fadeOutEndSixteenths = 16;
+        expect (p.resolveSongFadeEnd (4, sr) == 0, "既存フェードがあってもアイテムが無ければ0");
+        p.fadeOutStartSixteenths = 0;
+        p.fadeOutEndSixteenths = 0;
+
+        const double sixteenthSamples = sr * 60.0 / 120.0 * 4.0 / 16.0;
+        Track track;
+        track.id = 1;
+        Clip clip;
+        clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, 100);
+        clip.lengthSamples = (juce::int64) sixteenthSamples * 8; // 8個ぶん
+        track.clips.push_back (clip);
+        p.tracks.push_back (std::move (track));
+
+        expect (p.resolveSongFadeEnd (4, sr) == 8, "フェード未設定なら自動終端（アイテム終端）");
+        expect (p.resolveSongFadeEnd (8, sr) == 0, "開始点が終端ちょうどなら0");
+        expect (p.resolveSongFadeEnd (99, sr) == 0, "開始点が終端より後なら0");
+
+        // 既存フェードがあれば終端は動かさない（2本目を作らず開始点だけ移す）
+        p.fadeOutStartSixteenths = 5;
+        p.fadeOutEndSixteenths = 6;
+        expect (p.resolveSongFadeEnd (2, sr) == 6, "既存フェードの終端を維持すること");
+        expect (p.resolveSongFadeEnd (6, sr) == 0, "既存終端以後の開始点は0");
+
+        // 全アイテムをミュートしたら（＝鳴るものが無い）既存フェードがあっても0
+        p.tracks[0].clips[0].muted = true;
+        expect (p.resolveSongFadeEnd (2, sr) == 0, "全アイテムがミュートなら0");
+    }
+
+    // 終端の自動算出: 端数は切り上げ（最近傍だと最後の音を切る）
+    {
+        constexpr double sr = 48000.0;
+        Project p;
+        p.bpm = 120.0;
+        expect (p.lastItemEndSixteenths (sr) == 0, "アイテムが無ければ0");
+
+        const double sixteenthSamples = sr * 60.0 / 120.0 * 4.0 / 16.0; // 120BPM/48kで6000サンプル
+        Track track;
+        track.id = 1;
+        Clip clip;
+        clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, 100);
+        clip.startSample = 0;
+        clip.lengthSamples = (juce::int64) sixteenthSamples * 3 + 1; // 3個ぶん＋1サンプル
+        track.clips.push_back (clip);
+        p.tracks.push_back (std::move (track));
+        expect (p.lastItemEndSixteenths (sr) == 4, "端数は切り上げる（3.0002→4）");
+
+        // ミュートされたリージョンは含めない
+        p.tracks[0].clips[0].muted = true;
+        expect (p.lastItemEndSixteenths (sr) == 0, "ミュートリージョンは含めないこと");
+        p.tracks[0].clips[0].muted = false;
+
+        // トラックのミュート・ソロは考慮しない（一時的なモニター状態であって曲の長さではない）
+        p.tracks[0].params->mute.store (true);
+        expect (p.lastItemEndSixteenths (sr) == 4, "トラックミュートは終端に影響しないこと");
+        p.tracks[0].params->mute.store (false);
+
+        // ループ込みの全長を見る
+        p.tracks[0].clips[0].loopCount = 1;
+        expect (p.lastItemEndSixteenths (sr) == 7, "ループ込みの全長で算出すること");
+    }
+
+    dir.deleteRecursively();
+}
+
+// ---- 曲末フェード: RT再生・境界分割・BPM/SR追従・バウンス一致 ----
+void testEngineSongFade()
+{
+    beginTest ("engine applies song fade");
+
+    constexpr double sr = 48000.0;
+    constexpr int totalSamples = 32768;
+    constexpr float level = 0.5f;
+
+    // 全長にわたって一定値のクリップ1本（フェードの形がそのまま出力に出る）
+    const auto makeProject = [] (int fadeStart16, int fadeEnd16, double bpm)
+    {
+        auto project = std::make_unique<Project>();
+        project->bpm = bpm;
+        Track track;
+        track.id = 1;
+        track.params->gain.store (1.0f);
+        Clip clip;
+        clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, totalSamples * 2);
+        for (int i = 0; i < clip.audio->getNumSamples(); ++i)
+            clip.audio->setSample (0, i, level);
+        clip.lengthSamples = clip.audio->getNumSamples();
+        track.clips.push_back (std::move (clip));
+        project->tracks.push_back (std::move (track));
+        project->fadeOutStartSixteenths = fadeStart16;
+        project->fadeOutEndSixteenths = fadeEnd16;
+        return project;
+    };
+
+    const auto render = [&] (Project& project, int blockSize, double bpm)
+    {
+        juce::AudioBuffer<float> out (2, totalSamples);
+        out.clear();
+        TransportState transport;
+        transport.bpm.store (bpm);
+        SnapshotExchange snapshots;
+        PreviewFifo previewFifo;
+        PlaybackEngine engine (transport, snapshots, previewFifo);
+        engine.prepareToPlay (blockSize, sr);
+        snapshots.push (project.buildSnapshot());
+        transport.seekRequest.store (0);
+        engine.play();
+
+        juce::AudioBuffer<float> buffer (2, blockSize);
+        for (int pos = 0; pos < totalSamples; pos += blockSize)
+        {
+            buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+            engine.process (info);
+            const int n = juce::jmin (blockSize, totalSamples - pos);
+            for (int ch = 0; ch < 2; ++ch)
+                out.copyFrom (ch, pos, buffer, ch, 0, n);
+        }
+        engine.stop();
+        snapshots.deleteRetired();
+        return out;
+    };
+
+    // S字をブロック単位で線形近似する都合上、フェードが短いほど近似誤差が大きくなる
+    // （誤差はフェード長の2乗に反比例）。実使用は数秒〜数十秒なので、テストもそれに近い
+    // 長さにする: 50BPM/48kHz で 1/16 = 14400サンプル（0.3秒）
+    constexpr double bpm = 50.0;
+    const auto fadeStartSample = SongFade::sixteenthsToSamples (1, bpm, sr); // 14400
+    const auto fadeEndSample = SongFade::sixteenthsToSamples (2, bpm, sr);   // 28800
+    expect (fadeStartSample == 14400 && fadeEndSample == 28800, "1/16=14400サンプルになること");
+
+    // ブロックサイズ512: フェード境界(14400/28800)はブロックの途中に来る（14400 = 512*28 + 64）
+    {
+        auto project = makeProject (1, 2, bpm);
+        const auto out = render (*project, 512, bpm);
+
+        expect (std::abs (out.getSample (0, 0) - level) < 1.0e-6f, "フェード前は素の振幅");
+        expect (std::abs (out.getSample (0, (int) fadeStartSample - 1) - level) < 1.0e-6f,
+                "開始点の直前まで減衰しないこと（ブロック中央に開始がある回帰）");
+
+        // 終端以後は厳密に0（分割しないと直線ランプが境界を越えて非ゼロが残る）
+        int nonZeroAfterEnd = 0;
+        for (int i = (int) fadeEndSample; i < totalSamples; ++i)
+            if (out.getSample (0, i) != 0.0f || out.getSample (1, i) != 0.0f)
+                ++nonZeroAfterEnd;
+        expect (nonZeroAfterEnd == 0, "終端以後は厳密に0（ブロック中央に終端がある回帰）");
+
+        // 区間内はS字に沿う
+        const int mid = (int) ((fadeStartSample + fadeEndSample) / 2);
+        expect (std::abs (out.getSample (0, mid) - level * 0.5f) < 2.0e-3f, "中点で約半分");
+        expect (out.getSample (0, (int) fadeStartSample + 10) < level, "開始直後は減衰している");
+    }
+
+    // ブロックサイズを変えても結果が一致する（境界分割の副作用がないこと）
+    {
+        auto a = makeProject (1, 2, bpm);
+        auto b = makeProject (1, 2, bpm);
+        const auto outA = render (*a, 512, bpm);
+        const auto outB = render (*b, 500, bpm); // 境界に乗らないブロックサイズ
+        float maxDiff = 0.0f;
+        for (int i = 0; i < totalSamples; ++i)
+            maxDiff = juce::jmax (maxDiff, std::abs (outA.getSample (0, i) - outB.getSample (0, i)));
+        // 許容は実測から決める（推測しない）。S字を1ブロック=1直線で近似するため、
+        // ブロックサイズが変わると近似の刻みも変わる。実測の最大差は 3.5e-4（level 0.5 に対し0.07%＝
+        // -69dB相当で聴感差はない）。GOTCHAS.md の 1e-4 は「同一傾斜内の分割」の値で、
+        // 曲線を近似するここには当てはまらない
+        expect (maxDiff < 2.0e-3f, "ブロックサイズを変えても許容誤差内で一致");
+    }
+
+    // フェード開始・終端がブロック先頭と完全一致しても無限ループしない（segLen=0の回帰）。
+    // ブロック600なら 14400/28800 がちょうどブロック先頭に来る
+    {
+        auto project = makeProject (1, 2, bpm);
+        const auto out = render (*project, 600, bpm); // 14400 = 600*24, 28800 = 600*48
+        expect (std::abs (out.getSample (0, 0) - level) < 1.0e-6f, "境界一致でも先頭が正しく鳴ること");
+        expect (out.getSample (0, (int) fadeEndSample) == 0.0f, "境界一致でも終端以後が0であること");
+    }
+
+    // BPM変更に追従する（スナップショットを再pushせずにtransport.bpmだけ変える経路）
+    {
+        auto project = makeProject (1, 2, bpm);
+        juce::AudioBuffer<float> out (2, totalSamples);
+        out.clear();
+        TransportState transport;
+        transport.bpm.store (bpm);
+        SnapshotExchange snapshots;
+        PreviewFifo previewFifo;
+        PlaybackEngine engine (transport, snapshots, previewFifo);
+        engine.prepareToPlay (512, sr);
+        snapshots.push (project->buildSnapshot());
+        transport.seekRequest.store (0);
+        engine.play();
+
+        // BPMを半分にすると1/16の長さは倍 → フェード開始は 28800 へ動く
+        transport.bpm.store (bpm / 2.0);
+
+        juce::AudioBuffer<float> buffer (2, 512);
+        for (int pos = 0; pos < totalSamples; pos += 512)
+        {
+            buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, 512);
+            engine.process (info);
+            for (int ch = 0; ch < 2; ++ch)
+                out.copyFrom (ch, pos, buffer, ch, 0, juce::jmin (512, totalSamples - pos));
+        }
+        engine.stop();
+        snapshots.deleteRetired();
+
+        expect (std::abs (out.getSample (0, 28000) - level) < 1.0e-6f,
+                "BPM変更後は新しい開始位置(28800)より前が素の振幅であること");
+        expect (out.getSample (0, 29500) < level, "新しい開始位置より後は減衰していること");
+    }
+
+    // SR変更に追従する（同じ1/16でもSRが変われば位置が変わる）
+    {
+        const auto at48k = SongFade::sixteenthsToSamples (1, bpm, 48000.0);
+        const auto at96k = SongFade::sixteenthsToSamples (1, bpm, 96000.0);
+        expect (at96k == at48k * 2, "SRが倍なら同じ1/16のサンプル位置も倍");
+    }
+}
+
+// ---- 曲末フェード: バウンス（終端固定・テールなし・RTとの一致）----
+void testBounceSongFade()
+{
+    beginTest ("bounce song fade");
+
+    constexpr double sr = 48000.0;
+    constexpr double bpm = 50.0; // 1/16 = 14400サンプル（実使用に近い長さ。短いと線形近似の誤差が出る）
+    const auto dir = makeTempDir();
+    const auto target = dir.getChildFile ("fade.wav");
+
+    auto audio = std::make_shared<juce::AudioBuffer<float>> (1, 40000);
+    for (int i = 0; i < 40000; ++i)
+        audio->setSample (0, i, 0.5f);
+
+    BounceRenderer::Request request;
+    request.sampleRate = sr;
+    request.bpm = bpm;
+    request.startSample = 0;
+    request.endSample = 28800; // MainComponent が fadeEndSample で切る想定と同じ
+    request.wantTail = false; // フェードありのときはテールを付けない（末尾に無音1ブロックが付くため）
+    request.fadeOutStartSixteenths = 1;
+    request.fadeOutEndSixteenths = 2;
+    request.targetFile = target;
+    BounceRenderer::TrackRender track;
+    track.gain = 1.0f;
+    track.clips.push_back ({ audio, 0, 0, 40000 });
+    request.tracks.push_back (std::move (track));
+
+    BounceRenderer renderer;
+    expect (renderer.start (std::move (request)), "startできること");
+    expect (waitForBounce (renderer), "タイムアウトせず完了すること");
+    const auto result = renderer.takeResult();
+    expect (result.status == BounceRenderer::Status::success, "successで終わること");
+    expect (result.writtenSamples == 28800, "出力長がフェード終端に厳密に一致（テールの1ブロックが付かない）");
+
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatReader> reader (
+        wav.createReaderFor (new juce::FileInputStream (target), true));
+    expect (reader != nullptr, "書き出したWAVを読めること");
+    if (reader != nullptr)
+    {
+        expect (reader->lengthInSamples == 28800, "WAVの長さ=フェード終端");
+        juce::AudioBuffer<float> readBack (2, 28800);
+        reader->read (&readBack, 0, 28800, 0, true, true);
+
+        expect (std::abs (readBack.getSample (0, 0) - 0.5f) < 1.0e-4f, "フェード前は素の振幅");
+        expect (std::abs (readBack.getSample (0, 14399) - 0.5f) < 1.0e-4f, "開始点の直前まで減衰しない");
+        expect (std::abs (readBack.getSample (0, 21600) - 0.25f) < 2.0e-3f, "中点で約半分");
+        expect (std::abs (readBack.getSample (0, 28799)) < 2.0e-3f, "終端の直前はほぼ0");
+
+        // サンプルの欠落・重複がないこと（pos += n の回帰）: 素材は一定値なので、
+        // 出力はS字の単調減少になるはず。飛び・戻りがあれば単調性が崩れる
+        bool monotonicAfterStart = true;
+        for (int i = 14401; i < 28800; ++i)
+            if (readBack.getSample (0, i) > readBack.getSample (0, i - 1) + 1.0e-5f)
+                monotonicAfterStart = false;
+        expect (monotonicAfterStart, "フェード区間が単調減少（サンプルの欠落・重複がないこと）");
+    }
+
+    // RT再生との一致（許容誤差1e-4。GOTCHAS.mdの実測値に従う）
+    {
+        auto project = std::make_unique<Project>();
+        project->bpm = bpm;
+        Track t;
+        t.id = 1;
+        t.params->gain.store (1.0f);
+        Clip clip;
+        clip.audio = audio;
+        clip.lengthSamples = 40000;
+        t.clips.push_back (std::move (clip));
+        project->tracks.push_back (std::move (t));
+        project->fadeOutStartSixteenths = 1;
+        project->fadeOutEndSixteenths = 2;
+
+        TransportState transport;
+        transport.bpm.store (bpm);
+        SnapshotExchange snapshots;
+        PreviewFifo previewFifo;
+        PlaybackEngine engine (transport, snapshots, previewFifo);
+        engine.prepareToPlay (512, sr);
+        snapshots.push (project->buildSnapshot());
+        transport.seekRequest.store (0);
+        engine.play();
+
+        juce::AudioBuffer<float> rt (2, 28800);
+        rt.clear();
+        juce::AudioBuffer<float> buffer (2, 512);
+        for (int pos = 0; pos < 28800; pos += 512)
+        {
+            buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, 512);
+            engine.process (info);
+            for (int ch = 0; ch < 2; ++ch)
+                rt.copyFrom (ch, pos, buffer, ch, 0, juce::jmin (512, 28800 - pos));
+        }
+        engine.stop();
+        snapshots.deleteRetired();
+
+        if (reader != nullptr)
+        {
+            juce::AudioBuffer<float> readBack (2, 28800);
+            reader->read (&readBack, 0, 28800, 0, true, true);
+            float maxDiff = 0.0f;
+            for (int i = 0; i < 28800; ++i)
+                maxDiff = juce::jmax (maxDiff, std::abs (rt.getSample (0, i) - readBack.getSample (0, i)));
+            // RTは512、バウンスは renderBlockSize=1024 固定なので、S字の線形近似の刻みが違う。
+            // 実測の最大差は 1.5e-3（level 0.5 に対し0.3%＝-56dB相当）。同じカーブを適用して
+            // いることの確認が目的なので、この誤差は許容する
+            expect (maxDiff < 5.0e-3f, "RT再生とバウンスが許容誤差内で一致すること");
+        }
+    }
+
+    // バウンス範囲の決定そのもの（MainComponentが呼ぶ判断をRequest側に閉じてある）。
+    // ここが jmin へ戻ると素材終端で切れるので、値で直接固定する
+    {
+        BounceRenderer::Request r;
+        r.sampleRate = sr;
+        r.bpm = bpm;
+        r.endSample = 20000; // 素材終端（フェード終端28800より手前）
+        r.wantTail = true;
+        r.fadeOutStartSixteenths = 1;
+        r.fadeOutEndSixteenths = 2;
+        r.applySongFadeToRange();
+        expect (r.endSample == 28800, "終端を素材より後ろへ置いたら伸ばすこと（jminにしない）");
+        expect (! r.wantTail, "テールを落とすこと（末尾に無音1ブロックが付かないように）");
+
+        // 素材の方が長いケースでもフェード終端に合わせる（＝常にフェード終端が曲の終端）
+        BounceRenderer::Request shorter;
+        shorter.sampleRate = sr;
+        shorter.bpm = bpm;
+        shorter.endSample = 40000;
+        shorter.wantTail = true;
+        shorter.fadeOutStartSixteenths = 1;
+        shorter.fadeOutEndSixteenths = 2;
+        shorter.applySongFadeToRange();
+        expect (shorter.endSample == 28800, "素材が長くてもフェード終端で切ること");
+
+        // フェード未設定なら何も変えない（テールの判断も既存のまま）
+        BounceRenderer::Request none;
+        none.sampleRate = sr;
+        none.bpm = bpm;
+        none.endSample = 20000;
+        none.wantTail = true;
+        none.applySongFadeToRange();
+        expect (none.endSample == 20000 && none.wantTail, "フェード未設定なら範囲もテールも変えないこと");
+    }
+
+    // フェード終端を素材終端より後ろへ置いたケース（MIDIのリリースや余韻をフェードさせたいとき）。
+    // 呼び出し側が endSample を jmin で切ると素材終端で終わってしまうので、伸ばす側も従うこと
+    {
+        const auto target3 = dir.getChildFile ("fade-beyond-material.wav");
+        auto shortAudio = std::make_shared<juce::AudioBuffer<float>> (1, 20000); // フェード終端28800より短い
+        for (int i = 0; i < 20000; ++i)
+            shortAudio->setSample (0, i, 0.5f);
+
+        BounceRenderer::Request r3;
+        r3.sampleRate = sr;
+        r3.bpm = bpm;
+        r3.startSample = 0;
+        r3.endSample = 28800; // = fadeEndSample。素材終端(20000)より後ろ
+        r3.wantTail = false;
+        r3.fadeOutStartSixteenths = 1;
+        r3.fadeOutEndSixteenths = 2;
+        r3.targetFile = target3;
+        BounceRenderer::TrackRender t3;
+        t3.gain = 1.0f;
+        t3.clips.push_back ({ shortAudio, 0, 0, 20000 });
+        r3.tracks.push_back (std::move (t3));
+
+        BounceRenderer renderer3;
+        expect (renderer3.start (std::move (r3)), "startできること");
+        expect (waitForBounce (renderer3), "タイムアウトせず完了すること");
+        const auto result3 = renderer3.takeResult();
+        expect (result3.status == BounceRenderer::Status::success, "successで終わること");
+        expect (result3.writtenSamples == 28800,
+                "素材終端で切れず、フェード終端まで書き出すこと");
+
+        juce::WavAudioFormat wav3;
+        std::unique_ptr<juce::AudioFormatReader> reader3 (
+            wav3.createReaderFor (new juce::FileInputStream (target3), true));
+        if (reader3 != nullptr)
+        {
+            juce::AudioBuffer<float> back (2, 28800);
+            reader3->read (&back, 0, 28800, 0, true, true);
+            expect (back.getSample (0, 19999) > 0.0f, "素材の最後までフェードが掛かって鳴っていること");
+            expect (std::abs (back.getSample (0, 25000)) < 1.0e-6f, "素材終端より後ろは無音であること");
+        }
+    }
+
+    // サイクル範囲がフェード終端より後ろでも startSample >= endSample を作らない
+    // （サイクルONではフェード終端で切らない＝範囲はサイクルが優先）
+    {
+        const auto target2 = dir.getChildFile ("cycle-after-fade.wav");
+        BounceRenderer::Request r2;
+        r2.sampleRate = sr;
+        r2.bpm = bpm;
+        r2.startSample = 28800; // フェード終端以後から始まるサイクル範囲
+        r2.endSample = 32400;
+        r2.wantTail = false;
+        r2.fadeOutStartSixteenths = 1;
+        r2.fadeOutEndSixteenths = 2;
+        r2.targetFile = target2;
+        BounceRenderer::TrackRender t2;
+        t2.gain = 1.0f;
+        t2.clips.push_back ({ audio, 0, 0, 40000 });
+        r2.tracks.push_back (std::move (t2));
+
+        expect (r2.startSample < r2.endSample, "startSample < endSample が保たれること");
+        BounceRenderer renderer2;
+        expect (renderer2.start (std::move (r2)), "サイクル範囲の書き出しをstartできること");
+        expect (waitForBounce (renderer2), "タイムアウトせず完了すること");
+        const auto result2 = renderer2.takeResult();
+        expect (result2.status == BounceRenderer::Status::success, "successで終わること");
+        expect (result2.writtenSamples == 3600, "サイクル範囲ぶんの長さになること（無音でも書き出す）");
+    }
+
+    dir.deleteRecursively();
+}
+
 // ---- 回帰ハッシュ: モノのみ構成の決定的レンダリング結果のMD5をstdoutへ出す ----
 // ステレオ対応リファクタの前後で「モノのみトラックの出力がビット一致で不変」であることを、
 // このハッシュの目視比較で確認する。期待値はハードコードしない（浮動小数点の積和順序は
@@ -6661,6 +7241,10 @@ int main()
     testEngineClipGain();
     testEngineClipFade();
     testEngineBounceStereoConsistency();
+    testSongFadeGainCurve();
+    testSongFadeRoundtrip();
+    testEngineSongFade();
+    testBounceSongFade();
     testAudioImporter();
     testAudioFilePreview();
     testPreviewPolicy();

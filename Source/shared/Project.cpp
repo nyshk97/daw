@@ -1,6 +1,7 @@
 #include "Project.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <map>
 
@@ -427,6 +428,12 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
     cycleObj->setProperty ("enabled", cycleEnabled);
     root->setProperty ("cycle", juce::var (cycleObj));
 
+    // 曲末フェードアウト（v12）。単位・書式はサイクルと同じ
+    auto* fadeOutObj = new juce::DynamicObject();
+    fadeOutObj->setProperty ("start", fadeOutStartSixteenths);
+    fadeOutObj->setProperty ("end", fadeOutEndSixteenths);
+    root->setProperty ("fadeOut", juce::var (fadeOutObj));
+
     // 固定バス3本（並びは SendBuses::names と対応）とMaster
     juce::Array<juce::var> busesArray;
     for (int b = 0; b < numSendBuses; ++b)
@@ -727,6 +734,19 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
         }
     }
 
+    // 曲末フェードアウト（v11以前は無い → 既定値: 未設定）。
+    // サイクルと同じく、範囲が成立しない値（start >= end）は未設定へ落とす
+    if (const auto fadeVar = parsed.getProperty ("fadeOut", {}); fadeVar.isObject())
+    {
+        const int start = juce::jmax (0, (int) fadeVar.getProperty ("start", 0));
+        const int end = juce::jmax (0, (int) fadeVar.getProperty ("end", 0));
+        if (start < end)
+        {
+            project->fadeOutStartSixteenths = start;
+            project->fadeOutEndSixteenths = end;
+        }
+    }
+
     // 固定バス・Master（v3以前は無い → unityParams()の初期値 gain=1.0 のまま）
     if (auto* busesArray = parsed.getProperty ("buses", {}).getArray())
     {
@@ -842,6 +862,48 @@ juce::File Project::nextInstrumentFile() const
     return directory.getChildFile ("instr-overflow.wav");
 }
 
+int Project::lastItemEndSixteenths (double sr) const
+{
+    // 16分音符1つ分の長さ。オーディオはサンプル、MIDIはPPQで持っているので単位ごとに割る
+    const double sixteenthSamples = sr > 0.0
+                                        ? sr * 60.0 / juce::jlimit (20.0, 400.0, bpm) * 4.0 / 16.0
+                                        : 0.0;
+    constexpr double sixteenthTicks = (double) Ppq::ticksPerQuarter / 4.0;
+
+    int result = 0;
+    const auto bump = [&result] (double sixteenths)
+    {
+        // 端数は切り上げる（最近傍だと終端が手前へ吸着して最後の音を切る）
+        result = juce::jmax (result, (int) std::ceil (sixteenths));
+    };
+
+    for (const auto& track : tracks)
+    {
+        // トラックのミュート・ソロは見ない（一時的なモニター状態であって曲の長さではない）
+        for (const auto& clip : track.clips)
+            if (! clip.muted && sixteenthSamples > 0.0)
+                bump ((double) (clip.startSample + clip.totalLengthSamples()) / sixteenthSamples);
+
+        if (track.type == TrackType::midi)
+            for (const auto& region : track.midiRegions)
+                if (! region.muted)
+                    bump ((double) (region.startPpq + region.totalLengthPpq()) / sixteenthTicks);
+    }
+
+    return result;
+}
+
+int Project::resolveSongFadeEnd (int startSixteenths, double sr) const
+{
+    // 鳴るアイテムが無ければフェードを引く対象がない。**既存フェードの有無より先に見る**
+    // （後で見ると、全アイテムを消した後でも既存終端を使って開始点だけ動かせてしまう）
+    if (lastItemEndSixteenths (sr) <= 0)
+        return 0;
+
+    const int end = hasFadeOut() ? fadeOutEndSixteenths : lastItemEndSixteenths (sr);
+    return startSixteenths < end ? end : 0;
+}
+
 std::unique_ptr<PlaybackSnapshot> Project::buildSnapshot (SnapshotChange change)
 {
     // 既定（midiStructure）は世代を進める＝エンジンに消音＋跨ぎノート再発音をさせる。
@@ -857,6 +919,8 @@ std::unique_ptr<PlaybackSnapshot> Project::buildSnapshot (SnapshotChange change)
     for (int b = 0; b < numSendBuses; ++b)
         snapshot->busParams[b] = busParams[b];
     snapshot->masterParams = masterParams;
+    snapshot->fadeOutStartSixteenths = fadeOutStartSixteenths;
+    snapshot->fadeOutEndSixteenths = fadeOutEndSixteenths;
 
     for (auto& track : tracks)
     {

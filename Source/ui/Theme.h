@@ -59,6 +59,15 @@ inline const juce::Colour gridLineSub   { 0xff222226 };  // 細分線
 inline const juce::Colour cycleOn  { 0xffd7b545 };
 inline const juce::Colour cycleOff { 0xff77777e };
 
+// ---- 曲末フェードアウト ----
+// レーンに重ねる暗幕。音量カーブの表示は帯（songFadeBandBg）が担当し、レーン側は
+// 「この区間は落ちている」ことだけを一様な濃さで示す（トラック数・縦スクロールに依存させない）
+inline const juce::Colour songFadeShade  { 0x38000000 };
+// カーブ帯の地。タイムラインより一段沈めて「レーンではない」ことを示す
+inline const juce::Colour songFadeBandBg { 0xff141417 };
+// ルーラーのハンドル・帯のカーブ・終端の縦線。サイクル帯（黄/グレー）と取り違えないよう寒色に振る
+inline const juce::Colour songFadeHandle { 0xff7f93b8 };
+
 // ---- クリップ・リージョン ----
 inline const juce::Colour clipAudio          { 0xff39537d };  // オーディオクリップ（選択時はaccent）
 inline const juce::Colour clipMuted          { 0xff3c3d43 };

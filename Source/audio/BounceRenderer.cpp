@@ -9,6 +9,7 @@
 #include "../shared/Pan.h"
 #include "../shared/Ppq.h"
 #include "../shared/Project.h"
+#include "../shared/SongFade.h"
 
 namespace
 {
@@ -238,12 +239,25 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
         busMix.emplace_back (2, renderBlockSize);
 
     // ---- 本編: クリップ＋MIDIのミックス ----
-    for (juce::int64 pos = rangeStart; pos < rangeEnd; pos += renderBlockSize)
+    // posは固定幅で進めず、実際に処理した長さ n だけ進める（曲末フェードの境界でブロックを
+    // 短縮するため。固定幅のままだと境界後のサンプルを飛ばす）
+    for (juce::int64 pos = rangeStart; pos < rangeEnd; )
     {
         if (threadShouldExit())
             return false;
 
-        const int n = (int) juce::jmin ((juce::int64) renderBlockSize, rangeEnd - pos);
+        int n = (int) juce::jmin ((juce::int64) renderBlockSize, rangeEnd - pos);
+
+        // 曲末フェードの境界で切り、ブロックが「フェード前／区間内／終端以後」の
+        // いずれかに完全に収まるようにする（RTと同じ条件式。「現在位置より厳密に後ろ」の
+        // 境界だけ採用する＝境界ちょうどで n=0 になって進まなくなるのを防ぐ）
+        if (request.hasFadeOut())
+        {
+            for (const auto boundary : { request.fadeStartSample(), request.fadeEndSample() })
+                if (pos < boundary && boundary < pos + n)
+                    n = (int) (boundary - pos);
+        }
+
         mix.clear();
         for (auto& bus : busMix)
             bus.clear();
@@ -303,7 +317,7 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
             }
         }
 
-        mixBusesAndMaster (mix, busMix, n);
+        mixBusesAndMaster (mix, busMix, n, pos);
 
         for (int ch = 0; ch < 2; ++ch)
             runningPeak = juce::jmax (runningPeak, mix.getMagnitude (ch, 0, n));
@@ -317,6 +331,7 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
         samplesWritten += n;
 
         progressValue.store (0.85f * (float) ((double) (pos + n - rangeStart) / (double) (rangeEnd - rangeStart)));
+        pos += n;
     }
 
     // ---- テール: 範囲終端で鳴り残ったノートを止め、余韻が減衰しきるまで延長 ----
@@ -354,7 +369,7 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
             }
             firstTailBlock = false;
 
-            mixBusesAndMaster (mix, busMix, renderBlockSize);
+            mixBusesAndMaster (mix, busMix, renderBlockSize, rangeEnd + tailRendered);
 
             // 無音判定はMaster適用後の最終出力で行う（聞こえる信号が-60dBを下回ったら終了）
             float magnitude = 0.0f;
@@ -505,8 +520,28 @@ void BounceRenderer::renderSynthInto (juce::AudioBuffer<float>& mix,
     }
 }
 
+juce::int64 BounceRenderer::Request::fadeStartSample() const
+{
+    return SongFade::sixteenthsToSamples (fadeOutStartSixteenths, bpm, sampleRate);
+}
+
+juce::int64 BounceRenderer::Request::fadeEndSample() const
+{
+    return SongFade::sixteenthsToSamples (fadeOutEndSixteenths, bpm, sampleRate);
+}
+
+void BounceRenderer::Request::applySongFadeToRange()
+{
+    if (! hasFadeOut())
+        return;
+
+    endSample = fadeEndSample(); // jminにしないこと（ヘッダのコメント参照）
+    wantTail = false;
+}
+
 void BounceRenderer::mixBusesAndMaster (juce::AudioBuffer<float>& mix,
-                                        std::vector<juce::AudioBuffer<float>>& busMix, int numSamples)
+                                        std::vector<juce::AudioBuffer<float>>& busMix, int numSamples,
+                                        juce::int64 absPos)
 {
     for (int b = 0; b < numSendBuses; ++b)
     {
@@ -515,6 +550,31 @@ void BounceRenderer::mixBusesAndMaster (juce::AudioBuffer<float>& mix,
         for (int ch = 0; ch < 2; ++ch)
             mix.addFrom (ch, 0, busMix[(size_t) b], ch, 0, numSamples, request.busGain[b]);
     }
+
+    // 曲末フェード。呼び出し側が境界でブロックを切っているので、このブロックは
+    // 「フェード前」「区間内」「終端以後」のいずれかに完全に収まる（RTと同じ規則）
+    if (request.hasFadeOut())
+    {
+        const auto fadeStart = request.fadeStartSample();
+        const auto fadeEnd = request.fadeEndSample();
+        if (absPos >= fadeEnd)
+        {
+            mix.clear(); // 終端以後は厳密に無音
+            return;
+        }
+        if (absPos >= fadeStart)
+        {
+            // endGain は区間の排他端で評価する（GOTCHAS.md）。毎ブロック絶対位置から
+            // 計算し直すので誤差はブロック長で頭打ちになる
+            const float g0 = request.masterGain * SongFade::gainAt (absPos, fadeStart, fadeEnd);
+            const float g1 = request.masterGain * SongFade::gainAt (absPos + numSamples, fadeStart, fadeEnd);
+            mix.applyGainRamp (0, numSamples, g0, g1);
+            return;
+        }
+    }
+
+    // フェード前・未設定は既存の演算順序をそのまま通す（順序が変わると出力が微小に変わり、
+    // フェードを使っていない既存プロジェクトの書き出しまで変わってしまう）
     if (request.masterGain != 1.0f)
         mix.applyGain (0, numSamples, request.masterGain);
 }

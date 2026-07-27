@@ -290,6 +290,11 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         syncCycleToTransport();
         setDirty (true);
     };
+    // 曲末フェード（ルーラー右クリック）。開始点はTimelineView側でグリッドへ丸め済み
+    timeline.onSongFadeRequested = [this] (int startSixteenths) { setSongFadeFrom (startSixteenths); };
+    timeline.onSongFadeClearRequested = [this] { clearSongFade(); };
+    // フェード帯の出入りでレーン上端が変わる → トラックヘッダ側の上端も合わせ直す
+    timeline.onLaneTopChanged = [this] { resized(); };
     timeline.onOpenRegion = [this] (int trackIndex, int regionIndex) { openPianoRoll (trackIndex, regionIndex); };
     timeline.onDeleteItemRequested = [this] (int trackIndex, int itemIndex)
     {
@@ -1730,6 +1735,10 @@ void MainComponent::beginBounce (const juce::File& target)
     }
     request.endSample = endSample;
 
+    // 曲末フェード。位置は16分音符単位のまま渡し、サンプル換算はレンダラ側が SongFade で行う
+    request.fadeOutStartSixteenths = project->fadeOutStartSixteenths;
+    request.fadeOutEndSixteenths = project->fadeOutEndSixteenths;
+
     // サイクルON時はその範囲を書き出す（Logicのサイクル書き出しと同じ）。
     // ループ素材用途なのでMIDIがあってもテールを付けず、出力長＝範囲サンプル長ちょうどにする
     if (project->cycleEnabled && project->hasCycleRange())
@@ -1738,6 +1747,12 @@ void MainComponent::beginBounce (const juce::File& target)
         request.startSample = (juce::int64) std::llround ((double) project->cycleStartSixteenths * sixteenthLen);
         request.endSample = (juce::int64) std::llround ((double) project->cycleEndSixteenths * sixteenthLen);
         request.wantTail = false;
+    }
+    else
+    {
+        // 曲末フェードの終端＝曲そのものの終端。終端の置き換えとテールの落とし方は
+        // Request 側に閉じてある（テスト可能にするため。規則はそちらのコメント参照）
+        request.applySongFadeToRange();
     }
 
     Log::info ("bounce.start", "target=" + target.getFullPathName()
@@ -2527,6 +2542,48 @@ void MainComponent::pushAudioValueSnapshot()
     pushSnapshotWithChange (Project::SnapshotChange::audioValuesOnly);
 }
 
+// ---- 曲末フェードアウト ----
+
+// 「startSixteenths から曲末まで」に設定する（⌃F・ルーラー右クリック共通）。
+// 開始点は呼び出し側で必ずグリッドへ丸めておくこと: 生の位置で判定すると、丸めた結果が
+// 終端と一致するケース（終端の直前にヘッドがある）を取りこぼす
+void MainComponent::setSongFadeFrom (int startSixteenths)
+{
+    // 終端の解決（アイテム有無・既存フェードの維持・開始点の妥当性）はモデル側に閉じてある。
+    // 0 = no-op
+    const int end = project->resolveSongFadeEnd (startSixteenths, timeline.effectiveSampleRate());
+    if (end <= 0)
+    {
+        Log::info ("song_fade.noop", "start=" + juce::String (startSixteenths));
+        return;
+    }
+    if (project->fadeOutStartSixteenths == startSixteenths && project->fadeOutEndSixteenths == end)
+        return;
+
+    // undoは clipValue（MIDI世代を据え置くpushで鳴っている音を乱さない。リージョンゲインと同じ）
+    undoStack.begin (*project, UndoStack::EditKind::clipValue);
+    project->fadeOutStartSixteenths = startSixteenths;
+    project->fadeOutEndSixteenths = end;
+    setDirty (true);
+    pushAudioValueSnapshot();
+    timeline.refresh();
+    Log::info ("song_fade.set", "start=" + juce::String (startSixteenths) + " end=" + juce::String (end));
+}
+
+void MainComponent::clearSongFade()
+{
+    if (! project->hasFadeOut())
+        return;
+
+    undoStack.begin (*project, UndoStack::EditKind::clipValue);
+    project->fadeOutStartSixteenths = 0;
+    project->fadeOutEndSixteenths = 0;
+    setDirty (true);
+    pushAudioValueSnapshot();
+    timeline.refresh();
+    Log::info ("song_fade.clear", "");
+}
+
 void MainComponent::pushSnapshotWithChange (Project::SnapshotChange change)
 {
     auto snapshot = project->buildSnapshot (change);
@@ -2801,6 +2858,15 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (is (SC::repeatItem))
     {
         repeatSelectedItem();
+        return true;
+    }
+    // ⌃F = 再生ヘッド位置から曲末までフェードアウト（プロジェクトに1本だけ）
+    if (is (SC::songFadeOut))
+    {
+        // 基準は再生ヘッド（⌘Tの分割・⌘Vの貼り付けと同じ「編集の基準」。再生開始位置ではない）。
+        // uiPositionSample() は0クランプしないので編集側でjmaxする
+        setSongFadeFrom (timeline.sampleToSnappedSixteenths (
+            juce::jmax ((juce::int64) 0, transport.uiPositionSample())));
         return true;
     }
     // ,/.=1拍シーク、Shift+,/.（レイアウトにより<>）=1小節シーク
@@ -3286,7 +3352,7 @@ void MainComponent::resized()
 
     // ＋ボタンの帯はヘッダー列の中だけに置く（全幅に取るとタイムライン下に死にスペースができる）
     auto headerColumn = area.removeFromLeft (TrackHeadersView::preferredWidth);
-    headerColumn.removeFromTop (TimelineView::topHeight); // ルーラー＋マーカーレーン分の高さを合わせる
+    headerColumn.removeFromTop (timeline.laneTop()); // ルーラー＋マーカーレーン（＋曲末フェード帯）分の高さを合わせる
     addTrackButton.setBounds (headerColumn.removeFromBottom (32).reduced (8, 4));
     headers.setBounds (headerColumn);
     timeline.setBounds (area);

@@ -257,8 +257,9 @@ public:
     // v7: プロジェクトメモ / v8: サンプル音源（instrument・sample*）/
     // v9: リージョン/クリップのループ（loopCount。欠損＝ループなし）/
     // v10: オーディオリージョンのゲイン（clips[].gain。線形倍率・欠損＝1.0）/
-    // v11: オーディオリージョンのフェード（clips[].fadeInSamples / fadeOutSamples。欠損＝0）
-    static constexpr int currentVersion = 11;
+    // v11: オーディオリージョンのフェード（clips[].fadeInSamples / fadeOutSamples。欠損＝0）/
+    // v12: 曲末フェードアウト（fadeOut.start / fadeOut.end。16分音符単位・欠損＝未設定）
+    static constexpr int currentVersion = 12;
 
     juce::File directory;
     double bpm = 120.0;
@@ -274,6 +275,33 @@ public:
     int cycleEndSixteenths = 0;
     bool cycleEnabled = false;
     bool hasCycleRange() const { return cycleStartSixteenths < cycleEndSixteenths; }
+
+    // 曲末フェードアウト（マスターフェード）。プロジェクトに1本だけ。単位・流儀はサイクルと同じ
+    // （16分音符・0始まり・有効なのは start < end のときだけ）。
+    // サイクルと違い**undo対象**にする（範囲の繰り返しと違って鳴る音そのものが変わるため）。
+    // 終端以降は無音（フェード後にゲインが戻ることはない＝「曲そのものの終端」）
+    int fadeOutStartSixteenths = 0;
+    int fadeOutEndSixteenths = 0;
+    bool hasFadeOut() const { return fadeOutStartSixteenths < fadeOutEndSixteenths; }
+
+    // 最後のアイテムの「見た目上の終端」を16分音符単位で返す（0 = 鳴るアイテムが1つもない）。
+    // 曲末フェードの終端を自動で置くための値で、バウンス範囲の算出（MainComponent::startBounce）
+    // とは規則が違うので共用しない:
+    // - リージョンミュートは除外する（「この部分は使わない」という恒久的な意思表示）
+    // - **トラックのミュート・ソロは考慮しない**（一時的なモニター状態であって曲の長さではない。
+    //   ミュートして作業中に⌃Fを押したら終端が変わる、という驚きの方が大きい）
+    // - One Shot のサンプル全長は含めない（バウンスが含めるのは「鳴り切るまで書き出す」ため）
+    // - 端数は**切り上げる**（最近傍だと終端が手前へ吸着して最後の音を切る）
+    int lastItemEndSixteenths (double sampleRate) const;
+
+    // 「startSixteenths から曲末まで」でフェードを引くときの終端を解決する。
+    // 0 = no-op（何もしない）。判断をUIから切り離してテスト可能にするためモデル側に置く。
+    // 規則:
+    // - 鳴るアイテムが1つも無ければ 0。**既存フェードが残っていても 0**（全アイテムを消した後に
+    //   ⌃F で開始点だけ動かせてしまうのを防ぐ）
+    // - 既にフェードがあるなら終端は動かさない（2本目は作らず開始点だけ移す）
+    // - 開始点が終端以後なら 0（判定は呼び出し側でグリッドへ丸めた後の値で行うこと）
+    int resolveSongFadeEnd (int startSixteenths, double sampleRate) const;
 
     // send用固定バス3本（gain=リターン量・mute使用）とMaster（gain使用）。
     // gainの既定はトラック（0.8）と違いユニティ1.0（unityParams()が保証。

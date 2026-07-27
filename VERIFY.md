@@ -174,6 +174,11 @@ cmake --build build --target daw_tests && build/daw_tests_artefacts/Debug/daw_te
 - testMonoRenderRegressionHash が「重なりクリップ×pan×send×Master」の決定的レンダリングをFNV-1aで出力する
 - ハッシュの期待値はテストにハードコードしない（浮動小数点の積和順序がコンパイラ・環境依存。同一環境の変更前後比較にのみ使う）
 - 不一致＝モノのみトラック経路の演算順序が変わった兆候（PlaybackEngine/BounceRendererの2経路構造のコメント参照）
+- **変更前のハッシュを採り忘れたときは `git stash` で取れる**（作業ツリーを退避して同じ手順を実行 → `git stash pop` で戻す）。Masterゲイン経路に手を入れる変更（曲末フェード等）で「既存プロジェクトの出音を変えていない」ことを実証するのに使える:
+  ```sh
+  git stash push -u -m wip && cmake --build build --target daw_tests \
+    && build/daw_tests_artefacts/Debug/daw_tests | grep hash- ; git stash pop
+  ```
 
 ## オーディオ取り込みの確認
 

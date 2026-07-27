@@ -53,6 +53,23 @@ public:
         float busGain[numSendBuses] { 1.0f, 1.0f, 1.0f };
         bool busMute[numSendBuses] { false, false, false };
         float masterGain = 1.0f;
+
+        // 曲末フェードアウト（16分音符単位・無効は 0/0）。サンプル換算は RT と同じ SongFade を通す
+        // （片方だけ別式にすると再生とバウンスの出力一致が崩れる）
+        int fadeOutStartSixteenths = 0;
+        int fadeOutEndSixteenths = 0;
+        juce::int64 fadeStartSample() const;
+        juce::int64 fadeEndSample() const;
+        bool hasFadeOut() const { return fadeOutEndSixteenths > fadeOutStartSixteenths; }
+
+        // 通常バウンス（サイクルOFF）に曲末フェードを反映する。フェード未設定なら何もしない。
+        // 呼び出し側（MainComponent）の判断をここへ閉じてテスト可能にしている:
+        // - 終端＝フェード終端。**素材終端との jmin にしない**（終端を素材より後ろへ置いたとき
+        //   ＝MIDIのリリースや余韻をフェードさせたいときに切れてしまう）
+        // - テールを落とす。テールループは無音判定の前に必ず1ブロック書くため、endSampleを
+        //   合わせるだけでは末尾に無音が付いて固定終端にならない。フェード終端でゲインは
+        //   厳密に0なので、鳴り残った余韻を捨てても聴こえ方は変わらない
+        void applySongFadeToRange();
     };
 
     // 選択された1アイテム（クリップ or MIDIリージョン）だけをレンダリング対象にした
@@ -148,8 +165,10 @@ private:
                           const TrackRender& track, int numSamples);
 
     // 素通しバス（busGain/busMute適用）をmixへ合流 → Masterゲイン（RTのprocessと同じ順序）
+    // absPos = このブロックの絶対サンプル位置（曲末フェードの評価に必要）
     void mixBusesAndMaster (juce::AudioBuffer<float>& mix,
-                            std::vector<juce::AudioBuffer<float>>& busMix, int numSamples);
+                            std::vector<juce::AudioBuffer<float>>& busMix, int numSamples,
+                            juce::int64 absPos);
 
     Request request;
     Result result;

@@ -4,6 +4,7 @@
 
 #include "../shared/ClipFade.h"
 #include "../shared/Pan.h"
+#include "../shared/SongFade.h"
 #include "AudioFilePreview.h"
 
 namespace
@@ -129,6 +130,14 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
                                  ? snapshot->masterParams->gain.load()
                                  : 1.0f;
 
+    // 曲末フェード。スナップショットは16分音符単位で持つので、毎ブロックここで換算する
+    // （BPM/SRの変更はスナップショットを再pushしないため、焼き込むと音だけ古い位置に残る）
+    const juce::int64 fadeStartSample =
+        snapshot != nullptr ? SongFade::sixteenthsToSamples (snapshot->fadeOutStartSixteenths, bpm, sr) : 0;
+    const juce::int64 fadeEndSample =
+        snapshot != nullptr ? SongFade::sixteenthsToSamples (snapshot->fadeOutEndSixteenths, bpm, sr) : 0;
+    const bool fadeActive = fadeEndSample > fadeStartSample;
+
     // ---- プレビューコマンドの取り込み（コールバックごとに1回。処理する分だけ固定配列へ）----
     numPreviewCommands = 0;
     {
@@ -182,8 +191,23 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
         if (cycleActive)
             segLen = (int) juce::jmin ((juce::int64) segLen, cycleEnd - segPos);
 
+        // 曲末フェードの境界でも切り、セグメントが「フェード前／区間内／終端以後」の
+        // いずれかに完全に収まるようにする。分割しないと両端ゲインの直線ランプが境界を越え、
+        // 終端以後に非ゼロが残る（開始側は開始前から減衰する）。
+        // ⚠️ サイクルのように jmin にしてはいけない: サイクルは segPos を範囲頭へ巻き戻すので
+        // segLen が0にならないが、フェードは巻き戻さないので境界ちょうどで segLen=0 →
+        // done が進まず無限ループする。「現在位置より厳密に後ろ」の境界だけ採用する
+        if (fadeActive)
+        {
+            if (segPos < fadeStartSample && fadeStartSample < segPos + segLen)
+                segLen = (int) (fadeStartSample - segPos);
+            if (segPos < fadeEndSample && fadeEndSample < segPos + segLen)
+                segLen = (int) (fadeEndSample - segPos);
+        }
+
         processSegment (buffer, startSample + done, segLen, segPos,
                         playing, armed, punchIn, snapshot, anySolo, canProcess, masterGain,
+                        fadeStartSample, fadeEndSample,
                         sr, bpm, beatLen,
                         (firstSegment && (startedOrSeeked || stoppedNow || snapshotChanged)) || wrapSeek,
                         (firstSegment && (startedOrSeeked || stoppedNow)) || wrapSeek,
@@ -214,9 +238,22 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
 void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOffset, int segLen,
                                      juce::int64 segPos, bool playing, bool armed, juce::int64 punchIn,
                                      PlaybackSnapshot* snapshot, bool anySolo, bool canProcess,
-                                     float masterGain, double sr, double bpm, double beatLen,
+                                     float masterGain,
+                                     juce::int64 fadeStartSample, juce::int64 fadeEndSample,
+                                     double sr, double bpm, double beatLen,
                                      bool silenceTransport, bool silenceAll, bool resound)
 {
+    // 曲末フェード。呼び出し側が境界でセグメントを切っているので、このセグメントは
+    // 「フェード前」「区間内」「終端以後」のいずれかに完全に収まっている
+    const bool fadeActive = fadeEndSample > fadeStartSample;
+    const bool afterFade = fadeActive && segPos >= fadeEndSample;
+    const bool inFade = fadeActive && ! afterFade && segPos >= fadeStartSample;
+
+    // canProcess == false（想定外の巨大ブロック）の縮退経路が使うMasterゲイン。
+    // セグメント代表値の定数で済ませる（区間内は階段になるが、音を落とさないことを
+    // 優先する緊急経路。境界での分割は済んでいるので境界を越えて掛かる誤りは起きない）
+    const float fallbackMasterGain =
+        afterFade ? 0.0f : masterGain * SongFade::gainAt (segPos, fadeStartSample, fadeEndSample);
     // ステレオミックス（mixScratch）とsendバスの準備。全信号は
     // 「トラック（gain・pan）→ mixScratch/busScratch → バス素通し加算 → Masterゲイン → 出力ch0/1」
     // の順で流れる
@@ -293,14 +330,14 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
                             // フォールバックの縮退はsend/メーターのみ。出力ルール（ch0/1・1chダウンミックス）と
                             // pan・Masterは本編と揃える
                             ClipFade::addSegment (buffer, 0, outOffset + seg.destOffset, segSrc, seg,
-                                                  clipGain * panL * masterGain);
+                                                  clipGain * panL * fallbackMasterGain);
                             ClipFade::addSegment (buffer, 1, outOffset + seg.destOffset, segSrc, seg,
-                                                  clipGain * panR * masterGain);
+                                                  clipGain * panR * fallbackMasterGain);
                         }
                         else
                         {
                             ClipFade::addSegment (buffer, 0, outOffset + seg.destOffset, segSrc, seg,
-                                                  clipGain * 0.5f * (panL + panR) * masterGain);
+                                                  clipGain * 0.5f * (panL + panR) * fallbackMasterGain);
                         }
                     }
                 }
@@ -376,16 +413,16 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
                         else if (buffer.getNumChannels() >= 2)
                         {
                             ClipFade::addSegment (buffer, 0, outOffset + seg.destOffset, srcL + rel, seg,
-                                                  gainL * masterGain);
+                                                  gainL * fallbackMasterGain);
                             ClipFade::addSegment (buffer, 1, outOffset + seg.destOffset, srcR + rel, seg,
-                                                  gainR * masterGain);
+                                                  gainR * fallbackMasterGain);
                         }
                         else
                         {
                             ClipFade::addSegment (buffer, 0, outOffset + seg.destOffset, srcL + rel, seg,
-                                                  gainL * 0.5f * masterGain);
+                                                  gainL * 0.5f * fallbackMasterGain);
                             ClipFade::addSegment (buffer, 0, outOffset + seg.destOffset, srcR + rel, seg,
-                                                  gainR * 0.5f * masterGain);
+                                                  gainR * 0.5f * fallbackMasterGain);
                         }
                     }
                 }
@@ -438,23 +475,46 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
             mixScratch.addFrom (1, 0, busScratch[b], 1, 0, segLen, busGain);
         }
 
-        if (snapshot->masterParams != nullptr)
+        // 曲末フェードの終端以後は出力に足さない（＝厳密に無音。メーターも更新しない）。
+        // トラックの処理自体は止めない: サイクルで範囲頭へ戻ったときにMIDIの発音状態や
+        // クリップの位置追従が壊れないよう、「出力に足さないだけ」に留める
+        if (! afterFade)
         {
-            storePeakMax (snapshot->masterParams->peakL,
-                          mixScratch.getMagnitude (0, 0, segLen) * masterGain);
-            storePeakMax (snapshot->masterParams->peakR,
-                          mixScratch.getMagnitude (1, 0, segLen) * masterGain);
-        }
+            // フェード区間内だけ mixScratch へ masterGain×フェードのランプを適用してから
+            // ゲイン1.0で加算する。フェード前・未設定は既存の演算順序をそのまま通す
+            // （順序が変わると出力が微小に変わり、フェードを使っていないプロジェクトにも影響する）
+            float outGain = masterGain;
+            if (inFade)
+            {
+                // endGain は「最終サンプルの次に適用される値」＝区間の排他端で評価する（GOTCHAS.md）。
+                // 毎セグメント絶対位置から評価し直すので、誤差はランプ全長でなくセグメント長で頭打ち
+                const float g0 = masterGain * SongFade::gainAt (segPos, fadeStartSample, fadeEndSample);
+                const float g1 = masterGain * SongFade::gainAt (segPos + segLen, fadeStartSample, fadeEndSample);
+                mixScratch.applyGainRamp (0, 0, segLen, g0, g1);
+                mixScratch.applyGainRamp (1, 0, segLen, g0, g1);
+                outGain = 1.0f;
+            }
 
-        if (buffer.getNumChannels() >= 2)
-        {
-            buffer.addFrom (0, outOffset, mixScratch, 0, 0, segLen, masterGain);
-            buffer.addFrom (1, outOffset, mixScratch, 1, 0, segLen, masterGain);
-        }
-        else
-        {
-            buffer.addFrom (0, outOffset, mixScratch, 0, 0, segLen, 0.5f * masterGain);
-            buffer.addFrom (0, outOffset, mixScratch, 1, 0, segLen, 0.5f * masterGain);
+            if (snapshot->masterParams != nullptr)
+            {
+                // フェード中は「実際に出る信号」から測る（フェード前のピークに代表係数を掛けると、
+                // ブロック内で音と係数の最大位置がずれて不正確になる）
+                storePeakMax (snapshot->masterParams->peakL,
+                              mixScratch.getMagnitude (0, 0, segLen) * outGain);
+                storePeakMax (snapshot->masterParams->peakR,
+                              mixScratch.getMagnitude (1, 0, segLen) * outGain);
+            }
+
+            if (buffer.getNumChannels() >= 2)
+            {
+                buffer.addFrom (0, outOffset, mixScratch, 0, 0, segLen, outGain);
+                buffer.addFrom (1, outOffset, mixScratch, 1, 0, segLen, outGain);
+            }
+            else
+            {
+                buffer.addFrom (0, outOffset, mixScratch, 0, 0, segLen, 0.5f * outGain);
+                buffer.addFrom (0, outOffset, mixScratch, 1, 0, segLen, 0.5f * outGain);
+            }
         }
     }
 

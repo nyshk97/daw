@@ -169,6 +169,10 @@ private:
     // エンジンの消音＋跨ぎノート再発音が走らず、鳴っているMIDIを乱さずに音を更新できる。
     // 呼び出し側は「ノート・リージョン・トラック構成・音源を変えていないこと」を保証すること
     void pushAudioValueSnapshot();
+
+    // 曲末フェードアウト（プロジェクトに1本）。開始点は呼び出し側でグリッドへ丸めておくこと
+    void setSongFadeFrom (int startSixteenths);
+    void clearSongFade();
     void pushSnapshotWithChange (Project::SnapshotChange change); // 上記2つの共通尻尾（synth参照を埋めて渡す）
     void setDirty (bool nowDirty);
     void updateTransportButtons();

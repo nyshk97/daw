@@ -58,10 +58,13 @@ private:
     // 1セグメント分の出力（クリップ・MIDI・バス/Master・クリック）。オーディオスレッド専用。
     // サイクル（ループ範囲）で1コールバックが複数セグメントに分割されるため、process() から
     // セグメントごとに呼ばれる。outOffset = デバイスバッファ内の書き込み開始位置
-    // （スクラッチバッファは常にオフセット0から segLen 分を使い、最終出力だけずらす）
+    // （スクラッチバッファは常にオフセット0から segLen 分を使い、最終出力だけずらす）。
+    // fadeStartSample/fadeEndSample = 曲末フェード（サンプル換算済み・無効は 0/0）。呼び出し側が
+    // 境界でセグメントを切るので、1セグメントは「フェード前／区間内／終端以後」のどれかに収まる
     void processSegment (juce::AudioBuffer<float>& buffer, int outOffset, int segLen, juce::int64 segPos,
                          bool playing, bool armed, juce::int64 punchIn,
                          PlaybackSnapshot* snapshot, bool anySolo, bool canProcess, float masterGain,
+                         juce::int64 fadeStartSample, juce::int64 fadeEndSample,
                          double sr, double bpm, double beatLen,
                          bool silenceTransport, bool silenceAll, bool resound);
 

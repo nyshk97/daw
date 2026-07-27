@@ -11,6 +11,10 @@
 // - Clip::audio / TrackParams は shared_ptr の共有なのでコピーは安価
 // - TrackParams を共有したまま持つため、音量・ミュート・ソロはundo対象外（仕様どおり）
 // - nextId は巻き戻さない（ID再利用による衝突を避けるため常に単調増加）
+//
+// ⚠️ Project直下の値を新たにundo対象にするときは、ここの State に足して begin/undo/redo の
+// 3箇所すべてで往復させること。EditKind は「復元後にどう再pushするか」を選ぶだけで、
+// **保存範囲は広げない**（曲末フェードを足したときに実際に踏んだ）
 class UndoStack
 {
 public:
@@ -30,7 +34,8 @@ public:
     // 編集操作の直前に呼ぶ。redo履歴は破棄される
     void begin (const Project& project, EditKind kind = EditKind::structure)
     {
-        undoStates.push_back ({ project.tracks, project.markers, kind });
+        undoStates.push_back ({ project.tracks, project.markers,
+                                project.fadeOutStartSixteenths, project.fadeOutEndSixteenths, kind });
         if ((int) undoStates.size() > maxDepth)
             undoStates.erase (undoStates.begin());
         redoStates.clear();
@@ -42,9 +47,12 @@ public:
         if (undoStates.empty())
             return false;
         kind = undoStates.back().kind;
-        redoStates.push_back ({ std::move (project.tracks), std::move (project.markers), kind });
+        redoStates.push_back ({ std::move (project.tracks), std::move (project.markers),
+                                project.fadeOutStartSixteenths, project.fadeOutEndSixteenths, kind });
         project.tracks = std::move (undoStates.back().tracks);
         project.markers = std::move (undoStates.back().markers);
+        project.fadeOutStartSixteenths = undoStates.back().fadeOutStartSixteenths;
+        project.fadeOutEndSixteenths = undoStates.back().fadeOutEndSixteenths;
         undoStates.pop_back();
         return true;
     }
@@ -54,9 +62,12 @@ public:
         if (redoStates.empty())
             return false;
         kind = redoStates.back().kind;
-        undoStates.push_back ({ std::move (project.tracks), std::move (project.markers), kind });
+        undoStates.push_back ({ std::move (project.tracks), std::move (project.markers),
+                                project.fadeOutStartSixteenths, project.fadeOutEndSixteenths, kind });
         project.tracks = std::move (redoStates.back().tracks);
         project.markers = std::move (redoStates.back().markers);
+        project.fadeOutStartSixteenths = redoStates.back().fadeOutStartSixteenths;
+        project.fadeOutEndSixteenths = redoStates.back().fadeOutEndSixteenths;
         redoStates.pop_back();
         return true;
     }
@@ -86,6 +97,9 @@ private:
     {
         std::vector<Track> tracks;
         std::vector<SectionMarker> markers;
+        // 曲末フェード（Project直下の値。tracks/markers と違い移動できないので値コピー）
+        int fadeOutStartSixteenths = 0;
+        int fadeOutEndSixteenths = 0;
         EditKind kind = EditKind::structure;
     };
     std::vector<State> undoStates, redoStates;

@@ -147,6 +147,13 @@ struct PlaybackSnapshot
     std::shared_ptr<TrackParams> busParams[numSendBuses];
     std::shared_ptr<TrackParams> masterParams;
 
+    // 曲末フェードアウト（16分音符単位・無効は 0/0）。**サンプルに換算して入れないこと**:
+    // BPM変更（MainComponent::applyBpmText）もSR変更もスナップショットを再pushしないため、
+    // 焼き込むと表示だけが新しい小節位置へ動いて音が古い位置に取り残される。
+    // 換算はエンジン側が毎ブロック SongFade::sixteenthsToSamples で行う
+    int fadeOutStartSixteenths = 0;
+    int fadeOutEndSixteenths = 0;
+
     // MIDIの構成世代。エンジンはこの値が変わったときだけ「全ノートオフ＋跨ぎノート再発音」を行う
     // （再生中の編集でノートオフが失われて鳴りっぱなしになるのを防ぐ安全機構）。
     // オーディオ側だけが変わった差し替え（リージョンゲインのドラッグ等）では前回と同じ値を入れることで、
