@@ -8,7 +8,7 @@
 #
 # 注意:
 #   - Claude Code の認証をそのまま使う（API キーは不要）。トークンは通常のセッションと同じ扱い
-#   - 書き込みは対象フォルダの report.md のみ。ツールは Read/Write/Glob/Grep に限定している
+#   - 10〜15分かかる。文章は1トークンずつ順番にしか出せないので、これは短縮できない
 #   - 下書きが出るだけ。数値の裏取りは listen/ のクリップで耳でやる
 set -euo pipefail
 TOOLS="$(cd "$(dirname "$0")" && pwd)"
@@ -20,10 +20,16 @@ REF="$(cd "${REF%/}" && pwd)"
 # 雛形と見本はリポジトリ側にあるので、プロンプト内のパスを実パスに差し替えて渡す
 PROMPT=$(sed "s#TOOLS/#${TOOLS}/#g" "$TOOLS/report-prompt.md")
 
+echo "==> レポートを書いています（10〜15分）。何をしているかを流します"
 cd "$REF"
+
+# 既定の出力は「全部書き終わるまで無言」なので、10分以上だんまりになって
+# 止まったように見える。stream-json で経過を流す。
 claude -p "$PROMPT" \
   --add-dir "$TOOLS" \
-  --allowedTools Read Write Glob Grep Bash
+  --allowedTools Read Write Glob Grep Bash \
+  --output-format stream-json --verbose \
+  | "$TOOLS/.venv/bin/python" -u "$TOOLS/stream_progress.py"
 
 echo
 echo "書き出し: $REF/report.md"
