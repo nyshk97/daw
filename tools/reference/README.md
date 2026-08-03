@@ -22,6 +22,22 @@ Python は 3.12 固定（`.mise.toml` の `[tools]`）。homebrew の 3.14 で�
 URL を渡すだけ。取得 → MVエディットのトリム → 分析まで通しで走る。3:50 の曲で約4分。
 
 ```sh
+mise run ref:url 'https://www.youtube.com/watch?v=...'    # どこからでも
+```
+
+mise タスクは `mise tasks` で一覧できる。`cd` せずに済むだけで、中身は下のスクリプトと同じ。
+
+| タスク | 中身 |
+|---|---|
+| `ref:url <URL> [名前] [--trim a-b]` | `analyze-url.sh` |
+| `ref:analyze <フォルダ>` | `analyze.sh`（再分析） |
+| `ref:report <フォルダ>` | `report.sh` |
+| `ref:listen <フォルダ>` | `listen/` を Finder で開く |
+| `ref:setup` | `setup.sh`（venv 構築） |
+
+スクリプトを直接叩くなら:
+
+```sh
 cd ~/daw/tools/reference
 ./analyze-url.sh 'https://www.youtube.com/watch?v=...'
 ```

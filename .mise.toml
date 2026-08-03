@@ -3,10 +3,32 @@
 # 揃っているバージョンに固定する（homebrew の 3.14 では入らない）
 python = '3.12'
 
-[tasks.analyze-ref]
-description = 'リファレンス1曲を分析する（tools/reference/README.md 参照。track.wav を先に用意すること）'
-usage = 'arg "<dir>" help="~/Music/daw/references/<曲名> のパス"'
+# --- リファレンス分析パイプライン（tools/reference/README.md） ---
+# 引数は usage 方式。可変長は KDL の bool 記法で var=#true（var=true は parse error）
+
+[tasks."ref:url"]
+description = 'URLからリファレンスを1曲追加する（取得→トリム自動判定→分析。約4分）'
+usage = 'arg "<args>" var=#true help="URL [名前] [--trim a-b] [--dir 親フォルダ]"'
+run = 'tools/reference/analyze-url.sh $usage_args'
+
+[tasks."ref:analyze"]
+description = 'track.wav があるフォルダを分析し直す（約4分。スクリプトを直したあとに使う）'
+usage = 'arg "<dir>" help="~/Music/daw/references/<名前>"'
 run = 'tools/reference/analyze.sh "$usage_dir"'
+
+[tasks."ref:report"]
+description = '分析済みフォルダから report.md を書く（7〜15分。Claude Codeのヘッドレスを呼ぶ）'
+usage = 'arg "<dir>" help="~/Music/daw/references/<名前>"'
+run = 'tools/reference/report.sh "$usage_dir"'
+
+[tasks."ref:listen"]
+description = '耳で検算するクリップのフォルダを開く'
+usage = 'arg "<dir>" help="~/Music/daw/references/<名前>"'
+run = 'open "$usage_dir/listen"'
+
+[tasks."ref:setup"]
+description = '分析パイプラインの venv を作り直す（初回・依存を変えたとき）'
+run = 'tools/reference/setup.sh'
 
 [tasks.start]
 description = 'dev版アプリ（LaLa-dev.app）を起動する'
