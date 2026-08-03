@@ -19,35 +19,51 @@ Python は 3.12 固定（`.mise.toml` の `[tools]`）。homebrew の 3.14 で�
 
 ## 使い方
 
+URL を渡すだけ。取得 → MVエディットのトリム → 分析まで通しで走る。3:50 の曲で約4分。
+
 ```sh
-REF=~/Music/daw/references/<リファレンス名>   # 置き場は任意。1フォルダで完結する
-mkdir -p "$REF" && cd "$REF"
-
-# 1. 音源を取る
-yt-dlp -f bestaudio -x --audio-format wav --audio-quality 0 --no-playlist \
-       -o 'source.%(ext)s' --write-info-json '<URL>'
-
-# 2. MVエディットの有無を目で見る（頭のSE・尻のフェード/切断）
-cd - && .venv/bin/python overview.py "$REF/source.wav" "$REF/analysis/overview.png"
-.venv/bin/python overview.py "$REF/source.wav" "$REF/analysis/head.png" --end 40   # 拡大
-
-# 3. 本編だけ切り出す（この判断だけは自動化しない）
-ffmpeg -i "$REF/source.wav" -ss <開始> -to <終了> "$REF/track.wav"
-
-# 4. 残りを通しで
-./analyze.sh "$REF"
+cd ~/daw/tools/reference
+./add.sh 'https://www.youtube.com/watch?v=...'
 ```
 
-3:50 の曲で通し約4分。
+フォルダ名は曲名から自動で作る（`RAU DEF - FREEZE!!! feat.Sugbabe (Official Music Video)`
+→ `rau-def-freeze-feat-sugbabe`）。置き場の既定は `~/Music/daw/references/`。
 
-> 手順1〜3は Phase 3（LaLa内から起動）で不要になる。取り込みはLaLaの既存機能、
+```sh
+./add.sh '<URL>' <名前>                 フォルダ名を指定する
+./add.sh '<URL>' --trim 12.5-201.0      トリムの自動判定が外れたとき
+./add.sh '<URL>' --dir <親フォルダ>      置き場を変える
+```
+
+**トリムは自動判定**する。`overview.py` が検出した無音区間から「曲頭側の最後のギャップの終わり 〜
+曲尾側の最初のギャップの始まり」を本編とみなす（MVエディットは頭のSE・尻の切断のところに
+無音の切れ目を作るため）。曲中のブレイクを誤って掴まないよう、前後30秒の範囲だけ見ている。
+
+判定結果は実行中に表示される。外れていたら `--trim` を付けて撃ち直せばよく、
+**`source.wav` が既にあればダウンロードは走らない**ので安い。
+
+```
+無音区間: ["0.0-0.789","8.916-9.218","239.537-242.672"]
+自動判定 → 9.218-239.537
+```
+
+> 取得とトリムは Phase 3（LaLa内から起動）で不要になる。取り込みはLaLaの既存機能、
 > トリムは**リージョンの範囲そのもの**になるので、リージョンを `track.wav` に書き出して
-> 手順4を叩くだけになる。
+> `analyze.sh` を叩くだけになる。
+
+### 個別に走らせる
+
+```sh
+./analyze.sh <フォルダ>     # track.wav がある状態から分析だけ
+.venv/bin/python overview.py <audio> <out.png> --end 40    # 頭40秒だけ拡大して見る
+```
 
 ## スクリプト
 
 | ファイル | 役割 | 主な出力 |
 |---|---|---|
+| `add.sh` | **URL1本で取得→トリム自動判定→分析まで通し**。曲名からフォルダも作る | 1曲ぶんのフォルダ |
+| `analyze.sh` | `track.wav` がある状態から分析を通しで | `analysis/` `listen/` |
 | `overview.py` | 波形・RMS・スペクトログラムを1枚に。MVエディットの検出 | `overview.png` |
 | `basics.py` | BPM（固定テンポの剛体グリッド）・小節頭・キー・小節ごとのエネルギー | `basics.json` `click.wav` `sections.png` |
 | `stems.py` | ステムの音量・帯域バランス・調波打楽器比・**聴きどころの小節番号** | `stems-*.json` `stems-*.png` |
@@ -148,6 +164,8 @@ stems/htdemucs_6s/track/  drums.wav  bass.wav  vocals.wav  piano.wav  guitar.wav
 - **閾値の計算をループの条件式に書かない。** `if rise[i:i+step].max() > np.percentile(rise, 99.5)` は
   50msごとに500万要素の percentile を引き直し、この1行だけで2分半かかっていた（全体18分のうち13分）。
   外に出して 0.31秒。分析は全長の配列を回すので、こういう1行が桁で効く
+- **`$VAR` の直後に全角文字を置かない。** macOS の bash 3.2 はマルチバイトを変数名の一部として食うので、
+  `"$TITLE）"` が `TITLE<0xef>` という名前になり `unbound variable` で落ちる。`${TITLE}` と括る
 - **書き出した音声は長さでなく RMS/peak を見る。** 「ファイルがある・長さが正しい」だけ確認していたせいで、
   中身が全部無音のクリップをレビューに出したことがある。`excerpts.py` は自分の出力を検算して
   無音があれば非ゼロ終了する
