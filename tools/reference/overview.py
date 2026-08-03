@@ -8,7 +8,9 @@ SE や無音区間は帯域とRMSの両方で浮くので、この3段で大体�
 使い方: overview.py <audio> <out.png> [--title T]
 """
 import argparse
+import json
 import warnings
+from pathlib import Path
 
 warnings.filterwarnings("ignore")
 
@@ -79,13 +81,33 @@ def main() -> None:
     if start is not None:
         runs.append((t_rms[start], t_rms[-1]))
 
+    peak_db = float(librosa.amplitude_to_db(np.array([np.abs(y).max()]), ref=1.0)[0])
+    mean_db = float(rms_db[rms_db > -70].mean())
+
+    # レポートの「マスター」行と「分析の条件」節はここの数字を使う。
+    # 標準出力だけだと後から引けず、別セッションが再現できないので JSON にも残す。
+    out_json = Path(args.out).with_suffix(".json")
+    out_json.write_text(
+        json.dumps(
+            {
+                "audio": Path(args.audio).name,
+                "duration_sec": round(dur, 3),
+                "peak_dbfs": round(peak_db, 2),
+                "mean_rms_dbfs": round(mean_db, 2),
+                "near_silence": [{"start": round(a, 3), "end": round(b, 3), "len": round(b - a, 3)} for a, b in runs],
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+
     print(f"duration: {dur:.3f}s  sr(load): {sr}")
-    print(f"peak: {librosa.amplitude_to_db(np.array([np.abs(y).max()]), ref=1.0)[0]:.2f} dBFS")
-    print(f"mean RMS: {rms_db[rms_db > -70].mean():.2f} dBFS")
+    print(f"peak: {peak_db:.2f} dBFS")
+    print(f"mean RMS: {mean_db:.2f} dBFS")
     print("near-silence (<-50dBFS, >=0.3s):")
     for a, b in runs:
         print(f"  {a:7.2f} - {b:7.2f}  ({b - a:.2f}s)")
-    print(f"wrote {args.out}")
+    print(f"wrote {args.out} / {out_json}")
 
 
 if __name__ == "__main__":

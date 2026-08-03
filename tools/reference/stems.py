@@ -80,7 +80,10 @@ def analyze(path: Path, first_down: float, bar_len: float, n_bars: int) -> dict:
         "rms_db": db(np.sqrt((y**2).mean())),
         "peak_db": db(np.abs(y).max()),
         "band_balance": balance,
-        "spectral_centroid_hz": round(float(librosa.feature.spectral_centroid(S=S, sr=sr).mean()), 1),
+        # 重心は中央値を主に使う。平均は「その楽器が鳴っていないフレーム」（無音・減衰の
+        # 尻尾＝広帯域ノイズ）に引っ張られて高く出る（piano で中央値1036Hz に対し平均1480Hz）。
+        "spectral_centroid_hz_median": round(float(np.median(librosa.feature.spectral_centroid(S=S, sr=sr))), 1),
+        "spectral_centroid_hz_mean": round(float(librosa.feature.spectral_centroid(S=S, sr=sr).mean()), 1),
         "spectral_rolloff95_hz": round(float(librosa.feature.spectral_rolloff(S=S, sr=sr, roll_percent=0.95).mean()), 1),
         "harmonic_percussive_ratio": round(hp, 2),
         "stereo_width": round(width, 3),
