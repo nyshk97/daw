@@ -71,6 +71,7 @@
 - [transport-playhead.md](docs/design/transport-playhead.md) — 再生ヘッド（今いる場所＝編集の基準）と再生開始位置（次に鳴る場所）の分離。停止・録音・シークで両者がどう動くか。**トランスポートや「止めた場所」に関わる機能を触る前に読む**
 - [mixer-fx.md](docs/design/mixer-fx.md) — Tier 2 ミキサー・FXの確定設計（画面構成・チャンネル構成・6スライス）
 - [region-settings.md](docs/design/region-settings.md) — リージョン設定UIの割り当て方針
+- [reference-beat.md](docs/design/reference-beat.md) — リファレンス駆動ビートメイク（長期）。何を借りて何を借りないか・Python外部パイプライン＋LaLa内ガチャUIの分業・フェーズ表。実験記録は `docs/labs/reference-beat.md`（追記専用）
 
 新しい設計判断が出たらここに追記する（planに書かない。planは1実装分の記録なので後から探せなくなる）。
 
