@@ -5,3 +5,6 @@
 .scratchpad/
 # Sparkle prebuilt (scripts/fetch-sparkle.sh が取得)
 /.sparkle/
+# 分析パイプラインの venv（tools/reference/setup.sh で再構築）
+/tools/reference/.venv/
+__pycache__/
