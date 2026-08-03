@@ -32,7 +32,6 @@ mise タスクは `mise tasks` で一覧できる。`cd` せずに済むだけ�
 | `ref:url <URL> [名前] [--trim a-b]` | `analyze-url.sh` |
 | `ref:analyze <フォルダ>` | `analyze.sh`（再分析） |
 | `ref:report <フォルダ>` | `report.sh` |
-| `ref:listen <フォルダ>` | `listen/` を Finder で開く |
 | `ref:setup` | `setup.sh`（venv 構築） |
 
 スクリプトを直接叩くなら:
