@@ -55,7 +55,8 @@ ffmpeg -i "$REF/source.wav" -ss <開始> -to <終了> "$REF/track.wav"
 | `groove.py` | 16分グリッド上のドラム/ベースのプロファイル・スウィング・マイクロタイミング | `groove.json` `groove.png` |
 | `topline.py` | コード進行（ループ畳み込み）・音声→MIDI・音色特徴 | `topline-*.json` `*.mid` `midi_check-*.wav` |
 | `excerpts.py` | **耳で確認するための短いクリップ**を確認する順に番号を振って切り出す | `listen/*.wav` `listen/README.md` |
-| `report-template.md` | レポートの雛形（節構成・各節に何を書くか・機械/判断の切り分け）。Phase 1 の `report.py` の入力 | — |
+| `report-template.md` | レポートの雛形（節構成・各節に何を書くか・JSONキーの対応・判定語の閾値）。Phase 1 の `report.py` の入力 | — |
+| `report-example.md` | 雛形に沿って実際に書いたレポートの見本（第1号のコピー） | — |
 
 ## 動作確認（耳での検算）
 
@@ -73,6 +74,21 @@ cd "$REF/listen" && for f in *.wav; do echo "$f"; afplay "$f"; done
   コード名を読むより速くて確実な検算方法（`03-loop-only` が同じ区間のコード無し版）
 - `04-stem-*-quiet-*` — 分離の破綻・幽霊音が一番聴こえるのは「鳴っているが小さい」区間
 - `05-midi-*` — 左が原音、右が basic-pitch の結果
+
+## 既知の壊れ方
+
+検証したのは「テンポ完全固定・ループ1つ・ハネ無し・打ち込み」の1曲だけ（2026-08-03）。
+以下は**確実に壊れると分かっている**条件。壊れたことに気づけるかどうかも併記する。
+
+| 曲の性質 | 何が壊れるか | 気づき方 |
+|---|---|---|
+| **途中でコード進行が変わる** | `topline.py` は全長を1つのループとして畳むので、複数の進行が平均されて実在しない和音が出る | `loop.similarity_by_lag` がどのラグでも低い / `loop_progression.progression[].stability` が下がる |
+| **生ドラム・テンポが揺れる** | `basics.py` の剛体グリッドが破綻し、後半の小節番号が全部ずれる。以降の全分析が道連れ | `tempo.grid_contrast_by_eighth` の後半だけ落ちる / `tempo.local_bpm_std` が大きい |
+| **3拍子・6/8系** | 4/4 決め打ちなので小節・16分プロファイル・ループ長が全部無意味になる | **気づけない**（サイレントに壊れる）。拍子は人が確認するしかない |
+| **イントロ/アウトロが長い曲** | ループ畳み込みが「本編以外」も混ぜる | `repetitions_folded` の割に `stability` が低い |
+
+前3つは**壊れ方を知るために意図的に試す価値がある**。2曲目以降は素直な曲でなく、
+上のどれかに当たる曲を選ぶ方が学びが多い。結果は [docs/labs/reference-beat.md](../../docs/labs/reference-beat.md) に追記する。
 
 ## 設計上の注意（実測で踏んだもの）
 

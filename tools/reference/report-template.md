@@ -16,7 +16,7 @@ docs/design/reference-beat.md 「分析レポートの書き方」を参照。
 【機】= JSONのキーから機械的に埋まる（各節にキーのパスを書いてある）
 【判】= 判断が要る。テンプレート化できない
 判定語（「ハネ無し」等）の線引きは末尾の「判定語の閾値」にまとめてある。**勝手に別の線を引かない**。
-埋まっている見本: ~/Music/daw/references/rau-def-freeze/report.md
+埋まっている見本: report-example.md（同じディレクトリ）
 -->
 
 Prod. <プロデューサー> / <レーベル> / <公開日> 公開 / 分析日 <YYYY-MM-DD> / [原曲](<URL>)
