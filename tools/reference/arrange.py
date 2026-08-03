@@ -32,6 +32,12 @@ def main() -> None:
     args = ap.parse_args()
 
     data = json.loads(Path(args.stems).read_text())
+    # セクションの音量はミックスの実測を使う。
+    # ステムのdBを平均すると、鳴っていないステムの底に引っ張られる
+    # （アカペラ区間が -76dB と出て「一番静か」に見えた。実際は声だけで普通の音量）。
+    # dB は対数なので、そもそも複数ステムを算術平均しても合成音の大きさにならない。
+    bars_json = Path(args.outdir) / "basics.json"
+    mix_by_bar = [b["rms_db"] for b in json.loads(bars_json.read_text())["bars"]] if bars_json.exists() else None
     outdir = Path(args.outdir)
     names = [n for n in ORDER if n in data["stems"]] + [n for n in data["stems"] if n not in ORDER]
     mat = np.array([data["stems"][n]["rms_db_by_bar"] for n in names])
@@ -59,7 +65,11 @@ def main() -> None:
                     "bar_end": b,
                     "length_bars": b - a,
                     "active": [names[i] for i in range(len(names)) if state[start][i]],
-                    "rms_db_mean": round(float(np.mean([data["stems"][n]["rms_db_by_bar"][a:b] for n in names])), 2),
+                    "rms_db_mean": (
+                        round(float(np.mean(mix_by_bar[a:b])), 2)
+                        if mix_by_bar and len(mix_by_bar) > a
+                        else None
+                    ),
                 }
             )
             start = k
