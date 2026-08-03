@@ -23,16 +23,16 @@ URL を渡すだけ。取得 → MVエディットのトリム → 分析まで�
 
 ```sh
 cd ~/daw/tools/reference
-./add.sh 'https://www.youtube.com/watch?v=...'
+./analyze-url.sh 'https://www.youtube.com/watch?v=...'
 ```
 
 フォルダ名は曲名から自動で作る（`RAU DEF - FREEZE!!! feat.Sugbabe (Official Music Video)`
 → `rau-def-freeze-feat-sugbabe`）。置き場の既定は `~/Music/daw/references/`。
 
 ```sh
-./add.sh '<URL>' <名前>                 フォルダ名を指定する
-./add.sh '<URL>' --trim 12.5-201.0      トリムの自動判定が外れたとき
-./add.sh '<URL>' --dir <親フォルダ>      置き場を変える
+./analyze-url.sh '<URL>' <名前>                 フォルダ名を指定する
+./analyze-url.sh '<URL>' --trim 12.5-201.0      トリムの自動判定が外れたとき
+./analyze-url.sh '<URL>' --dir <親フォルダ>      置き場を変える
 ```
 
 **トリムは自動判定**する。`overview.py` が検出した無音区間から「曲頭側の最後のギャップの終わり 〜
@@ -62,7 +62,7 @@ cd ~/daw/tools/reference
 
 | ファイル | 役割 | 主な出力 |
 |---|---|---|
-| `add.sh` | **URL1本で取得→トリム自動判定→分析まで通し**。曲名からフォルダも作る | 1曲ぶんのフォルダ |
+| `analyze-url.sh` | **URL1本で取得→トリム自動判定→分析まで通し**。曲名からフォルダも作る | 1曲ぶんのフォルダ |
 | `analyze.sh` | `track.wav` がある状態から分析を通しで | `analysis/` `listen/` |
 | `overview.py` | 波形・RMS・スペクトログラムを1枚に。MVエディットの検出 | `overview.png` |
 | `basics.py` | BPM（固定テンポの剛体グリッド）・小節頭・キー・小節ごとのエネルギー | `basics.json` `click.wav` `sections.png` |

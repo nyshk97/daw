@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# URL を1本渡すだけでリファレンスを1曲ぶん追加する。
+# URL から丸ごと。取得 → トリム → analyze.sh、をひと続きで走らせる入口。
+# 分析本体は analyze.sh にあり（LaLa から呼ぶのも Phase 3 ではそちら）、ここは URL 版の皮。
 #
-#   ./add.sh '<URL>'                        取得 → トリム自動判定 → 分析まで通し
-#   ./add.sh '<URL>' <名前>                 フォルダ名を指定する（省略時は曲名から自動）
-#   ./add.sh '<URL>' --trim 12.5-201.0      自動判定が外れたとき手で指定
-#   ./add.sh '<URL>' --dir <親フォルダ>      置き場を変える（既定 ~/Music/daw/references）
+#   ./analyze-url.sh '<URL>'                        取得 → トリム自動判定 → 分析まで通し
+#   ./analyze-url.sh '<URL>' <名前>                 フォルダ名を指定する（省略時は曲名から自動）
+#   ./analyze-url.sh '<URL>' --trim 12.5-201.0      自動判定が外れたとき手で指定
+#   ./analyze-url.sh '<URL>' --dir <親フォルダ>      置き場を変える（既定 ~/Music/daw/references）
 #
 # source.wav が既にあればダウンロードを飛ばすので、--trim を変えて撃ち直すのは安い。
 set -euo pipefail
