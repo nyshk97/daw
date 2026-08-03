@@ -215,10 +215,16 @@ def main() -> None:
     off8 = [hi_dev[s] for s in (2, 6, 10, 14) if hi_dev[s] is not None]
     if on8 and off8:
         d = float(np.mean(off8) - np.mean(on8))
+        ratio = round(0.5 + d / (step * 2 * 1000) / 2, 4)
+        # 0.5 を下回る＝裏拍が表より早い、はまず起きない。ハットの無い曲で高域が
+        # 別の音（歪んだ808のノイズ等）を拾っているサイン。0.8超も同様に測定の破綻。
+        # 音楽的にありうるのは 0.50〜0.75（0.67が3連）。範囲外なら数値を採用しない
         result["swing"] = {
             "offbeat_lag_ms": round(d, 1),
-            "ratio": round(0.5 + d / (step * 2 * 1000) / 2, 4),
-            "note": "0.50=イーブン / 0.67=3連スウィング。高域(ハット)の8分裏 vs 8分表の平均ズレ",
+            "ratio": ratio,
+            "plausible": bool(0.45 <= ratio <= 0.80),
+            "note": "0.50=イーブン / 0.67=3連スウィング。高域(ハット)の8分裏 vs 8分表の平均ズレ。"
+            "plausible=false なら高域にハットが無く別の音を拾っている（ハネ無しとは読まない）",
         }
 
     # 小節ごとの帯域エネルギー（抜き差しの検出用）

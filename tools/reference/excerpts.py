@@ -31,7 +31,7 @@ CHORD_DEGREES = {
 }
 
 
-def cut(src: Path, dst: Path, t0: float, t1: float, lead: float = 0.3) -> None:
+def cut(src: Path, dst: Path, t0: float, t1: float, lead: float = 0.3) -> bool:
     """切り出して両端にごく短いフェードを掛ける。頭に lead 秒ぶん余白を足して1拍目を切らない。
 
     ffmpeg は使わない。`-ss`/`-to` を `-i` の後ろに置くと出力オプション扱いになる一方で
@@ -42,12 +42,17 @@ def cut(src: Path, dst: Path, t0: float, t1: float, lead: float = 0.3) -> None:
     info = sf.info(str(src))
     start = max(0, int((t0 - lead) * info.samplerate))
     stop = min(info.frames, int(t1 * info.samplerate))
+    # 範囲が音源の外に出ていたら書かない。空のファイルを作ると
+    # 「無音のクリップをレビューに出す」事故に戻る（呼び出し側で False を見て飛ばす）
+    if stop - start < info.samplerate * 0.5:
+        return False
     y, sr = sf.read(str(src), start=start, stop=stop, always_2d=True, dtype="float32")
     n_in, n_out = int(sr * 0.02), int(sr * 0.05)
     if len(y) > n_in + n_out:
         y[:n_in] *= np.linspace(0, 1, n_in)[:, None]
         y[-n_out:] *= np.linspace(1, 0, n_out)[:, None]
     sf.write(str(dst), y, sr)
+    return True
 
 
 def chord_pad(prog: list[dict], bar_len: float, per_bar: int, n_loops: int) -> np.ndarray:
@@ -100,29 +105,63 @@ def main() -> None:
     def bar_t(n: int) -> float:
         return fd + (n - 1) * bar_len
 
+    # 小節数は曲ごとに違う（BPM が遅いほど少ない）。切り出す範囲はここから導く。
+    # 決め打ちにすると、遅い曲で存在しない小節を指して空のファイルができる（実際に踏んだ）。
+    n_bars = max(1, int((sf.info(str(ref / "track.wav")).duration - fd) / bar_len))
     notes: list[tuple[str, str]] = []
 
-    # 1) BPM と小節頭 — 曲頭と曲尾でクリックがズレていないか
-    for tag, b0, b1 in (("head", 1, 17), ("tail", 77, 93)):
+    # 1) BPM と小節頭 — 曲頭と曲尾でクリックがズレていないか。
+    # 曲尾側は最後の16小節。頭と重なるほど短い曲では1本にする。
+    ranges = [("head", 1, min(17, n_bars + 1))]
+    if n_bars > 32:
+        ranges.append(("tail", n_bars - 15, n_bars + 1))
+    for tag, b0, b1 in ranges:
         f = f"01-click-{tag}-bar{b0}-{b1 - 1}.wav"
-        cut(a / "click.wav", out / f, bar_t(b0), bar_t(b1))
+        if not cut(a / "click.wav", out / f, bar_t(b0), bar_t(b1)):
+            continue
         notes.append((f, f"高いクリック＝小節頭、低い＝拍。{b0}-{b1 - 1}小節目。曲頭と曲尾の両方でズレていなければ BPM {bpm} は正しい"))
 
-    # 2) コード — 推定した和音を重ねて、濁らないか
-    prog = json.loads((a / "topline-6s-piano.json").read_text())["loop_progression"]
-    per_bar = 2
-    loop_bars = prog["loop_bars"]
-    b0 = 13  # 全パートが揃っていて、かつループの頭に当たる小節
-    mix, _ = librosa.load(str(ref / "track.wav"), sr=SR, mono=True, offset=bar_t(b0), duration=bar_len * loop_bars * 2)
-    pad = chord_pad(prog["progression"], bar_len, per_bar, 2)
-    n = min(len(mix), len(pad))
-    sf.write(out / "02-chords-check-bar13-20.wav", np.clip(mix[:n] * 0.85 + pad[:n] * 0.5, -1, 1), SR)
-    names = " → ".join(p["chord"] or "-" for p in prog["progression"])
-    notes.append(("02-chords-check-bar13-20.wav", f"推定コードをサイン波で重ねたもの（{names}）。**合っていれば曲に溶け、違えば濁る**。2小節目後半と4小節目後半だけ推定が揺れているので、そこが濁らないか"))
+    # 2) コード — 推定した和音を重ねて、濁らないか。
+    # 出どころのステムは決め打ちにしない。上モノの構成は曲ごとに違い、
+    # piano が実質無音の曲（ドラム＋ベース＋声だけ）だとノイズの和音を鳴らすことになる。
+    # 音量が足りているステムのうち、一番大きいものを使う。
+    cands = []
+    for p in sorted(a.glob("topline-*.json")):
+        d = json.loads(p.read_text())
+        if d.get("chord_estimate_usable") and d.get("loop_progression", {}).get("progression"):
+            cands.append((d["stem_rms_db"], d["stem"], d))
+    if not cands:
+        print("上モノが足りずコードのクリップは作らない（全ステムがミックス比 -25dB 未満）")
+    src_rms, src_stem, src = max(cands) if cands else (None, None, None)
 
-    # 02 と並べて聴くので、こちらは頭の余白を入れない（0.3秒ずれると比較しづらい）
-    cut(ref / "track.wav", out / "03-loop-only-bar13-20.wav", bar_t(b0), bar_t(b0 + loop_bars * 2), lead=0.0)
-    notes.append(("03-loop-only-bar13-20.wav", "同じ区間のコード無し版。02 と聴き比べる用"))
+    # 曲の 1/3 あたり（イントロを抜けた辺り）を切り出しの基準にする。
+    # 上モノが無い曲でも 04/05 のクリップはこの位置を使うので、src の有無に関わらず決める。
+    loop_bars = src["loop_progression"]["loop_bars"] if src else 4
+    span = min(loop_bars * 2, max(1, n_bars))
+    aligned = [b for b in range(1, max(2, n_bars - span + 2)) if (b - 1) % loop_bars == 0]
+    b0 = min(aligned, key=lambda b: abs(b - n_bars // 3)) if aligned else 1
+    span = min(span, max(1, n_bars - b0 + 1))
+    tag = f"bar{b0}-{b0 + span - 1}"
+
+    if src:
+        prog = src["loop_progression"]
+        per_bar = 2
+        mix, _ = librosa.load(str(ref / "track.wav"), sr=SR, mono=True, offset=bar_t(b0), duration=bar_len * span)
+        pad = chord_pad(prog["progression"], bar_len, per_bar, max(1, span // loop_bars))
+        n = min(len(mix), len(pad))
+        sf.write(out / f"02-chords-check-{tag}.wav", np.clip(mix[:n] * 0.85 + pad[:n] * 0.5, -1, 1), SR)
+        names = " → ".join(p["chord"] or "-" for p in prog["progression"])
+        notes.append(
+            (
+                f"02-chords-check-{tag}.wav",
+                f"推定コードをサイン波で重ねたもの（{names} / 出どころ: {src_stem} ステム）。"
+                "**合っていれば曲に溶け、違えば濁る**。確信度の低いスロットが濁らないか",
+            )
+        )
+
+        # 02 と並べて聴くので、こちらは頭の余白を入れない（0.3秒ずれると比較しづらい）
+        if cut(ref / "track.wav", out / f"03-loop-only-{tag}.wav", bar_t(b0), bar_t(b0 + span), lead=0.0):
+            notes.append((f"03-loop-only-{tag}.wav", "同じ区間のコード無し版。02 と聴き比べる用"))
 
     # 3) ステムの分離品質 — 一番大きい小節と、鳴っているが小さい小節
     stems = json.loads((a / "stems-6s.json").read_text())
@@ -133,7 +172,8 @@ def main() -> None:
                 continue
             b = bars[0]
             f = f"04-stem-{name}-{kind}-bar{b}.wav"
-            cut(ref / "stems" / "htdemucs_6s" / "track" / f"{name}.wav", out / f, bar_t(b), bar_t(b + 4))
+            if not cut(ref / "stems" / "htdemucs_6s" / "track" / f"{name}.wav", out / f, bar_t(b), bar_t(b + 4)):
+                continue
             notes.append((f, f"{name} の{'一番大きい' if kind == 'loud' else '鳴っているが小さい'}区間（{b}-{b + 3}小節）。"
                              + ("素性が出る" if kind == "loud" else "**分離の破綻・幽霊音はここで一番聴こえる**")))
 
@@ -141,8 +181,9 @@ def main() -> None:
     for label in ("6s-piano", "other"):
         src = a / f"midi_check-{label}.wav"
         if src.exists():
-            f = f"05-midi-{label}-bar13-20.wav"
-            cut(src, out / f, bar_t(b0), bar_t(b0 + loop_bars * 2))
+            f = f"05-midi-{label}-{tag}.wav"
+            if not cut(src, out / f, bar_t(b0), bar_t(b0 + span)):
+                continue
             notes.append((f, f"左=原音（{label}）/ 右=basic-pitch の結果をサイン波で。音高が合っているか、刻まれ方がどれだけ実態とズレているか"))
 
     (out / "README.md").write_text(

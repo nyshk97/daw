@@ -49,9 +49,9 @@ $PY groove.py "$REF/stems/htdemucs/track" "$A/basics.json" "$A"   # ← 4分割�
 
 echo "==> 上モノ"
 BASS="$REF/stems/htdemucs/track/bass.wav"   # ← コードのルート判定も4分割のベースを使う
-$PY topline.py "$REF/stems/htdemucs/track/other.wav"     "$BASS" "$A/basics.json" "$A" --label other
+$PY topline.py "$REF/stems/htdemucs/track/other.wav"     "$BASS" "$A/basics.json" "$A" --label other --mix "$REF/track.wav"
 for s in piano guitar other; do
-  $PY topline.py "$REF/stems/htdemucs_6s/track/$s.wav"   "$BASS" "$A/basics.json" "$A" --label "6s-$s"
+  $PY topline.py "$REF/stems/htdemucs_6s/track/$s.wav"   "$BASS" "$A/basics.json" "$A" --label "6s-$s" --mix "$REF/track.wav"
 done
 
 echo "==> 耳で確認するクリップ"

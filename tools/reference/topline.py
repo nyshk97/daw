@@ -277,6 +277,7 @@ def main() -> None:
     ap.add_argument("outdir")
     ap.add_argument("--label", default="other")
     ap.add_argument("--per-bar", type=int, default=2, help="1小節を何分割してコードを当てるか")
+    ap.add_argument("--mix", default=None, help="ミックス（track.wav）。ステムの音量比で上モノの有無を判定する")
     args = ap.parse_args()
 
     basics = json.loads(Path(args.basics).read_text())
@@ -308,10 +309,26 @@ def main() -> None:
     loops = loop_length(sub, args.per_bar)
     loop_bars = int(loops["most_likely"].replace("bar", "")) if loops["most_likely"] else 4
 
+    # そのステムに本当に上モノが入っているかを先に判定する。
+    # 上モノがほぼ無い曲（ドラム＋ベース＋声だけ）だと、demucs の piano/guitar/other には
+    # かぶりノイズしか残らない。それでもコード検出は何かしらの和音を返し、しかも
+    # **3ステムとも同じノイズを見ているので揃って同じ誤答を出す**（実測: 全ステム "Fmaj9"）。
+    # 「複数ステムが一致したら信用してよい」は、この場合に成立しない。
+    stem_rms = float(20 * np.log10(max(float(np.sqrt((harm**2).mean())), 1e-9)))
+    usable, below = True, None
+    if args.mix:
+        mix_y, _ = librosa.load(args.mix, sr=sr, mono=True)
+        mix_rms = float(20 * np.log10(max(float(np.sqrt((mix_y**2).mean())), 1e-9)))
+        below = round(stem_rms - mix_rms, 2)
+        usable = bool(below > -25)  # 実測: 上モノのある曲は -16〜-18dB、無い曲は -33〜-69dB
+
     result = {
         "stem": args.label,
         "bpm": bpm,
         "n_bars": n_bars,
+        "stem_rms_db": round(stem_rms, 2),
+        "stem_rms_below_mix_db": below,
+        "chord_estimate_usable": usable,
         "loop": loops,
         "loop_progression": folded_progression(sub, sub_b, args.per_bar, loop_bars, names, T),
         "chords": chords,
