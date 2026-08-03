@@ -54,6 +54,9 @@ for s in piano guitar other; do
   $PY topline.py "$REF/stems/htdemucs_6s/track/$s.wav"   "$BASS" "$A/basics.json" "$A" --label "6s-$s" --mix "$REF/track.wav"
 done
 
+echo "==> 信頼性の判定"
+$PY gates.py "$A"
+
 echo "==> 耳で確認するクリップ"
 $PY excerpts.py "$REF"
 

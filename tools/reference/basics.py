@@ -6,7 +6,7 @@
   analysis/click.wav     元音源に拍クリックを重ねたもの（BPM/拍位置を耳で裏取りする用）
   analysis/sections.png  小節ごとのエネルギー曲線＋推定セクション境界
 
-使い方: basics.py <audio> <outdir> [--bpm-min 70] [--bpm-max 150]
+使い方: basics.py <audio> <outdir> [--bpm-min 60] [--bpm-max 200]
 """
 import argparse
 import json
@@ -106,11 +106,35 @@ def fit_rigid_grid(env: np.ndarray, t: np.ndarray, bpm_min: float, bpm_max: floa
             if s[i] > best[2]:
                 best = (float(bpm), float(offs[i]), float(s[i]))
     bpm, origin, score = best
+
+    # オクターブの決定。素点は**常に遅い方を好む**（遅いグリッドは強い点だけを拾うため）。
+    # 実測: 73.006 の曲で half=0.319 > x1=0.296 > double=0.239 と単調に減っていた。
+    # つまり素点だけでは倍/半分を区別できない。レンジで抑える方法も、73 と 146 のように
+    # 両方がレンジ内に入る曲では効かない（実際に半分の 73 を採って全分析が濁った）。
+    # 人が「速さ」を感じる帯域（120 BPM 前後）の事前分布を掛けて決める。
+    def prior(b: float) -> float:
+        return float(np.exp(-(np.log2(b / 120.0) ** 2) / (2 * 0.8**2)))
+
     octaves = {}
-    for label, mul in (("half", 0.5), ("double", 2.0), ("x1.5", 1.5)):
+    for label, mul in (("half", 0.5), ("x1", 1.0), ("x1.5", 1.5), ("double", 2.0)):
         cand = bpm * mul
+        if not (bpm_min * 0.5 <= cand <= bpm_max * 2):
+            continue
         offs = np.arange(0.0, 60.0 / cand, 0.001)
-        octaves[label] = {"bpm": round(cand, 3), "score": round(float(score_at(cand, offs).max()), 4)}
+        s = float(score_at(cand, offs).max())
+        octaves[label] = {"bpm": round(cand, 3), "score": round(s, 4), "weighted": round(s * prior(cand), 4)}
+
+    pick = max(octaves.values(), key=lambda d: d["weighted"])
+    if abs(pick["bpm"] - bpm) > 0.01:
+        # 倍/半分に乗り換えたので、その近傍で BPM と原点を取り直す
+        best = (0.0, 0.0, -1.0)
+        for cand in np.arange(pick["bpm"] - 0.3, pick["bpm"] + 0.3, 0.002):
+            offs = np.arange(0.0, 60.0 / cand, 0.001)
+            s = score_at(cand, offs)
+            i = int(np.argmax(s))
+            if s[i] > best[2]:
+                best = (float(cand), float(offs[i]), float(s[i]))
+        bpm, origin, score = best
     return bpm, origin, score, octaves
 
 
@@ -133,8 +157,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("audio")
     ap.add_argument("outdir")
-    ap.add_argument("--bpm-min", type=float, default=70)
-    ap.add_argument("--bpm-max", type=float, default=150)
+    ap.add_argument("--bpm-min", type=float, default=60)
+    ap.add_argument("--bpm-max", type=float, default=200)
     args = ap.parse_args()
 
     outdir = Path(args.outdir)

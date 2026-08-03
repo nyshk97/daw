@@ -70,8 +70,10 @@ cd ~/daw/tools/reference
 | `arrange.py` | 小節×ステムの在/不在からセクションを切る | `arrangement.json` `arrangement.png` |
 | `groove.py` | 16分グリッド上のドラム/ベースのプロファイル・スウィング・マイクロタイミング | `groove.json` `groove.png` |
 | `topline.py` | コード進行（ループ畳み込み）・音声→MIDI・音色特徴 | `topline-*.json` `*.mid` `midi_check-*.wav` |
+| `gates.py` | **どこまで信じてよいかの機械判定**（BPMのオクターブ・テンポの安定・小節頭・スウィング・キー・上モノの有無） | `gates.json` |
 | `excerpts.py` | **耳で確認するための短いクリップ**を確認する順に番号を振って切り出す | `listen/*.wav` `listen/README.md` |
 | `report-template.md` | レポートの雛形（節構成・各節に何を書くか・JSONキーの対応・判定語の閾値）。Phase 1 の `report.py` の入力 | — |
+| `report.sh` / `report-prompt.md` | 分析済みフォルダから `report.md` を書く（Claude Code のヘッドレスモードを呼ぶ） | `report.md` |
 | `report-example.md` | 雛形に沿って実際に書いたレポートの見本（第1号のコピー） | — |
 
 ## 動作確認（耳での検算）
