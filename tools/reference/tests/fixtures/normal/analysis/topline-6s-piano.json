@@ -1,0 +1,14 @@
+{
+  "stem": "6s-piano",
+  "chord_estimate_usable": true,
+  "stem_rms_below_mix_db": -18.0,
+  "loop_progression": {
+    "loop_bars": 2,
+    "progression": [
+      { "bar": 1, "sub": 0, "chord": "Am7" },
+      { "bar": 1, "sub": 1, "chord": "Am7" },
+      { "bar": 2, "sub": 0, "chord": "F" },
+      { "bar": 2, "sub": 1, "chord": "G" }
+    ]
+  }
+}

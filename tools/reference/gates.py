@@ -21,6 +21,27 @@ def load(a: Path, name: str):
     return json.loads(p.read_text()) if p.exists() else None
 
 
+# コードを読んでよいステムは6分割の上モノだけ。4分割 other は1本きりで合議できず、
+# 実際にループ長を 8小節 と誤答した実績がある。usable の閾値(-25dB)も6分割の実測で
+# 引いた線なので、4分割に当てはめない。
+HARMONY_STEMS = ("6s-piano", "6s-guitar", "6s-other")
+
+
+def pick_harmony_source(tops: list[dict]) -> str | None:
+    """usable かつ進行が抽出できた6分割ステムのうち一番大きいものを返す。無ければ None。
+
+    usable=None（chord_estimate_usable が無い古い分析）は false 扱い。
+    進行が空（曲が短くループ2周ぶん取れない）のステムも候補にしない — usable だけ見て
+    選ぶと、下流（card.py / excerpts.py）が空の loop_progression を読んで落ちる。
+    複数ステムの進行が食い違うときの合議は入れていない（v1 は最大音量で決める。
+    性格は骨格レベルまで落として読むので揺れが小さい。必要になったら Phase 2 の生成器の要求で決める）。
+    """
+    # any() で「実コードが1つ以上」を見る（リストの truthiness だと [None, None] が通り、
+    # コードを1つも読めていないのに changes=0/static のカードができる）
+    cands = [t for t in tops if t["stem"] in HARMONY_STEMS and t.get("usable") and any(t.get("progression") or [])]
+    return max(cands, key=lambda t: t["rms_below_mix_db"])["stem"] if cands else None
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("analysis")
@@ -97,12 +118,13 @@ def main() -> None:
                 "progression": [x["chord"] for x in d.get("loop_progression", {}).get("progression", [])],
             }
         )
-    usable = [t for t in tops if t["usable"]]
+    source = pick_harmony_source(tops)
     gates["harmony"] = {
-        "ok": bool(usable),
-        "source_stem": max(usable, key=lambda t: t["rms_below_mix_db"])["stem"] if usable else None,
+        "ok": source is not None,
+        "source_stem": source,
         "stems": tops,
-        "note": "全ステム false なら上モノがほぼ無い曲。コード進行の節は書かず、何で構成されているかを書く",
+        "note": "ok/source は6分割の上モノだけで判定（4分割 other は合議できない）。"
+        "6分割が全 false なら上モノがほぼ無い曲。コード進行の節は書かず、何で構成されているかを書く",
     }
 
     failed = [k for k, v in gates.items() if isinstance(v, dict) and v.get("ok") is False or v.get("octave_ok") is False]

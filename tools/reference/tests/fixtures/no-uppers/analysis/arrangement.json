@@ -1,0 +1,8 @@
+{
+  "n_bars": 32,
+  "sections": [
+    { "bar_start": 1, "bar_end": 8, "length_bars": 8, "active": ["drums", "bass"], "rms_db_mean": -12.34 },
+    { "bar_start": 9, "bar_end": 32, "length_bars": 24, "active": ["drums", "bass", "piano"], "rms_db_mean": -10.0 }
+  ],
+  "stems": ["drums", "bass", "piano", "vocals"]
+}

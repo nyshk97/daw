@@ -21,6 +21,15 @@ description = '分析済みフォルダから report.md を書く（7〜15分。
 usage = 'arg "<dir>" help="~/Music/daw/references/<名前>"'
 run = 'tools/reference/report.sh "$usage_dir"'
 
+[tasks."ref:card"]
+description = '分析済みフォルダから制約カード card.json を再生成する（一瞬。ガチャの入力）'
+usage = 'arg "<dir>" help="~/Music/daw/references/<名前>"'
+run = 'tools/reference/.venv/bin/python tools/reference/card.py "$usage_dir"'
+
+[tasks."ref:test"]
+description = '分析パイプラインの回帰テスト（card.py / gates.py。fixture のみで数秒）'
+run = 'cd tools/reference && .venv/bin/python tests/test_card.py'
+
 [tasks."ref:setup"]
 description = '分析パイプラインの venv を作り直す（初回・依存を変えたとき）'
 run = 'tools/reference/setup.sh'

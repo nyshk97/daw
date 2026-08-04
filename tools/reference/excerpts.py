@@ -122,17 +122,19 @@ def main() -> None:
         notes.append((f, f"高いクリック＝小節頭、低い＝拍。{b0}-{b1 - 1}小節目。曲頭と曲尾の両方でズレていなければ BPM {bpm} は正しい"))
 
     # 2) コード — 推定した和音を重ねて、濁らないか。
-    # 出どころのステムは決め打ちにしない。上モノの構成は曲ごとに違い、
-    # piano が実質無音の曲（ドラム＋ベース＋声だけ）だとノイズの和音を鳴らすことになる。
-    # 音量が足りているステムのうち、一番大きいものを使う。
-    cands = []
-    for p in sorted(a.glob("topline-*.json")):
-        d = json.loads(p.read_text())
-        if d.get("chord_estimate_usable") and d.get("loop_progression", {}).get("progression"):
-            cands.append((d["stem_rms_db"], d["stem"], d))
-    if not cands:
-        print("上モノが足りずコードのクリップは作らない（全ステムがミックス比 -25dB 未満）")
-    src_rms, src_stem, src = max(cands) if cands else (None, None, None)
+    # 出どころのステムはここで独自に選ばず、gates.json の harmony 判定を唯一の判断元にする。
+    # 以前は全 topline-*.json から usable な最大音量を独自選択していて、gates が harmony NG の曲でも
+    # 4分割 other 由来の進行を鳴らしてしまった（カード・レポートは「harmonyなし」なのに listen/
+    # だけ和音が付く不整合）。同じ判定を2箇所に書かない。
+    harmony = json.loads((a / "gates.json").read_text())["harmony"]
+    src_stem = harmony["source_stem"]
+    src = None
+    if harmony["ok"]:
+        d = json.loads((a / f"topline-{src_stem}.json").read_text())
+        if d.get("loop_progression", {}).get("progression"):
+            src = d
+    if not src:
+        print("上モノが足りずコードのクリップは作らない（gates の harmony 判定が NG）")
 
     # 曲の 1/3 あたり（イントロを抜けた辺り）を切り出しの基準にする。
     # 上モノが無い曲でも 04/05 のクリップはこの位置を使うので、src の有無に関わらず決める。

@@ -16,6 +16,11 @@ REF="${REF%/}"
 A="$REF/analysis"
 mkdir -p "$A"
 
+# 旧カードは分析を始めた時点で無効。途中のステップで失敗したとき、
+# 更新済みの analysis/*.json の横に旧分析由来の card.json が残るのを防ぐ
+# （ref:card でいつでも再生成できるので消すのは安い）
+rm -f "$REF/card.json"
+
 echo "==> 全体像"
 $PY overview.py "$REF/track.wav" "$A/overview.png" --title "$(basename "$REF")"
 
@@ -59,6 +64,9 @@ $PY gates.py "$A"
 
 echo "==> 耳で確認するクリップ"
 $PY excerpts.py "$REF"
+
+echo "==> 制約カード"
+$PY card.py "$REF"
 
 echo
 echo "完了: $A"

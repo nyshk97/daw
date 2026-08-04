@@ -1,0 +1,25 @@
+{
+  "swing": { "ratio": 0.55, "plausible": true },
+  "drums": {
+    "low": {
+      "profile_by_16th": [1.0, 0.2, 0.1, 0.3, 0.5, 0.1, 0.0, 0.2, 0.6, 0.75, 0.1, 0.0, 0.25, 0.1, 0.0, 0.05],
+      "dev_ms_by_16th": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null]
+    },
+    "mid": {
+      "profile_by_16th": [0.1, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+      "dev_ms_by_16th": [2.0, null, null, null, -4.0, null, null, null, null, null, null, null, null, null, null, null]
+    },
+    "high": {
+      "profile_by_16th": [1.0, 0.1, 0.8, 0.1, 1.0, 0.1, 0.8, 0.1, 1.0, 0.1, 0.8, 0.1, 1.0, 0.1, 0.8, 0.1],
+      "dev_ms_by_16th": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 6.0]
+    }
+  },
+  "bass": {
+    "notes_per_bar": 3.0,
+    "core_range_semitones": 12,
+    "pitch_median": "C2",
+    "dur_median_in_16ths": 2.0,
+    "dev_ms_abs_mean": 10.0,
+    "onset_rate_by_16th": [0.9, 0.0, 0.1, 0.0, 0.5, 0.0, 0.0, 0.0, 0.7, 0.0, 0.2, 0.0, 0.4, 0.0, 0.0, 0.1]
+  }
+}

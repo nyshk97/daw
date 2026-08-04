@@ -32,6 +32,8 @@ mise タスクは `mise tasks` で一覧できる。`cd` せずに済むだけ�
 | `ref:url <URL> [名前] [--trim a-b]` | `analyze-url.sh` |
 | `ref:analyze <フォルダ>` | `analyze.sh`（再分析） |
 | `ref:report <フォルダ>` | `report.sh` |
+| `ref:card <フォルダ>` | `card.py`（制約カードだけ再生成。一瞬） |
+| `ref:test` | `tests/test_card.py`（fixture 回帰テスト） |
 | `ref:setup` | `setup.sh`（venv 構築） |
 
 スクリプトを直接叩くなら:
@@ -87,9 +89,29 @@ cd ~/daw/tools/reference
 | `topline.py` | コード進行（ループ畳み込み）・音声→MIDI・音色特徴 | `topline-*.json` `*.mid` `midi_check-*.wav` |
 | `gates.py` | **どこまで信じてよいかの機械判定**（BPMのオクターブ・テンポの安定・小節頭・スウィング・キー・上モノの有無） | `gates.json` |
 | `excerpts.py` | **耳で確認するための短いクリップ**を確認する順に番号を振って切り出す | `listen/*.wav` `listen/README.md` |
+| `card.py` | **制約カード** — ゲートを通った値だけをガチャの生成器向けに1枚へ厳選 | `<ref>/card.json` |
+| `tests/test_card.py` | card.py / gates.py の回帰テスト（実曲でなく最小 fixture で固定） | — |
 | `report-template.md` | レポートの雛形（節構成・各節に何を書くか・JSONキーの対応・判定語の閾値）。Phase 1 の `report.py` の入力 | — |
 | `report.sh` / `report-prompt.md` | 分析済みフォルダから `report.md` を書く（Claude Code のヘッドレスモードを呼ぶ） | `report.md` |
 | `report-example.md` | 雛形に沿って実際に書いたレポートの見本（第1号のコピー） | — |
+
+## 制約カード（card.json）
+
+分析結果のうち「**MIDIガチャの生成器が読む値**」だけを厳選した1枚。`report.md` と兄弟
+（同じ分析の機械可読/人間可読の2レンダリング）。パーツ別スライス
+（`global` / `drums` / `bass` / `chords` / `arrangement`）に区切ってあり、ガチャは
+パーツごとに別のカードを指せる（設計は
+[docs/design/reference-beat.md](../../docs/design/reference-beat.md)）。
+
+- **載せない**: コードの細かい種別（進行そのものも載せない — 借りるのは性格だけ）・
+  キックの16分位置（拍単位に畳む）・basic-pitch の音価・検算用の素点
+- **拍子は測定値でなく4/4前提**（`meta.assumptions`）。現行分析は3拍子を検出できない
+- **ゲート落ちはスライス/フィールドごと省略**され、`meta.excluded` に
+  `{path, gate, reason}` で残る。生成器は「無いなら自分のデフォルト」と解釈する
+- BPM/テンポのゲートが落ちた曲は**カード自体を生成しない**（既存の card.json も削除される。
+  グリッドごと信用できない曲のカードは存在しないのが正しい状態）
+- `analyze.sh` は**冒頭で card.json を消し**、最後に再生成する。分析が途中で失敗した曲に
+  旧分析由来のカードが残らないようにするため。`ref:card` でいつでも作り直せる
 
 ## 動作確認（耳での検算）
 

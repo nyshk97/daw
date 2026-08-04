@@ -1,0 +1,8 @@
+{
+  "bpm": { "value": 120.0, "octave_ok": true },
+  "tempo_stable": { "ok": true },
+  "downbeat": { "ok": true },
+  "swing": { "ok": true, "ratio": 0.55 },
+  "key": { "value": "A minor", "confidence": "高" },
+  "harmony": { "ok": true, "source_stem": "6s-piano" }
+}
