@@ -3,6 +3,7 @@
 #include "TimelineView.h"
 #include "../shared/AudioFileTypes.h"
 #include "../shared/GmInstruments.h"
+#include "../shared/MidiFileTypes.h"
 #include "Fonts.h"
 #include "Shortcuts.h"
 #include "Theme.h"
@@ -25,6 +26,13 @@ TrackHeaderComponent::TrackHeaderComponent()
         nameLabel.setFont (Fonts::forText (Fonts::body(), nameLabel.getText()));
         if (track != nullptr && nameLabel.getText() != track->name)
         {
+            if (editBlocked && editBlocked())
+            {
+                // 仮オブジェクト（ガチャの自動作成トラック）は編集を中止。表示を元へ戻すだけ
+                // （track への書き込みは受け手が撤去した後だと dangling になるため一切しない）
+                nameLabel.setText (nameLabel.getText(), juce::dontSendNotification);
+                return;
+            }
             if (onWillChangeStructure)
                 onWillChangeStructure(); // リネームはundo対象（変更前の状態を積む）
             track->name = nameLabel.getText();
@@ -88,6 +96,8 @@ TrackHeaderComponent::TrackHeaderComponent()
     {
         if (track == nullptr)
             return;
+        if (editBlocked && editBlocked())
+            return; // 仮オブジェクト（ガチャの自動作成トラック）は編集を中止（表示は次のrebindで戻る）
 
         if (instrumentBox.getSelectedId() == sampleItemId)
         {
@@ -356,6 +366,7 @@ void TrackHeadersView::rebuild()
             auto header = std::make_unique<TrackHeaderComponent>();
             header->onSelect = [this, i] { if (onSelect) onSelect (i); };
             header->onDeleteClicked = [this, i] { if (onDeleteRequested) onDeleteRequested (i); };
+            header->editBlocked = [this, i] { return onTrackEditBlocked != nullptr && onTrackEditBlocked (i); };
             header->onChanged = [this] { if (onChanged) onChanged(); };
             header->onWillChangeStructure = [this] { if (onWillChangeStructure) onWillChangeStructure(); };
             header->onInstrumentChanged = [this, i] { if (onInstrumentChanged) onInstrumentChanged (i); };
@@ -377,6 +388,12 @@ void TrackHeadersView::rebuild()
 void TrackHeadersView::refreshValues()
 {
     refreshBindings();
+}
+
+void TrackHeadersView::unbindAll()
+{
+    for (auto& item : items)
+        item->bind (nullptr, false, false);
 }
 
 void TrackHeadersView::updateMeters (const std::vector<StereoPeak>& peaks)
@@ -488,6 +505,14 @@ bool TrackHeadersView::hasAudioFile (const juce::StringArray& files)
     return false;
 }
 
+bool TrackHeadersView::hasMidiFile (const juce::StringArray& files)
+{
+    for (const auto& file : files)
+        if (MidiFileTypes::isSupported (file))
+            return true;
+    return false;
+}
+
 int TrackHeadersView::rowForDropY (int y) const
 {
     if (project == nullptr)
@@ -518,6 +543,18 @@ void TrackHeadersView::clearDropTarget()
 
 void TrackHeadersView::completeAssignDrop (const juce::StringArray& files, int y)
 {
+    // .mid は行に関係なくMIDI取り込みへ（新規トラックが作られる。音源割り当てには化けない）
+    juce::StringArray midiFiles;
+    for (const auto& file : files)
+        if (MidiFileTypes::isSupported (file))
+            midiFiles.add (file);
+    if (! midiFiles.isEmpty() && onMidiFilesDropped != nullptr)
+    {
+        clearDropTarget();
+        onMidiFilesDropped (midiFiles);
+        return;
+    }
+
     updateDropTarget (y);
     const int row = dropRow;
     const bool rejected = dropRejected;
@@ -535,11 +572,23 @@ void TrackHeadersView::completeAssignDrop (const juce::StringArray& files, int y
 
 bool TrackHeadersView::isInterestedInFileDrag (const juce::StringArray& files)
 {
-    return onAssignInstrumentDropped != nullptr && hasAudioFile (files);
+    return (onAssignInstrumentDropped != nullptr && hasAudioFile (files))
+        || (onMidiFilesDropped != nullptr && hasMidiFile (files));
 }
 
-void TrackHeadersView::fileDragEnter (const juce::StringArray&, int, int y) { updateDropTarget (y); }
-void TrackHeadersView::fileDragMove (const juce::StringArray&, int, int y) { updateDropTarget (y); }
+// .mid のドラッグは行ハイライトを出さない（新規トラックへの取り込みで、行の受理/不受理と無関係）
+void TrackHeadersView::fileDragEnter (const juce::StringArray& files, int, int y)
+{
+    if (! hasMidiFile (files))
+        updateDropTarget (y);
+}
+
+void TrackHeadersView::fileDragMove (const juce::StringArray& files, int, int y)
+{
+    if (! hasMidiFile (files))
+        updateDropTarget (y);
+}
+
 void TrackHeadersView::fileDragExit (const juce::StringArray&) { clearDropTarget(); }
 
 void TrackHeadersView::filesDropped (const juce::StringArray& files, int, int y)
@@ -556,12 +605,14 @@ bool TrackHeadersView::isInterestedInDragSource (const SourceDetails& details)
 
 void TrackHeadersView::itemDragEnter (const SourceDetails& details)
 {
-    updateDropTarget (details.localPosition.y);
+    if (! MidiFileTypes::isSupported (details.description.toString()))
+        updateDropTarget (details.localPosition.y);
 }
 
 void TrackHeadersView::itemDragMove (const SourceDetails& details)
 {
-    updateDropTarget (details.localPosition.y);
+    if (! MidiFileTypes::isSupported (details.description.toString()))
+        updateDropTarget (details.localPosition.y);
 }
 
 void TrackHeadersView::itemDragExit (const SourceDetails&) { clearDropTarget(); }

@@ -114,6 +114,8 @@ screencapture -x -R<x,y,w,h> /tmp/daw-check.png
    「保存して終了」ダイアログ → `click button "保存して終了"` → プロセス終了と
    `python3 -m json.tool ~/Music/daw/cli-test/project.json` で bpm/sampleRate/tracks/clips を確認
 5. **復元**: 再起動 → 行をダブルクリック（上記CGEvent手順。直前に触ったプロジェクトが先頭に来る）→ スクショでBPM・トラック名・音量スライダー位置・クリップ位置が一致すること
+6. **右クリックメニューの項目クリック（リージョンのミュート・分析等）は1プロセスのCGEventツールで**: ①Ctrl+左クリック（flags に maskControl）でメニューを開く ②CGWindowList で「クリック後に新出した owner=LaLa-dev の小窓」= メニューを特定 ③高さ÷項目数で等分した行の中心をクリック。項目数はメニュー構成から数える（オーディオリージョンは8項目: ミュート/ゲイン/複製/ループ解除/分割/書き出し/リファレンス分析/削除）。着弾はアプリログで裏取りする（実装例: セッションscratchpadの refmenu.swift）
+7. **合成クリックの座標がウィンドウ矩形の外に出るとデスクトップ/Finderに落ち、以後LaLa-devのボタンが不発になる**（フォーカスがFinderへ移るため）。クリック前にウィンドウ矩形と突き合わせ、外していたら `activate` で戻してから撃ち直す
 
 ## プロジェクトを閉じる/選択画面まわりの確認
 

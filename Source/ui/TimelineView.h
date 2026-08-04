@@ -88,6 +88,14 @@ public:
     std::function<void (int, int)> onOpenRegion;     // リージョンをダブルクリック（track, region）
     std::function<void (int, int)> onDeleteItemRequested; // 右クリックメニューの削除（track, クリップorリージョンindex）
     std::function<void (int, int)> onExportItemRequested; // 右クリックメニューの書き出し（同上）
+    // 右クリックメニューの「リファレンスとして分析…」（オーディオクリップのみ。track, clip index）
+    std::function<void (int, int)> onAnalyzeItemRequested;
+
+    // ガチャの仮オブジェクト（仮リージョン・自動作成トラック）への操作ガード。
+    // MIDIリージョンを掴む・右クリックする直前に (trackId, regionId) を問い合わせ、
+    // true が返ったら「撤去して中止」（選択もドラッグも始めない）。撤去後の古い index で
+    // 操作を続けるとクラッシュ・別対象への誤操作になるため、全ジェスチャーの起点で塞ぐ
+    std::function<bool (juce::uint64, juce::uint64)> onPreviewObjectGesture;
     // 「クリップのオーディオ値」（リージョンゲイン・フェード）専用の編集通知。通常の
     // onModelEdited（pushSnapshot）を使うとMIDIが消音＋再発音されてしまうため、経路を分けている
     // （MainComponent::pushAudioValueSnapshot へ繋ぐ）
@@ -106,6 +114,10 @@ public:
     // トラックヘッダーへのドロップ（TrackHeadersView）と同じ受け口へ繋ぐ
     std::function<void (const juce::StringArray&, int)> onAssignInstrumentDropped;
     static bool isImportableAudioFile (const juce::String& path); // 拡張子判定（D&D受理と共用）
+
+    // .mid のD&D取り込み（新規トラックが作られるので行は渡さない）。
+    // startPpq = ドロップ位置の小節頭（小節単位に floor 済み）
+    std::function<void (const juce::StringArray&, juce::int64)> onImportMidiDropped;
 
     // リージョン単位の操作。対象は引数で明示する（「現在の選択」を暗黙に読まない）。
     // itemIndex はオーディオトラックなら clips、MIDIトラックなら midiRegions のindex
@@ -329,18 +341,19 @@ private:
         bool active = false;
         bool rejected = false;      // 不受理（現状は該当なし。将来の受理不能ケース用に残す）
         bool instrument = false;    // MIDIトラック上＝サンプル音源の割り当て（クリップ配置ではない）
+        bool midi = false;          // .mid のドラッグ（新規トラック＋小節頭配置。行ハイライトは出さない）
         int track = -1;             // -1 = 空白ゾーン（新規トラック）
         juce::int64 startSample = 0;
 
         bool operator== (const FileDropState& other) const
         {
             return active == other.active && rejected == other.rejected
-                && instrument == other.instrument
+                && instrument == other.instrument && midi == other.midi
                 && track == other.track && startSample == other.startSample;
         }
     };
     FileDropState fileDrop;
-    void updateFileDrop (int contentX, int contentY);
+    void updateFileDrop (int contentX, int contentY, bool isMidi);
     void clearFileDrop();
 
     std::unique_ptr<RulerContent> ruler;

@@ -7,6 +7,8 @@
 #include "Shortcuts.h"
 #include "Theme.h"
 #include "../shared/AudioFileTypes.h"
+#include "../shared/MidiFileTypes.h"
+#include "../shared/ReferenceTools.h"
 #include "../shared/GainScale.h"
 #include "../shared/Log.h"
 #include "../shared/SongFade.h"
@@ -404,8 +406,10 @@ public:
         return isInterested (files);
     }
 
-    void fileDragEnter (const juce::StringArray&, int x, int y) override { owner.updateFileDrop (x, y); }
-    void fileDragMove (const juce::StringArray&, int x, int y) override { owner.updateFileDrop (x, y); }
+    void fileDragEnter (const juce::StringArray& files, int x, int y) override
+    { owner.updateFileDrop (x, y, hasMidi (files)); }
+    void fileDragMove (const juce::StringArray& files, int x, int y) override
+    { owner.updateFileDrop (x, y, hasMidi (files)); }
     void fileDragExit (const juce::StringArray&) override { owner.clearFileDrop(); }
 
     void filesDropped (const juce::StringArray& files, int x, int y) override
@@ -422,12 +426,14 @@ public:
 
     void itemDragEnter (const SourceDetails& details) override
     {
-        owner.updateFileDrop (details.localPosition.x, details.localPosition.y);
+        owner.updateFileDrop (details.localPosition.x, details.localPosition.y,
+                              MidiFileTypes::isSupported (details.description.toString()));
     }
 
     void itemDragMove (const SourceDetails& details) override
     {
-        owner.updateFileDrop (details.localPosition.x, details.localPosition.y);
+        owner.updateFileDrop (details.localPosition.x, details.localPosition.y,
+                              MidiFileTypes::isSupported (details.description.toString()));
     }
 
     void itemDragExit (const SourceDetails&) override { owner.clearFileDrop(); }
@@ -612,10 +618,21 @@ public:
     }
 
 private:
+    static bool hasMidi (const juce::StringArray& files)
+    {
+        for (const auto& file : files)
+            if (MidiFileTypes::isSupported (file))
+                return true;
+        return false;
+    }
+
     bool isInterested (const juce::StringArray& files) const
     {
-        if (owner.project == nullptr
-            || (owner.onImportFilesDropped == nullptr && owner.onAssignInstrumentDropped == nullptr))
+        if (owner.project == nullptr)
+            return false;
+        if (owner.onImportMidiDropped != nullptr && hasMidi (files))
+            return true;
+        if (owner.onImportFilesDropped == nullptr && owner.onAssignInstrumentDropped == nullptr)
             return false;
         for (const auto& file : files)
             if (TimelineView::isImportableAudioFile (file))
@@ -625,11 +642,27 @@ private:
 
     void completeDrop (const juce::StringArray& files, int x, int y)
     {
-        owner.updateFileDrop (x, y);
+        owner.updateFileDrop (x, y, hasMidi (files));
         const auto drop = owner.fileDrop;
         owner.clearFileDrop();
         if (! drop.active || drop.rejected)
             return;
+
+        // .mid はMIDI取り込みへ（オーディオの経路と混ぜない。startSample は小節頭スナップ済み）
+        if (drop.midi)
+        {
+            juce::StringArray midiFiles;
+            for (const auto& file : files)
+                if (MidiFileTypes::isSupported (file))
+                    midiFiles.add (file);
+            if (! midiFiles.isEmpty() && owner.onImportMidiDropped != nullptr)
+            {
+                const auto bar = (juce::int64) std::llround ((double) drop.startSample
+                                                             / owner.barLengthSamples());
+                owner.onImportMidiDropped (midiFiles, bar * Ppq::ticksPerBar);
+            }
+            return;
+        }
 
         juce::StringArray audioFiles;
         for (const auto& file : files)
@@ -1134,11 +1167,28 @@ bool TimelineView::isImportableAudioFile (const juce::String& path)
     return AudioFileTypes::isSupported (path);
 }
 
-void TimelineView::updateFileDrop (int contentX, int contentY)
+void TimelineView::updateFileDrop (int contentX, int contentY, bool isMidi)
 {
     FileDropState next;
     next.active = true;
     next.startSample = snapSampleToGrid (juce::jmax ((juce::int64) 0, xToSample (contentX)));
+
+    if (isMidi)
+    {
+        // .mid は常に新規トラック＋小節頭配置（行に依存しない）。挿入位置ラインも小節頭に出す
+        next.midi = true;
+        next.track = -1;
+        const double barLen = barLengthSamples();
+        const auto bar = (juce::int64) std::floor (
+            (double) juce::jmax ((juce::int64) 0, xToSample (contentX)) / barLen);
+        next.startSample = (juce::int64) std::llround ((double) bar * barLen);
+        if (! (next == fileDrop))
+        {
+            fileDrop = next;
+            lanes->repaint();
+        }
+        return;
+    }
 
     const int numTracks = project != nullptr ? (int) project->tracks.size() : 0;
     const int row = contentY / trackHeight;
@@ -1392,6 +1442,13 @@ void TimelineView::handleLaneMouseDown (const juce::MouseEvent& e)
                                                            : hitTestClip (row, e.x);
             if (item >= 0)
             {
+                // 仮オブジェクトの右クリックは撤去して中止（メニューを出さない）
+                if (track.type == TrackType::midi && onPreviewObjectGesture != nullptr
+                    && onPreviewObjectGesture (track.id, track.midiRegions[(size_t) item].id))
+                {
+                    lanes->repaint();
+                    return;
+                }
                 if (track.type == TrackType::midi)
                 {
                     selection.clear();
@@ -1418,6 +1475,14 @@ void TimelineView::handleLaneMouseDown (const juce::MouseEvent& e)
         if (track.type == TrackType::midi)
         {
             const int ri = hitTestRegion (row, e.x);
+            // 仮オブジェクトを掴んだら撤去して中止（選択もドラッグも始めない。
+            // ダブルクリックも1クリック目がここを通るため、ピアノロールが開くことはない）
+            if (ri >= 0 && onPreviewObjectGesture != nullptr
+                && onPreviewObjectGesture (track.id, track.midiRegions[(size_t) ri].id))
+            {
+                lanes->repaint();
+                return;
+            }
             if (ri >= 0)
             {
                 const bool wasSelected = regionSelection.track == row && regionSelection.region == ri;
@@ -1810,7 +1875,14 @@ void TimelineView::handleLaneDoubleClick (const juce::MouseEvent& e)
         return;
     }
 
-    // 空エリアのダブルクリック → 1小節のリージョンを作成（小節頭にスナップ）
+    // 空エリアのダブルクリック → 1小節のリージョンを作成（小節頭にスナップ）。
+    // ガチャの自動作成トラックは「撤去して中止」（onWillEditModel の begin フックが
+    // 仮トラックを撤去すると、この関数が保持する track 参照が失効するため）
+    if (onPreviewObjectGesture != nullptr && onPreviewObjectGesture (track.id, 0))
+    {
+        lanes->repaint();
+        return;
+    }
     if (onWillEditModel)
         onWillEditModel();
 
@@ -1935,6 +2007,15 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
     menu.addItem (6, jp (u8"ループ解除"), looped);
     menu.addItem (itemWithKey (4, jp (u8"再生ヘッド位置で分割"), Shortcuts::ID::split, canSplit));
     menu.addItem (itemWithKey (5, jp (u8"書き出し…"), Shortcuts::ID::exportRegion));
+    // リファレンス分析はオーディオリージョン専用（リージョン範囲がそのままトリムになる）。
+    // ツール群（~/daw の Python パイプライン）不在時は無効化し、理由を文言で示す
+    if (! isMidi && onAnalyzeItemRequested != nullptr)
+    {
+        const bool toolsOk = ReferenceTools::analyzeAvailable();
+        menu.addItem (8, toolsOk ? jp (u8"リファレンスとして分析…")
+                                 : jp (u8"リファレンスとして分析…（~/daw のツールが見つかりません）"),
+                      toolsOk);
+    }
     menu.addItem (itemWithKey (3, jp (u8"削除"), Shortcuts::ID::deleteItem));
 
     // コールバックは後から呼ばれるためSafePointerで寿命を確認し、右クリック時点の対象を捕捉して渡す。
@@ -1959,6 +2040,8 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
                                 safe->clearLoopAt (trackIndex, itemIndex);
                             else if (result == 7)
                                 safe->showClipGainCallout (trackIndex, itemIndex);
+                            else if (result == 8 && safe->onAnalyzeItemRequested)
+                                safe->onAnalyzeItemRequested (trackIndex, itemIndex);
                         });
 }
 

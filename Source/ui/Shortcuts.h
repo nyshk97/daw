@@ -292,8 +292,8 @@ inline const Entry table[] = {
       [] (const juce::KeyPress& k)
       { return k == juce::KeyPress ('s', juce::ModifierKeys::commandModifier, 0); },
       juce::KeyPress ('s', juce::ModifierKeys::commandModifier, 0) },
-    // Logic準拠: ⇧⌘I = オーディオファイルを読み込む
-    { ID::importAudio, Category::project, u8"オーディオを読み込む", u8"⇧⌘I",
+    // Logic準拠: ⇧⌘I = オーディオファイルを読み込む（.mid もここから読める）
+    { ID::importAudio, Category::project, u8"オーディオ/MIDIを読み込む", u8"⇧⌘I",
       [] (const juce::KeyPress& k)
       {
           return k == juce::KeyPress ('i', juce::ModifierKeys::commandModifier

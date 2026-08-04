@@ -33,6 +33,10 @@ public:
     std::function<void()> onChanged;             // M/S・音量の変更（dirtyマーク用）
     std::function<void()> onWillChangeStructure; // リネーム・楽器変更の直前（undoスナップショット用）
     std::function<void()> onInstrumentChanged;   // 楽器変更の確定後（pushSnapshotで音源差し替え）
+    // リネーム・楽器変更を始めてよいか（ガチャの自動作成トラックは編集不可＝仮オブジェクト。
+    // true が返ったら操作を中止する。撤去は受け手が非同期に行う — このコールバック中に
+    // ヘッダを rebuild すると呼び出し元コンポーネントが破壊されるため）
+    std::function<bool()> editBlocked;
 
     // ドラッグ並び替え。開始できるのはヘッダ背景＋種別アイコン＋トラック名（nameLabel）から。
     // M/S・音量・楽器セレクタの上からは開始しない。Yは親（container）座標
@@ -84,6 +88,10 @@ public:
 
     void setProject (Project* p);
     void rebuild(); // トラックの追加・削除後に呼ぶ
+    // 全ヘッダのバインドを外す。Track を消した直後、rebuild を非同期に回すとき
+    // （ヘッダのコールバック内から呼ばれた場合の再入対策）に、30Hz timer が
+    // ダングリングポインタへ触れないようにする
+    void unbindAll();
     void refreshValues(); // モデル側の値変更（キー操作でのミュート等）を表示に反映する
     void updateMeters (const std::vector<StereoPeak>& peaks); // 30Hz Timerから（各ヘッダへの転送のみ）
     void setSelectedTrack (int index);
@@ -104,6 +112,14 @@ public:
     // 対応拡張子のファイルだけを渡す（複数なら先頭のみ処理するかは受け手が決める）
     std::function<void (const juce::StringArray&, int)> onAssignInstrumentDropped;
 
+    // トラックの構造編集（リネーム・楽器変更）を始めてよいかの問い合わせ（indexつき）。
+    // ガチャの自動作成トラックを「撤去して中止」するため（TrackHeaderComponent::editBlocked へ配線）
+    std::function<bool (int)> onTrackEditBlocked;
+
+    // .mid のドロップ＝MIDI取り込み（新規トラックを作るのでドロップ先の行は使わない。
+    // ヘッダーには横座標が無いため配置は再生ヘッドの小節頭＝受け手が決める）
+    std::function<void (const juce::StringArray&)> onMidiFilesDropped;
+
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
     void paintOverChildren (juce::Graphics& g) override; // 挿入位置インジケータ・ドロップ先ハイライト
 
@@ -122,6 +138,7 @@ public:
 private:
     void refreshBindings();
     static bool hasAudioFile (const juce::StringArray& files);
+    static bool hasMidiFile (const juce::StringArray& files);
     int rowForDropY (int y) const;      // ビュー座標Y → トラックindex（範囲外は-1）
     void updateDropTarget (int y);
     void clearDropTarget();

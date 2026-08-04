@@ -1,6 +1,7 @@
 #include "AudioFileBrowserView.h"
 
 #include "../shared/AudioFileTypes.h"
+#include "../shared/MidiFileTypes.h"
 #include "Fonts.h"
 #include "Theme.h"
 
@@ -53,7 +54,8 @@ AudioFileBrowserView::AudioFilter::AudioFilter()
 
 bool AudioFileBrowserView::AudioFilter::isFileSuitable (const juce::File& file) const
 {
-    return AudioFileTypes::isSupported (file);
+    // .mid も一覧に出す（試聴・サンプル音源割り当ては AudioFileTypes 判定のままなので対象外）
+    return AudioFileTypes::isSupported (file) || MidiFileTypes::isSupported (file);
 }
 
 bool AudioFileBrowserView::AudioFilter::isDirectorySuitable (const juce::File& file) const
@@ -254,7 +256,7 @@ void AudioFileBrowserView::paintListBoxItem (int row, juce::Graphics& g, int wid
                                     .withCentre (iconArea.toFloat().getCentre()),
                                 side * 0.14f);
     }
-    else if (row == hoveredRow)
+    else if (row == hoveredRow && isPlayable (file))
     {
         const float side = 10.0f;
         const auto box = juce::Rectangle<float> (side, side)
@@ -362,6 +364,8 @@ void AudioFileBrowserView::listBoxItemDoubleClicked (int row, const juce::MouseE
     const auto file = fileAt (row);
     if (file.isDirectory())
         navigate (file, true);
+    else if (MidiFileTypes::isSupported (file) && onMidiImportRequested)
+        onMidiImportRequested (file);
     else if (AudioFileTypes::isSupported (file) && onImportRequested)
         onImportRequested (file);
 }
@@ -371,7 +375,8 @@ juce::var AudioFileBrowserView::getDragSourceDescription (const juce::SparseSet<
     if (importInProgress || rows.size() != 1)
         return {};
     const auto file = fileAt (rows[0]);
-    return file.existsAsFile() && AudioFileTypes::isSupported (file)
+    return file.existsAsFile()
+                   && (AudioFileTypes::isSupported (file) || MidiFileTypes::isSupported (file))
                ? juce::var (file.getFullPathName())
                : juce::var();
 }
@@ -462,7 +467,8 @@ void AudioFileBrowserView::refreshSelection()
 {
     const auto file = selectedFile();
     const bool audio = isPlayable (file);
-    selectedNameLabel.setText (audio ? file.getFileName() : jp (u8"ファイルを選択"),
+    const bool midi = file.existsAsFile() && MidiFileTypes::isSupported (file);
+    selectedNameLabel.setText (audio || midi ? file.getFileName() : jp (u8"ファイルを選択"),
                                juce::dontSendNotification);
     durationLabel.setText (audio ? durationText (file) : juce::String(),
                            juce::dontSendNotification);

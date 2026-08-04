@@ -32,7 +32,7 @@ import numpy as np
 import soundfile as sf
 from scipy.signal import butter, lfilter
 
-GENERATOR_VERSION = 1
+GENERATOR_VERSION = 2  # v2: note_off を bars×TICKS_BAR にクランプ（LaLa 取り込みで5小節化しない）
 PPQ = 480          # MIDI の分解能（4分音符あたり tick）
 TICKS_16TH = PPQ // 4
 TICKS_BAR = PPQ * 4
@@ -201,19 +201,23 @@ def _generate_bar(lane: str, profile: list[float], swing: float, dev_ms: float,
 
 # ---------------------------------------------------------------- MIDI
 
-def build_midi(notes: dict[str, list[tuple[int, int]]], bpm: float) -> mido.MidiFile:
+def build_midi(notes: dict[str, list[tuple[int, int]]], bpm: float, bars: int) -> mido.MidiFile:
     mid = mido.MidiFile(ticks_per_beat=PPQ)
     track = mido.MidiTrack()
     mid.tracks.append(track)
     track.append(mido.MetaMessage("time_signature", numerator=4, denominator=4, time=0))
     track.append(mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(bpm), time=0))
 
+    # note_off は最終小節の境界でクランプする。note_on は小節末 1 tick 前まで許すため、
+    # +NOTE_DURATION がスウィング＋正方向ジッターの最終ハットで境界を越えることがあり、
+    # 取り込み側（小節切り上げ）で bars+1 小節のリージョンに化けるため
+    end_tick = bars * TICKS_BAR
     events = []  # (tick, 順序キー: off=0/on=1, note, velocity)
     for lane, lane_notes in notes.items():
         note = GM_NOTE[lane]
         for tick, vel in lane_notes:
             events.append((tick, 1, note, vel))
-            events.append((tick + NOTE_DURATION, 0, note, 0))
+            events.append((min(tick + NOTE_DURATION, end_tick), 0, note, 0))
     events.sort()
 
     now = 0
@@ -484,7 +488,16 @@ def run(argv: list[str]) -> int:
     ap.add_argument("--out", type=str, default=None, help="出力先（既定はカードと同じフォルダの gacha/）")
     ap.add_argument("--from", dest="from_sidecar", metavar="SIDECAR",
                     help="候補のサイドカー .json から1件を完全再現する（カード不要。他の生成条件はサイドカーの値を使う）")
+    # 機械可読出力（LaLa 連携用）。stdout は JSON Lines のみ（候補ごとに1行:
+    # base=ファイル名の共通部・lane_seeds・status=generated|regenerated|skipped）。
+    # 人間向けの進捗・補完申告は stderr へ、成否は exit code。
+    # 「JSON でない行を読み飛ばす」形の文字列依存を作らないための契約
+    ap.add_argument("--porcelain", action="store_true", help="stdout を JSON Lines のみにする（機械可読）")
     args = ap.parse_args(argv)
+
+    # 人間向け出力の宛先を1箇所で切り替える（porcelain では stdout を JSON Lines 専用に保つ）
+    def note(*a, **kw):
+        print(*a, **kw, file=sys.stderr if args.porcelain else sys.stdout)
 
     if args.from_sidecar:
         if args.card or args.seed is not None or args.lock or args.count is not None or args.bars is not None:
@@ -493,7 +506,7 @@ def run(argv: list[str]) -> int:
         effective, bpm, bars, defaulted, lane_seeds, global_seed, reference = load_sidecar(sc_path)
         outdir = Path(args.out).expanduser() if args.out else sc_path.parent
         candidates = [(global_seed, lane_seeds)]
-        print(f"サイドカーから再現: {sc_path}（BPM {bpm:g} / {bars}小節）")
+        note(f"サイドカーから再現: {sc_path}（BPM {bpm:g} / {bars}小節）")
     else:
         if not args.card:
             raise GachaError("card（リファレンスフォルダ or card.json）か --from を指定する")
@@ -505,14 +518,14 @@ def run(argv: list[str]) -> int:
         effective, bpm, defaulted, reference = load_card(card_path)
         locks = parse_locks(args.lock) if args.lock else {}
         outdir = Path(args.out).expanduser() if args.out else card_path.parent / "gacha"
-        print(f"カード: {card_path}（BPM {bpm:g} / swing {effective['swing_ratio']:g}）")
+        note(f"カード: {card_path}（BPM {bpm:g} / swing {effective['swing_ratio']:g}）")
         for field in defaulted:
-            print(f"  [補完] drums.{field} が無いため既定値を使う")
+            note(f"  [補完] drums.{field} が無いため既定値を使う")
         if locks:
-            print("  [ロック] " + ", ".join(f"{k}={v:08x}" for k, v in locks.items()))
+            note("  [ロック] " + ", ".join(f"{k}={v:08x}" for k, v in locks.items()))
         global_seed = args.seed if args.seed is not None else secrets.randbits(32)
         if args.seed is None:
-            print(f"全体 seed: {global_seed}（--seed {global_seed} で再現できる）")
+            note(f"全体 seed: {global_seed}（--seed {global_seed} で再現できる）")
         candidates = [(global_seed + i, resolve_lane_seeds(global_seed + i, locks)) for i in range(count)]
 
     outdir.mkdir(parents=True, exist_ok=True)
@@ -520,10 +533,17 @@ def run(argv: list[str]) -> int:
     cfg_sha = cfg_hash(payload)
     generated = skipped = 0
     seen: set[str] = set()
+    # porcelain: ユニークな候補1件につき1行だけ emit する（実行内重複＝同一ファイルは出さない。
+    # 受け手はこの行の集合を「今回の実行の候補一覧」として使う）
+    def emit(base: str, lane_seeds_hex: dict[str, str], status: str) -> None:
+        if args.porcelain:
+            print(json.dumps({"base": base, "lane_seeds": lane_seeds_hex, "status": status},
+                             ensure_ascii=False))
+
     for gseed, lane_seeds in candidates:
         base = candidate_basename(lane_seeds, cfg_sha)
         if base in seen:  # 全レーンロック時は全候補が同一になる
-            print(f"  [スキップ] {base}: この実行内で生成済み（全レーンがロックされている）")
+            note(f"  [スキップ] {base}: この実行内で生成済み（全レーンがロックされている）")
             skipped += 1
             continue
         seen.add(base)
@@ -531,11 +551,12 @@ def run(argv: list[str]) -> int:
         cand_sha = candidate_hash(payload, lane_seeds_hex)
         status = candidate_status(outdir, base, payload, lane_seeds_hex)
         if status == "skip":
-            print(f"  [スキップ] {base}: 完成済み（同じ seed・同じ設定＝同じ内容）")
+            note(f"  [スキップ] {base}: 完成済み（同じ seed・同じ設定＝同じ内容）")
+            emit(base, lane_seeds_hex, "skipped")  # 完成済み＝ファイルは揃っている（候補として有効）
             skipped += 1
             continue
         notes = generate_pattern(effective, lane_seeds, bars, bpm)
-        mid = build_midi(notes, bpm)
+        mid = build_midi(notes, bpm, bars)
         wav_data = synth_wav(notes, bpm, bars, lane_seeds)
         sidecar = {
             "cfg_sha256": cfg_sha,
@@ -551,10 +572,11 @@ def run(argv: list[str]) -> int:
             sidecar["reference"] = reference
         publish_candidate(outdir, base, mid, wav_data, sidecar)
         label = "再生成" if status == "regen" else "生成"
-        print(f"  [{label}] {base}")
+        note(f"  [{label}] {base}")
+        emit(base, lane_seeds_hex, "regenerated" if status == "regen" else "generated")
         generated += 1
 
-    print(f"完了: 生成 {generated} 件 / スキップ {skipped} 件 → {outdir}")
+    note(f"完了: 生成 {generated} 件 / スキップ {skipped} 件 → {outdir}")
     return 0
 
 

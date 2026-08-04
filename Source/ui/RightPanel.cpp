@@ -72,6 +72,7 @@ RightPanel::RightPanel()
     };
 
     addChildComponent (browser);
+    addChildComponent (gacha);
     refreshMode();
     setVisible (false);
 }
@@ -83,6 +84,7 @@ void RightPanel::setProject (Project* projectToUse)
     memoEditor.setText (project != nullptr ? project->memo : juce::String(),
                         juce::dontSendNotification);
     bindingMemo = false;
+    gacha.setProject (projectToUse);
 }
 
 void RightPanel::open (Mode newMode)
@@ -108,11 +110,22 @@ void RightPanel::focusNotesEditor()
 void RightPanel::refreshMode()
 {
     const bool notes = currentMode == Mode::notes;
-    titleLabel.setText (notes ? jp (u8"プロジェクトメモ") : jp (u8"ファイル"),
+    const bool files = currentMode == Mode::files;
+    const bool isGacha = currentMode == Mode::gacha;
+    titleLabel.setText (notes    ? jp (u8"プロジェクトメモ")
+                        : files  ? jp (u8"ファイル")
+                                 : jp (u8"ドラムガチャ"),
                         juce::dontSendNotification);
-    scopeLabel.setText (notes ? "PROJECT" : "AUDIO", juce::dontSendNotification);
+    scopeLabel.setText (notes ? "PROJECT" : files ? "AUDIO" : "GACHA", juce::dontSendNotification);
     memoEditor.setVisible (notes);
-    browser.setVisible (! notes);
+    browser.setVisible (files);
+    gacha.setVisible (isGacha);
+    if (isGacha)
+    {
+        // 開くたびに列挙し直す（分析の完了・ツールの導入を開き直しで拾う）
+        gacha.refreshAvailability();
+        gacha.refreshCards();
+    }
     resized();
     repaint();
 }
@@ -138,4 +151,6 @@ void RightPanel::resized()
         memoEditor.setBounds (area.reduced (14));
     if (browser.isVisible())
         browser.setBounds (area);
+    if (gacha.isVisible())
+        gacha.setBounds (area);
 }

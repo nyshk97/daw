@@ -6,6 +6,11 @@
 #include <signal.h> // kill(pid, 0) による一時ディレクトリの持ち主判定
 
 #include "../shared/Log.h"
+#include "../shared/MidiFileTypes.h"
+#include "../shared/MidiImport.h"
+#include "../shared/ReferenceExport.h"
+#include "../shared/ReferenceTools.h"
+#include "../shared/SpawnedProcess.h"
 #include "../shared/TempDirSweep.h"
 #include "Fonts.h"
 #include "Shortcuts.h"
@@ -110,12 +115,14 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     addAndMakeVisible (settingsButton);
     addAndMakeVisible (notesButton);
     addAndMakeVisible (filesButton);
+    addAndMakeVisible (gachaButton);
     addAndMakeVisible (clickButton);
     addChildComponent (addTrackOverlay); // トラック追加メニュー表示中のみ可視
     addChildComponent (shortcutOverlay); // ⌘?表示中のみ可視
     addChildComponent (bounceOverlay);   // バウンス中のみ可視
     addChildComponent (importOverlay);   // 取り込み中のみ可視
     addChildComponent (urlOverlay);      // URL入力中のみ可視
+    addChildComponent (referenceOverlay); // リファレンス分析中のみ可視
     addAndMakeVisible (lcd);
     addChildComponent (srWarningLabel); // 不一致時のみ表示
 
@@ -141,6 +148,11 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     {
         startImport (file, -1, // 試聴の停止・予約の取り消しは startImport 側で畳む
                      timeline.snapSampleToVisibleGrid (timeline.editPositionSample()));
+    };
+    // .mid のダブルクリック＝再生ヘッドの小節頭へ取り込み（オーディオと違い配置グリッドは小節固定）
+    rightPanel.fileBrowser().onMidiImportRequested = [this] (const juce::File& file)
+    {
+        importMidiFile (file, playheadBarStartPpq());
     };
     mixerWindow.content().setProject (project.get());
     mixerWindow.content().onSelectTrack = [this] (int index) { selectTrackFromUser (index); };
@@ -307,6 +319,8 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     };
     timeline.onExportItemRequested = [this] (int trackIndex, int itemIndex)
     { startRegionExportFlow (trackIndex, itemIndex); };
+    timeline.onAnalyzeItemRequested = [this] (int trackIndex, int itemIndex)
+    { startReferenceAnalysis (trackIndex, itemIndex); };
     // 録音中は構造編集を止める。キー経由（⌘T/⌃M/⌘R）はMainComponent側でも弾いているが、
     // 右クリックメニュー経由はTimelineViewが直接モデルを書くのでここを通す
     timeline.canEdit = [this] { return ! engine.isRecording(); };
@@ -324,6 +338,47 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     headers.onAssignInstrumentDropped = [this] (const juce::StringArray& files, int trackIndex)
     {
         startInstrumentImport (juce::File (files[0]), trackIndex, files.size() > 1);
+    };
+    // .mid のD&D。タイムライン＝ドロップ位置の小節頭 / ヘッダー＝再生ヘッドの小節頭
+    // （ヘッダーには横座標が無い）。複数ファイルは先頭のみ処理（オーディオD&Dと同じ規則）
+    timeline.onImportMidiDropped = [this] (const juce::StringArray& files, juce::int64 startPpq)
+    {
+        importMidiFile (juce::File (files[0]), startPpq, files.size() > 1);
+    };
+    headers.onMidiFilesDropped = [this] (const juce::StringArray& files)
+    {
+        importMidiFile (juce::File (files[0]), playheadBarStartPpq(), files.size() > 1);
+    };
+
+    // ---- ドラムガチャ（右パネル第3モード）----
+    rightPanel.gachaPanel().onRoll = [this] { performGachaRoll(); };
+    rightPanel.gachaPanel().onPick = [this] (int index) { pickGachaCandidate (index); };
+    rightPanel.gachaPanel().onKeep = [this] { keepGachaCandidate(); };
+    rightPanel.gachaPanel().onCardChanged = [this]
+    {
+        cancelGachaPreview();
+        gachaSession.setCandidates ({}); // 前カードの候補一覧はパネル側でもクリア済み
+    };
+    // 編集開始（undoスナップショットの直前）に仮配置を撤去する。begin が状態を保存する前に
+    // 呼ばれるため、仮リージョンが undo 履歴に混入しない
+    undoStack.willBegin = [this] { cancelGachaPreview(); };
+    // タイムライン上の仮オブジェクト（仮リージョン・自動作成トラック）への操作は「撤去して中止」
+    timeline.onPreviewObjectGesture = [this] (juce::uint64 trackId, juce::uint64 regionId)
+    {
+        if (! gachaSession.isPreviewObject (trackId, regionId))
+            return false;
+        cancelGachaPreview();
+        return true;
+    };
+    // 自動作成トラックのリネーム・楽器変更も「撤去して中止」（ヘッダのコールバック内からの
+    // 呼び出しになるため、cancelGachaPreview のヘッダ rebuild は非同期で行われる）
+    headers.onTrackEditBlocked = [this] (int index)
+    {
+        if (index < 0 || index >= (int) project->tracks.size()
+            || ! gachaSession.trackIsPreviewOwned (project->tracks[(size_t) index].id))
+            return false;
+        cancelGachaPreview();
+        return true;
     };
     pianoRoll.onWillEditModel = [this] { undoStack.begin (*project); };
     pianoRoll.onModelEdited = [this]
@@ -428,6 +483,12 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     filesButton.setToggleIconColour (Theme::panelToggleOn);
     filesButton.setBorderless (true);
 
+    gachaButton.onClick = [this] { toggleRightPanel (RightPanel::Mode::gacha); };
+    gachaButton.setTooltip (jp (u8"ドラムガチャ")); // ショートカットなし（ボタンのみ）
+    gachaButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
+    gachaButton.setToggleIconColour (Theme::panelToggleOn);
+    gachaButton.setBorderless (true);
+
     bounceOverlay.onCancel = [this]
     {
         Log::info ("bounce.cancel_requested", "source=overlay");
@@ -439,6 +500,12 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     {
         Log::info ("import.cancel_requested", "source=overlay");
         audioImporter.cancel(); // 非同期。完了はpollImport()が拾う
+    };
+
+    referenceOverlay.onCancel = [this]
+    {
+        Log::info ("reference.analyze.cancel_requested", "source=overlay");
+        referenceAnalyzer.cancel(); // 非同期。完了はpollReferenceAnalysis()が拾う
     };
 
     clickButton.setClickingTogglesState (true); // ONで点灯（Logicのメトロノームボタン風）
@@ -456,7 +523,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     // Space（再生/停止）をボタンに奪わせない
     for (auto* c : std::initializer_list<juce::Component*> {
              &playButton, &recordButton, &addTrackButton, &settingsButton, &notesButton,
-             &filesButton, &clickButton })
+             &filesButton, &gachaButton, &clickButton })
     {
         c->setWantsKeyboardFocus (false);
         c->setMouseClickGrabsKeyboardFocus (false);
@@ -559,6 +626,7 @@ void MainComponent::timerCallback()
     pollBounce();
     pollUrlImport(); // ダウンロード完了時にそのまま pollImport 側の取り込みへ引き渡す
     pollImport();
+    pollReferenceAnalysis();
 
     // サイクル範囲のサンプル換算はBPM・サンプルレートに依存するため毎tick同期する
     // （BPM編集・デバイスSR確定・デバイス変更のどの経路でも取りこぼさない。atomic2本のstoreのみで安価）
@@ -770,6 +838,7 @@ void MainComponent::toggleRecord()
 
 void MainComponent::startRecordingFlow()
 {
+    cancelGachaPreview(); // 未確定の仮リージョンを鳴らしながら録らない
     seekResumePending = false; // 録音はカウントイン込みで自前のトランスポート制御を行う
     numSeekKeyCodes = 0;
     // 録音の終了でクリップが増える＝リージョンゲインの吹き出しが保持しているindexが失効するため、
@@ -947,6 +1016,12 @@ void MainComponent::requestDeleteTrack (int index)
 {
     if (engine.isRecording() || index < 0 || index >= (int) project->tracks.size())
         return;
+    // ガチャの自動作成トラックは「撤去して中止」（確認ダイアログも出さない）
+    if (gachaSession.trackIsPreviewOwned (project->tracks[(size_t) index].id))
+    {
+        cancelGachaPreview();
+        return;
+    }
 
     juce::NativeMessageBox::showAsync (
         juce::MessageBoxOptions()
@@ -981,6 +1056,12 @@ void MainComponent::reorderTrack (int from, int to)
 {
     if (engine.isRecording())
         return;
+    // 仮配置中の並び替えは撤去して中止（from/to は仮トラック込みの並びで計算されているため）
+    if (gachaSession.hasPreview())
+    {
+        cancelGachaPreview();
+        return;
+    }
     const int numTracks = (int) project->tracks.size();
     if (from < 0 || from >= numTracks || to < 0 || to > numTracks || to == from || to == from + 1)
         return;
@@ -1092,6 +1173,8 @@ void MainComponent::performUndo()
 {
     if (engine.isRecording())
         return;
+    // undo/redo は begin を通らない（willBegin フックが効かない）ので、仮配置をここで撤去する
+    cancelGachaPreview();
     auto kind = UndoStack::EditKind::structure;
     if (undoStack.undo (*project, kind))
     {
@@ -1104,6 +1187,7 @@ void MainComponent::performRedo()
 {
     if (engine.isRecording())
         return;
+    cancelGachaPreview(); // undo/redo は begin を通らない（willBegin フックが効かない）
     auto kind = UndoStack::EditKind::structure;
     if (undoStack.redo (*project, kind))
     {
@@ -1126,6 +1210,14 @@ void MainComponent::afterHistoryRestore (UndoStack::EditKind kind)
     timeline.clearSelection();
     headers.rebuild();
     selectTrack (selectedTrack); // 範囲内にクランプし直す（下部エディタの対象もここで張り替わる）
+
+    // BPMもStateに含まれる。transport（再生換算）とLCD表示を復元値に追従させる
+    // （末尾の timeline.refresh() が小節幅を描き直す）
+    if (std::abs (transport.bpm.load() - project->bpm) > 1e-9)
+    {
+        transport.bpm.store (project->bpm);
+        lcd.tempoLabel().setText (juce::String (project->bpm), juce::dontSendNotification);
+    }
 
     if (kind == UndoStack::EditKind::sampleValue)
     {
@@ -1159,6 +1251,14 @@ void MainComponent::openPianoRoll (int trackIndex, int regionIndex)
     if (regionIndex < 0 || regionIndex >= (int) track.midiRegions.size())
         return;
     auto& region = track.midiRegions[(size_t) regionIndex];
+
+    // ガチャの仮リージョンは「撤去して中止」（撤去後の古いindexで開くとクラッシュ・誤対象になる。
+    // 通常はタイムラインのmouseDownガードで先に撤去されるため、ここは最終防衛線）
+    if (gachaSession.isPreviewObject (track.id, region.id))
+    {
+        cancelGachaPreview();
+        return;
+    }
 
     // 同じリージョンを再ダブルクリック → 閉じる（トグル）
     if (pianoRoll.isShowingRegion (track.id, region.id))
@@ -1231,9 +1331,13 @@ void MainComponent::toggleRightPanel (RightPanel::Mode mode)
     if (rightPanel.isOpen() && rightPanel.mode() == RightPanel::Mode::files
         && mode != RightPanel::Mode::files)
         rightPanel.fileBrowser().cancelPreview(); // 予約中のオートプレビューも取り消す
+    if (rightPanel.isOpen() && rightPanel.mode() == RightPanel::Mode::gacha
+        && mode != RightPanel::Mode::gacha)
+        cancelGachaPreview(); // ガチャモードを離れる＝未確定の仮配置を撤去
     rightPanel.open (mode);
     notesButton.setToggleState (mode == RightPanel::Mode::notes, juce::dontSendNotification);
     filesButton.setToggleState (mode == RightPanel::Mode::files, juce::dontSendNotification);
+    gachaButton.setToggleState (mode == RightPanel::Mode::gacha, juce::dontSendNotification);
     resized();
     if (mode == RightPanel::Mode::notes)
         rightPanel.focusNotesEditor();
@@ -1245,9 +1349,12 @@ void MainComponent::closeRightPanel()
         return;
     if (rightPanel.mode() == RightPanel::Mode::files)
         rightPanel.fileBrowser().cancelPreview(); // 予約中のオートプレビューも取り消す
+    if (rightPanel.mode() == RightPanel::Mode::gacha)
+        cancelGachaPreview(); // モードを離れる＝未確定の仮配置を撤去
     rightPanel.close();
     notesButton.setToggleState (false, juce::dontSendNotification);
     filesButton.setToggleState (false, juce::dontSendNotification);
+    gachaButton.setToggleState (false, juce::dontSendNotification);
     resized();
 }
 
@@ -1577,9 +1684,23 @@ void MainComponent::applyBpmText()
         lcd.tempoLabel().setText (juce::String (transport.bpm.load()), juce::dontSendNotification);
         return;
     }
+    setProjectBpm (value);
+}
+
+// BPM変更の一本化（LCD・「BPMをプロジェクトに設定」の両経路）。undo対象
+void MainComponent::setProjectBpm (double value)
+{
+    if (std::abs (project->bpm - value) < 1e-9)
+    {
+        // 同値なら何もしない（undo履歴にno-opを積まない）。LCDの表示だけ正規化する
+        lcd.tempoLabel().setText (juce::String (project->bpm), juce::dontSendNotification);
+        return;
+    }
     Log::info ("project.bpm", "value=" + juce::String (value));
+    undoStack.begin (*project);
     transport.bpm.store (value);
     project->bpm = value;
+    lcd.tempoLabel().setText (juce::String (value), juce::dontSendNotification);
     setDirty (true);
     timeline.refresh(); // 小節幅（サンプル換算）が変わる
 }
@@ -1590,6 +1711,7 @@ void MainComponent::startBounceFlow()
 {
     if (bounceActive || engine.isRecording() || importActive || isUrlImporting())
         return;
+    cancelGachaPreview(); // 未確定の仮リージョンを書き出しに混入させない
 
     // 素材が何も無ければ入口で弾く（mute/soloを踏まえた正確な判定はbeginBounceで行う）
     bool hasContent = false;
@@ -1813,6 +1935,19 @@ void MainComponent::startRegionExportFlow (int trackIndex, int itemIndex)
 {
     if (bounceActive || engine.isRecording())
         return;
+    // 書き出し対象が仮オブジェクトなら撤去して中止。他対象でも先に撤去する
+    //（仮リージョンは対象トラック/リージョン列の末尾に居るため、撤去で index はずれない）
+    if (trackIndex >= 0 && trackIndex < (int) project->tracks.size())
+    {
+        const auto& t = project->tracks[(size_t) trackIndex];
+        if (t.type == TrackType::midi && itemIndex >= 0 && itemIndex < (int) t.midiRegions.size()
+            && gachaSession.isPreviewObject (t.id, t.midiRegions[(size_t) itemIndex].id))
+        {
+            cancelGachaPreview();
+            return;
+        }
+    }
+    cancelGachaPreview();
     if (trackIndex < 0 || trackIndex >= (int) project->tracks.size())
         return;
     const auto& track = project->tracks[(size_t) trackIndex];
@@ -1983,9 +2118,9 @@ void MainComponent::startImportFlow()
         return;
 
     importChooser = std::make_unique<juce::FileChooser> (
-        jp (u8"オーディオを読み込む"),
+        jp (u8"オーディオ/MIDIを読み込む"),
         juce::File::getSpecialLocation (juce::File::userHomeDirectory).getChildFile ("Downloads"),
-        "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.m4a");
+        "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.m4a;*.mid;*.midi");
 
     const auto flags = juce::FileBrowserComponent::openMode
                        | juce::FileBrowserComponent::canSelectFiles;
@@ -1995,7 +2130,10 @@ void MainComponent::startImportFlow()
         const auto chosen = chooser.getResult();
         if (chosen == juce::File())
             return; // キャンセル
-        startImport (chosen, -1, 0); // メニュー経由は常に新規トラックの小節1（曲頭）へ
+        if (MidiFileTypes::isSupported (chosen))
+            importMidiFile (chosen, 0); // メニュー経由は曲頭（小節1）へ。オーディオと同じ規則
+        else
+            startImport (chosen, -1, 0); // メニュー経由は常に新規トラックの小節1（曲頭）へ
     });
 }
 
@@ -2050,6 +2188,14 @@ void MainComponent::startInstrumentImport (const juce::File& source, int trackIn
     if (trackIndex < 0 || trackIndex >= (int) project->tracks.size()
         || project->tracks[(size_t) trackIndex].type != TrackType::midi)
         return;
+    // ガチャの自動作成トラックへの音源割り当ては「撤去して中止」（完了処理の begin フックで
+    // 仮トラックが消え、保持した trackIndex が範囲外になるため。他トラックへの割り当ては
+    // 仮オブジェクトが末尾に居る不変条件により index がずれないのでそのまま進めてよい）
+    if (gachaSession.trackIsPreviewOwned (project->tracks[(size_t) trackIndex].id))
+    {
+        cancelGachaPreview();
+        return;
+    }
     rightPanel.fileBrowser().cancelPreview(); // 予約中のオートプレビューごと畳む
 
     importIsInstrument = true;
@@ -2280,6 +2426,359 @@ void MainComponent::finishInstrumentImport (const AudioImporter::Result& result)
     importDoneTicks = 40; // 30Hz × 40 ≈ 1.3秒表示して自動で消える
 }
 
+// ---- MIDIファイル（.mid）の取り込み ----
+// オーディオと違いデコード・リサンプルが無いので同期で完結する（ワーカー・オーバーレイなし）。
+// プロジェクトのサンプルレートは確定させない（音を持たないため）
+
+juce::int64 MainComponent::playheadBarStartPpq() const
+{
+    const double barLen = timeline.barLengthSamples();
+    const auto bar = (juce::int64) std::floor ((double) timeline.editPositionSample() / barLen);
+    return juce::jmax ((juce::int64) 0, bar) * Ppq::ticksPerBar;
+}
+
+void MainComponent::importMidiFile (const juce::File& source, juce::int64 startPpq, bool othersSkipped)
+{
+    if (importActive || bounceActive || engine.isRecording() || isUrlImporting())
+        return;
+    rightPanel.fileBrowser().cancelPreview(); // 予約中のオートプレビューごと畳む
+
+    MidiImport::Result parsed;
+    juce::String error;
+    if (! MidiImport::parseFile (source, parsed, error))
+    {
+        Log::error ("midi_import.failed", "source=" + source.getFullPathName()
+                                              + " message=" + error.replace ("\n", " / "));
+        showAlert (jp (u8"MIDIを取り込めません"), error);
+        return;
+    }
+
+    const auto outcome = MidiImport::apply (*project, undoStack, parsed,
+                                            source.getFileNameWithoutExtension(), startPpq);
+    if (outcome.numTracksCreated == 0)
+        return;
+
+    headers.rebuild();
+    selectTrackFromUser (outcome.firstTrackIndex); // 取り込んだトラックを選択状態にする
+    pushSnapshot();
+    setDirty (true);
+    trySave();
+    timeline.refresh();
+
+    Log::info ("midi_import.done", "source=" + source.getFullPathName()
+                                       + " tracks=" + juce::String (outcome.numTracksCreated)
+                                       + " drumNotes=" + juce::String ((int) parsed.drumNotes.size())
+                                       + " otherNotes=" + juce::String ((int) parsed.otherNotes.size())
+                                       + " startPpq=" + juce::String (startPpq)
+                                       + (othersSkipped ? " othersSkipped=1" : ""));
+}
+
+// ---- リファレンス分析（リージョン右クリック）----
+
+void MainComponent::startReferenceAnalysis (int trackIndex, int itemIndex)
+{
+    if (importActive || bounceActive || engine.isRecording() || isUrlImporting() || analysisActive)
+        return;
+    if (trackIndex < 0 || trackIndex >= (int) project->tracks.size())
+        return;
+    auto& track = project->tracks[(size_t) trackIndex];
+    if (track.type != TrackType::audio || itemIndex < 0 || itemIndex >= (int) track.clips.size())
+        return;
+    if (! ReferenceTools::analyzeAvailable())
+    {
+        showAlert (jp (u8"分析できません"), ReferenceTools::unavailableReason());
+        return;
+    }
+
+    // 分析は数分かかり、その間はモーダル（キーもクリックも塞ぐ）。再生しっぱなしで
+    // 止められない状態を作らないよう、バウンスと同じく開始時に再生を止める
+    stopPlaybackForBounce();
+
+    const auto& clip = track.clips[(size_t) itemIndex];
+    // 名前はクリップ名から（録音クリップは表示名が空なのでトラック名で代替）
+    const auto rawName = clip.name.isNotEmpty() ? clip.name : track.name;
+    const auto folder = ReferenceExport::allocateFolder (project->directory, rawName);
+
+    juce::String error;
+    if (! ReferenceExport::exportClipRange (project->directory, clip, folder, error))
+    {
+        folder.deleteRecursively();
+        Log::error ("reference.analyze.fail", "stage=export message=" + error.replace ("\n", " / "));
+        showAlert (jp (u8"分析できません"), error);
+        return;
+    }
+
+    ReferenceAnalyzer::Request request;
+    request.script = ReferenceTools::analyzeScript();
+    request.referenceFolder = folder;
+    if (! referenceAnalyzer.start (std::move (request)))
+    {
+        folder.deleteRecursively();
+        showAlert (jp (u8"分析できません"), jp (u8"前回の分析が終了していません。"));
+        return;
+    }
+
+    analysisActive = true;
+    analysisFolder = folder;
+    Log::info ("reference.analyze.start", "name=" + folder.getFileName()
+                                              + " track=" + juce::String (trackIndex)
+                                              + " clip=" + juce::String (itemIndex));
+    referenceOverlay.setBounds (getLocalBounds());
+    referenceOverlay.show (folder.getFileName());
+    refreshMacMenu(); // 分析中はFileメニューをdisabledにする
+}
+
+void MainComponent::pollReferenceAnalysis()
+{
+    if (! analysisActive)
+        return;
+
+    referenceOverlay.setStatusLine (referenceAnalyzer.currentLine());
+    if (referenceAnalyzer.status() == ReferenceAnalyzer::Status::running)
+        return;
+
+    analysisActive = false;
+    const auto result = referenceAnalyzer.takeResult();
+    referenceOverlay.dismiss();
+    const auto folder = analysisFolder;
+    analysisFolder = juce::File();
+
+    switch (result.status)
+    {
+        case ReferenceAnalyzer::Status::success:
+        {
+            Log::info ("reference.analyze.done",
+                       "name=" + folder.getFileName()
+                           + " hasCard=" + juce::String ((int) result.hasCard)
+                           + (result.hasCard ? " bpm=" + juce::String (result.bpm, 3) : juce::String())
+                           + (result.keyText.isNotEmpty() ? " key=" + result.keyText : juce::String()));
+            if (result.hasCard)
+            {
+                // 「BPM 112.9 / D major」。キーは card.json でゲート落ち省略されることがある
+                auto message = jp (u8"BPM ") + juce::String (result.bpm, 1)
+                               + (result.keyText.isNotEmpty() ? " / " + result.keyText : juce::String());
+                const double cardBpm = result.bpm;
+                juce::Component::SafePointer<MainComponent> safe (this);
+                juce::NativeMessageBox::showAsync (
+                    juce::MessageBoxOptions()
+                        .withIconType (juce::MessageBoxIconType::InfoIcon)
+                        .withTitle (jp (u8"分析が完了しました（") + folder.getFileName() + jp (u8"）"))
+                        .withMessage (message)
+                        .withButton (jp (u8"BPM をプロジェクトに設定"))
+                        .withButton (jp (u8"閉じる")),
+                    [safe, cardBpm] (int button)
+                    {
+                        if (button == 0 && safe != nullptr)
+                            safe->setProjectBpm (cardBpm); // undo対応済みの経路（⌘Zで戻せる）
+                    });
+            }
+            else
+            {
+                // card.json 自体が生成されなかった（BPM/テンポのゲート落ち）。分析結果は残っている
+                showAlert (jp (u8"分析は完了しましたが制約カードは生成されませんでした"),
+                           result.noCardReason.isNotEmpty()
+                               ? result.noCardReason
+                               : jp (u8"BPM・テンポのゲートが落ちています（analysis/ 内の結果は参照できます）。"));
+            }
+            break;
+        }
+
+        case ReferenceAnalyzer::Status::cancelled:
+            // 不完全な残骸は次回実行を壊す（analyze.sh はステム出力の存在で分離をスキップする）ため
+            // 今回のフォルダを丸ごと消す。コピー元リージョンは残っているのでやり直しは効く
+            folder.deleteRecursively();
+            Log::info ("reference.analyze.cancel", "name=" + folder.getFileName());
+            break;
+
+        default:
+            folder.deleteRecursively();
+            Log::error ("reference.analyze.fail",
+                        "name=" + folder.getFileName()
+                            + " message=" + result.errorMessage.replace ("\n", " / "));
+            showAlert (jp (u8"分析に失敗しました"), result.errorMessage);
+            break;
+    }
+    refreshMacMenu();
+}
+
+// ---- ドラムガチャ（右パネル第3モード）----
+
+void MainComponent::performGachaRoll()
+{
+    auto& panel = rightPanel.gachaPanel();
+    const auto cardFolder = panel.selectedCardFolder();
+    if (cardFolder == juce::File() || ! ReferenceTools::gachaAvailable())
+        return;
+
+    // ロック: パネルがトグルON時に確保した seed をそのまま渡す（現在の選択には依存しない —
+    // 「点灯しているのに振り直しで変わる」を作らないため）
+    juce::StringArray lockParts;
+    if (panel.lockedKickSeed().isNotEmpty())
+        lockParts.add ("kick=" + panel.lockedKickSeed());
+    if (panel.lockedSnareSeed().isNotEmpty())
+        lockParts.add ("snare=" + panel.lockedSnareSeed());
+    if (panel.lockedHatSeed().isNotEmpty())
+        lockParts.add ("hat=" + panel.lockedHatSeed());
+
+    juce::StringArray argv { ReferenceTools::venvPython().getFullPathName(),
+                             ReferenceTools::drumsScript().getFullPathName(),
+                             cardFolder.getFullPathName(),
+                             "--count", "8", "--porcelain" };
+    if (! lockParts.isEmpty())
+    {
+        argv.add ("--lock");
+        argv.add (lockParts.joinIntoString (","));
+    }
+
+    SpawnedProcess proc;
+    if (! proc.start (argv))
+    {
+        showAlert (jp (u8"ガチャを実行できません"), jp (u8"drums.py を起動できませんでした。"));
+        return;
+    }
+    // 実測0.5秒程度なので同期で読み切る。venv破損等で固まらないよう10秒で見切る
+    const auto deadline = juce::Time::getMillisecondCounter() + 10000;
+    juce::StringArray stdoutLines, stderrLines;
+    const bool finished = proc.readUntilFinished (
+        [deadline] { return juce::Time::getMillisecondCounter() > deadline; },
+        [&stdoutLines] (const juce::String& line) { stdoutLines.add (line); },
+        [&stderrLines] (const juce::String& line) { stderrLines.add (line); });
+    if (! finished || proc.exitCode() != 0)
+    {
+        juce::String detail;
+        for (int i = stderrLines.size(); --i >= 0 && detail.isEmpty();)
+            detail = stderrLines[i].trim();
+        Log::error ("gacha.roll_failed", "exit=" + juce::String (proc.exitCode())
+                                             + " detail=" + detail);
+        showAlert (jp (u8"ガチャに失敗しました"),
+                   detail.isNotEmpty() ? detail : jp (u8"drums.py がエラーで終了しました。"));
+        return;
+    }
+
+    // 候補一覧は「今回の実行で申告されたファイル名」だけから作る（gacha/ の全列挙だと
+    // 過去の振り直し分が混ざる）。JSON でない行は読み飛ばさずエラーにする（契約の破れを隠さない）
+    std::vector<GachaSession::Candidate> candidates;
+    for (const auto& line : stdoutLines)
+    {
+        if (line.trim().isEmpty())
+            continue;
+        GachaSession::Candidate candidate;
+        if (! GachaSession::parsePorcelainLine (line, candidate))
+        {
+            Log::error ("gacha.roll_failed", "message=porcelain_parse line=" + line);
+            showAlert (jp (u8"ガチャに失敗しました"), jp (u8"drums.py の出力を解釈できませんでした。"));
+            return;
+        }
+        candidates.push_back (std::move (candidate));
+    }
+
+    Log::info ("gacha.roll", "count=" + juce::String ((int) candidates.size())
+                                 + " locks=" + (lockParts.isEmpty() ? juce::String ("none")
+                                                                    : lockParts.joinIntoString (",")));
+    gachaSession.setCandidates (candidates);
+    panel.setCandidates (std::move (candidates));
+}
+
+void MainComponent::pickGachaCandidate (int index)
+{
+    if (engine.isRecording())
+        return;
+    auto& panel = rightPanel.gachaPanel();
+    if (index < 0 || index >= (int) panel.candidates().size())
+        return;
+    const auto cardFolder = panel.selectedCardFolder();
+    if (cardFolder == juce::File())
+        return;
+    const auto base = panel.candidates()[(size_t) index].base;
+    const auto midFile = cardFolder.getChildFile ("gacha").getChildFile (base + ".mid");
+
+    MidiImport::Result parsed;
+    juce::String error;
+    if (! MidiImport::parseFile (midFile, parsed, error))
+    {
+        Log::error ("gacha.pick_failed", "file=" + midFile.getFileName()
+                                             + " message=" + error.replace ("\n", " / "));
+        showAlert (jp (u8"候補を読めません"), error);
+        return;
+    }
+
+    // 仮配置（2回目以降は差し替え）。対象は選択中の Drum Kit トラック、無ければ「Drums」を自動作成。
+    // 位置は再生ヘッドの小節頭（録音開始位置と同じ丸め）。undo には積まない（「残す」で1件積む）
+    if (! gachaSession.previewCandidate (*project, parsed, selectedTrack, playheadBarStartPpq()))
+        return;
+
+    headers.rebuild(); // 自動作成トラックが増えたかもしれない
+    for (int i = 0; i < (int) project->tracks.size(); ++i)
+        if (project->tracks[(size_t) i].id == gachaSession.previewTrackId())
+            selectTrackFromUser (i);
+    pushSnapshot(); // 普段の再生で曲と一緒に鳴らす（単体プレビュー経路は作らない）
+    timeline.refresh();
+    panel.setKeepEnabled (true);
+    Log::info ("gacha.pick", "candidate=" + base);
+}
+
+void MainComponent::keepGachaCandidate()
+{
+    if (! gachaSession.hasPreview())
+        return;
+    if (! gachaSession.keep (*project, undoStack)) // pushCommitted（redo履歴破棄）で undo 1件
+        return;
+    setDirty (true); // 「残す」で初めてプロジェクトの変更として扱う（保存は⌘S）
+    rightPanel.gachaPanel().setKeepEnabled (false);
+    rightPanel.gachaPanel().clearCandidateSelection();
+    timeline.refresh();
+    Log::info ("gacha.keep");
+}
+
+void MainComponent::cancelGachaPreview()
+{
+    if (! gachaSession.hasPreview())
+        return;
+    const bool trackRemoved = gachaSession.trackIsPreviewOwned (gachaSession.previewTrackId());
+    if (! gachaSession.cancelPreview (*project))
+        return;
+
+    Log::info ("gacha.cancel_preview");
+    timeline.clearSelection();
+    if (trackRemoved)
+    {
+        // ヘッダは即座にバインドを外し（30Hz timer のダングリング防止）、rebuild は非同期にする。
+        // begin フック経由でヘッダ自身のコールバック内から呼ばれることがあり、
+        // 同期 rebuild は実行中のコンポーネントを破壊するため
+        headers.unbindAll();
+        selectTrack (selectedTrack); // 範囲内へクランプ（有効な範囲だけ再バインドされる）
+        juce::Component::SafePointer<MainComponent> safe (this);
+        juce::MessageManager::callAsync ([safe]
+        {
+            if (safe != nullptr)
+                safe->headers.rebuild();
+        });
+    }
+    pushSnapshot(); // 仮リージョンを消した状態を再生へ反映
+    timeline.refresh();
+    rightPanel.gachaPanel().setKeepEnabled (false);
+    rightPanel.gachaPanel().clearCandidateSelection();
+}
+
+void MainComponent::cancelReferenceAnalysisForClose()
+{
+    if (! analysisActive)
+        return;
+
+    Log::info ("reference.analyze.cancel_requested", "source=close");
+    referenceAnalyzer.cancelAndWait(); // SpawnedProcess がプロセスグループごと終了させてから戻る
+    analysisActive = false;
+    (void) referenceAnalyzer.takeResult();
+    referenceOverlay.dismiss();
+    if (analysisFolder != juce::File())
+    {
+        analysisFolder.deleteRecursively();
+        Log::info ("reference.analyze.cancel", "name=" + analysisFolder.getFileName() + " reason=close");
+        analysisFolder = juce::File();
+    }
+    refreshMacMenu();
+}
+
 void MainComponent::cancelImportForClose()
 {
     if (! importActive)
@@ -2489,6 +2988,8 @@ bool MainComponent::trySave()
     if (engine.isRecording())
         return false;
 
+    cancelGachaPreview(); // 未確定の仮リージョンを保存に混入させない
+
     project->bpm = transport.bpm.load();
     juce::String error;
     // undo/redo履歴が参照するWAVはGCから保護する（redoでの復元に備える）。
@@ -2623,6 +3124,17 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         {
             Log::info ("import.cancel_requested", "source=escape");
             audioImporter.cancel(); // 非同期。完了はpollImport()が拾う
+        }
+        return true;
+    }
+
+    // リファレンス分析中もモーダル（取り込み中と同じ扱い）
+    if (analysisActive)
+    {
+        if (escape)
+        {
+            Log::info ("reference.analyze.cancel_requested", "source=escape");
+            referenceAnalyzer.cancel(); // 非同期。完了はpollReferenceAnalysis()が拾う
         }
         return true;
     }
@@ -3131,6 +3643,14 @@ bool MainComponent::copySelectedItem()
         const auto& regions = project->tracks[(size_t) rsel.track].midiRegions;
         if (rsel.region < 0 || rsel.region >= (int) regions.size())
             return false;
+        // ガチャの仮リージョンは Copy も「撤去して中止」（⌘C→閉じる→⌘V で「残す」を
+        // 迂回して確定できてしまうため。通常はmouseDownガードで選択自体ができないが最終防衛線）
+        if (gachaSession.isPreviewObject (project->tracks[(size_t) rsel.track].id,
+                                          regions[(size_t) rsel.region].id))
+        {
+            cancelGachaPreview();
+            return false;
+        }
         itemClipboard.kind = ItemClipboard::Kind::midiRegion;
         itemClipboard.region = regions[(size_t) rsel.region]; // ノート・ミュートごと丸ごと
         itemClipboard.clip = {};
@@ -3147,6 +3667,8 @@ bool MainComponent::pasteItemAtPlayhead()
         return false;
     if (itemClipboard.kind == ItemClipboard::Kind::none)
         return false;
+    // begin フックより先に撤去する（下で取るトラック参照が、フック内の撤去で失効しないように）
+    cancelGachaPreview();
     if (selectedTrack < 0 || selectedTrack >= (int) project->tracks.size())
         return false;
 
@@ -3295,6 +3817,8 @@ void MainComponent::resized()
     topBarSeparator = juce::Rectangle<float> (1.0f, 16.0f)
                           .withCentre (topRow.removeFromRight (1).toFloat().getCentre());
     topRow.removeFromRight (8);
+    gachaButton.setBounds (auxButton());
+    topRow.removeFromRight (2);
     filesButton.setBounds (auxButton());
     topRow.removeFromRight (2);
     notesButton.setBounds (auxButton());
@@ -3372,4 +3896,6 @@ void MainComponent::resized()
         importOverlay.setBounds (getLocalBounds());
     if (urlOverlay.isVisible())
         urlOverlay.setBounds (getLocalBounds());
+    if (referenceOverlay.isVisible())
+        referenceOverlay.setBounds (getLocalBounds());
 }

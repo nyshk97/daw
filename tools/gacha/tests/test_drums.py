@@ -58,10 +58,10 @@ ok(drums.derive_audio_seed("kick", 0xDEADBEEF) == 0x80E3052070AF92A6, "audio see
 # 乱数消費・クリップ・tick 丸め）は素通りするので、実カード相当（dev 11.3ms）の jitter.json
 # でもゴールデンを焼き、両経路の変更を検出する
 GOLDENS = (
-    ("full.json", "42", "drums-kcf50d9fe-s27068bbd-hcefb6b8a-e7b845",
+    ("full.json", "42", "drums-kcf50d9fe-s27068bbd-hcefb6b8a-6da2db",
      "d772cc3bc0425c2a4861872a85bf40016baf5091a2cf8e8975760a4afdbda5b6",
      "13f791414863873a04c80898ac167225626cc263c01cec4259e23128650d96aa"),
-    ("jitter.json", "7", "drums-k5d935960-sbf6a240a-h7b19edc8-69a67a",
+    ("jitter.json", "7", "drums-k5d935960-sbf6a240a-h7b19edc8-61761c",
      "7e4bf02e479e6a5fbbdb41c381692ff6570ad3fe3c44d702d0c43b6a5b6342aa",
      "7ad9b82929a2a2910c2e398338ad9ddb2aa8f43c28b7c14e4f9e84bd1ddf422f"),
 )
@@ -199,6 +199,27 @@ hat_ticks_ex = [t for t, _ in drums.generate_pattern(extreme, seeds, bars=1, bpm
 ok(all(a < b for a, b in zip(hat_ticks_ex, hat_ticks_ex[1:])), f"tick 列が狭義単調増加: {hat_ticks_ex}")
 ok(len(hat_ticks_ex) == 16 and hat_ticks_ex[-1] < drums.TICKS_BAR, "全ノートが小節内に収まる")
 
+# --- note_off クランプ: 全 note_off ≤ bars×TICKS_BAR（LaLa 取り込みの小節切り上げで bars+1 小節化しない） ---
+# 小節末ぎりぎりの note_on（+NOTE_DURATION が境界を越える唯一のケース）を直接与えて固定する
+clamp_mid = drums.build_midi({"hat": [(drums.TICKS_BAR - 1, 100)]}, 120.0, bars=1)
+abs_ticks, now = {}, 0
+for m in clamp_mid.tracks[0]:
+    now += m.time
+    if m.type in ("note_on", "note_off"):
+        abs_ticks[m.type] = now
+ok(abs_ticks["note_on"] == drums.TICKS_BAR - 1, f"クランプテストの note_on 位置: {abs_ticks}")
+ok(abs_ticks["note_off"] == drums.TICKS_BAR, f"note_off が小節境界にクランプされる: {abs_ticks}")
+# 生成経路でも全 note_off が境界内であることを確認（ジッター fixture・複数 seed）
+for gseed in (7, 8, 9):
+    eff_j, bpm_j, _ = drums.parse_card(load_fixture("jitter.json"), "jitter")
+    n_j = drums.generate_pattern(eff_j, drums.resolve_lane_seeds(gseed, {}), bars=2, bpm=bpm_j)
+    m_j = drums.build_midi(n_j, bpm_j, bars=2)
+    now = 0
+    for m in m_j.tracks[0]:
+        now += m.time
+        if m.type == "note_off":
+            ok(now <= 2 * drums.TICKS_BAR, f"seed {gseed}: note_off {now} が 2小節境界内")
+
 # --- ⑦ 全レーンロック＋--count>1 は1件だけ生成して残りをスキップ申告 ---
 with tempfile.TemporaryDirectory() as tmp:
     out = Path(tmp) / "locked"
@@ -208,6 +229,38 @@ with tempfile.TemporaryDirectory() as tmp:
     )
     ok("全レーンがロックされている" in r.stdout, f"スキップ理由を申告: {r.stdout}")
     ok(len(list(out.iterdir())) == 3, "候補は1件（3ファイル）だけ")
+
+# --- --porcelain: stdout は JSON Lines のみ・人間向けは stderr・候補ごとに1行 ---
+with tempfile.TemporaryDirectory() as tmp:
+    out = Path(tmp) / "porcelain"
+    args = (str(FIXTURES / "full.json"), "--seed", "5", "--count", "3", "--bars", "1",
+            "--out", str(out), "--porcelain")
+    r = run_cli(*args)
+    lines = [ln for ln in r.stdout.splitlines() if ln.strip()]
+    ok(len(lines) == 3, f"--count 3 で3行: {lines}")
+    parsed = [json.loads(ln) for ln in lines]  # JSON でない行があればここで落ちる
+    for rec in parsed:
+        ok(set(rec) == {"base", "lane_seeds", "status"}, f"porcelain 行のキー: {rec}")
+        ok(set(rec["lane_seeds"]) == {"kick", "snare", "hat"}, f"レーン seed が揃う: {rec}")
+        ok(rec["status"] == "generated", f"初回は generated: {rec}")
+        for ext in (".mid", ".wav", ".json"):
+            ok((out / (rec["base"] + ext)).exists(), f"{rec['base']}{ext} が実在する")
+    ok("完了" in r.stderr and "カード:" in r.stderr, f"人間向け出力は stderr へ: {r.stderr[:120]}")
+    ok("完了" not in r.stdout, "stdout に人間向け出力が混ざらない")
+
+    # 2回目は全候補 skipped（ファイルは揃っている＝候補として有効）で同じ3行
+    r2 = run_cli(*args)
+    parsed2 = [json.loads(ln) for ln in r2.stdout.splitlines() if ln.strip()]
+    ok([p["base"] for p in parsed2] == [p["base"] for p in parsed], "2回目も同じ base 列")
+    ok(all(p["status"] == "skipped" for p in parsed2), f"2回目は skipped: {parsed2}")
+
+    # 全レーンロックは実行内重複を emit しない（ユニーク1件のみ）
+    out2 = Path(tmp) / "locked"
+    r3 = run_cli(str(FIXTURES / "full.json"), "--seed", "1", "--count", "3", "--bars", "1",
+                 "--lock", "kick=00000001,snare=00000002,hat=00000003",
+                 "--out", str(out2), "--porcelain")
+    lines3 = [ln for ln in r3.stdout.splitlines() if ln.strip()]
+    ok(len(lines3) == 1, f"全レーンロックは1行のみ: {lines3}")
 
 # --- スキップ3分岐: 完成済み=スキップ / サイドカー欠損=再生成 / ハッシュ不一致=エラー ---
 with tempfile.TemporaryDirectory() as tmp:

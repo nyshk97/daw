@@ -13,6 +13,7 @@
 #include "IconButton.h"
 #include "MixerWindow.h"
 #include "PianoRollView.h"
+#include "ReferenceAnalysisOverlay.h"
 #include "RightPanel.h"
 #include "ShortcutListOverlay.h"
 #include "TimelineView.h"
@@ -23,7 +24,9 @@
 #include "../audio/AudioFilePreview.h"
 #include "../audio/BounceRenderer.h"
 #include "../audio/PlaybackEngine.h"
+#include "../audio/ReferenceAnalyzer.h"
 #include "../audio/UrlDownloader.h"
+#include "../shared/GachaSession.h"
 #include "../shared/PreviewFifo.h"
 #include "../shared/PlaybackSnapshot.h"
 #include "../shared/Project.h"
@@ -68,6 +71,10 @@ public:
     void startUrlImportFlow();
     bool isUrlImporting() const { return urlStage != UrlStage::idle; }
     void cancelUrlImportForClose(); // DL中ならキャンセル→join→一時ディレクトリ削除まで待つ
+
+    // リファレンス分析（リージョン右クリック）。分析中はモーダル＋Fileメニューdisable
+    bool isAnalyzingReference() const { return analysisActive; }
+    void cancelReferenceAnalysisForClose(); // 分析中ならキャンセル→join→今回のフォルダ削除まで待つ
     // 前回クラッシュ等で残った一時ディレクトリの掃除。アプリ起動時に1回呼ぶ
     // （MainComponent生成前＝選択画面の時点で走らせたいので static かつ public）
     static void sweepStaleUrlTempDirs();
@@ -138,6 +145,7 @@ private:
     void toggleDeviceSettings (const char* source); // 歯車ボタン／⌘,（開いていれば閉じる。sourceはログ用）
     void closeDeviceSettings();
     void applyBpmText();
+    void setProjectBpm (double value); // BPM変更の一本化（undo対象。同値ならno-op）
     void beginBounce (const juce::File& target); // 保存先確定後: パラメータ固定→専用synth生成→ワーカー開始
     void exportSelectedItem();                   // ⌘E: 選択中のリージョン/クリップを書き出し（regionSelection優先）
     void startRegionExportFlow (int trackIndex, int itemIndex);  // リージョン書き出しの入口（保存ダイアログまで）
@@ -153,6 +161,10 @@ private:
                       bool othersSkipped = false, const juce::String& displayName = {});
     // MIDIトラックへのサンプル音源の割り当て（元のSRを保って取り込む）
     void startInstrumentImport (const juce::File& source, int trackIndex, bool othersSkipped = false);
+    // .mid の取り込み（同期・SR非確定）。startPpq = 配置位置（小節頭へ丸め済みであること）。
+    // ch10 → Drum Kit トラック / 他チャンネル → GM トラック（判断は shared/MidiImport）
+    void importMidiFile (const juce::File& source, juce::int64 startPpq, bool othersSkipped = false);
+    juce::int64 playheadBarStartPpq() const; // 再生ヘッド（編集基準位置）の小節頭PPQ（録音開始と同じ丸め）
     // 取り込みワーカーの起動（クリップ・サンプル共通の尻尾）。targetRate <= 0 で元SR保持
     bool beginImportWorker (const juce::File& source, double targetRate, bool othersSkipped,
                             const juce::String& displayName);
@@ -160,6 +172,17 @@ private:
     bool ensureProjectSampleRate (double& targetRate);
     void pollImport();                                    // Timerからの完了ポーリング・進捗反映
     void pollUrlImport();                                 // 同上（URLダウンロード）
+    void startReferenceAnalysis (int trackIndex, int itemIndex); // 右クリック「リファレンスとして分析」
+    void pollReferenceAnalysis();                         // 同上の完了ポーリング・stdout行の反映
+
+    // ドラムガチャ（右パネル第3モード）。仮配置・確定の判断は shared/GachaSession
+    void performGachaRoll();          // drums.py --porcelain を同期実行して候補一覧を更新
+    void pickGachaCandidate (int index); // 候補クリック → 仮配置（差し替え）
+    void keepGachaCandidate();        // 「残す」→ pushCommitted で undo 1件・dirty化
+    // 仮配置の中央撤去。モデルに触る全入口（undo/redo・保存・バウンス・書き出し・録音開始・
+    // モード離脱・カード変更・仮オブジェクトへの操作）から呼ぶ。ヘッダの rebuild は非同期
+    //（ヘッダ自身のコールバック内から begin フック経由で呼ばれることがあるため）
+    void cancelGachaPreview();
     void cleanupUrlTempDir();                             // URL取り込みの一時ディレクトリを畳む
     void finishImport (const AudioImporter::Result& result); // 成功時: リネーム→クリップ/トラック追加→保存
     void finishInstrumentImport (const AudioImporter::Result& result); // 同上（サンプル音源の割り当て）
@@ -257,6 +280,7 @@ private:
     IconButton settingsButton { IconButton::Icon::gear, juce::String::fromUTF8 (u8"オーディオ設定") };
     IconButton notesButton { IconButton::Icon::notes, juce::String::fromUTF8 (u8"プロジェクトメモ") };
     IconButton filesButton { IconButton::Icon::folder, juce::String::fromUTF8 (u8"オーディオファイル") };
+    IconButton gachaButton { IconButton::Icon::dice, juce::String::fromUTF8 (u8"ドラムガチャ") };
     IconButton addTrackButton { IconButton::Icon::plus, juce::String::fromUTF8 (u8"トラックを追加") };
     AddTrackOverlay addTrackOverlay;
     ShortcutListOverlay shortcutOverlay; // ⌘?のショートカット一覧（表示中のみ可視）
@@ -357,6 +381,18 @@ private:
     // 前半に取るので 0.7〜1.0 を AudioImporter に割り当てる（オーバーレイは1枚を通しで使う）
     float importProgressBase = 0.0f;
     float importProgressSpan = 1.0f;
+
+    // ドラムガチャ。候補の実行結果・仮配置状態は GachaSession が持つ
+    GachaSession gachaSession;
+
+    // リファレンス分析（右クリック「リファレンスとして分析」）。
+    // track.wav の書き出しは同期（速い）、analyze.sh はワーカー（約4分・キャンセル可）。
+    // キャンセル・失敗時は今回作成したフォルダを丸ごと削除する（analyze.sh はステム出力
+    // ディレクトリの存在だけで分離をスキップするため、残骸が次回実行を壊す）
+    ReferenceAnalyzer referenceAnalyzer;
+    ReferenceAnalysisOverlay referenceOverlay;
+    bool analysisActive = false;
+    juce::File analysisFolder; // 今回作成した references/<名前>
 
     // URLからの取り込み（yt-dlp）。DL完了後は落ちてきたWAVを startImport() に渡すだけで、
     // 取り込み自体は既存経路（AudioImporter → finishImport）に相乗りする

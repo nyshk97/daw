@@ -8,7 +8,7 @@ class IconButton : public juce::Button
 {
 public:
     enum class Icon { play, stop, record, metronome, gear, plus, notes, folder, speaker,
-                      speakerMuted, sort };
+                      speakerMuted, sort, dice };
 
     IconButton (Icon initialIcon, const juce::String& accessibleName)
         : juce::Button (accessibleName), icon (initialIcon) {}
@@ -119,7 +119,7 @@ public:
         // 線画アイコン（メモ・フォルダ・歯車）は塗り図形と同じ寸法だと軽く見えるので一回り大きくする
         const bool strokeIcon = icon == Icon::notes || icon == Icon::folder || icon == Icon::gear
                                 || icon == Icon::speaker || icon == Icon::speakerMuted
-                                || icon == Icon::sort;
+                                || icon == Icon::sort || icon == Icon::dice;
         const float side = juce::jmin (bounds.getWidth(), bounds.getHeight())
                            * (strokeIcon ? 0.57f : 0.42f);
         const auto r = juce::Rectangle<float> (side, side).withCentre (bounds.getCentre());
@@ -280,6 +280,19 @@ public:
                                                               juce::PathStrokeType::curved,
                                                               juce::PathStrokeType::rounded));
                 }
+                break;
+            }
+            case Icon::dice:
+            {
+                // サイコロ（3の目・対角線）。枠は線画、目は塗り
+                const float stroke = strokeWidth (side);
+                g.drawRoundedRectangle ({ at (r, 3.8f, 3.8f), at (r, 20.2f, 20.2f) },
+                                        design (side, 4.4f), stroke);
+                const float pip = design (side, 1.7f);
+                const float centres[3][2] = { { 8.3f, 8.3f }, { 12.0f, 12.0f }, { 15.7f, 15.7f } };
+                for (const auto& c : centres)
+                    g.fillEllipse (juce::Rectangle<float> (pip * 2.0f, pip * 2.0f)
+                                       .withCentre (at (r, c[0], c[1])));
                 break;
             }
             case Icon::folder:

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <vector>
 
 #include "Project.h"
@@ -31,11 +32,33 @@ public:
     // - structure: それ以外。音程モードの変更もこちら（停止要求＋resoundの経路が必要なため）
     enum class EditKind { structure, sampleValue, clipValue };
 
+    // 編集開始の通知（ガチャの仮配置撤去用）。begin() が状態を保存する**前**に呼ばれるので、
+    // ここで仮リージョンを取り除けば undo 履歴に仮配置が混入しない。
+    // フック内から begin()/undo()/redo() を呼び返さないこと（再入は想定しない）
+    std::function<void()> willBegin;
+
     // 編集操作の直前に呼ぶ。redo履歴は破棄される
     void begin (const Project& project, EditKind kind = EditKind::structure)
     {
+        if (willBegin != nullptr)
+            willBegin();
         undoStates.push_back ({ project.tracks, project.markers,
-                                project.fadeOutStartSixteenths, project.fadeOutEndSixteenths, kind });
+                                project.fadeOutStartSixteenths, project.fadeOutEndSixteenths,
+                                project.bpm, kind });
+        if ((int) undoStates.size() > maxDepth)
+            undoStates.erase (undoStates.begin());
+        redoStates.clear();
+    }
+
+    // ガチャ「残す」の確定: 呼び出し側が保持していた**仮配置前の tracks** を before として
+    // 1件積む（begin と違い現在の project の tracks は使わない — 現在はすでに候補が
+    // 置かれた後で、それを before にすると undo が no-op になる）。redo履歴は破棄される。
+    // markers・フェード・BPM は仮配置中に変わらない（全編集入口が先に撤去する）ので現在値でよい
+    void pushCommitted (std::vector<Track> beforeTracks, const Project& project)
+    {
+        undoStates.push_back ({ std::move (beforeTracks), project.markers,
+                                project.fadeOutStartSixteenths, project.fadeOutEndSixteenths,
+                                project.bpm, EditKind::structure });
         if ((int) undoStates.size() > maxDepth)
             undoStates.erase (undoStates.begin());
         redoStates.clear();
@@ -48,12 +71,9 @@ public:
             return false;
         kind = undoStates.back().kind;
         redoStates.push_back ({ std::move (project.tracks), std::move (project.markers),
-                                project.fadeOutStartSixteenths, project.fadeOutEndSixteenths, kind });
-        project.tracks = std::move (undoStates.back().tracks);
-        project.markers = std::move (undoStates.back().markers);
-        project.fadeOutStartSixteenths = undoStates.back().fadeOutStartSixteenths;
-        project.fadeOutEndSixteenths = undoStates.back().fadeOutEndSixteenths;
-        undoStates.pop_back();
+                                project.fadeOutStartSixteenths, project.fadeOutEndSixteenths,
+                                project.bpm, kind });
+        restoreFrom (undoStates, project);
         return true;
     }
 
@@ -63,12 +83,9 @@ public:
             return false;
         kind = redoStates.back().kind;
         undoStates.push_back ({ std::move (project.tracks), std::move (project.markers),
-                                project.fadeOutStartSixteenths, project.fadeOutEndSixteenths, kind });
-        project.tracks = std::move (redoStates.back().tracks);
-        project.markers = std::move (redoStates.back().markers);
-        project.fadeOutStartSixteenths = redoStates.back().fadeOutStartSixteenths;
-        project.fadeOutEndSixteenths = redoStates.back().fadeOutEndSixteenths;
-        redoStates.pop_back();
+                                project.fadeOutStartSixteenths, project.fadeOutEndSixteenths,
+                                project.bpm, kind });
+        restoreFrom (redoStates, project);
         return true;
     }
 
@@ -100,7 +117,20 @@ private:
         // 曲末フェード（Project直下の値。tracks/markers と違い移動できないので値コピー）
         int fadeOutStartSixteenths = 0;
         int fadeOutEndSixteenths = 0;
+        double bpm = 120.0; // BPM変更（LCD・「BPMをプロジェクトに設定」）もundo対象
         EditKind kind = EditKind::structure;
     };
+
+    // states 末尾 → project の復元（undo/redo 共通。State のフィールドを増やしたらここも足す）
+    static void restoreFrom (std::vector<State>& states, Project& project)
+    {
+        project.tracks = std::move (states.back().tracks);
+        project.markers = std::move (states.back().markers);
+        project.fadeOutStartSixteenths = states.back().fadeOutStartSixteenths;
+        project.fadeOutEndSixteenths = states.back().fadeOutEndSixteenths;
+        project.bpm = states.back().bpm;
+        states.pop_back();
+    }
+
     std::vector<State> undoStates, redoStates;
 };

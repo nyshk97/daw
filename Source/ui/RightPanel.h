@@ -5,6 +5,7 @@
 
 #include "../shared/Project.h"
 #include "AudioFileBrowserView.h"
+#include "GachaPanelView.h"
 
 // メモ本文の入力欄。フォーカスは枠の色でなく地の明度で示す
 // （面積が大きく四方を囲むため、青枠だとパネル内で枠が主役になってしまう）。
@@ -24,7 +25,7 @@ public:
 class RightPanel : public juce::Component
 {
 public:
-    enum class Mode { notes, files };
+    enum class Mode { notes, files, gacha };
 
     RightPanel();
 
@@ -36,6 +37,7 @@ public:
     Mode mode() const { return currentMode; }
     void focusNotesEditor();
     AudioFileBrowserView& fileBrowser() { return browser; }
+    GachaPanelView& gachaPanel() { return gacha; }
 
     std::function<void()> onMemoChanged;
 
@@ -54,6 +56,7 @@ private:
     juce::Label scopeLabel;
     MemoEditor memoEditor;
     AudioFileBrowserView browser;
+    GachaPanelView gacha;
 
     static constexpr int headerHeight = 42;
 

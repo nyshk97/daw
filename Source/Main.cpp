@@ -148,7 +148,8 @@ public:
     {
         auto* mainComp = mainWindow != nullptr ? mainWindow->currentMainComponent() : nullptr;
         const bool ready = mainComp != nullptr && ! mainComp->isBouncing()
-                           && ! mainComp->isImporting() && ! mainComp->isUrlImporting();
+                           && ! mainComp->isImporting() && ! mainComp->isUrlImporting()
+                           && ! mainComp->isAnalyzingReference();
 
         switch (id)
         {
@@ -183,7 +184,8 @@ public:
         // メニューのenable状態はNSMenu構築時のもので古いことがあるため、ここでも必ずガードする
         auto* mainComp = mainWindow != nullptr ? mainWindow->currentMainComponent() : nullptr;
         const bool ready = mainComp != nullptr && ! mainComp->isBouncing()
-                           && ! mainComp->isImporting() && ! mainComp->isUrlImporting();
+                           && ! mainComp->isImporting() && ! mainComp->isUrlImporting()
+                           && ! mainComp->isAnalyzingReference();
 
         switch (info.commandID)
         {
@@ -370,6 +372,7 @@ private:
             mainComp->cancelBounceForClose();
             mainComp->cancelUrlImportForClose(); // 取り込みより先に。DL成功直後の未回収分も畳む
             mainComp->cancelImportForClose();
+            mainComp->cancelReferenceAnalysisForClose(); // 分析中ならプロセスグループ終了→フォルダ削除まで待つ
             mainComp->finishRecordingForClose();
 
             if (! mainComp->hasUnsavedChanges())

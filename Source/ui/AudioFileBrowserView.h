@@ -22,6 +22,8 @@ public:
     std::function<void (const juce::File&)> onPreviewRequested;
     std::function<void()> onPreviewStopRequested;
     std::function<void (const juce::File&)> onImportRequested;
+    // .mid のダブルクリック（試聴・サンプル音源割り当ての対象外。配置位置は受け手が決める）
+    std::function<void (const juce::File&)> onMidiImportRequested;
 
     void setPreviewState (bool loading, bool playing, const juce::String& error);
     void setImporting (bool importing);

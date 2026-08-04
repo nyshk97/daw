@@ -17,6 +17,11 @@
 #include "shared/SynthBank.h"
 #include "shared/UndoStack.h"
 #include "shared/AudioFileTypes.h"
+#include "shared/MidiFileTypes.h"
+#include "shared/MidiImport.h"
+#include "shared/GachaSession.h"
+#include "shared/ReferenceExport.h"
+#include "shared/ReferenceTools.h"
 #include "shared/AudioBrowserNavigation.h"
 #include "shared/ClipFade.h"
 #include "shared/GainScale.h"
@@ -7175,6 +7180,519 @@ void testTempDirSweep()
 }
 
 
+// ---- MidiImport（.mid 取り込み）----
+
+// テスト用 SMF をメモリ上で組む。events は (tick, channel 1..16, pitch, velocity, isOn)。
+// tpq はファイルの ticks_per_beat（ガチャの .mid は 480）
+juce::MemoryBlock buildSmf (int tpq, const std::vector<std::tuple<int, int, int, int, bool>>& events,
+                            int midiFileType = 1, bool smpte = false)
+{
+    juce::MidiFile mf;
+    if (smpte)
+        mf.setSmpteTimeFormat (25, 40);
+    else
+        mf.setTicksPerQuarterNote (tpq);
+
+    juce::MidiMessageSequence seq;
+    for (const auto& [tick, channel, pitch, velocity, isOn] : events)
+    {
+        auto msg = isOn ? juce::MidiMessage::noteOn (channel, pitch, (juce::uint8) velocity)
+                        : juce::MidiMessage::noteOff (channel, pitch, (juce::uint8) 0);
+        msg.setTimeStamp ((double) tick);
+        seq.addEvent (msg);
+    }
+    mf.addTrack (seq);
+
+    juce::MemoryOutputStream out;
+    mf.writeTo (out, midiFileType);
+    return out.getMemoryBlock();
+}
+
+bool parseSmf (const juce::MemoryBlock& data, MidiImport::Result& result, juce::String& error)
+{
+    juce::MemoryInputStream in (data, false);
+    return MidiImport::parse (in, result, error);
+}
+
+void testMidiFileTypes()
+{
+    beginTest ("MidiFileTypes filter");
+    expect (MidiFileTypes::isSupported (juce::String ("/tmp/a.mid")), "midを受理");
+    expect (MidiFileTypes::isSupported (juce::String ("/tmp/a.MIDI")), "MIDI(大文字)を受理");
+    expect (! MidiFileTypes::isSupported (juce::String ("/tmp/a.wav")), "wavは対象外");
+    expect (! AudioFileTypes::isSupported ("/tmp/a.mid"), "AudioFileTypesにmidは足さない");
+}
+
+void testMidiImportParse()
+{
+    beginTest ("MidiImport parse");
+
+    // PPQ換算（480→960 = ×2）と ch10 分離。ch10 のノート＋ch1 のノートの混在ファイル
+    {
+        MidiImport::Result result;
+        juce::String error;
+        const auto data = buildSmf (480, {
+            { 0,    10, 36, 100, true }, { 60,   10, 36, 0, false },  // kick（vel0のnote_on=off）
+            { 480,  10, 42, 90,  true }, { 540,  10, 42, 0, false },  // hat
+            { 240,  1,  60, 80,  true }, { 720,  1,  60, 0, false },  // piano（ch1）
+        });
+        expect (parseSmf (data, result, error), "混在SMFをパースできる");
+        expect ((int) result.drumNotes.size() == 2, "ch10のノートは2つ");
+        expect ((int) result.otherNotes.size() == 1, "他チャンネルのノートは1つ");
+        expect (result.drumNotes[0].startPpq == 0 && result.drumNotes[0].lengthPpq == 120,
+                "tick 0-60 → PPQ 0-120（×2換算）");
+        expect (result.drumNotes[1].startPpq == 960 && result.drumNotes[1].lengthPpq == 120,
+                "tick 480 → PPQ 960");
+        expect (result.drumNotes[0].velocity == 100 && result.drumNotes[0].pitch == 36,
+                "velocity・pitch を保持");
+        expect (result.otherNotes[0].startPpq == 480 && result.otherNotes[0].lengthPpq == 960,
+                "ch1: tick 240-720 → PPQ 480-1440");
+        expect (result.drumRegionLengthPpq == Ppq::ticksPerBar, "ドラムは1小節に切り上げ");
+        expect (result.otherRegionLengthPpq == Ppq::ticksPerBar, "他chも1小節に切り上げ");
+    }
+
+    // 小節切り上げ: 終端が小節境界を1tickでも越えたら次の小節へ
+    {
+        MidiImport::Result result;
+        juce::String error;
+        // tpq=960（換算なし）。ノート終端 = 3841 tick > 1小節(3840)
+        const auto data = buildSmf (960, { { 3800, 10, 36, 100, true }, { 3841, 10, 36, 0, false } });
+        expect (parseSmf (data, result, error), "パース成功");
+        expect (result.drumRegionLengthPpq == Ppq::ticksPerBar * 2,
+                "終端3841 → 2小節へ切り上げ");
+    }
+
+    // (channel, pitch) の対応付け: 別チャンネルの同音 off が誤って閉じない
+    {
+        MidiImport::Result result;
+        juce::String error;
+        const auto data = buildSmf (960, {
+            { 0,   1, 60, 100, true },   // ch1 on
+            { 100, 2, 60, 90,  true },   // ch2 on（同pitch）
+            { 200, 2, 60, 0,   false },  // ch2 off → ch2のノートを閉じる（ch1ではない）
+            { 400, 1, 60, 0,   false },  // ch1 off
+        });
+        expect (parseSmf (data, result, error), "パース成功");
+        expect ((int) result.otherNotes.size() == 2, "2ノートになる");
+        expect (result.otherNotes[0].startPpq == 0 && result.otherNotes[0].lengthPpq == 400,
+                "ch1のノートはch2のoffで閉じない（長さ400）");
+        expect (result.otherNotes[1].startPpq == 100 && result.otherNotes[1].lengthPpq == 100,
+                "ch2のノートは自分のoffで閉じる（長さ100）");
+    }
+
+    // 重複 note_on（同ch同pitch）: 各々独立ノート・最も古い未クローズから閉じる（FIFO）
+    {
+        MidiImport::Result result;
+        juce::String error;
+        const auto data = buildSmf (960, {
+            { 0,   1, 62, 100, true },
+            { 100, 1, 62, 80,  true },
+            { 300, 1, 62, 0,   false },  // → 最初のon（tick 0）を閉じる
+            { 500, 1, 62, 0,   false },  // → 2番目のon（tick 100）を閉じる
+        });
+        expect (parseSmf (data, result, error), "パース成功");
+        expect ((int) result.otherNotes.size() == 2, "重複onは各々独立ノート");
+        expect (result.otherNotes[0].startPpq == 0 && result.otherNotes[0].lengthPpq == 300,
+                "FIFO: 最初のoffが最古のonを閉じる");
+        expect (result.otherNotes[1].startPpq == 100 && result.otherNotes[1].lengthPpq == 400,
+                "2番目のoffが残りのonを閉じる");
+    }
+
+    // 孤立 note_off は無視・未クローズ note_on はファイル末尾で閉じる
+    {
+        MidiImport::Result result;
+        juce::String error;
+        const auto data = buildSmf (960, {
+            { 0,    1, 70, 0,   false },  // 孤立off（無視）
+            { 100,  1, 64, 100, true },   // 未クローズon
+            { 2000, 1, 65, 90,  true },   // 未クローズon（これが最終イベント）
+        });
+        expect (parseSmf (data, result, error), "パース成功");
+        expect ((int) result.otherNotes.size() == 2, "孤立offはノートにならない");
+        expect (result.otherNotes[0].startPpq == 100 && result.otherNotes[0].lengthPpq == 1900,
+                "未クローズonは最終イベント時刻(2000)で閉じる");
+        expect (result.otherNotes[1].lengthPpq == 1, "最終イベント自身のノートは最低長1");
+    }
+
+    // ゼロ長になる換算でも lengthPpq >= 1
+    {
+        MidiImport::Result result;
+        juce::String error;
+        const auto data = buildSmf (480, { { 0, 1, 60, 100, true }, { 0, 1, 60, 0, false } });
+        // 同tickのon/off: offが先に処理される→孤立off無視→onは末尾(0)で閉じ、長さ最低1
+        expect (parseSmf (data, result, error), "パース成功");
+        expect ((int) result.otherNotes.size() == 1 && result.otherNotes[0].lengthPpq == 1,
+                "ゼロ長ノートは長さ1にクランプ");
+    }
+
+    // SMPTE 形式は明示エラー
+    {
+        MidiImport::Result result;
+        juce::String error;
+        const auto data = buildSmf (0, { { 0, 1, 60, 100, true }, { 100, 1, 60, 0, false } },
+                                    1, /*smpte=*/true);
+        expect (! parseSmf (data, result, error), "SMPTEは失敗する");
+        expect (error.contains ("SMPTE"), "エラーにSMPTEと明示");
+    }
+
+    // ノートが1つも無い・壊れたデータはエラー
+    {
+        MidiImport::Result result;
+        juce::String error;
+        const auto empty = buildSmf (480, {});
+        expect (! parseSmf (empty, result, error), "ノートなしは失敗");
+
+        juce::MemoryBlock garbage ("not a midi file", 15);
+        expect (! parseSmf (garbage, result, error), "壊れたデータは失敗");
+    }
+
+    // type 0（1トラック）と type 1（複数トラック相当）で同じ結果になる
+    {
+        MidiImport::Result r0, r1;
+        juce::String error;
+        const std::vector<std::tuple<int, int, int, int, bool>> events = {
+            { 0, 10, 36, 100, true }, { 60, 10, 36, 0, false },
+        };
+        expect (parseSmf (buildSmf (480, events, 0), r0, error), "type 0 をパースできる");
+        expect (parseSmf (buildSmf (480, events, 1), r1, error), "type 1 をパースできる");
+        expect (r0.drumNotes.size() == r1.drumNotes.size()
+                    && r0.drumNotes[0].startPpq == r1.drumNotes[0].startPpq
+                    && r0.drumRegionLengthPpq == r1.drumRegionLengthPpq,
+                "type 0/1 で同じ結果");
+    }
+}
+
+void testMidiImportApply()
+{
+    beginTest ("MidiImport apply");
+
+    const auto dir = makeTempDir();
+    juce::String error;
+    auto project = Project::createNew (dir.getChildFile ("proj"), error);
+    expect (project != nullptr, "プロジェクト作成");
+    project->tracks.clear(); // createNew の初期トラックを外して apply の追加分だけを見る
+    UndoStack undo;
+
+    MidiImport::Result mixed;
+    mixed.drumNotes = { MidiNote { 0, 36, 0, 120, 100 }, MidiNote { 0, 42, 960, 120, 90 } };
+    mixed.otherNotes = { MidiNote { 0, 60, 480, 960, 80 } };
+    mixed.drumRegionLengthPpq = Ppq::ticksPerBar;
+    mixed.otherRegionLengthPpq = Ppq::ticksPerBar * 2;
+
+    expect (project->sampleRate <= 0.0, "前提: 新規プロジェクトはSR未確定");
+    const auto outcome = MidiImport::apply (*project, undo, mixed, "beat", Ppq::ticksPerBar * 4);
+
+    expect (outcome.numTracksCreated == 2, "混在SMFは2トラック");
+    expect (outcome.firstTrackIndex == 0, "先頭に作られたトラックのindex");
+    expect ((int) project->tracks.size() == 2, "トラックが2本増えた");
+
+    const auto& drumTrack = project->tracks[0];
+    const auto& gmTrack = project->tracks[1];
+    expect (drumTrack.type == TrackType::midi && drumTrack.drums && drumTrack.drumPitch == -1,
+            "ch10側は Drum Kit（drums=true）");
+    expect (gmTrack.type == TrackType::midi && ! gmTrack.drums, "他ch側はGM（drums=false）");
+    expect (drumTrack.midiRegions.size() == 1 && gmTrack.midiRegions.size() == 1,
+            "各トラックに1リージョン");
+    expect (drumTrack.midiRegions[0].startPpq == Ppq::ticksPerBar * 4
+                && gmTrack.midiRegions[0].startPpq == Ppq::ticksPerBar * 4,
+            "2トラックは同じ開始位置");
+    expect (drumTrack.midiRegions[0].lengthPpq == Ppq::ticksPerBar
+                && gmTrack.midiRegions[0].lengthPpq == Ppq::ticksPerBar * 2,
+            "リージョン長は変換結果どおり");
+    expect ((int) drumTrack.midiRegions[0].notes.size() == 2, "ドラムノートが入る");
+    expect (drumTrack.midiRegions[0].notes[0].id != 0
+                && drumTrack.midiRegions[0].notes[1].id != 0
+                && drumTrack.midiRegions[0].notes[0].id != drumTrack.midiRegions[0].notes[1].id,
+            "ノートIDが採番される");
+    expect (drumTrack.id != 0 && gmTrack.id != 0 && drumTrack.id != gmTrack.id,
+            "トラックIDが採番される");
+    expect (project->sampleRate <= 0.0, "サンプルレートを確定させない");
+    expect (drumTrack.name.contains (juce::String::fromUTF8 (u8"ドラム")),
+            "混在時のドラム側は接尾辞つき");
+    expect (gmTrack.name == "beat", "他ch側はファイル名そのまま");
+
+    // undo は全体で1件: 1回の undo で2トラックとも消える
+    auto kind = UndoStack::EditKind::structure;
+    expect (undo.undo (*project, kind), "undoできる");
+    expect (project->tracks.empty(), "undo 1回で2トラックとも消える（全体で1件）");
+    expect (! undo.canUndo(), "undo履歴は1件だけだった");
+
+    // 単独（ドラムのみ）はファイル名そのまま・1トラック
+    MidiImport::Result drumsOnly;
+    drumsOnly.drumNotes = { MidiNote { 0, 36, 0, 120, 100 } };
+    drumsOnly.drumRegionLengthPpq = Ppq::ticksPerBar;
+    const auto outcome2 = MidiImport::apply (*project, undo, drumsOnly, "gacha-1", 0);
+    expect (outcome2.numTracksCreated == 1 && (int) project->tracks.size() == 1,
+            "ドラムのみは1トラック");
+    expect (project->tracks[0].name == "gacha-1", "単独はファイル名そのまま");
+
+    // 空の結果は何もしない（undoも積まない）
+    const bool couldUndoBefore = undo.canUndo();
+    const auto emptyOutcome = MidiImport::apply (*project, undo, {}, "empty", 0);
+    expect (emptyOutcome.numTracksCreated == 0 && (int) project->tracks.size() == 1,
+            "空の結果は何もしない");
+    expect (undo.canUndo() == couldUndoBefore, "空の結果でundoを積まない");
+
+    dir.deleteRecursively();
+}
+
+void testReferenceExport()
+{
+    beginTest ("ReferenceExport range copy and naming");
+
+    // サニタイズ: パス区切り・禁止文字・前後ドット/空白の除去。空は "reference"
+    expect (ReferenceExport::sanitizeName ("My Beat") == "My Beat", "普通の名前はそのまま");
+    expect (ReferenceExport::sanitizeName ("a/b\\c:d*e?f\"g<h>i|j") == "abcdefghij", "禁止文字を除去");
+    expect (ReferenceExport::sanitizeName ("  .hidden  ") == "hidden", "先頭ドットと空白を刈る");
+    expect (ReferenceExport::sanitizeName ("///") == "reference", "空になったらreference");
+    expect (ReferenceExport::sanitizeName ("") == "reference", "空文字はreference");
+
+    const auto dir = makeTempDir();
+
+    // 衝突連番: 既存フォルダがあれば -2, -3, ...
+    const auto first = ReferenceExport::allocateFolder (dir, "song");
+    expect (first.getFileName() == "song", "1つ目はそのままの名前");
+    first.createDirectory();
+    const auto second = ReferenceExport::allocateFolder (dir, "song");
+    expect (second.getFileName() == "song-2", "衝突は-2");
+    second.createDirectory();
+    expect (ReferenceExport::allocateFolder (dir, "song").getFileName() == "song-3", "さらに衝突は-3");
+
+    // 範囲コピー: ステレオWAVの offset〜offset+length が素のまま切り出される
+    juce::AudioBuffer<float> sourceBuffer (2, 1000);
+    for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < 1000; ++i)
+            sourceBuffer.setSample (ch, i, std::sin ((float) (i + ch * 500) * 0.01f) * 0.5f);
+    const auto wavFile = dir.getChildFile ("clip-001.wav");
+    expect (writeBufferWav (wavFile, sourceBuffer, 44100.0), "ソースWAVを用意");
+
+    Clip clip;
+    clip.fileName = "clip-001.wav";
+    clip.name = "verse loop";
+    clip.offsetSamples = 100;
+    clip.lengthSamples = 300;
+    clip.gain = 2.0f;          // 適用されないこと（素のままコピー）
+    clip.fadeInSamples = 50;   // 同上
+    clip.loopCount = 3;        // ループは1周分のみ
+
+    const auto folder = ReferenceExport::allocateFolder (dir, clip.name);
+    juce::String error;
+    expect (ReferenceExport::exportClipRange (dir, clip, folder, error), "書き出し成功");
+    const auto track = folder.getChildFile ("track.wav");
+    expect (track.existsAsFile(), "track.wavができる");
+
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (track));
+    expect (reader != nullptr && reader->lengthInSamples == 300, "長さ=lengthSamples（ループ1周分）");
+    expect (reader != nullptr && (int) reader->numChannels == 2, "チャンネル数を保持");
+    if (reader != nullptr)
+    {
+        juce::AudioBuffer<float> readBack (2, 300);
+        reader->read (&readBack, 0, 300, 0, true, true);
+        float maxDiff = 0.0f;
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < 300; ++i)
+                maxDiff = juce::jmax (maxDiff, std::abs (readBack.getSample (ch, i)
+                                                         - sourceBuffer.getSample (ch, i + 100)));
+        expect (maxDiff < 1.0f / (1 << 20), "サンプルが素のまま一致（ゲイン・フェード不適用）");
+    }
+
+    // 範囲が空のクリップはエラー
+    Clip empty;
+    empty.fileName = "clip-001.wav";
+    empty.offsetSamples = 1000;
+    empty.lengthSamples = 100; // ソース全長を超える（クランプ後 length 0）
+    expect (! ReferenceExport::exportClipRange (dir, empty,
+                                                ReferenceExport::allocateFolder (dir, "x"), error),
+            "空の範囲は失敗を返す");
+
+    dir.deleteRecursively();
+}
+
+// GachaSession 用の最小ドラム変換結果（4小節・kick 2発）
+MidiImport::Result makeDrumResult()
+{
+    MidiImport::Result result;
+    result.drumNotes = { MidiNote { 0, 36, 0, 120, 100 }, MidiNote { 0, 42, 960, 120, 90 } };
+    result.drumRegionLengthPpq = Ppq::ticksPerBar * 4;
+    return result;
+}
+
+void testGachaPorcelainParse()
+{
+    beginTest ("GachaSession porcelain parse");
+
+    GachaSession::Candidate c;
+    expect (GachaSession::parsePorcelainLine (
+                R"({"base": "drums-k01-s02-h03-abc", "lane_seeds": {"kick": "0000ab01", "snare": "0000ab02", "hat": "0000ab03"}, "status": "generated"})",
+                c),
+            "正常な行をパースできる");
+    expect (c.base == "drums-k01-s02-h03-abc" && c.kickSeed == "0000ab01"
+                && c.snareSeed == "0000ab02" && c.hatSeed == "0000ab03" && c.status == "generated",
+            "各フィールドが入る");
+    expect (! GachaSession::parsePorcelainLine ("not json", c), "JSONでない行は拒否");
+    expect (! GachaSession::parsePorcelainLine (R"({"base": "x"})", c), "キー欠損は拒否");
+    expect (! GachaSession::parsePorcelainLine (
+                R"({"base": "x", "lane_seeds": {"kick": "01"}, "status": "generated"})", c),
+            "レーン欠損は拒否");
+}
+
+void testGachaSessionPreview()
+{
+    beginTest ("GachaSession preview / replace / cancel / keep");
+
+    const auto dir = makeTempDir();
+    juce::String error;
+    auto project = Project::createNew (dir.getChildFile ("proj"), error);
+    expect (project != nullptr, "プロジェクト作成");
+    project->tracks.clear();
+
+    // --- 自動作成: Drum Kit トラックが無ければ「Drums」を作って配置 ---
+    {
+        GachaSession session;
+        expect (session.previewCandidate (*project, makeDrumResult(), -1, Ppq::ticksPerBar * 2),
+                "仮配置できる");
+        expect ((int) project->tracks.size() == 1, "Drumsトラックが自動作成される");
+        const auto& track = project->tracks[0];
+        expect (track.type == TrackType::midi && track.drums && track.name == "Drums",
+                "自動作成トラックは Drum Kit");
+        expect ((int) track.midiRegions.size() == 1, "仮リージョンが1つ");
+        expect (track.midiRegions[0].startPpq == Ppq::ticksPerBar * 2
+                    && track.midiRegions[0].lengthPpq == Ppq::ticksPerBar * 4,
+                "配置位置と長さ（4小節）");
+        expect (session.isPreviewObject (track.id, track.midiRegions[0].id),
+                "仮オブジェクト判定（リージョン）");
+        expect (session.trackIsPreviewOwned (track.id), "仮オブジェクト判定（自動作成トラック）");
+
+        // --- 差し替え: 2候補目でもリージョンは1つ・同じ場所 ---
+        auto second = makeDrumResult();
+        second.drumNotes[0].pitch = 38;
+        expect (session.previewCandidate (*project, second, -1, Ppq::ticksPerBar * 9),
+                "差し替えできる");
+        expect ((int) project->tracks.size() == 1 && (int) project->tracks[0].midiRegions.size() == 1,
+                "差し替えでリージョンは増えない");
+        expect (project->tracks[0].midiRegions[0].startPpq == Ppq::ticksPerBar * 2,
+                "差し替えは初回の位置を維持する（新しいstartPpqは無視）");
+        expect (project->tracks[0].midiRegions[0].notes[0].pitch == 38, "中身は新候補");
+
+        // --- キャンセル: 自動作成トラックごと撤去 ---
+        expect (session.cancelPreview (*project), "キャンセルで撤去");
+        expect (project->tracks.empty(), "自動作成トラックごと消える");
+        expect (! session.hasPreview(), "セッションが畳まれる");
+        expect (! session.cancelPreview (*project), "二重キャンセルはno-op");
+    }
+
+    // --- 既存の Drum Kit トラックへ配置 → キャンセルでトラックは残る ---
+    {
+        Track drumKit;
+        drumKit.id = project->allocateId();
+        drumKit.type = TrackType::midi;
+        drumKit.drums = true;
+        drumKit.name = "My Drums";
+        project->tracks.push_back (std::move (drumKit));
+
+        GachaSession session;
+        expect (session.previewCandidate (*project, makeDrumResult(), 0, 0), "既存トラックへ配置");
+        expect ((int) project->tracks.size() == 1, "トラックは増えない");
+        expect ((int) project->tracks[0].midiRegions.size() == 1, "リージョンが載る");
+        expect (! session.trackIsPreviewOwned (project->tracks[0].id),
+                "既存トラックは自動作成扱いにならない");
+        expect (session.cancelPreview (*project), "キャンセル");
+        expect ((int) project->tracks.size() == 1 && project->tracks[0].midiRegions.empty(),
+                "リージョンだけ消えトラックは残る");
+        project->tracks.clear();
+    }
+
+    // --- 残す→undo→redo / pushCommitted が redo 履歴を消す ---
+    {
+        UndoStack undo;
+        // 先に1編集入れて undo し、redo 履歴を作っておく（pushCommitted が破棄することの確認用）
+        undo.begin (*project);
+        Track dummy;
+        dummy.id = project->allocateId();
+        dummy.name = "dummy";
+        project->tracks.push_back (std::move (dummy));
+        auto kind = UndoStack::EditKind::structure;
+        undo.undo (*project, kind);
+        expect (undo.canRedo(), "前提: redo履歴がある");
+
+        GachaSession session;
+        expect (session.previewCandidate (*project, makeDrumResult(), -1, 0), "仮配置");
+        expect (session.keep (*project, undo), "keepは「確定変更あり」を返す");
+        expect (! undo.canRedo(), "pushCommittedはredo履歴を破棄する");
+        expect ((int) project->tracks.size() == 1
+                    && (int) project->tracks[0].midiRegions.size() == 1,
+                "残した候補はプロジェクトに残る");
+        expect (! session.hasPreview(), "keep後はセッションが畳まれる");
+
+        expect (undo.undo (*project, kind), "keep後にundoできる");
+        expect (project->tracks.empty(), "undoで仮配置前（トラックなし）に戻る");
+        expect (undo.redo (*project, kind), "redoできる");
+        expect ((int) project->tracks.size() == 1
+                    && (int) project->tracks[0].midiRegions.size() == 1,
+                "redoで候補が復活する");
+        project->tracks.clear();
+
+        // 仮配置なしの keep は false
+        GachaSession empty;
+        expect (! empty.keep (*project, undo), "仮配置なしのkeepはfalse");
+    }
+
+    // --- begin フック（willBegin）で撤去 → その後の undo で仮リージョンが復活しない ---
+    {
+        UndoStack undo;
+        GachaSession session;
+        undo.willBegin = [&] { session.cancelPreview (*project); };
+
+        expect (session.previewCandidate (*project, makeDrumResult(), -1, 0), "仮配置");
+        expect ((int) project->tracks.size() == 1, "仮トラックがある");
+
+        // 別の編集（トラック追加）: begin のフックが先に仮配置を撤去する
+        undo.begin (*project);
+        Track other;
+        other.id = project->allocateId();
+        other.name = "audio";
+        project->tracks.push_back (std::move (other));
+
+        expect ((int) project->tracks.size() == 1 && project->tracks[0].name == "audio",
+                "フックで仮トラックが消えてから編集された");
+        auto kind = UndoStack::EditKind::structure;
+        expect (undo.undo (*project, kind), "undoできる");
+        expect (project->tracks.empty(), "undoで仮リージョンが復活しない（空に戻る）");
+    }
+
+    dir.deleteRecursively();
+}
+
+void testUndoStackBpm()
+{
+    beginTest ("UndoStack BPM roundtrip");
+    const auto dir = makeTempDir();
+    juce::String error;
+    auto project = Project::createNew (dir.getChildFile ("proj"), error);
+    expect (project != nullptr, "プロジェクト作成");
+    project->bpm = 100.0;
+
+    UndoStack undo;
+    undo.begin (*project);
+    project->bpm = 140.0;
+
+    auto kind = UndoStack::EditKind::structure;
+    expect (undo.undo (*project, kind), "undoできる");
+    expect (std::abs (project->bpm - 100.0) < 1e-9, "undoでBPMが変更前に戻る");
+    expect (undo.redo (*project, kind), "redoできる");
+    expect (std::abs (project->bpm - 140.0) < 1e-9, "redoでBPMが再適用される");
+
+    // BPMを含まない編集のundoでもBPMは（beginの時点の値へ）正しく往復する
+    undo.begin (*project);
+    project->tracks.clear();
+    expect (undo.undo (*project, kind), "構造編集のundo");
+    expect (std::abs (project->bpm - 140.0) < 1e-9, "構造編集のundoでBPMは維持される");
+
+    dir.deleteRecursively();
+}
+
 } // namespace
 
 
@@ -7193,11 +7711,18 @@ int main()
     testBuildSnapshotClipOffsets();
     testEngineReadsClipOffsets();
     testUiPositionSample();
+    testMidiFileTypes();
+    testMidiImportParse();
+    testMidiImportApply();
     testSplitClip();
     testSplitMidiRegion();
     testSectionMarkers();
     testSectionMarkersInvalidLoad();
     testUndoStack();
+    testUndoStackBpm();
+    testReferenceExport();
+    testGachaPorcelainParse();
+    testGachaSessionPreview();
     testSaveGcProtectsUndoWavs();
     testSaveGcProtectsClipboardWav();
     testRegionEditShortcuts();
