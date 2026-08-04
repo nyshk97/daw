@@ -9,7 +9,13 @@ python = '3.12'
 [tasks."ref:url"]
 description = 'URLからリファレンスを1曲追加する（取得→トリム自動判定→分析。約4分）'
 usage = 'arg "<args>" var=#true help="URL [名前] [--trim a-b] [--dir 親フォルダ]"'
-run = 'tools/reference/analyze-url.sh $usage_args'
+# var=#true の $usage_args は各引数がシェルクォート付きで渡る（URL の ?= を含む引数が
+# '...' ごと下流に届いて "not a valid URL" になる）。eval set -- でクォートを外す
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+exec tools/reference/analyze-url.sh "$@"
+'''
 
 [tasks."ref:analyze"]
 description = 'track.wav があるフォルダを分析し直す（約4分。スクリプトを直したあとに使う）'
