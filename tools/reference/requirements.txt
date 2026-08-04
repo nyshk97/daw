@@ -6,12 +6,18 @@ torch==2.13.0
 torchaudio==2.11.0
 demucs==4.1.0
 
-# 音声→MIDI
-# 0.4.0 は tensorflow-macos<2.15.1 を要求するが py3.12 用の wheel が存在しないので 0.3.0 で固定
-basic-pitch==0.3.0
-# basic-pitch 0.3.0 は resampy<0.4.3 を指定するが、0.4.2 は setuptools 81+ で消えた
-# pkg_resources に依存していて import できない。0.4.3 で上書きする（動作は実測で確認済み）
+# 音声→MIDI: basic-pitch 本体はこのファイルに書けない（setup.sh が --no-deps で後入れする）
+# - basic-pitch 0.3.0 は resampy<0.4.3 を要求するが、0.4.2 は setuptools 81+ で消えた
+#   pkg_resources に依存していて import できない。0.4.3 で上書きしたい
+# - pip の resolver は1回の install -r でこの上書きを許さず ResolutionImpossible になる
+#   ので、basic-pitch を --no-deps で分離し、その依存を以下に手で列挙する
+# - 0.4.0 は tensorflow-macos<2.15.1 を要求するが py3.12 用の wheel が存在しないので 0.3.0 のまま
 resampy==0.4.3
+onnxruntime==1.28.0  # 推論バックエンド。topline.py が ONNX モデルを明示指定する（TF は py3.12 で使えず不要）
+scipy==1.16.3
+scikit-learn==1.7.2
+mir_eval==0.8.2
+numpy==1.26.4  # 上限が無いと 2.x に浮く。パイプラインを実測検証した 1.x に固定
 
 # 基礎分析・可視化
 librosa==0.11.0
