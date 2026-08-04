@@ -95,7 +95,7 @@ Phase 1 で `report.py` を作り、雛形の `【機】` を埋めた状態で�
 
 - [x] **Phase 0: 分析ラボ**（アプリ外・Python）— 実リファレンス曲でステム分離（Demucs）・BPM/キー検出・音声→MIDI（basic-pitch）を試し、何が実用精度かを見極める。結果は [../labs/reference-beat.md](../labs/reference-beat.md) に記録<br>→ 2026-08-03 完了。パイプラインは `tools/reference/`、第1号は `~/Music/daw/references/rau-def-freeze/`
 - [ ] **Phase 1: 制約カード＋分析レポートの形式確定** — Phase 0 で信頼できた分析だけを載せる。レポートの節構成は Phase 0 で確定済み（[分析レポートの書き方](#分析レポートの書き方)）<br>→ 制約カード側は 2026-08-04 完了（スキーマ v1・`card.py`・下記「制約カード」）。残りは `report.py` の要否判断のみ（`report.sh` が3曲とも人手介入なしで完走しており、雛形の機械埋めが今も必要かは未決）
-- [ ] **Phase 2: MIDI生成ガチャ**（CLIで完結。LaLaを触らずMIDIファイルの耳チェックで評価）
+- [ ] **Phase 2: MIDI生成ガチャ**（CLIで完結。LaLaを触らずMIDIファイルの耳チェックで評価）<br>→ 2026-08-04 ドラムのみの最小版に着手（`tools/gacha/`・plan は `docs/plans/2026-08-04-1158-drum-gacha-cli.md`）。プロファイルは骨格（強度0.35以上=毎回鳴る）と装飾（未満=確率）の2層解釈、レーン別 seed でキック固定→ハットだけ振り直しができる。耳チェックは自前合成 wav（音色は仮、本番は SynthBank の Drum Kit）
 - [ ] **Phase 3: LaLa内ガチャUI**（着手時に `/dig` で詰める。ガチャUIの置き場・候補ストック数はここで決める）
 
 各フェーズの実装は着手時に `/plot` で plan 化する。

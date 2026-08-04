@@ -40,6 +40,21 @@ run = 'cd tools/reference && .venv/bin/python tests/test_card.py'
 description = '分析パイプラインの venv を作り直す（初回・依存を変えたとき）'
 run = 'tools/reference/setup.sh'
 
+# --- MIDI生成ガチャ（tools/gacha/README.md） ---
+
+[tasks."gacha:drums"]
+description = 'カードからドラム候補をガチャ生成する（.mid＋耳チェック用.wav。既定8候補）'
+usage = 'arg "<args>" var=#true help="<リファレンスフォルダ|card.json> [--seed N] [--count N] [--bars N] [--lock kick=HEX8,...] [--out DIR]"'
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+exec tools/reference/.venv/bin/python tools/gacha/drums.py "$@"
+'''
+
+[tasks."gacha:test"]
+description = 'ドラムガチャの回帰テスト（fixture のみで数秒）'
+run = 'tools/reference/.venv/bin/python tools/gacha/tests/test_drums.py'
+
 [tasks.start]
 description = 'dev版アプリ（LaLa-dev.app）を起動する'
 run = 'open build/daw_artefacts/Debug/LaLa-dev.app'

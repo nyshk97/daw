@@ -557,3 +557,16 @@ JUCEアプリには合成キーストロークが届かないため、ショー�
 - **notarize 以降とリリース本番**: `scripts/release.sh <version>` を**ユーザーの Terminal で**実行（notarytool は Claude Code の Bash から keychain に届かない）
 - **アップデート一連の確認**: 低い VERSION でビルドした dmg の .app を `/Applications` にコピーして起動（Translocation 回避）→ Check for Updates → 新版が offer → 更新完走後に `plutil -extract CFBundleVersion raw /Applications/LaLa.app/Contents/Info.plist` と `codesign --verify --strict /Applications/LaLa.app` を確認
 - **旧名 daw からの初回アップデート（0.2.x 以前 → LaLa 初版）**: Sparkle は既存 `.app` のパスへ置き換えるため、更新後も `/Applications` のファイル名が `daw.app` のまま残る可能性がある（メニューバー・タイトルバーの表示名は Info.plist 由来で LaLa になる）。残っていたら Finder で `LaLa.app` に手動リネームする（bundle id 不変なので TCC・Sparkle の連続性に影響なし）。この確認は初回リリース時に一度だけ必要
+
+## 外部ツール（分析パイプライン・ガチャ）の確認
+
+アプリ外の Python ツールの回帰。どちらも fixture のみで数秒・ネット不要:
+
+```sh
+mise run ref:test     # tools/reference/ の card.py / gates.py
+mise run gacha:test   # tools/gacha/ の drums.py
+```
+
+- 判定: 末尾に `OK: <N> 件のチェックが通った` が出て exit 0。assert で落ちたらメッセージに期待値と実測値が出る
+- `gacha:test` は固定 fixture・固定 seed の出力を**既知 SHA-256 で焼き込んでいる**ため、seed 導出式・生成ロジック・wav 合成のどれを変えても落ちるのが正しい（落ちたら「同じファイル名で以前と違う音が出る」変更をした、ということ。意図的なら GENERATOR_VERSION を上げてテスト内の既知ハッシュを採り直す）
+- 実カードでの通し確認: `mise run gacha:drums <リファレンスフォルダ> -- --seed <固定値>` → 3ファイル×候補数が `gacha/` にでき、stdout の密度・swing がカードの性格と大きく乖離しないこと（少サンプルの密度は二項ノイズで ±1発/小節 程度ぶれる。乖離を疑うときは 1000 seed のシミュレーションで発火率 vs profile を見る — plan 2026-08-04 のログ参照）

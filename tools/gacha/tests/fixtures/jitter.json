@@ -1,0 +1,17 @@
+{
+  "card_version": 1,
+  "meta": {
+    "reference": "fixture-jitter",
+    "generated_at": "2026-08-04T00:00:00+09:00",
+    "assumptions": { "time_signature": "4/4" },
+    "excluded": []
+  },
+  "global": { "bpm": 112.946, "key": { "root": "D", "mode": "major" } },
+  "drums": {
+    "swing_ratio": 0.482,
+    "quantize_dev_ms": 11.3,
+    "kick_profile_by_beat": [0.971, 1.0, 0.966, 0.966],
+    "snare_profile_by_16th": [0.96, 0.158, 0.039, 0.296, 1.0, 0.175, 0.04, 0.066, 0.947, 0.17, 0.044, 0.298, 0.941, 0.163, 0.056, 0.041],
+    "hat_profile_by_16th": [0.937, 0.287, 0.308, 0.358, 1.0, 0.271, 0.404, 0.198, 0.932, 0.223, 0.385, 0.293, 0.951, 0.225, 0.41, 0.188]
+  }
+}

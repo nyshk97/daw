@@ -1,0 +1,17 @@
+{
+  "card_version": 1,
+  "meta": {
+    "reference": "fixture-minimal",
+    "generated_at": "2026-08-04T00:00:00+09:00",
+    "assumptions": { "time_signature": "4/4" },
+    "excluded": [
+      { "path": "drums.swing_ratio", "gate": "swing.ok", "reason": "fixture: 全省略の経路を固定する" },
+      { "path": "drums.quantize_dev_ms", "gate": "n/a", "reason": "fixture" },
+      { "path": "drums.kick_profile_by_beat", "gate": "downbeat.ok", "reason": "fixture" },
+      { "path": "drums.snare_profile_by_16th", "gate": "downbeat.ok", "reason": "fixture" },
+      { "path": "drums.hat_profile_by_16th", "gate": "downbeat.ok", "reason": "fixture" }
+    ]
+  },
+  "global": { "bpm": 90.0 },
+  "drums": {}
+}
