@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <juce_core/juce_core.h>
 
 #include "MidiImport.h"
@@ -21,13 +22,29 @@
 class GachaSession
 {
 public:
+    // パターン・ミニチュア（候補一覧の1行に描く1小節ぶんのドット譜）。
+    // レーンは [kick, snare, hat]、スロットは16分×16。値: 0=なし / 1=装飾（ゴースト）/ 2=骨格
+    static constexpr int patternLanes = 3;
+    static constexpr int patternSlots = 16;
+    using Pattern = std::array<std::array<int, patternSlots>, patternLanes>;
+
     // drums.py --porcelain の1行ぶん（候補一覧の1件）
     struct Candidate
     {
         juce::String base;                       // ファイル名の共通部（.mid/.wav/.json が並ぶ）
         juce::String kickSeed, snareSeed, hatSeed; // 8桁hex（--lock に渡す形式そのまま）
         juce::String status;                     // generated / regenerated / skipped
+        Pattern pattern {};                      // .mid から抽出したミニチュア（hasPattern=false なら未取得）
+        bool hasPattern = false;
     };
+
+    // 取り込み済みノート列（PPQ 960）から1小節ぶんのミニチュアを作る。
+    // - スロットはスウィング・ジッター込みの位置を最近傍の16分へ丸める（生成側のクリップ幅
+    //   ±40%×16分 < 半スロットなので取り違えない）
+    // - 濃淡は velocity で分ける: 生成器は vel ≈ 20 + 強度×96 なので、骨格閾値 0.35 に相当する
+    //   ≈53 を境に 骨格(2)/装飾(1) とみなす（表示専用の近似。境界の±ノイズは許容）
+    // - 2小節目以降のノートは無視する（ガチャは1小節パターンの繰り返し）
+    static Pattern patternFromDrumNotes (const std::vector<MidiNote>& notes);
 
     // porcelain 1行をパースする。JSON でない・キー欠損は false（呼び出し側は行を捨てずエラー扱いに）
     static bool parsePorcelainLine (const juce::String& line, Candidate& out);

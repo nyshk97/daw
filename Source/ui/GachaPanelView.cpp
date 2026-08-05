@@ -10,6 +10,70 @@ namespace
 juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
 }
 
+// 選択行の右端に出すチップ。普段は「仮配置中」の状態表示、ホバーすると「残す」ボタンに変わる
+// （状態とアクションを同じ場所に住まわせる。上段に独立の「残す」ボタンは置かない）。
+// 行そのものは透過させたまま（選択・候補クリックは ListBox 側が担う）チップだけがクリックを受ける
+// — AudioFileBrowserView::RowIconComponent と同じ構え
+class GachaPanelView::KeepChipRow final : public juce::Component
+{
+public:
+    KeepChipRow()
+    {
+        setInterceptsMouseClicks (false, true); // 自分は透過、チップだけ受ける
+        addChildComponent (chip);
+    }
+
+    void update (bool showChip, std::function<void()> onKeepClick)
+    {
+        chip.onKeepClick = std::move (onKeepClick);
+        chip.setVisible (showChip);
+    }
+
+    void resized() override
+    {
+        chip.setBounds (getWidth() - chipWidth - 8, getHeight() / 2 - chipHeight / 2,
+                        chipWidth, chipHeight);
+    }
+
+private:
+    static constexpr int chipWidth = 64;
+    static constexpr int chipHeight = 18;
+
+    struct Chip final : public juce::Component,
+                        public juce::SettableTooltipClient
+    {
+        Chip()
+        {
+            setMouseCursor (juce::MouseCursor::PointingHandCursor);
+            setTooltip (jp (u8"この候補をプロジェクトに残す（確定）"));
+        }
+
+        void mouseEnter (const juce::MouseEvent&) override { hovered = true; repaint(); }
+        void mouseExit (const juce::MouseEvent&) override { hovered = false; repaint(); }
+        void mouseDown (const juce::MouseEvent&) override
+        {
+            if (onKeepClick != nullptr)
+                onKeepClick();
+        }
+
+        void paint (juce::Graphics& g) override
+        {
+            const auto bounds = getLocalBounds().toFloat();
+            g.setColour (hovered ? Theme::playGreen.withAlpha (0.9f) : Theme::accent);
+            g.fillRoundedRectangle (bounds, 4.0f);
+            g.setColour (juce::Colours::white);
+            g.setFont (Fonts::small());
+            g.drawText (hovered ? jp (u8"残す") : jp (u8"仮配置中"), getLocalBounds(),
+                        juce::Justification::centred);
+        }
+
+        std::function<void()> onKeepClick;
+        bool hovered = false;
+    };
+
+    Chip chip;
+};
+
 GachaPanelView::GachaPanelView()
 {
     addAndMakeVisible (cardBox);
@@ -42,24 +106,20 @@ GachaPanelView::GachaPanelView()
     hatLock.onClick = [this] { handleLockToggle (hatLock, lockedHat); };
 
     addAndMakeVisible (rollButton);
-    rollButton.setButtonText (jp (u8"振り直す"));
+    rollButton.setButtonText (jp (u8"🎲 振り直す"));
     rollButton.onClick = [this]
     {
         if (onRoll)
             onRoll();
     };
 
-    addAndMakeVisible (keepButton);
-    keepButton.setButtonText (jp (u8"残す"));
-    keepButton.setEnabled (false); // 候補を仮配置してから押せる
-    keepButton.onClick = [this]
-    {
-        if (onKeep)
-            onKeep();
-    };
+    addAndMakeVisible (lockCaption);
+    lockCaption.setText (juce::String::fromUTF8 (u8"ロック"), juce::dontSendNotification);
+    lockCaption.setFont (Fonts::small());
+    lockCaption.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.4f));
 
     addAndMakeVisible (listBox);
-    listBox.setRowHeight (26);
+    listBox.setRowHeight (36); // 3レーン×16分のドット譜が入る高さ
     listBox.setMultipleSelectionEnabled (false);
     listBox.setColour (juce::ListBox::backgroundColourId, Theme::timelineBg);
     listBox.setColour (juce::ListBox::outlineColourId, juce::Colours::white.withAlpha (0.07f));
@@ -70,10 +130,15 @@ GachaPanelView::GachaPanelView()
     infoLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.45f));
     infoLabel.setJustificationType (juce::Justification::topLeft);
 
+    // 下部の1行ガイド（次にやることを常に言う。ロックが押せない理由もここに出す）
+    addAndMakeVisible (statusLabel);
+    statusLabel.setFont (Fonts::small());
+    statusLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.4f));
+    statusLabel.setJustificationType (juce::Justification::topLeft);
+
     // Space（再生/停止）を奪わせない
     for (auto* c : std::initializer_list<juce::Component*> { &cardBox, &kickLock, &snareLock,
-                                                            &hatLock, &rollButton, &keepButton,
-                                                            &listBox })
+                                                            &hatLock, &rollButton, &listBox })
     {
         c->setWantsKeyboardFocus (false);
         c->setMouseClickGrabsKeyboardFocus (false);
@@ -148,9 +213,10 @@ void GachaPanelView::handleLockToggle (juce::TextButton& button, juce::String& s
 {
     if (button.getToggleState())
     {
-        // ONにした瞬間の選択中候補から seed を確保する。未選択ならONにできない
-        //（何をロックするのか決まらないため。ボタン自体も未選択時はdisabledにしている）
+        // ONにした瞬間の選択中候補から seed を確保する。未選択なら黙って戻さず理由を言う
+        //（disabled で無反応にすると「押しても効かない」に見える）
         const int row = selectedCandidate();
+        const auto laneName = &button == &kickLock ? "kick" : &button == &snareLock ? "snare" : "hat";
         if (row >= 0 && row < (int) items.size())
         {
             stored = &button == &kickLock    ? items[(size_t) row].kickSeed
@@ -160,6 +226,10 @@ void GachaPanelView::handleLockToggle (juce::TextButton& button, juce::String& s
         else
         {
             button.setToggleState (false, juce::dontSendNotification);
+            statusLabel.setText (jp (u8"ロックは候補を選んでから — どの候補の ") + laneName
+                                     + jp (u8" を固定するかが決まらないためです"),
+                                 juce::dontSendNotification);
+            return; // updateControls で案内を上書きしない
         }
     }
     else
@@ -180,7 +250,8 @@ void GachaPanelView::clearLocks()
 
 void GachaPanelView::selectedRowsChanged (int)
 {
-    updateControls(); // ロックトグルの有効/無効は候補選択の有無で変わる
+    listBox.updateContent(); // チップ（仮配置中/残す）は選択行にだけ出す
+    updateControls();        // ロックトグルの有効/無効は候補選択の有無で変わる
 }
 
 void GachaPanelView::updateControls()
@@ -193,11 +264,36 @@ void GachaPanelView::updateControls()
     rollButton.setTooltip (allLocked ? jp (u8"全レーンをロックすると振り直せません（同じ候補しか出ないため）")
                                      : juce::String());
     cardBox.setEnabled (toolsAvailable);
-    // ロックをONにするには「どの候補の目を固定するか」が要る → 未選択時はOFF側だけ操作可
-    const bool canLock = toolsAvailable && hasCard && selectedCandidate() >= 0;
-    kickLock.setEnabled (canLock || kickLock.getToggleState());
-    snareLock.setEnabled (canLock || snareLock.getToggleState());
-    hatLock.setEnabled (canLock || hatLock.getToggleState());
+    // ロックは候補があれば常に押せる（未選択で押したときは handleLockToggle が理由を案内する）。
+    // ON状態は 🔒 を付けて「固定されている」ことを名乗る
+    const bool lanesUsable = toolsAvailable && hasCard && ! items.empty();
+    kickLock.setEnabled (lanesUsable || kickLock.getToggleState());
+    snareLock.setEnabled (lanesUsable || snareLock.getToggleState());
+    hatLock.setEnabled (lanesUsable || hatLock.getToggleState());
+    kickLock.setButtonText (lockedKick.isNotEmpty() ? jp (u8"🔒 kick") : juce::String ("kick"));
+    snareLock.setButtonText (lockedSnare.isNotEmpty() ? jp (u8"🔒 snare") : juce::String ("snare"));
+    hatLock.setButtonText (lockedHat.isNotEmpty() ? jp (u8"🔒 hat") : juce::String ("hat"));
+
+    // 下部の1行ガイド（いまの状態で次にやることを言う）
+    const int sel = selectedCandidate();
+    if (! items.empty())
+    {
+        if (allLocked)
+            statusLabel.setText (jp (u8"全レーンをロック中 — 振り直しても同じ候補しか出ません"),
+                                 juce::dontSendNotification);
+        else if (previewActive && sel >= 0)
+            statusLabel.setText (jp (u8"候補") + juce::String (sel + 1)
+                                     + jp (u8"を仮配置中 — 「仮配置中」をクリックで残す（確定）・"
+                                            u8"他の候補クリックで差し替え"),
+                                 juce::dontSendNotification);
+        else
+            statusLabel.setText (jp (u8"① 候補をクリックで仮配置 → ② 気に入ったレーンを🔒 → ③ 振り直す"),
+                                 juce::dontSendNotification);
+    }
+    else
+    {
+        statusLabel.setText ({}, juce::dontSendNotification);
+    }
 
     if (! toolsAvailable)
         infoLabel.setText (ReferenceTools::unavailableReason(), juce::dontSendNotification);
@@ -213,6 +309,16 @@ void GachaPanelView::updateControls()
     listBox.setVisible (! infoLabel.isVisible() || ! items.empty());
 }
 
+void GachaPanelView::setKeepEnabled (bool enabled)
+{
+    previewActive = enabled;
+    listBox.updateContent(); // 選択行のチップ（仮配置中/残す）を付け替える
+    listBox.repaint();
+    updateControls();
+}
+
+// 候補行 = 番号＋K/S/H のドット譜（1小節・16分×16）＋仮配置バッジ。
+// hex の seed は表示しない（人が比べたいのはパターンそのもの。seed はロックの内部表現に徹する）
 void GachaPanelView::paintListBoxItem (int row, juce::Graphics& g, int width, int height,
                                        bool selected)
 {
@@ -227,13 +333,68 @@ void GachaPanelView::paintListBoxItem (int row, juce::Graphics& g, int width, in
     g.setColour (juce::Colours::white.withAlpha (selected ? 0.94f : 0.72f));
     g.setFont (Fonts::body());
     g.drawText (juce::String (row + 1), 10, 0, 18, height, juce::Justification::centredLeft);
-    // レーン seed（ロック対象を選ぶ手掛かり。ファイル名と同じ8桁hex）
-    g.setFont (Fonts::mono (11.0f));
-    g.setColour (juce::Colours::white.withAlpha (selected ? 0.80f : 0.55f));
-    g.drawText ("k " + candidate.kickSeed + "  s " + candidate.snareSeed + "  h " + candidate.hatSeed,
-                34, 0, width - 42, height, juce::Justification::centredLeft, true);
+
+    // レーンタグ（K/S/H）
+    const bool laneLocked[GachaSession::patternLanes] = {
+        lockedKick.isNotEmpty(), lockedSnare.isNotEmpty(), lockedHat.isNotEmpty() };
+    static const char* laneTags[GachaSession::patternLanes] = { "K", "S", "H" };
+    const float laneHeight = 7.0f;
+    const float laneGap = 3.0f;
+    const float top = (height - (laneHeight * 3 + laneGap * 2)) / 2.0f;
+    g.setFont (Fonts::mono (7.0f));
+    for (int lane = 0; lane < GachaSession::patternLanes; ++lane)
+    {
+        const float y = top + lane * (laneHeight + laneGap);
+        g.setColour (juce::Colours::white.withAlpha (0.3f));
+        g.drawText (laneTags[lane], juce::Rectangle<float> (30.0f, y, 10.0f, laneHeight),
+                    juce::Justification::centredLeft);
+    }
+
+    // ドット譜。骨格=濃・装飾（ゴースト）=淡。ロック中レーンはアクセント色で「固定」を示す
+    if (candidate.hasPattern)
+    {
+        const float cellGap = 1.5f;
+        const float gridX = 44.0f;
+        const float gridRight = (float) width - 66.0f; // 右端はバッジ分を空ける
+        const float cellW = juce::jmax (3.0f, (gridRight - gridX) / 16.0f - cellGap);
+        for (int lane = 0; lane < GachaSession::patternLanes; ++lane)
+        {
+            const float y = top + lane * (laneHeight + laneGap);
+            for (int slot = 0; slot < GachaSession::patternSlots; ++slot)
+            {
+                const int value = candidate.pattern[(size_t) lane][(size_t) slot];
+                const auto base = laneLocked[lane] ? Theme::accent : juce::Colours::white;
+                g.setColour (value == 2   ? base.withAlpha (0.80f)
+                             : value == 1 ? base.withAlpha (0.34f)
+                                          : juce::Colours::white.withAlpha (0.06f));
+                g.fillRoundedRectangle (gridX + slot * (cellW + cellGap), y, cellW, laneHeight, 1.5f);
+            }
+        }
+    }
+
+    // 「仮配置中」バッジは KeepChipRow（refreshComponentForRow）が重ねる（ホバーで「残す」になるため）
+
     g.setColour (juce::Colours::white.withAlpha (0.05f));
     g.drawHorizontalLine (height - 1, 8.0f, (float) width);
+}
+
+juce::Component* GachaPanelView::refreshComponentForRow (int row, bool selected,
+                                                         juce::Component* existing)
+{
+    std::unique_ptr<juce::Component> owned (existing);
+    if (! juce::isPositiveAndBelow (row, getNumRows()))
+        return nullptr;
+
+    auto* chipRow = dynamic_cast<KeepChipRow*> (owned.get());
+    if (chipRow == nullptr)
+    {
+        chipRow = new KeepChipRow();
+        owned.reset (chipRow);
+    }
+    // チップは「仮配置中の選択行」にだけ出す。クリックは onKeep（確定）へ
+    chipRow->update (selected && previewActive,
+                     [this] { if (onKeep) onKeep(); });
+    return owned.release();
 }
 
 void GachaPanelView::listBoxItemClicked (int row, const juce::MouseEvent&)
@@ -255,6 +416,7 @@ void GachaPanelView::resized()
     area.removeFromTop (8);
 
     auto lockRow = area.removeFromTop (24);
+    lockCaption.setBounds (lockRow.removeFromLeft (40));
     const int lockWidth = (lockRow.getWidth() - 2 * 6) / 3;
     kickLock.setBounds (lockRow.removeFromLeft (lockWidth));
     lockRow.removeFromLeft (6);
@@ -263,10 +425,7 @@ void GachaPanelView::resized()
     hatLock.setBounds (lockRow);
     area.removeFromTop (8);
 
-    auto buttonRow = area.removeFromTop (28);
-    rollButton.setBounds (buttonRow.removeFromLeft ((buttonRow.getWidth() - 8) / 2));
-    buttonRow.removeFromLeft (8);
-    keepButton.setBounds (buttonRow);
+    rollButton.setBounds (area.removeFromTop (28));
     area.removeFromTop (10);
 
     if (infoLabel.isVisible() && items.empty())
@@ -274,5 +433,8 @@ void GachaPanelView::resized()
         infoLabel.setBounds (area.removeFromTop (72));
         area.removeFromTop (4);
     }
+    // 下部の1行ガイド（2行ぶんの高さ。候補がないときは空文字で場所だけ確保）
+    statusLabel.setBounds (area.removeFromBottom (32));
+    area.removeFromBottom (4);
     listBox.setBounds (area);
 }

@@ -7538,6 +7538,33 @@ void testGachaPorcelainParse()
             "レーン欠損は拒否");
 }
 
+void testGachaPatternMiniature()
+{
+    beginTest ("GachaSession pattern miniature");
+
+    // 骨格(vel>=53)と装飾(vel<53)の濃淡・16分スロットへの丸め・2小節目以降の無視
+    std::vector<MidiNote> notes = {
+        MidiNote { 0, 36, 0, 120, 116 },     // kick 骨格 @slot0
+        MidiNote { 0, 38, 960, 120, 100 },   // snare 骨格 @slot4（2拍目）
+        MidiNote { 0, 38, 730, 120, 40 },    // snare 装飾 @slot3（720へ丸め。ジッター+10tick）
+        MidiNote { 0, 42, 1150, 120, 30 },   // hat 装飾 @slot5（1200へ丸め。-50tick）
+        MidiNote { 0, 42, 3830, 120, 90 },   // hat 骨格 小節末（3840へ丸まるが15に収める）
+        MidiNote { 0, 36, 3840, 120, 116 },  // 2小節目 → 無視
+        MidiNote { 0, 47, 480, 120, 100 },   // 対象外ピッチ（tom等）→ 無視
+    };
+    const auto pattern = GachaSession::patternFromDrumNotes (notes);
+    expect (pattern[0][0] == 2, "kickの骨格が濃で入る");
+    expect (pattern[1][4] == 2, "snareの骨格がスロット4に入る");
+    expect (pattern[1][3] == 1, "snareの装飾（ジッター込み）が最近傍スロットへ丸まる");
+    expect (pattern[2][5] == 1, "hatの装飾が最近傍スロットへ丸まる");
+    expect (pattern[2][15] == 2, "小節末のノートはスロット15に収まる（16へ溢れない）");
+    int total = 0;
+    for (const auto& lane : pattern)
+        for (int cell : lane)
+            total += cell != 0 ? 1 : 0;
+    expect (total == 5, "2小節目・対象外ピッチは数えない");
+}
+
 void testGachaSessionPreview()
 {
     beginTest ("GachaSession preview / replace / cancel / keep");
@@ -7722,6 +7749,7 @@ int main()
     testUndoStackBpm();
     testReferenceExport();
     testGachaPorcelainParse();
+    testGachaPatternMiniature();
     testGachaSessionPreview();
     testSaveGcProtectsUndoWavs();
     testSaveGcProtectsClipboardWav();

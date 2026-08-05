@@ -26,6 +26,28 @@ bool GachaSession::parsePorcelainLine (const juce::String& line, Candidate& out)
     return true;
 }
 
+GachaSession::Pattern GachaSession::patternFromDrumNotes (const std::vector<MidiNote>& notes)
+{
+    Pattern pattern {};
+    const juce::int64 slotTicks = Ppq::ticksPerBar / patternSlots; // 16分 = 240 tick
+    for (const auto& note : notes)
+    {
+        if (note.startPpq >= Ppq::ticksPerBar)
+            continue; // 2小節目以降（1小節パターンの繰り返し）は見ない
+        const int lane = note.pitch == 36 ? 0 : note.pitch == 38 ? 1 : note.pitch == 42 ? 2 : -1;
+        if (lane < 0)
+            continue;
+        // 最近傍の16分スロットへ丸める（小節末のスウィング裏拍が16へ丸まったら15に収める）
+        const int slot = juce::jmin (patternSlots - 1,
+                                     (int) ((note.startPpq + slotTicks / 2) / slotTicks));
+        // 骨格(強度>=0.35)は vel ≈ 20+0.35×96 ≈ 53 以上になる（生成器の式の逆算。表示専用の近似）
+        const int strength = note.velocity >= 53 ? 2 : 1;
+        auto& cell = pattern[(size_t) lane][(size_t) slot];
+        cell = juce::jmax (cell, strength);
+    }
+    return pattern;
+}
+
 int GachaSession::findPreviewTrack (const Project& project) const
 {
     for (int i = 0; i < (int) project.tracks.size(); ++i)

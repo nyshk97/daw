@@ -2672,6 +2672,20 @@ void MainComponent::performGachaRoll()
         candidates.push_back (std::move (candidate));
     }
 
+    // 一覧のパターン・ミニチュア用に各候補の .mid を読む（8件×数KBなので同期で足りる）。
+    // 読めなくても一覧からは外さない（hasPattern=false の行はドットなしで出る）
+    for (auto& candidate : candidates)
+    {
+        MidiImport::Result parsed;
+        juce::String parseError;
+        const auto midFile = cardFolder.getChildFile ("gacha").getChildFile (candidate.base + ".mid");
+        if (MidiImport::parseFile (midFile, parsed, parseError))
+        {
+            candidate.pattern = GachaSession::patternFromDrumNotes (parsed.drumNotes);
+            candidate.hasPattern = true;
+        }
+    }
+
     Log::info ("gacha.roll", "count=" + juce::String ((int) candidates.size())
                                  + " locks=" + (lockParts.isEmpty() ? juce::String ("none")
                                                                     : lockParts.joinIntoString (",")));

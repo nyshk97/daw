@@ -37,14 +37,19 @@ public:
     const std::vector<GachaSession::Candidate>& candidates() const { return items; }
     int selectedCandidate() const { return listBox.getSelectedRow(); }
     void clearCandidateSelection() { listBox.deselectAllRows(); }
-    void setKeepEnabled (bool enabled) { keepButton.setEnabled (enabled); }
+    // 仮配置の有無（「残す」の有効/無効・選択行の「▶ 仮配置中」バッジ・案内文が連動する）
+    void setKeepEnabled (bool enabled);
 
     void resized() override;
     void paint (juce::Graphics& g) override;
 
 private:
+    class KeepChipRow; // 選択行の「仮配置中」バッジ（ホバーで「残す」ボタンに変わる）
+
     int getNumRows() override { return (int) items.size(); }
     void paintListBoxItem (int row, juce::Graphics& g, int width, int height, bool selected) override;
+    juce::Component* refreshComponentForRow (int row, bool selected,
+                                             juce::Component* existing) override;
     void listBoxItemClicked (int row, const juce::MouseEvent& e) override;
     void selectedRowsChanged (int) override; // ロックトグルの有効/無効が選択に依存する
     void updateControls(); // 全ロック時の「振り直す」無効化・案内文の切り替え
@@ -53,15 +58,18 @@ private:
 
     Project* project = nullptr;
     bool toolsAvailable = false;
+    bool previewActive = false; // 仮配置中（選択行のバッジ・「候補Nを残す」表示）
     std::vector<GachaSession::Candidate> items;
     std::vector<juce::File> cardFolders; // コンボの並びと対応
     juce::String lockedKick, lockedSnare, lockedHat; // トグルON時に確保した seed（空=ロックなし）
 
     juce::ComboBox cardBox;
+    juce::Label lockCaption;   // トグル行の「ロック」ラベル
     juce::TextButton kickLock { "kick" }, snareLock { "snare" }, hatLock { "hat" };
-    juce::TextButton rollButton, keepButton;
+    juce::TextButton rollButton; // 「残す」は独立ボタンでなく選択行のバッジ（KeepChipRow）が担う
     juce::ListBox listBox { {}, this };
-    juce::Label infoLabel; // ツール不在・カード無しの案内
+    juce::Label infoLabel;   // ツール不在・カード無しの案内（一覧の代わりに出す）
+    juce::Label statusLabel; // 下部の1行ガイド（手順・仮配置中・全ロック・ロック不可の理由）
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (GachaPanelView)
 };
