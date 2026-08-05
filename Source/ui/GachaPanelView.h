@@ -23,6 +23,15 @@ public:
     std::function<void (int)> onPick;    // 候補クリック（index は candidates() の添字）
     std::function<void()> onKeep;        // 残す
     std::function<void()> onCardChanged; // カード変更（仮配置の撤去用）
+    std::function<void()> onAlignReference; // 「原曲を頭出し」（実行側がクリック時に再解決する）
+    // 頭出しの可否問い合わせ（空文字=可、非空=理由。source/groove/gates のファイルI/Oを含むため
+    // updateControls 経由でのみ呼ぶ — タイマーから毎tick呼んではいけない）
+    std::function<juce::String()> alignUnavailableReason;
+
+    // 頭出しボタンの有効状態を再評価する（構造編集後・録音の開始/終了に MainComponent から呼ぶ）
+    void refreshAlignAvailability() { updateControls(); }
+    // 下部ガイドへ一時メッセージを出す（クリック時の再解決失敗の理由など）
+    void showStatus (const juce::String& text);
 
     juce::File selectedCardFolder() const; // 選択中カードのリファレンスフォルダ（未選択は空File）
 
@@ -67,6 +76,7 @@ private:
     juce::Label lockCaption;   // トグル行の「ロック」ラベル
     juce::TextButton kickLock { "kick" }, snareLock { "snare" }, hatLock { "hat" };
     juce::TextButton rollButton; // 「残す」は独立ボタンでなく選択行のバッジ（KeepChipRow）が担う
+    juce::TextButton alignButton; // 原曲を頭出し（カード行の右端）
     juce::ListBox listBox { {}, this };
     juce::Label infoLabel;   // ツール不在・カード無しの案内（一覧の代わりに出す）
     juce::Label statusLabel; // 下部の1行ガイド（手順・仮配置中・全ロック・ロック不可の理由）

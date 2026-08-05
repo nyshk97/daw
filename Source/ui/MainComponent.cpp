@@ -359,6 +359,28 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         cancelGachaPreview();
         gachaSession.setCandidates ({}); // 前カードの候補一覧はパネル側でもクリア済み
     };
+    // 「原曲を頭出し」の可否（空文字=可）。ファイルI/Oを含むためパネルの updateControls 経由でのみ呼ばれる
+    rightPanel.gachaPanel().alignUnavailableReason = [this]() -> juce::String
+    {
+        if (engine.isRecording())
+            return jp (u8"録音中は使えません");
+        const auto folder = rightPanel.gachaPanel().selectedCardFolder();
+        if (folder == juce::File())
+            return jp (u8"カードを選択してください");
+        const auto descriptor = ReferenceAlign::readSourceDescriptor (folder);
+        if (! descriptor.isValid())
+            return jp (u8"元クリップの記録がありません（このリージョンを再分析すると付きます）");
+        const auto info = ReferenceAlign::readInfo (folder);
+        if (! info.available)
+            return info.reason;
+        const auto located = ReferenceAlign::locateClip (*project, descriptor);
+        if (located.matches == 0)
+            return jp (u8"分析時のクリップが見つかりません（削除・トリムされた可能性）");
+        if (located.matches > 1)
+            return jp (u8"同じ内容のクリップが複数あり特定できません（複製されている可能性）");
+        return {};
+    };
+    rightPanel.gachaPanel().onAlignReference = [this] { performGachaAlign(); };
     // 編集開始（undoスナップショットの直前）に仮配置を撤去する。begin が状態を保存する前に
     // 呼ばれるため、仮リージョンが undo 履歴に混入しない
     undoStack.willBegin = [this] { cancelGachaPreview(); };
@@ -904,6 +926,10 @@ void MainComponent::startRecordingFlow()
                                    + " sr=" + juce::String (deviceRate, 0));
     closeDeviceSettings(); // デバイス設定は非モーダルなので、録音中に触られないよう閉じる
     updateTransportButtons();
+    // 録音中は「原曲を頭出し」を disabled にする（BPM変更とクリップ移動を伴うため。
+    // 録音終了側は finishRecording のクリップ追加 → pushSnapshot 経由で引き直される）
+    if (rightPanel.isOpen() && rightPanel.mode() == RightPanel::Mode::gacha)
+        rightPanel.gachaPanel().refreshAlignAvailability();
 }
 
 void MainComponent::finishRecording()
@@ -957,6 +983,9 @@ void MainComponent::finishRecording()
     pendingRecordTrack = -1;
     timeline.refresh();
     updateTransportButtons();
+    // 録音終了で「原曲を頭出し」の disabled を解く（破棄で終えると pushSnapshot を通らないため）
+    if (rightPanel.isOpen() && rightPanel.mode() == RightPanel::Mode::gacha)
+        rightPanel.gachaPanel().refreshAlignAvailability();
 }
 
 void MainComponent::finishRecordingForClose()
@@ -1687,6 +1716,15 @@ void MainComponent::applyBpmText()
     setProjectBpm (value);
 }
 
+// begin しない適用部（transport・project->bpm・LCD の同期を1箇所に保つ）。
+// 単独のBPM変更（setProjectBpm）と頭出しの複合操作（performReferenceAlign）の両方から呼ぶ
+void MainComponent::applyProjectBpm (double value)
+{
+    transport.bpm.store (value);
+    project->bpm = value;
+    lcd.tempoLabel().setText (juce::String (value), juce::dontSendNotification);
+}
+
 // BPM変更の一本化（LCD・「BPMをプロジェクトに設定」の両経路）。undo対象
 void MainComponent::setProjectBpm (double value)
 {
@@ -1698,11 +1736,40 @@ void MainComponent::setProjectBpm (double value)
     }
     Log::info ("project.bpm", "value=" + juce::String (value));
     undoStack.begin (*project);
-    transport.bpm.store (value);
-    project->bpm = value;
-    lcd.tempoLabel().setText (juce::String (value), juce::dontSendNotification);
+    applyProjectBpm (value);
     setDirty (true);
     timeline.refresh(); // 小節幅（サンプル換算）が変わる
+}
+
+// 原曲クリップの頭出し。モデル変更（no-op判定・begin 1回・BPM＋クリップ移動）は
+// ReferenceAlign::apply が担当し、ここは録音ガードとUI同期だけを行う
+void MainComponent::performReferenceAlign (const ReferenceAlign::ClipDescriptor& descriptor,
+                                           double bpm, double firstDownbeatSec)
+{
+    if (engine.isRecording())
+        return; // 最終防衛線（パネル側はボタンも disabled にする）
+
+    switch (ReferenceAlign::apply (*project, undoStack, descriptor, bpm, firstDownbeatSec))
+    {
+        case ReferenceAlign::ApplyResult::applied:
+            applyProjectBpm (project->bpm); // transport・LCD を適用後の値に同期
+            pushSnapshot();                 // クリップ位置の変更を再生へ反映
+            setDirty (true);
+            timeline.refresh();
+            Log::info ("reference.align", "bpm=" + juce::String (bpm, 3)
+                                              + " file=" + descriptor.fileName
+                                              + " fdSec=" + juce::String (firstDownbeatSec, 4));
+            break;
+
+        case ReferenceAlign::ApplyResult::noChange:
+            Log::info ("reference.align", "result=no_change"); // 頭出し済み（undoは積まれていない）
+            break;
+
+        case ReferenceAlign::ApplyResult::notFound:
+            showAlert (jp (u8"頭出しできません"),
+                       jp (u8"分析時のクリップが特定できません（削除・トリム・複製の可能性）。"));
+            break;
+    }
 }
 
 // ---- バウンス（書き出し）----
@@ -2495,6 +2562,9 @@ void MainComponent::startReferenceAnalysis (int trackIndex, int itemIndex)
     stopPlaybackForBounce();
 
     const auto& clip = track.clips[(size_t) itemIndex];
+    // 完了ダイアログの「頭出し」用にクリップの同定情報を控える（index は保持しない —
+    // 完了時とボタン押下時に記述子から再解決する）
+    analysisSourceClip = { clip.fileName, clip.offsetSamples, clip.lengthSamples };
     // 名前はクリップ名から（録音クリップは表示名が空なのでトラック名で代替）
     const auto rawName = clip.name.isNotEmpty() ? clip.name : track.name;
     const auto folder = ReferenceExport::allocateFolder (project->directory, rawName);
@@ -2558,17 +2628,29 @@ void MainComponent::pollReferenceAnalysis()
                 auto message = jp (u8"BPM ") + juce::String (result.bpm, 1)
                                + (result.keyText.isNotEmpty() ? " / " + result.keyText : juce::String());
                 const double cardBpm = result.bpm;
+                // 頭出しを提供できるか: groove.json の補正済み位相＋gates.downbeat.ok＋
+                // 元クリップが（fileName＋offset＋length で）ちょうど1件同定できること
+                const auto alignInfo = ReferenceAlign::readInfo (folder);
+                const auto descriptor = analysisSourceClip;
+                const bool canAlign = alignInfo.available && descriptor.isValid()
+                                      && ReferenceAlign::locateClip (*project, descriptor).matches == 1;
+                const double fdSec = alignInfo.firstDownbeatSec;
                 juce::Component::SafePointer<MainComponent> safe (this);
                 juce::NativeMessageBox::showAsync (
                     juce::MessageBoxOptions()
                         .withIconType (juce::MessageBoxIconType::InfoIcon)
                         .withTitle (jp (u8"分析が完了しました（") + folder.getFileName() + jp (u8"）"))
                         .withMessage (message)
-                        .withButton (jp (u8"BPM をプロジェクトに設定"))
+                        .withButton (canAlign ? jp (u8"BPM を設定して原曲を頭出し")
+                                              : jp (u8"BPM をプロジェクトに設定"))
                         .withButton (jp (u8"閉じる")),
-                    [safe, cardBpm] (int button)
+                    [safe, cardBpm, canAlign, descriptor, fdSec] (int button)
                     {
-                        if (button == 0 && safe != nullptr)
+                        if (button != 0 || safe == nullptr)
+                            return;
+                        if (canAlign)
+                            safe->performReferenceAlign (descriptor, cardBpm, fdSec);
+                        else
                             safe->setProjectBpm (cardBpm); // undo対応済みの経路（⌘Zで戻せる）
                     });
             }
@@ -2602,6 +2684,32 @@ void MainComponent::pollReferenceAnalysis()
 }
 
 // ---- ドラムガチャ（右パネル第3モード）----
+
+// 「原曲を頭出し」。保存済み index は使わず、クリック時に source.json の記述子から再解決する
+void MainComponent::performGachaAlign()
+{
+    if (engine.isRecording())
+        return; // 最終防衛線（ボタンも disabled にしているが、状態の隙間を塞ぐ）
+    auto& panel = rightPanel.gachaPanel();
+    const auto folder = panel.selectedCardFolder();
+    if (folder == juce::File())
+        return;
+
+    const auto descriptor = ReferenceAlign::readSourceDescriptor (folder);
+    const auto info = ReferenceAlign::readInfo (folder);
+    const auto card = juce::JSON::parse (folder.getChildFile ("card.json").loadFileAsString());
+    const auto cardBpm = card.getProperty ("global", {}).getProperty ("bpm", {});
+    if (! descriptor.isValid() || ! info.available || ! (cardBpm.isDouble() || cardBpm.isInt()))
+    {
+        // ボタン有効化後に状態が変わった（ファイル削除等）。理由を出して有効状態を引き直す
+        panel.showStatus (jp (u8"頭出しできません — リファレンスの情報を読めませんでした"));
+        panel.refreshAlignAvailability();
+        return;
+    }
+
+    performReferenceAlign (descriptor, (double) cardBpm, info.firstDownbeatSec);
+    panel.refreshAlignAvailability();
+}
 
 void MainComponent::performGachaRoll()
 {
@@ -3042,6 +3150,11 @@ void MainComponent::pushSnapshot()
     // MIDIトラックの音源を先に用意してから、スナップショットに参照を埋めて渡す。
     // sampleRate 未確定の間は synth が null のまま（timerCallback の sync が確定後に再pushする）
     synthBank.sync (*project, transport.sampleRate.load(), transport.blockSizeExpected.load());
+
+    // 構造編集で「原曲を頭出し」の可否が変わる（クリップの分割・複製・削除）。
+    // ガチャモード表示中だけ引き直す（判定は小さなJSONの読み直しを含むため常時はやらない）
+    if (rightPanel.isOpen() && rightPanel.mode() == RightPanel::Mode::gacha)
+        rightPanel.gachaPanel().refreshAlignAvailability();
 
     pushSnapshotWithChange (Project::SnapshotChange::midiStructure);
 

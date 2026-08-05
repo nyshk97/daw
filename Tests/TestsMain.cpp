@@ -20,6 +20,7 @@
 #include "shared/MidiFileTypes.h"
 #include "shared/MidiImport.h"
 #include "shared/GachaSession.h"
+#include "shared/ReferenceAlign.h"
 #include "shared/ReferenceExport.h"
 #include "shared/ReferenceTools.h"
 #include "shared/AudioBrowserNavigation.h"
@@ -7692,6 +7693,131 @@ void testGachaSessionPreview()
     dir.deleteRecursively();
 }
 
+void testReferenceAlign()
+{
+    beginTest ("ReferenceAlign calculation / info gates / apply contract");
+
+    // ---- alignedClipStart: 位置計算 ----
+    const double barLen = 48000.0 * 240.0 / 120.0; // 120BPM/48k → 96000サンプル/小節
+    // fd=0 かつ現在位置が小節頭 → no-op
+    expect (ReferenceAlign::alignedClipStart (96000 * 2, 0, barLen) == 96000 * 2,
+            "fd=0で小節頭ならそのまま");
+    // fd=0 かつオフグリッド → 最寄りの小節頭へスナップ
+    expect (ReferenceAlign::alignedClipStart (96000 * 2 + 40000, 0, barLen) == 96000 * 2,
+            "fd=0でオフグリッドは手前の小節へ（40000<半小節）");
+    expect (ReferenceAlign::alignedClipStart (96000 * 2 + 50000, 0, barLen) == 96000 * 3,
+            "fd=0でオフグリッドは近い方の小節へ（50000>半小節）");
+    // fd>0: クリップ内の小節頭が小節線に乗る位置へ。startSample>=0 を保つ
+    expect (ReferenceAlign::alignedClipStart (0, 66000, barLen) == 96000 - 66000,
+            "曲頭付近では小節1の頭に合わせて正の位置へ（startSample>=0）");
+    // current=5小節目・fd=66000 → (480000+66000)/96000=5.69 → N=6 → 576000-66000=510000
+    expect (ReferenceAlign::alignedClipStart (96000 * 5, 66000, barLen) == 510000,
+            "現在位置から最も近い整合位置へ動く");
+
+    // ---- readInfo: groove.json / gates.json のゲート ----
+    const auto dir = makeTempDir();
+    const auto analysis = dir.getChildFile ("analysis");
+    analysis.createDirectory();
+    const auto writeJson = [&analysis] (const char* name, const juce::String& text)
+    { analysis.getChildFile (name).replaceWithText (text); };
+
+    // gates が無い → 提供不可
+    expect (! ReferenceAlign::readInfo (dir).available, "gatesが無ければ提供不可");
+    // downbeat.ok=false → 提供不可（値が在っても信頼できない）
+    writeJson ("gates.json", R"({"downbeat": {"ok": false}})");
+    writeJson ("groove.json", R"({"first_downbeat_sec": 1.3595})");
+    expect (! ReferenceAlign::readInfo (dir).available, "downbeat.ok=falseは提供不可");
+    // ok=true + groove欠損 → 提供不可
+    writeJson ("gates.json", R"({"downbeat": {"ok": true}})");
+    writeJson ("groove.json", R"({})");
+    expect (! ReferenceAlign::readInfo (dir).available, "grooveのfirst_downbeat_sec欠損は提供不可");
+    // 揃った → 提供可・groove.json の補正済み値を返す
+    writeJson ("groove.json", R"({"first_downbeat_sec": 1.3595})");
+    {
+        const auto info = ReferenceAlign::readInfo (dir);
+        expect (info.available, "gates ok + groove あり → 提供可");
+        expect (std::abs (info.firstDownbeatSec - 1.3595) < 1e-9, "groove.jsonの値を返す");
+    }
+
+    // ---- source.json の往復 ----
+    expect (! ReferenceAlign::readSourceDescriptor (dir).isValid(), "source.json 不在は invalid");
+    expect (ReferenceAlign::writeSourceDescriptor (dir, { "clip-001.wav", 1440000, 5760000 }),
+            "source.jsonを書ける");
+    {
+        const auto descriptor = ReferenceAlign::readSourceDescriptor (dir);
+        expect (descriptor.isValid() && descriptor.fileName == "clip-001.wav"
+                    && descriptor.offsetSamples == 1440000 && descriptor.lengthSamples == 5760000,
+                "source.jsonの往復");
+    }
+
+    // ---- locateClip / apply の契約 ----
+    juce::String error;
+    auto project = Project::createNew (dir.getChildFile ("proj"), error);
+    expect (project != nullptr, "プロジェクト作成");
+    project->sampleRate = 48000.0;
+    project->bpm = 100.0;
+    project->tracks.clear();
+
+    Track track;
+    track.id = project->allocateId();
+    track.type = TrackType::audio;
+    Clip clip;
+    clip.fileName = "clip-001.wav";
+    clip.offsetSamples = 1440000;
+    clip.lengthSamples = 5760000;
+    clip.startSample = 0;
+    track.clips.push_back (clip);
+    project->tracks.push_back (std::move (track));
+
+    const ReferenceAlign::ClipDescriptor descriptor { "clip-001.wav", 1440000, 5760000 };
+    expect (ReferenceAlign::locateClip (*project, descriptor).matches == 1, "1件一致");
+
+    UndoStack undo;
+    // 適用: undo 深さがちょうど1増える（誤って2回beginしない）
+    expect (ReferenceAlign::apply (*project, undo, descriptor, 112.938, 1.3595)
+                == ReferenceAlign::ApplyResult::applied,
+            "適用できる");
+    expect (undo.canUndo(), "undo履歴が積まれる");
+    expect (std::abs (project->bpm - 112.938) < 1e-9, "BPMが変わる");
+    const auto fdSamples = (juce::int64) std::llround (1.3595 * 48000.0);
+    const double barLen2 = 48000.0 * 240.0 / 112.938;
+    const auto expectedStart = (juce::int64) std::llround (barLen2) - fdSamples; // 曲頭付近→小節1
+    expect (project->tracks[0].clips[0].startSample == expectedStart,
+            "クリップ内の小節頭が小節線に乗る位置へ動く");
+
+    // 同値再実行: begin されず noChange（no-op の undo 履歴を積まない）
+    auto kind = UndoStack::EditKind::structure;
+    expect (ReferenceAlign::apply (*project, undo, descriptor, 112.938, 1.3595)
+                == ReferenceAlign::ApplyResult::noChange,
+            "頭出し済みの再実行はnoChange");
+    expect (undo.undo (*project, kind), "undoは1件だけ");
+    expect (! undo.canUndo(), "再実行分の履歴は積まれていない（深さ1だった）");
+    expect (std::abs (project->bpm - 100.0) < 1e-9 && project->tracks[0].clips[0].startSample == 0,
+            "undo 1回でBPMとクリップ位置が両方戻る");
+    expect (undo.redo (*project, kind), "redoできる");
+    expect (std::abs (project->bpm - 112.938) < 1e-9
+                && project->tracks[0].clips[0].startSample == expectedStart,
+            "redoで両方再適用される");
+
+    // 複製で2件一致 → notFound（何も変更しない）
+    project->tracks[0].clips.push_back (project->tracks[0].clips[0]);
+    const auto startBefore = project->tracks[0].clips[0].startSample;
+    expect (ReferenceAlign::locateClip (*project, descriptor).matches == 2, "複製で2件一致");
+    expect (ReferenceAlign::apply (*project, undo, descriptor, 120.0, 1.3595)
+                == ReferenceAlign::ApplyResult::notFound,
+            "2件一致は適用しない");
+    expect (std::abs (project->bpm - 112.938) < 1e-9
+                && project->tracks[0].clips[0].startSample == startBefore,
+            "notFoundでは何も変更しない");
+
+    // 0件（記述子不一致）→ notFound
+    expect (ReferenceAlign::apply (*project, undo, { "clip-999.wav", 0, 100 }, 120.0, 1.0)
+                == ReferenceAlign::ApplyResult::notFound,
+            "0件一致は適用しない");
+
+    dir.deleteRecursively();
+}
+
 void testUndoStackBpm()
 {
     beginTest ("UndoStack BPM roundtrip");
@@ -7748,6 +7874,7 @@ int main()
     testUndoStack();
     testUndoStackBpm();
     testReferenceExport();
+    testReferenceAlign();
     testGachaPorcelainParse();
     testGachaPatternMiniature();
     testGachaSessionPreview();

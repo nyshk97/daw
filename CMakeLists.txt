@@ -99,6 +99,7 @@ target_sources(daw PRIVATE
     Source/shared/Log.cpp
     Source/shared/MidiImport.cpp
     Source/shared/Project.cpp
+    Source/shared/ReferenceAlign.cpp
     Source/shared/ReferenceExport.cpp
     Source/shared/SpawnedProcess.cpp
     Source/shared/SynthBank.cpp
@@ -233,6 +234,7 @@ target_sources(daw_tests PRIVATE
     Source/shared/Log.cpp
     Source/shared/MidiImport.cpp
     Source/shared/Project.cpp
+    Source/shared/ReferenceAlign.cpp
     Source/shared/ReferenceExport.cpp
     Source/shared/SpawnedProcess.cpp
     Source/shared/SynthBank.cpp

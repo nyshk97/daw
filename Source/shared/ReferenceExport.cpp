@@ -1,5 +1,7 @@
 #include "ReferenceExport.h"
 
+#include "ReferenceAlign.h"
+
 namespace ReferenceExport
 {
 juce::String sanitizeName (const juce::String& raw)
@@ -87,6 +89,11 @@ bool exportClipRange (const juce::File& projectDir, const Clip& clip,
         error = juce::String::fromUTF8 (u8"track.wav の書き込みに失敗しました");
         return false;
     }
+
+    // 元クリップの同定メモ（後からの「原曲を頭出し」用）。分析パイプラインはこのファイルを無視する。
+    // 書けなくても分析自体は成立するので失敗にはしない
+    ReferenceAlign::writeSourceDescriptor (folder,
+                                           { clip.fileName, clip.offsetSamples, clip.lengthSamples });
     return true;
 }
 }

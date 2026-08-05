@@ -28,6 +28,7 @@
 #include "../audio/UrlDownloader.h"
 #include "../shared/GachaSession.h"
 #include "../shared/PreviewFifo.h"
+#include "../shared/ReferenceAlign.h"
 #include "../shared/PlaybackSnapshot.h"
 #include "../shared/Project.h"
 #include "../shared/SynthBank.h"
@@ -146,6 +147,12 @@ private:
     void closeDeviceSettings();
     void applyBpmText();
     void setProjectBpm (double value); // BPM変更の一本化（undo対象。同値ならno-op）
+    void applyProjectBpm (double value); // begin しない適用部（transport・project->bpm・LCD の同期のみ）
+    // 原曲クリップの頭出し（BPM設定＋クリップ移動を undo 1件で）。本体は ReferenceAlign::apply、
+    // ここは録音ガードと transport/LCD/スナップショット/再描画の同期だけを担当する
+    void performReferenceAlign (const ReferenceAlign::ClipDescriptor& descriptor,
+                                double bpm, double firstDownbeatSec);
+    void performGachaAlign(); // ガチャパネルの「原曲を頭出し」（クリック時に記述子から再解決）
     void beginBounce (const juce::File& target); // 保存先確定後: パラメータ固定→専用synth生成→ワーカー開始
     void exportSelectedItem();                   // ⌘E: 選択中のリージョン/クリップを書き出し（regionSelection優先）
     void startRegionExportFlow (int trackIndex, int itemIndex);  // リージョン書き出しの入口（保存ダイアログまで）
@@ -393,6 +400,7 @@ private:
     ReferenceAnalysisOverlay referenceOverlay;
     bool analysisActive = false;
     juce::File analysisFolder; // 今回作成した references/<名前>
+    ReferenceAlign::ClipDescriptor analysisSourceClip; // 分析対象クリップの同定情報（完了ダイアログの頭出し用）
 
     // URLからの取り込み（yt-dlp）。DL完了後は落ちてきたWAVを startImport() に渡すだけで、
     // 取り込み自体は既存経路（AudioImporter → finishImport）に相乗りする

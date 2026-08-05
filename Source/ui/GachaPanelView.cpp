@@ -105,6 +105,14 @@ GachaPanelView::GachaPanelView()
     snareLock.onClick = [this] { handleLockToggle (snareLock, lockedSnare); };
     hatLock.onClick = [this] { handleLockToggle (hatLock, lockedHat); };
 
+    addAndMakeVisible (alignButton);
+    alignButton.setButtonText (jp (u8"原曲を頭出し"));
+    alignButton.onClick = [this]
+    {
+        if (onAlignReference)
+            onAlignReference();
+    };
+
     addAndMakeVisible (rollButton);
     rollButton.setButtonText (jp (u8"🎲 振り直す"));
     rollButton.onClick = [this]
@@ -138,7 +146,8 @@ GachaPanelView::GachaPanelView()
 
     // Space（再生/停止）を奪わせない
     for (auto* c : std::initializer_list<juce::Component*> { &cardBox, &kickLock, &snareLock,
-                                                            &hatLock, &rollButton, &listBox })
+                                                            &hatLock, &rollButton, &alignButton,
+                                                            &listBox })
     {
         c->setWantsKeyboardFocus (false);
         c->setMouseClickGrabsKeyboardFocus (false);
@@ -277,6 +286,19 @@ void GachaPanelView::updateControls()
                                   : jp (u8"🎲 ") + freeLanes.joinIntoString (jp (u8"・"))
                                         + jp (u8"を振り直す"));
     cardBox.setEnabled (toolsAvailable);
+
+    // 頭出し: 可否と理由は実行側（MainComponent）が判定する（source.json・groove/gates・
+    // クリップ同定・録音状態。ファイルI/Oを含むのでユーザー操作起点のここでだけ評価する）
+    juce::String alignReason;
+    if (! toolsAvailable || ! hasCard)
+        alignReason = jp (u8"カードを選択してください");
+    else if (alignUnavailableReason != nullptr)
+        alignReason = alignUnavailableReason();
+    alignButton.setEnabled (alignReason.isEmpty());
+    alignButton.setTooltip (alignReason.isEmpty()
+                                ? jp (u8"原曲クリップをBPM設定＋小節グリッドに合わせる（生成ドラムと重ねて聴ける）")
+                                : alignReason);
+
     // ロックは候補があれば常に押せる（未選択で押したときは handleLockToggle が理由を案内する）。
     // ON状態は 🔒 を付けて「固定されている」ことを名乗る
     const bool lanesUsable = toolsAvailable && hasCard && ! items.empty();
@@ -320,6 +342,11 @@ void GachaPanelView::updateControls()
                            juce::dontSendNotification);
     infoLabel.setVisible (! toolsAvailable || ! hasCard || items.empty());
     listBox.setVisible (! infoLabel.isVisible() || ! items.empty());
+}
+
+void GachaPanelView::showStatus (const juce::String& text)
+{
+    statusLabel.setText (text, juce::dontSendNotification);
 }
 
 void GachaPanelView::setKeepEnabled (bool enabled)
@@ -425,7 +452,10 @@ void GachaPanelView::resized()
 {
     auto area = getLocalBounds().reduced (14, 10);
 
-    cardBox.setBounds (area.removeFromTop (26));
+    auto cardRow = area.removeFromTop (26);
+    alignButton.setBounds (cardRow.removeFromRight (96));
+    cardRow.removeFromRight (6);
+    cardBox.setBounds (cardRow);
     area.removeFromTop (8);
 
     auto lockRow = area.removeFromTop (24);
