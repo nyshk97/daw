@@ -263,6 +263,19 @@ void GachaPanelView::updateControls()
     rollButton.setEnabled (toolsAvailable && hasCard && ! allLocked);
     rollButton.setTooltip (allLocked ? jp (u8"全レーンをロックすると振り直せません（同じ候補しか出ないため）")
                                      : juce::String());
+    // ロック中はボタン自身が対象を名乗る（「🎲 snare・hatを振り直す」— 押す前に効果が読める）。
+    // 最長でも約170pt（パネル最小幅240ptのボタン212ptに収まる）
+    juce::StringArray freeLanes;
+    if (lockedKick.isEmpty())
+        freeLanes.add ("kick");
+    if (lockedSnare.isEmpty())
+        freeLanes.add ("snare");
+    if (lockedHat.isEmpty())
+        freeLanes.add ("hat");
+    rollButton.setButtonText (freeLanes.size() == 3 || freeLanes.isEmpty()
+                                  ? jp (u8"🎲 振り直す")
+                                  : jp (u8"🎲 ") + freeLanes.joinIntoString (jp (u8"・"))
+                                        + jp (u8"を振り直す"));
     cardBox.setEnabled (toolsAvailable);
     // ロックは候補があれば常に押せる（未選択で押したときは handleLockToggle が理由を案内する）。
     // ON状態は 🔒 を付けて「固定されている」ことを名乗る
