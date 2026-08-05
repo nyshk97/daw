@@ -25,6 +25,8 @@ public:
         name = referenceName;
         statusLine.clear();
         phase = 0.0f;
+        startMs = juce::Time::currentTimeMillis();
+        lastElapsedSeconds = -1;
         setInterceptsMouseClicks (true, true); // 表示中はモーダル（背後のUIを塞ぐ）
         setVisible (true);
         toFront (false);
@@ -64,7 +66,8 @@ public:
 
         g.setColour (juce::Colours::white.withAlpha (0.6f));
         g.setFont (Fonts::small());
-        g.drawText (name + juce::String::fromUTF8 (u8"（数分かかります）"),
+        g.drawText (name + juce::String::fromUTF8 (u8"（経過 ") + elapsedText()
+                        + juce::String::fromUTF8 (u8" ／ 目安 約4分）"),
                     panel.withTrimmedTop (padY + titleHeight).withHeight (16),
                     juce::Justification::centred);
 
@@ -126,6 +129,20 @@ private:
         if (phase >= 1.0f)
             phase -= 1.0f;
         repaint (progressBarBounds().expanded (0, 2));
+
+        const auto seconds = (int) ((juce::Time::currentTimeMillis() - startMs) / 1000);
+        if (seconds != lastElapsedSeconds)
+        {
+            lastElapsedSeconds = seconds;
+            const auto panel = panelBounds();
+            repaint (panel.withTrimmedTop (padY + titleHeight).withHeight (16));
+        }
+    }
+
+    juce::String elapsedText() const
+    {
+        const auto seconds = (int) ((juce::Time::currentTimeMillis() - startMs) / 1000);
+        return juce::String (seconds / 60) + ":" + juce::String (seconds % 60).paddedLeft ('0', 2);
     }
 
     juce::Rectangle<int> panelBounds() const
@@ -157,6 +174,8 @@ private:
     juce::String name;
     juce::String statusLine;
     float phase = 0.0f;
+    juce::int64 startMs = 0;
+    int lastElapsedSeconds = -1;
     bool cancelHovered = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ReferenceAnalysisOverlay)
