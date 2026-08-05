@@ -31,6 +31,17 @@ CHORD_DEGREES = {
 }
 
 
+def silent_ok(name: str) -> bool:
+    """無音でもエラー停止しないクリップか。
+
+    quiet ステム抜粋（04-stem-*-quiet-*）は「鳴っているが小さい小節」をデータから選ぶため、
+    分離結果しだいで正当に無音判定（peak < -60dB）を割ることがある（その曲のそのステムの
+    最静小節が実質無音だった、というだけ）。この場合はレビューに出さず除外する。
+    それ以外のクリップの無音は切り出しバグの兆候なので従来どおり止める。
+    """
+    return name.startswith("04-stem-") and "-quiet-" in name
+
+
 def cut(src: Path, dst: Path, t0: float, t1: float, lead: float = 0.3) -> bool:
     """切り出して両端にごく短いフェードを掛ける。頭に lead 秒ぶん余白を足して1拍目を切らない。
 
@@ -188,33 +199,41 @@ def main() -> None:
                 continue
             notes.append((f, f"左=原音（{label}）/ 右=basic-pitch の結果をサイン波で。音高が合っているか、刻まれ方がどれだけ実態とズレているか"))
 
-    (out / "README.md").write_text(
-        "# 耳で確認するクリップ\n\n"
-        "番号順に聴けば一周できる。Finder でこのフォルダを開き、ファイルを選んで**スペースキー**で再生するのが速い。\n"
-        "（ターミナルなら `afplay <ファイル>`、フォルダごとなら `for f in *.wav; do echo $f; afplay $f; done`）\n\n"
-        f"1小節 = {bar_len:.3f}秒 / {bpm} BPM / 1小節目の頭 = {fd:.3f}秒\n\n"
-        + "".join(f"### {f}\n{n}\n\n" for f, n in notes)
-        + "\n## 聴きながらメモしてほしいこと\n\n"
-        "- 各クリップが OK か NG か（NG ならどう聴こえたか一言）\n"
-        "- **「特にここが好き」な瞬間を2〜3個**（秒でも小節番号でもよい）。次の曲の分析でそこを重点的に見る\n"
-    )
-
     # 書き出したクリップに実際に音が入っているかを自分で検算する。
     # 「ファイルがある・長さが正しい」だけ見ていたせいで、中身が全部無音のまま
     # レビューを依頼してしまったことがある。長さでなく RMS を見る。
+    # quiet ステム抜粋の無音だけは正当なデータ条件（silent_ok 参照）なので、除外して続行する。
+    # README は検算の後に書く（除外したクリップを README が参照しないように）
     print(f"{len(notes)} 本を {out} に書き出した\n")
     silent = []
+    kept: list[tuple[str, str]] = []
     for f, n in notes:
         y, sr = sf.read(str(out / f), always_2d=True, dtype="float32")
         m = y.mean(axis=1)
         rms = 20 * np.log10(max(float(np.sqrt((m**2).mean())), 1e-9))
         peak = 20 * np.log10(max(float(np.abs(m).max()), 1e-9))
+        if peak < -60 and silent_ok(f):
+            (out / f).unlink()
+            print(f"  [除外] {f}  peak {peak:.1f}dB（このステムの最静小節が実質無音。レビュー対象から外す）")
+            continue
         mark = "無音" if peak < -60 else ("小さい" if rms < -45 else "ok  ")
         if peak < -60:
             silent.append(f)
+        kept.append((f, n))
         print(f"  [{mark}] {f}  RMS {rms:.1f}dB / peak {peak:.1f}dB\n         {n}")
     if silent:
         raise SystemExit(f"\nERROR: 無音のクリップがある: {silent}")
+
+    (out / "README.md").write_text(
+        "# 耳で確認するクリップ\n\n"
+        "番号順に聴けば一周できる。Finder でこのフォルダを開き、ファイルを選んで**スペースキー**で再生するのが速い。\n"
+        "（ターミナルなら `afplay <ファイル>`、フォルダごとなら `for f in *.wav; do echo $f; afplay $f; done`）\n\n"
+        f"1小節 = {bar_len:.3f}秒 / {bpm} BPM / 1小節目の頭 = {fd:.3f}秒\n\n"
+        + "".join(f"### {f}\n{n}\n\n" for f, n in kept)
+        + "\n## 聴きながらメモしてほしいこと\n\n"
+        "- 各クリップが OK か NG か（NG ならどう聴こえたか一言）\n"
+        "- **「特にここが好き」な瞬間を2〜3個**（秒でも小節番号でもよい）。次の曲の分析でそこを重点的に見る\n"
+    )
 
 
 if __name__ == "__main__":
