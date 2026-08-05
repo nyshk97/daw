@@ -1,5 +1,6 @@
 #include "GachaPanelView.h"
 
+#include "../shared/ReferenceReport.h"
 #include "../shared/ReferenceTools.h"
 #include "AppLookAndFeel.h"
 #include "Fonts.h"
@@ -121,6 +122,48 @@ GachaPanelView::GachaPanelView()
             onRoll();
     };
 
+    // レポート（カード行の下）。report.md 無し=書く／有り=開く（表示中はON色・再押下で閉じる）。
+    // 分岐の判断は実行側 — report の有無とウィンドウの表示対象を知っているのは MainComponent
+    addAndMakeVisible (reportButton);
+    reportButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
+    reportButton.onClick = [this]
+    {
+        if (onReportAction)
+            onReportAction();
+    };
+    reportButton.onRightClick = [this]
+    {
+        // 「書き直す」は report がある（=ボタンが「開く」の）ときだけ意味を持つ。
+        // 生成中・report無しでは出さない
+        const auto folder = selectedCardFolder();
+        const auto generating = reportGeneratingFolder != nullptr ? reportGeneratingFolder()
+                                                                  : juce::File();
+        if (folder == juce::File() || generating != juce::File()
+            || ! ReferenceReport::exists (folder) || ! ReferenceTools::reportAvailable())
+            return;
+        juce::PopupMenu menu;
+        menu.addItem (1, jp (u8"レポートを書き直す（10〜15分・AI）"));
+        juce::Component::SafePointer<GachaPanelView> safe (this);
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&reportButton),
+                            [safe] (int result)
+                            {
+                                if (safe != nullptr && result == 1 && safe->onRewriteReport)
+                                    safe->onRewriteReport();
+                            });
+    };
+
+    // 生成中の経過行（ボタンと排他表示。テキストは MainComponent のタイマーが流し込む）
+    addChildComponent (reportProgressLabel);
+    reportProgressLabel.setFont (Fonts::small());
+    reportProgressLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.6f));
+    addChildComponent (reportCancelButton);
+    reportCancelButton.setButtonText (jp (u8"キャンセル"));
+    reportCancelButton.onClick = [this]
+    {
+        if (onCancelReport)
+            onCancelReport();
+    };
+
     addAndMakeVisible (lockCaption);
     lockCaption.setText (juce::String::fromUTF8 (u8"ロック"), juce::dontSendNotification);
     lockCaption.setFont (Fonts::small());
@@ -147,6 +190,7 @@ GachaPanelView::GachaPanelView()
     // Space（再生/停止）を奪わせない
     for (auto* c : std::initializer_list<juce::Component*> { &cardBox, &kickLock, &snareLock,
                                                             &hatLock, &rollButton, &alignButton,
+                                                            &reportButton, &reportCancelButton,
                                                             &listBox })
     {
         c->setWantsKeyboardFocus (false);
@@ -285,7 +329,9 @@ void GachaPanelView::updateControls()
                                   ? jp (u8"🎲 振り直す")
                                   : jp (u8"🎲 ") + freeLanes.joinIntoString (jp (u8"・"))
                                         + jp (u8"を振り直す"));
-    cardBox.setEnabled (toolsAvailable);
+    // カード選択はカードが在れば常に有効（ガチャツール drums.py の有無に相乗りしない —
+    // レポートの閲覧/生成は独立判定なので、ガチャだけ欠けた環境でもカードは選べる必要がある）
+    cardBox.setEnabled (true);
 
     // 頭出し: 可否と理由は実行側（MainComponent）が判定する（source.json・groove/gates・
     // クリップ同定・録音状態。ファイルI/Oを含むのでユーザー操作起点のここでだけ評価する）
@@ -298,6 +344,47 @@ void GachaPanelView::updateControls()
     alignButton.setTooltip (alignReason.isEmpty()
                                 ? jp (u8"原曲クリップをBPM設定＋小節グリッドに合わせる（生成ドラムと重ねて聴ける）")
                                 : alignReason);
+
+    // レポート: report.md 無し=書く（AI・10〜15分）／有り=開く。選択中カードを生成中なら
+    // ボタンの代わりに経過行を出す。存在チェックはファイルI/Oを含むが、updateControls は
+    // ユーザー操作起点でしか呼ばれないので許容（alignと同じ扱い）
+    {
+        const auto cardFolder = selectedCardFolder();
+        const bool hasReport = hasCard && ReferenceReport::exists (cardFolder);
+        const auto generating = reportGeneratingFolder != nullptr ? reportGeneratingFolder()
+                                                                  : juce::File();
+        const bool generatingThis = generating != juce::File() && generating == cardFolder;
+
+        reportButton.setVisible (! generatingThis);
+        reportProgressLabel.setVisible (generatingThis);
+        reportCancelButton.setVisible (generatingThis);
+
+        if (hasReport)
+        {
+            reportButton.setButtonText (jp (u8"📄 レポートを開く"));
+            reportButton.setEnabled (ReferenceTools::renderAvailable());
+            reportButton.setTooltip (ReferenceTools::renderAvailable()
+                                         ? jp (u8"分析レポートを別ウィンドウで読む（右クリックで書き直し）")
+                                         : ReferenceTools::unavailableReason());
+        }
+        else
+        {
+            reportButton.setButtonText (jp (u8"📄 レポートを書く（10〜15分・AI）"));
+            const bool canGenerate = hasCard && ReferenceTools::reportAvailable()
+                                     && generating == juce::File();
+            reportButton.setEnabled (canGenerate);
+            reportButton.setTooltip (! hasCard ? jp (u8"カードを選択してください")
+                                     : generating != juce::File()
+                                         ? jp (u8"別のレポートを生成中です（同時に1件まで）")
+                                     : ! ReferenceTools::reportAvailable()
+                                         ? ReferenceTools::unavailableReason()
+                                         : jp (u8"分析データから Claude Code がレポートを書く"
+                                               u8"（Claude Code の利用枠を消費します）"));
+        }
+        const auto showing = reportWindowFolder != nullptr ? reportWindowFolder() : juce::File();
+        reportButton.setToggleState (hasCard && showing != juce::File() && showing == cardFolder,
+                                     juce::dontSendNotification);
+    }
 
     // ロックは候補があれば常に押せる（未選択で押したときは handleLockToggle が理由を案内する）。
     // ON状態は 🔒 を付けて「固定されている」ことを名乗る
@@ -456,6 +543,14 @@ void GachaPanelView::resized()
     alignButton.setBounds (cardRow.removeFromRight (96));
     cardRow.removeFromRight (6);
     cardBox.setBounds (cardRow);
+    area.removeFromTop (6);
+
+    auto reportRow = area.removeFromTop (26);
+    reportButton.setBounds (reportRow);
+    // 生成中はボタンの代わりに経過行＋キャンセル（可視切り替えは updateControls）
+    reportCancelButton.setBounds (reportRow.removeFromRight (72));
+    reportRow.removeFromRight (6);
+    reportProgressLabel.setBounds (reportRow);
     area.removeFromTop (8);
 
     auto lockRow = area.removeFromTop (24);

@@ -458,3 +458,8 @@ if (activeWriter.load() != nullptr)
 - **シグナルハンドラの即 raise は「Popen 完了〜管理リストへの登録」の窓で子を孤児化させる**: ハンドラはその区間だけフラグを立てるに留め、登録完了直後のチェックで raise する。sigmask でブロックする案は fork/exec した子がマスクを継承して TERM を無視する子になる副作用があるので使わない
 - **macOS の `killpg(pgid, 0)` は生死判定に使えない**: グループ内に終了処理中のメンバーが1つでもいると EPERM（man kill）。存在確認は `pgrep -g <pgid>` を使い、シグナル送信側は EPERM も握りつぶす（killable なメンバーへの配送自体は行われる）
 - 失敗したステップの drain スレッドは **kill 前に join しない**: 生き残った子孫が stdout/stderr パイプの write 端を握っていると EOF が来ず、join のタイムアウトぶん fail-fast が遅れる（join は kill 後）
+
+### `File::replaceWithText` の既定改行は CRLF（bash スクリプトを書くと壊れる）
+
+- `juce::File::replaceWithText (text)` は既定引数 `lineEndings = "\r\n"` で `\n` を CRLF に変換して書く。テストから bash スクリプトや `.next` 系の検証ファイルを生成すると `exit 65\r` のような行になり、bash が `numeric argument required` で exit 255 を返す（daw_tests の fake script で実際に踏んだ）
+- スクリプト・改行に意味があるファイルは `replaceWithText (text, false, false, "\n")` と LF を明示する

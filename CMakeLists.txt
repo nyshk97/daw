@@ -93,6 +93,7 @@ target_sources(daw PRIVATE
     Source/audio/PlaybackEngine.cpp
     Source/audio/Recorder.cpp
     Source/audio/ReferenceAnalyzer.cpp
+    Source/audio/ReferenceReportGenerator.cpp
     Source/audio/SamplerEngine.cpp
     Source/audio/UrlDownloader.cpp
     Source/shared/GachaSession.cpp
@@ -122,7 +123,8 @@ target_compile_definitions(daw PRIVATE
     # アプリ表示名（Debug=LaLa-dev / Release=LaLa）とバージョン。Main.cpp が参照する
     DAW_APP_NAME="${DAW_PRODUCT_NAME}"
     DAW_APP_VERSION="${PROJECT_VERSION}"
-    JUCE_WEB_BROWSER=0
+    # JUCE_WEB_BROWSER はレポートウィンドウ（WKWebView）が使うため有効（既定値）。
+    # daw_tests 側は UI を含まないので 0 のまま
     JUCE_USE_CURL=0
     JUCE_PLUGINHOST_AU=1
     # メッセージループまで漏れた例外を unhandledException に届ける（ログしてからterminateする）
@@ -133,6 +135,7 @@ target_link_libraries(daw
     PRIVATE
         juce::juce_audio_utils
         juce::juce_audio_processors
+        juce::juce_gui_extra
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
@@ -228,6 +231,7 @@ target_sources(daw_tests PRIVATE
     Source/audio/PlaybackEngine.cpp
     Source/audio/Recorder.cpp
     Source/audio/ReferenceAnalyzer.cpp
+    Source/audio/ReferenceReportGenerator.cpp
     Source/audio/SamplerEngine.cpp
     Source/audio/UrlDownloader.cpp
     Source/shared/GachaSession.cpp

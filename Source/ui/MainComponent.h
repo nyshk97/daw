@@ -12,6 +12,9 @@
 #include "InstrumentDetailView.h"
 #include "IconButton.h"
 #include "MixerWindow.h"
+#include "ReportWindow.h"
+#include "ToastBar.h"
+#include "../audio/ReferenceReportGenerator.h"
 #include "PianoRollView.h"
 #include "ReferenceAnalysisOverlay.h"
 #include "RightPanel.h"
@@ -153,6 +156,16 @@ private:
     void performReferenceAlign (const ReferenceAlign::ClipDescriptor& descriptor,
                                 double bpm, double firstDownbeatSec);
     void performGachaAlign(); // ガチャパネルの「原曲を頭出し」（クリック時に記述子から再解決）
+    void toggleReportWindow(); // ガチャパネルのレポートボタン（表示中の同カードなら閉じる）
+    void handleReportAction();                    // レポートボタン（report有無で開く/書くに分岐）
+    void startReportGeneration (const juce::File& folder); // report.sh をワーカーで起動
+    void confirmRewriteReport();                  // 右クリック「書き直す」の上書き確認
+public:
+    // アプリ終了・プロジェクト切り替え時の確認用（Main.cpp が既存のワーカー同期キャンセル群より
+    // 先に非同期確認してから呼ぶ — 順序を守らないと確認前に生成が中断される）
+    bool isReportGenerationRunning() const;
+    void cancelReportForClose();                  // プロセスグループ終了→join→残骸掃除まで待つ
+private:
     void beginBounce (const juce::File& target); // 保存先確定後: パラメータ固定→専用synth生成→ワーカー開始
     void exportSelectedItem();                   // ⌘E: 選択中のリージョン/クリップを書き出し（regionSelection優先）
     void startRegionExportFlow (int trackIndex, int itemIndex);  // リージョン書き出しの入口（保存ダイアログまで）
@@ -181,6 +194,7 @@ private:
     void pollUrlImport();                                 // 同上（URLダウンロード）
     void startReferenceAnalysis (int trackIndex, int itemIndex); // 右クリック「リファレンスとして分析」
     void pollReferenceAnalysis();                         // 同上の完了ポーリング・stdout行の反映
+    void pollReportGeneration();                          // レポート生成の経過行・完了トースト
 
     // ドラムガチャ（右パネル第3モード）。仮配置・確定の判断は shared/GachaSession
     void performGachaRoll();          // drums.py --porcelain を同期実行して候補一覧を更新
@@ -293,6 +307,8 @@ private:
     ShortcutListOverlay shortcutOverlay; // ⌘?のショートカット一覧（表示中のみ可視）
     BounceOverlay bounceOverlay;         // バウンス進捗（表示中のみ可視・モーダル）
     MixerWindow mixerWindow;             // Xのミキサー（独立ウィンドウ。移動・リサイズ自由）
+    ReportWindow reportWindow;           // 分析レポートの閲覧（独立ウィンドウ・1枚使い回し）
+    ToastBar toast;                      // 右下の一時通知（レポート生成の完了/失敗）
     // 歯車ボタン／⌘,のデバイス設定（開いている間だけ生存。入力レベル測定を常駐させないため閉じたら破棄）
     std::unique_ptr<DeviceSettingsWindow> deviceSettingsWindow;
     TransportLcd lcd; // BPM・小節位置・時間のLCD風パネル（バー中央に置く）
@@ -397,6 +413,7 @@ private:
     // キャンセル・失敗時は今回作成したフォルダを丸ごと削除する（analyze.sh はステム出力
     // ディレクトリの存在だけで分離をスキップするため、残骸が次回実行を壊す）
     ReferenceAnalyzer referenceAnalyzer;
+    ReferenceReportGenerator reportGenerator; // 「レポートを書く」（report.sh・10〜15分・非モーダル）
     ReferenceAnalysisOverlay referenceOverlay;
     bool analysisActive = false;
     juce::File analysisFolder; // 今回作成した references/<名前>

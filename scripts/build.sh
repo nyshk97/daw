@@ -14,7 +14,18 @@
 #
 # 注: notarytool は Claude Code の Bash からは keychain に届かない。
 #     このスクリプトはユーザーの Terminal で実行すること（通常は release.sh 経由）。
+#
+# --skip-notarize: 署名検証まで実行して終了する（notarize / DMG 生成をスキップ）。
+#     署名まわりの変更（モジュール追加等）を、リリース本番より前に自走検証する用
 set -euo pipefail
+
+SKIP_NOTARIZE=0
+for arg in "$@"; do
+  case "$arg" in
+    --skip-notarize) SKIP_NOTARIZE=1 ;;
+    *) echo "不明な引数: $arg（使えるのは --skip-notarize のみ）" >&2; exit 2 ;;
+  esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -80,6 +91,12 @@ ENT=$(codesign -d --entitlements - "$APP" 2>/dev/null || true)
 if echo "$ENT" | grep -q "get-task-allow"; then
   echo "ERROR: entitlements に get-task-allow が残っています（配布物には禁止）"
   exit 1
+fi
+
+if [ "$SKIP_NOTARIZE" = 1 ]; then
+  echo "==> --skip-notarize: 署名検証まで完了（notarize / DMG はスキップ）"
+  echo "    app: $APP"
+  exit 0
 fi
 
 echo "==> Notarizing app (profile: $NOTARY_PROFILE)..."

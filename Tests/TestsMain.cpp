@@ -13,6 +13,7 @@
 #include "audio/PlaybackEngine.h"
 #include "audio/SamplerEngine.h"
 #include "audio/UrlDownloader.h"
+#include "audio/ReferenceReportGenerator.h"
 #include "shared/Project.h"
 #include "shared/SynthBank.h"
 #include "shared/UndoStack.h"
@@ -22,6 +23,7 @@
 #include "shared/GachaSession.h"
 #include "shared/ReferenceAlign.h"
 #include "shared/ReferenceExport.h"
+#include "shared/ReferenceReport.h"
 #include "shared/ReferenceTools.h"
 #include "shared/AudioBrowserNavigation.h"
 #include "shared/ClipFade.h"
@@ -7818,6 +7820,133 @@ void testReferenceAlign()
     dir.deleteRecursively();
 }
 
+void testReferenceReportGenerator()
+{
+    beginTest ("ReferenceReportGenerator worker (fake script)");
+
+    const auto dir = makeTempDir();
+    const auto writeScript = [&dir] (const char* name, const juce::String& body)
+    {
+        const auto file = dir.getChildFile (name);
+        // replaceWithText は既定で改行を CRLF にする → bash が `exit 65\r` を食って壊れる。LF 明示
+        file.replaceWithText ("#!/bin/bash\n" + body + "\n", false, false, "\n");
+        return file;
+    };
+
+    // ---- 成功: stdout の最新行が currentLine に載り、status が success になる ----
+    {
+        ReferenceReportGenerator gen;
+        const auto script = writeScript ("ok.sh", "echo '==> step1'; echo '==> step2'");
+        expect (gen.start ({ script, dir }), "起動できる");
+        while (gen.status() == ReferenceReportGenerator::Status::running)
+            juce::Thread::sleep (10);
+        expect (gen.currentLine() == "==> step2", "stdout の最新行が currentLine に載る");
+        // 完了〜takeResult の間（status=success・スレッド停止済み）は開始できない
+        //（前回の result・対象フォルダを黙って上書きし、poll 前の完了通知が消えるため）
+        expect (! gen.start ({ script, dir }), "結果の未回収中は再開始できない");
+        expect (gen.takeResult().status == ReferenceReportGenerator::Status::success,
+                "exit 0 は success");
+        expect (gen.status() == ReferenceReportGenerator::Status::idle, "takeResult 後は idle");
+        expect (gen.start ({ script, dir }), "takeResult 後は再開始できる");
+        while (gen.status() == ReferenceReportGenerator::Status::running)
+            juce::Thread::sleep (10);
+        gen.takeResult();
+    }
+
+    // ---- 失敗: stderr の理由行が errorMessage に載る ----
+    {
+        ReferenceReportGenerator gen;
+        const auto script = writeScript ("fail.sh", "echo 'reason line' >&2; exit 65");
+        gen.start ({ script, dir });
+        while (gen.status() == ReferenceReportGenerator::Status::running)
+            juce::Thread::sleep (10);
+        const auto result = gen.takeResult();
+        expect (result.status == ReferenceReportGenerator::Status::failed, "exit 非0 は failed");
+        expect (result.errorMessage.contains ("reason line"), "stderr の理由行が載る");
+        expect (result.errorMessage.contains ("65"), "exit code が載る");
+    }
+
+    // ---- キャンセル: プロセスグループごと止まり、残骸 .next も回収される ----
+    {
+        const auto next = dir.getChildFile ("report.md.next");
+        next.replaceWithText ("# partial"); // SIGKILL で trap が走らなかった体
+        ReferenceReportGenerator gen;
+        const auto script = writeScript ("slow.sh", "echo started; sleep 30");
+        gen.start ({ script, dir });
+        while (gen.currentLine() != "started" && gen.status() == ReferenceReportGenerator::Status::running)
+            juce::Thread::sleep (10);
+        gen.cancel();
+        while (gen.status() == ReferenceReportGenerator::Status::running)
+            juce::Thread::sleep (10);
+        const int pgid = gen.pgid();
+        expect (gen.takeResult().status == ReferenceReportGenerator::Status::cancelled,
+                "キャンセルは cancelled");
+        expect (countProcessesInGroup (pgid) == 0, "プロセスグループごと止まる");
+        expect (! next.existsAsFile(), "残骸 .next がロック経由の掃除で消える");
+    }
+
+    // ---- 掃除の抑制: 別プロセスがロック保持中は .next に触れない ----
+    {
+        const auto next = dir.getChildFile ("report.md.next");
+        next.replaceWithText ("# other runner writing");
+        SpawnedProcess holder;
+        expect (holder.start ({ "/bin/bash", "-c",
+                                "exec 9>'" + dir.getChildFile (".report.lock").getFullPathName()
+                                    + "'; /usr/bin/lockf -s -t 0 9 && sleep 10" }),
+                "ロック保持プロセスを起動できる");
+        juce::Thread::sleep (500); // ロック取得を待つ
+
+        ReferenceReportGenerator gen;
+        const auto script = writeScript ("fail2.sh", "exit 1");
+        gen.start ({ script, dir });
+        while (gen.status() == ReferenceReportGenerator::Status::running)
+            juce::Thread::sleep (10);
+        gen.takeResult();
+        expect (next.existsAsFile(), "ロック保持中は手動実行の .next に触れない");
+        holder.terminate();
+    }
+
+    dir.deleteRecursively();
+}
+
+void testReferenceReport()
+{
+    beginTest ("ReferenceReport paths / existence / render cache invalidation");
+
+    const auto dir = makeTempDir();
+    const auto renderer = dir.getChildFile ("render_report.py");
+    renderer.replaceWithText ("# renderer");
+
+    expect (ReferenceReport::reportMd (dir) == dir.getChildFile ("report.md"), "report.mdのパス");
+    expect (ReferenceReport::reportHtml (dir) == dir.getChildFile ("report.html"), "report.htmlのパス");
+    expect (! ReferenceReport::exists (dir), "report.mdが無ければ存在しない扱い");
+
+    const auto md = dir.getChildFile ("report.md");
+    md.replaceWithText ("# report");
+    expect (ReferenceReport::exists (dir), "report.mdがあれば存在する");
+    expect (ReferenceReport::needsRender (dir, renderer), "HTMLキャッシュが無ければ変換が要る");
+
+    // キャッシュが両方（md・変換器）より新しい → 変換不要
+    const auto html = dir.getChildFile ("report.html");
+    html.replaceWithText ("<html>");
+    const auto base = juce::Time::getCurrentTime();
+    md.setLastModificationTime (base - juce::RelativeTime::seconds (60));
+    renderer.setLastModificationTime (base - juce::RelativeTime::seconds (60));
+    html.setLastModificationTime (base);
+    expect (! ReferenceReport::needsRender (dir, renderer), "キャッシュが新しければ変換不要");
+
+    // report.md の方が新しい（書き直し後）→ 変換が要る
+    md.setLastModificationTime (base + juce::RelativeTime::seconds (60));
+    expect (ReferenceReport::needsRender (dir, renderer), "report.mdが新しければ変換が要る");
+
+    // 変換器の方が新しい（render_report.py やCSSの更新後）→ 変換が要る
+    md.setLastModificationTime (base - juce::RelativeTime::seconds (60));
+    renderer.setLastModificationTime (base + juce::RelativeTime::seconds (60));
+    expect (ReferenceReport::needsRender (dir, renderer), "変換器が新しければ変換が要る");
+
+    dir.deleteRecursively();
+}
+
 void testUndoStackBpm()
 {
     beginTest ("UndoStack BPM roundtrip");
@@ -7875,6 +8004,8 @@ int main()
     testUndoStackBpm();
     testReferenceExport();
     testReferenceAlign();
+    testReferenceReport();
+    testReferenceReportGenerator();
     testGachaPorcelainParse();
     testGachaPatternMiniature();
     testGachaSessionPreview();

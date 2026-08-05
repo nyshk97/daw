@@ -367,6 +367,33 @@ private:
                 return;
             flowPending = true;
 
+            // レポート生成（10〜15分・トークン消費）だけは黙ってキャンセルせず先に確認する。
+            // 下の同期キャンセル群より前に置くこと — 後に置くと確認が出る前に生成が中断される。
+            // キャンセルを選んだら何もしない（生成は継続する）
+            if (mainComp->isReportGenerationRunning())
+            {
+                juce::Component::SafePointer<MainWindow> safeForReport (this);
+                juce::NativeMessageBox::showAsync (
+                    juce::MessageBoxOptions()
+                        .withIconType (juce::MessageBoxIconType::QuestionIcon)
+                        .withTitle (jp (u8"レポート生成中です"))
+                        .withMessage (jp (u8"レポートの生成を中断しますか？（途中までの結果は残りません）"))
+                        .withButton (quitting ? jp (u8"中断して終了") : jp (u8"中断して閉じる"))
+                        .withButton (jp (u8"キャンセル")),
+                    [safeForReport, quitting, onClosed] (int result)
+                    {
+                        if (safeForReport == nullptr)
+                            return;
+                        safeForReport->flowPending = false;
+                        if (result != 0)
+                            return; // 生成は継続。閉じる操作ごと取りやめ
+                        if (safeForReport->mainComp != nullptr)
+                            safeForReport->mainComp->cancelReportForClose();
+                        safeForReport->confirmCloseProject (quitting, onClosed);
+                    });
+                return;
+            }
+
             // バウンス・取り込み中の閉じる/終了（バツボタン・⌘Q。メニューはdisabled）は
             // キャンセル→ワーカーjoin→一時ファイル削除を待ってから進める
             mainComp->cancelBounceForClose();

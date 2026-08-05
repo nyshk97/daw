@@ -381,6 +381,22 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         return {};
     };
     rightPanel.gachaPanel().onAlignReference = [this] { performGachaAlign(); };
+    rightPanel.gachaPanel().onReportAction = [this] { handleReportAction(); };
+    rightPanel.gachaPanel().onRewriteReport = [this] { confirmRewriteReport(); };
+    rightPanel.gachaPanel().onCancelReport = [this]
+    {
+        Log::info ("report.generate.cancel_requested", "source=panel");
+        reportGenerator.cancel(); // 非同期。完了は pollReportGeneration() が拾う
+    };
+    rightPanel.gachaPanel().reportWindowFolder = [this] { return reportWindow.showingFolder(); };
+    rightPanel.gachaPanel().reportGeneratingFolder = [this]
+    {
+        return reportGenerator.status() == ReferenceReportGenerator::Status::running
+                   ? reportGenerator.targetFolder()
+                   : juce::File();
+    };
+    reportWindow.onDismissed = [this] { rightPanel.gachaPanel().refreshReportButton(); };
+    addChildComponent (toast);
     // 編集開始（undoスナップショットの直前）に仮配置を撤去する。begin が状態を保存する前に
     // 呼ばれるため、仮リージョンが undo 履歴に混入しない
     undoStack.willBegin = [this] { cancelGachaPreview(); };
@@ -649,6 +665,7 @@ void MainComponent::timerCallback()
     pollUrlImport(); // ダウンロード完了時にそのまま pollImport 側の取り込みへ引き渡す
     pollImport();
     pollReferenceAnalysis();
+    pollReportGeneration();
 
     // サイクル範囲のサンプル換算はBPM・サンプルレートに依存するため毎tick同期する
     // （BPM編集・デバイスSR確定・デバイス変更のどの経路でも取りこぼさない。atomic2本のstoreのみで安価）
@@ -2686,6 +2703,147 @@ void MainComponent::pollReferenceAnalysis()
 // ---- ドラムガチャ（右パネル第3モード）----
 
 // 「原曲を頭出し」。保存済み index は使わず、クリック時に source.json の記述子から再解決する
+// ガチャパネルのレポートボタン。report.md 有→ウィンドウのトグル、無→生成の開始
+void MainComponent::handleReportAction()
+{
+    const auto folder = rightPanel.gachaPanel().selectedCardFolder();
+    if (folder == juce::File())
+        return;
+    if (ReferenceReport::exists (folder))
+        toggleReportWindow();
+    else
+        startReportGeneration (folder);
+}
+
+// トグルの判定は「ウィンドウの表示対象 == 選択中カード」
+// （別カード表示中に押したら閉じずに内容を入れ替える）
+void MainComponent::toggleReportWindow()
+{
+    const auto folder = rightPanel.gachaPanel().selectedCardFolder();
+    if (folder == juce::File())
+        return;
+    if (reportWindow.showingFolder() == folder)
+    {
+        Log::info ("report.close", "source=button");
+        reportWindow.dismiss(); // onDismissed がボタン表示を戻す
+        return;
+    }
+    reportWindow.openFor (folder, this);
+    rightPanel.gachaPanel().refreshReportButton();
+}
+
+// 右クリック「書き直す」。既存 report.md が上書きされる旨を確認してから始める
+// （生成自体は report.md.next へのトランザクションなので、失敗・中断では旧レポートが残る）
+void MainComponent::confirmRewriteReport()
+{
+    const auto folder = rightPanel.gachaPanel().selectedCardFolder();
+    if (folder == juce::File() || ! ReferenceReport::exists (folder))
+        return;
+    juce::NativeMessageBox::showAsync (
+        juce::MessageBoxOptions()
+            .withIconType (juce::MessageBoxIconType::QuestionIcon)
+            .withTitle (jp (u8"レポートを書き直す"))
+            .withMessage (folder.getFileName() + jp (u8" の既存レポートを書き直します（10〜15分）。"
+                                                     u8"完成すると現在の report.md は置き換わります。"))
+            .withButton (jp (u8"書き直す"))
+            .withButton (jp (u8"キャンセル")),
+        [this, folder] (int result)
+        {
+            if (result == 0)
+                startReportGeneration (folder);
+        });
+}
+
+void MainComponent::startReportGeneration (const juce::File& folder)
+{
+    if (! ReferenceTools::reportAvailable())
+        return;
+    // idle 以外は開始しない（running の多重起動に加え、完了〜poll 回収前の上書きも防ぐ。
+    // ボタン側でも無効化しているが、書き直し確認など非同期ダイアログ経由に備える）
+    if (reportGenerator.status() != ReferenceReportGenerator::Status::idle)
+        return;
+
+    if (! reportGenerator.start ({ ReferenceTools::reportScript(), folder }))
+        return;
+    Log::info ("report.generate.start", "folder=" + folder.getFileName());
+    rightPanel.gachaPanel().setReportProgress (jp (u8"レポートを書いています…"));
+    rightPanel.gachaPanel().refreshReportButton(); // ボタン→経過行へ切り替え
+}
+
+void MainComponent::pollReportGeneration()
+{
+    const auto status = reportGenerator.status();
+    if (status == ReferenceReportGenerator::Status::idle)
+        return;
+
+    if (status == ReferenceReportGenerator::Status::running)
+    {
+        // 経過行: 「3:24 ｜ ==> グルーヴ」。テキスト更新のみ（updateControls は呼ばない）
+        const auto elapsed = juce::Time::getCurrentTime() - reportGenerator.startTime();
+        const int totalSeconds = (int) elapsed.inSeconds();
+        const auto clock = juce::String (totalSeconds / 60) + ":"
+                           + juce::String (totalSeconds % 60).paddedLeft ('0', 2);
+        const auto line = reportGenerator.currentLine();
+        rightPanel.gachaPanel().setReportProgress (
+            clock + (line.isEmpty() ? juce::String() : jp (u8" ｜ ") + line));
+        return;
+    }
+
+    // 完了（success / cancelled / failed）
+    const auto folder = reportGenerator.targetFolder();
+    const auto result = reportGenerator.takeResult();
+    rightPanel.gachaPanel().refreshReportButton(); // 経過行→ボタンへ戻す
+
+    if (result.status == ReferenceReportGenerator::Status::success)
+    {
+        Log::info ("report.generate.success", "folder=" + folder.getFileName());
+        // ウィンドウが同じフォルダを表示中なら自動再読込（別フォルダ表示中は切り替えない）
+        reportWindow.reloadIfShowing (folder);
+        juce::Component::SafePointer<MainComponent> safe (this);
+        toast.show (folder.getFileName() + jp (u8" のレポートができました — クリックで開く"),
+                    false,
+                    [safe, folder]
+                    {
+                        if (safe == nullptr)
+                            return;
+                        safe->reportWindow.openFor (folder, safe.getComponent());
+                        safe->rightPanel.gachaPanel().refreshReportButton();
+                    });
+    }
+    else if (result.status == ReferenceReportGenerator::Status::failed)
+    {
+        // 全文（exit code＋stderr の理由行）はログへ、トーストには実際の理由（2行目）を優先して出す
+        //（1行目は「失敗しました（exit N)」の汎用文で、ロック競合や claude 認証エラーが隠れるため）
+        Log::error ("report.generate.fail", "folder=" + folder.getFileName()
+                                                + " message=" + result.errorMessage.replace ("\n", " / "));
+        const auto detail = result.errorMessage.fromFirstOccurrenceOf ("\n", false, false).trim();
+        toast.show (jp (u8"レポート生成に失敗: ")
+                        + (detail.isNotEmpty()
+                               ? detail
+                               : result.errorMessage.upToFirstOccurrenceOf ("\n", false, false)),
+                    true, nullptr);
+    }
+    else
+    {
+        Log::info ("report.generate.cancelled", "folder=" + folder.getFileName());
+    }
+}
+
+bool MainComponent::isReportGenerationRunning() const
+{
+    return reportGenerator.status() == ReferenceReportGenerator::Status::running;
+}
+
+void MainComponent::cancelReportForClose()
+{
+    if (! isReportGenerationRunning())
+        return;
+    Log::info ("report.generate.cancel_requested", "source=close");
+    reportGenerator.cancelAndWait(); // プロセスグループ終了→join→残骸 .next 掃除（ワーカー内）まで
+    reportGenerator.takeResult();
+    Log::info ("report.generate.cancel", "reason=close");
+}
+
 void MainComponent::performGachaAlign()
 {
     if (engine.isRecording())
@@ -4025,4 +4183,7 @@ void MainComponent::resized()
         urlOverlay.setBounds (getLocalBounds());
     if (referenceOverlay.isVisible())
         referenceOverlay.setBounds (getLocalBounds());
+
+    // 右下の一時通知（他のUIと重なってよい。表示中の位置追従のため常に置く）
+    toast.setBounds (getLocalBounds().reduced (16).removeFromBottom (44).removeFromRight (360));
 }
