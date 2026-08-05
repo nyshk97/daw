@@ -4,7 +4,7 @@
 #include <juce_core/juce_core.h>
 
 // リージョン右クリック「リファレンスとして分析」のワーカー。
-// tools/reference/analyze.sh を外部プロセスとして走らせ（demucs 分離を含むので約4分）、
+// tools/reference/analyze.sh を外部プロセスとして走らせ（demucs 分離を含み並列で約2分）、
 // 完了時に card.json から完了ダイアログ用の BPM / キーを拾う。
 // UrlDownloader と同じ形（専用スレッド＋atomic状態＋pull型の完了通知）。
 // 進捗は工程数が読めないため割合を出さず、stdout の最新行をそのまま流す。

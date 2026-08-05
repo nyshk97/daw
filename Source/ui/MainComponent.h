@@ -393,7 +393,7 @@ private:
     GachaSession gachaSession;
 
     // リファレンス分析（右クリック「リファレンスとして分析」）。
-    // track.wav の書き出しは同期（速い）、analyze.sh はワーカー（約4分・キャンセル可）。
+    // track.wav の書き出しは同期（速い）、analyze.sh はワーカー（約2分・キャンセル可）。
     // キャンセル・失敗時は今回作成したフォルダを丸ごと削除する（analyze.sh はステム出力
     // ディレクトリの存在だけで分離をスキップするため、残骸が次回実行を壊す）
     ReferenceAnalyzer referenceAnalyzer;

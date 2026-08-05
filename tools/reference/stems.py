@@ -9,11 +9,12 @@
   analysis/stems.json  ステムごとの音量・帯域バランス・調波打楽器比・聴きどころ
   analysis/stems.png   ステムごとの小節エネルギー曲線
 
-使い方: stems.py <stemdir> <mix.wav> <basics.json> <outdir> [--label htdemucs]
+使い方: stems.py <stemdir> <mix.wav> <basics.json> <outdir> [--label htdemucs] [--workers N]
 """
 import argparse
 import json
 import warnings
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 warnings.filterwarnings("ignore")
@@ -103,6 +104,9 @@ def main() -> None:
     ap.add_argument("basics")
     ap.add_argument("outdir")
     ap.add_argument("--label", default="")
+    # ステムごとの analyze() は完全に独立なので並列化できる（結果はワーカー数によらず同一）。
+    # 値は analyze.py（オーケストレータ）のステップ重みと一致させること
+    ap.add_argument("--workers", type=int, default=3)
     args = ap.parse_args()
 
     basics = json.loads(Path(args.basics).read_text())
@@ -116,8 +120,10 @@ def main() -> None:
 
     stems = sorted(p for p in stemdir.glob("*.wav"))
     result = {"model": args.label or stemdir.parent.name, "n_bars": n_bars, "bar_len_sec": round(bar_len, 4), "stems": {}}
-    for p in stems:
-        result["stems"][p.stem] = analyze(p, first_down, bar_len, n_bars)
+    with ProcessPoolExecutor(max_workers=max(1, args.workers)) as pool:
+        futures = [(p.stem, pool.submit(analyze, p, first_down, bar_len, n_bars)) for p in stems]
+        for name, fut in futures:  # 投入順に回収する＝JSON のキー順は直列版と同じ
+            result["stems"][name] = fut.result()
 
     # ステムの合計がミックスをどれだけ再現しているか（demucs は加算的なのでほぼ一致するはず。
     # 大きく残るなら読み込み・トリムの取り違えを疑う）

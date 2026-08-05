@@ -442,3 +442,19 @@ if (activeWriter.load() != nullptr)
 - GPU 演算の非決定性により、ステム分離の結果が実行ごとにわずかに変わる。閾値ベースの検査（無音判定・ゲート等）は境界ケースで「一度落ちて再実行では通る」flaky になる（実例: 同じ track.wav で excerpts.py の無音検査が落ち、再実行では素通りした）
 - 検査を書くときは「**系統的バグの検出**（例: 切り出しミスで全クリップが無音）」と「**データ由来で正当に閾値を割るケース**（例: そのステムの最静小節が実質無音）」を区別し、後者はエラー停止でなく除外＋続行にする（実例: excerpts.py の quiet 抜粋 → a07992a で修正）
 - 「同一入力なら同一出力」を前提にした回帰テスト・キャッシュ判定も demucs 出力そのものには適用できない（ゴールデン比較は drums.py のような決定的な生成器にだけ使う）
+
+### librosa 系プロセスの並走は BLAS スレッドを 1 に絞らないと轢き合う
+
+- macOS の BLAS（Accelerate/OpenBLAS）はデフォルトで論理コア数ぶんスレッドを立てるが、pyin 等の小さい行列演算では**単独実行ですらスレッド1本の方が速い**（52.1→50.1秒）うえ、複数プロセス並走時はスピン待ちで sys time が爆発する（pyin 2本並走: 52→76秒に劣化・sys 97秒。`OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1` で 50.7＋13.2秒・sys 0.9秒）
+- **数値結果はスレッド数によらずバイト一致**を確認済み（basics/stems/groove の json・png 全比較）。並列化の高速化でスレッド上限を入れても「精度を変えない」は崩れない
+- demucs（torch・MPS）も同罪: CPU は 0.3 コアしか使わないのに torch のスレッドプールがスピンし、並走する basics.py を 35→73秒に轢いた。`OMP_NUM_THREADS=2` で解消（demucs 自身は遅くならない）
+- この環境変数群は analyze.py（オーケストレータ）が子プロセスに注入している。ステップを単体で手実行して時間を測るときも付けないと並走時と別の数字が出る
+- なお `taskpolicy -c utility` で非クリティカルステップを E コアに寄せる案は実測で効果なし（`mediaanalysisd` 等の外部負荷によるブレの方が大きい）。実行時間の計測時は `ps -Ao pcpu,comm -r | head` で外部負荷を先に確認する
+
+### 子プロセスツリーの停止は killpg 一択（ppid 列挙は取りこぼす）
+
+- ppid をたどって子孫を kill する方式は、①失敗した親の子孫は親の死の時点で reparent 済みで列挙不能 ②TERM 無視の孫が親の死で reparent すると次の列挙から消える、の2パターンで漏れる（analyze.py の初版実装で実際に漏れた）。プロセスグループ所属は reparent で変わらないので、ステップを `Popen(process_group=0)` で自グループのリーダーにして `killpg` で止めるのが唯一確実
+- ただし別グループの子は起動元（LaLa の SpawnedProcess）の killpg が届かなくなる → orchestrator が SIGTERM/SIGHUP を例外に変換して全ステップグループへ TERM → 0.5秒 → KILL を伝播する（LaLa は TERM の1秒後に KILL を撃つので、その猶予内に完了させる。SIGHUP はターミナルを閉じたとき orchestrator にしか届かないため同じ経路が必要）
+- **シグナルハンドラの即 raise は「Popen 完了〜管理リストへの登録」の窓で子を孤児化させる**: ハンドラはその区間だけフラグを立てるに留め、登録完了直後のチェックで raise する。sigmask でブロックする案は fork/exec した子がマスクを継承して TERM を無視する子になる副作用があるので使わない
+- **macOS の `killpg(pgid, 0)` は生死判定に使えない**: グループ内に終了処理中のメンバーが1つでもいると EPERM（man kill）。存在確認は `pgrep -g <pgid>` を使い、シグナル送信側は EPERM も握りつぶす（killable なメンバーへの配送自体は行われる）
+- 失敗したステップの drain スレッドは **kill 前に join しない**: 生き残った子孫が stdout/stderr パイプの write 端を握っていると EOF が来ず、join のタイムアウトぶん fail-fast が遅れる（join は kill 後）

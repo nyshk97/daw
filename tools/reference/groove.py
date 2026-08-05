@@ -13,6 +13,7 @@
 import argparse
 import json
 import warnings
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 warnings.filterwarnings("ignore")
@@ -161,6 +162,24 @@ def bass_notes(y: np.ndarray, sr: int, first_down: float, bar_len: float) -> dic
     }
 
 
+def bass_notes_worker(path: str, first_down: float, bar_len: float) -> dict:
+    """JSON 用のベース解析（pyin hop=128）。groove 全体で最重量（実測52秒）。"""
+    bass, sr = librosa.load(path, sr=SR, mono=True)
+    return bass_notes(bass, sr, first_down, bar_len)
+
+
+def bass_plot_worker(path: str) -> tuple:
+    """描画用のピッチ追跡（pyin hop=512。実測13秒）。
+
+    hop=128 の bass_notes と統合すれば1回で済むように見えるが、パラメータが違う
+    独立した2計算で、統合すると結果が変わる。2本を別ワーカーで並走させる
+    （pyin は Viterbi 追跡なので1本の内部並列化はできない＝これが groove の下限）。
+    """
+    bass, sr = librosa.load(path, sr=SR, mono=True)
+    f0, voiced, _ = librosa.pyin(bass, fmin=30, fmax=400, sr=sr, hop_length=512, frame_length=2048)
+    return f0, voiced
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("stemdir")
@@ -181,6 +200,12 @@ def main() -> None:
     master = onset_env(drums, sr, 180, 10500)
     first_down = refine_origin(master, t, basics["grid"]["first_downbeat_sec"], step)
     n_bars = int((len(drums) / sr - first_down) / bar_len)
+
+    # ベース（pyin 2本）は first_down が決まったここから並走できる。
+    # ドラム側は全部で約2秒しかないので、実質 groove の所要時間＝重い方の pyin
+    pool = ProcessPoolExecutor(max_workers=2)
+    notes_future = pool.submit(bass_notes_worker, str(stemdir / "bass.wav"), first_down, bar_len)
+    plot_future = pool.submit(bass_plot_worker, str(stemdir / "bass.wav"))
 
     result = {
         "bpm": bpm,
@@ -237,8 +262,9 @@ def main() -> None:
         density.append(row)
     result["drums"]["energy_by_bar"] = density
 
-    bass, _ = librosa.load(stemdir / "bass.wav", sr=SR, mono=True)
-    result["bass"] = bass_notes(bass, sr, first_down, bar_len)
+    result["bass"] = notes_future.result()
+    f0, voiced = plot_future.result()
+    pool.shutdown()
 
     (outdir / "groove.json").write_text(json.dumps(result, indent=2, ensure_ascii=False))
 
@@ -255,7 +281,6 @@ def main() -> None:
     ax[0].legend()
     ax[0].grid(axis="y", alpha=0.3)
 
-    f0, voiced, _ = librosa.pyin(bass, fmin=30, fmax=400, sr=sr, hop_length=512, frame_length=2048)
     tt = librosa.frames_to_time(np.arange(len(f0)), sr=sr, hop_length=512)
     m = np.where(voiced, librosa.hz_to_midi(np.nan_to_num(f0, nan=1.0)), np.nan)
     # ベースが最も鳴っている8小節を選ぶ（イントロは基本ベース無しなので先頭固定だと空になる）

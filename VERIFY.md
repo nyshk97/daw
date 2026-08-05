@@ -565,7 +565,7 @@ JUCEアプリには合成キーストロークが届かないため、ショー�
 アプリ外の Python ツールの回帰。どちらも fixture のみで数秒・ネット不要:
 
 ```sh
-mise run ref:test     # tools/reference/ の card.py / gates.py
+mise run ref:test     # tools/reference/ の card.py / gates.py / analyze.py（DAGオーケストレータ。テストファイルごとに OK 行が1行ずつ出る）
 mise run gacha:test   # tools/gacha/ の drums.py
 ```
 

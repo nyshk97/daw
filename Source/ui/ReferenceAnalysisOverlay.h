@@ -6,7 +6,7 @@
 #include "Theme.h"
 
 // 「リファレンスとして分析」の進捗オーバーレイ。BounceOverlay と同じ「親全面を覆い
-// パネルを自前描画」方式。分析は工程数が読めない（demucs 分離が支配的・約4分）ので
+// パネルを自前描画」方式。分析はステップが並列に走り工程の進み方が読めない（約2分）ので
 // 進捗バーは不定型（流れるハイライト）にし、analyze.sh の stdout 最新行を添える。
 class ReferenceAnalysisOverlay : public juce::Component,
                                  private juce::Timer
@@ -67,7 +67,7 @@ public:
         g.setColour (juce::Colours::white.withAlpha (0.6f));
         g.setFont (Fonts::small());
         g.drawText (name + juce::String::fromUTF8 (u8"（経過 ") + elapsedText()
-                        + juce::String::fromUTF8 (u8" ／ 目安 約4分）"),
+                        + juce::String::fromUTF8 (u8" ／ 目安 約2分）"),
                     panel.withTrimmedTop (padY + titleHeight).withHeight (16),
                     juce::Justification::centred);
 

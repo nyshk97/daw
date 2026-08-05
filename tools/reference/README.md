@@ -19,7 +19,7 @@ Python は 3.12 固定（`.mise.toml` の `[tools]`）。homebrew の 3.14 で�
 
 ## 使い方
 
-URL を渡すだけ。取得 → MVエディットのトリム → 分析まで通しで走る。3:50 の曲で約4分。
+URL を渡すだけ。取得 → MVエディットのトリム → 分析まで通しで走る。4:35 の曲で約2分（analyze.py が依存グラフに沿ってステップを並列実行する）。
 
 ```sh
 mise run ref:url 'https://www.youtube.com/watch?v=...'    # どこからでも

@@ -7,7 +7,7 @@ python = '3.12'
 # 引数は usage 方式。可変長は KDL の bool 記法で var=#true（var=true は parse error）
 
 [tasks."ref:url"]
-description = 'URLからリファレンスを1曲追加する（取得→トリム自動判定→分析。約4分）'
+description = 'URLからリファレンスを1曲追加する（取得→トリム自動判定→分析。約2分）'
 usage = 'arg "<args>" var=#true help="URL [名前] [--trim a-b] [--dir 親フォルダ]"'
 # var=#true の $usage_args は各引数がシェルクォート付きで渡る（URL の ?= を含む引数が
 # '...' ごと下流に届いて "not a valid URL" になる）。eval set -- でクォートを外す
@@ -18,7 +18,7 @@ exec tools/reference/analyze-url.sh "$@"
 '''
 
 [tasks."ref:analyze"]
-description = 'track.wav があるフォルダを分析し直す（約4分。スクリプトを直したあとに使う）'
+description = 'track.wav があるフォルダを分析し直す（約2分。スクリプトを直したあとに使う）'
 usage = 'arg "<dir>" help="~/Music/daw/references/<名前>"'
 run = 'tools/reference/analyze.sh "$usage_dir"'
 
@@ -33,8 +33,8 @@ usage = 'arg "<dir>" help="~/Music/daw/references/<名前>"'
 run = 'tools/reference/.venv/bin/python tools/reference/card.py "$usage_dir"'
 
 [tasks."ref:test"]
-description = '分析パイプラインの回帰テスト（card.py / gates.py。fixture のみで数秒）'
-run = 'cd tools/reference && .venv/bin/python tests/test_card.py'
+description = '分析パイプラインの回帰テスト（card.py / gates.py / analyze.py。fixture のみで数秒）'
+run = 'cd tools/reference && .venv/bin/python tests/test_card.py && .venv/bin/python tests/test_analyze.py'
 
 [tasks."ref:setup"]
 description = '分析パイプラインの venv を作り直す（初回・依存を変えたとき）'
