@@ -1,0 +1,6 @@
+{
+  "audio": "track.wav",
+  "duration_sec": 64.0,
+  "tempo": { "bpm": 120.0 },
+  "grid": { "n_bars": 32 }
+}

@@ -78,15 +78,15 @@
 
 ### Phase 0: 計測とモデル固定（先行で仕込む・効果測定の土台） [AI🤖]
 
-- [ ] `report.sh` に `--model claude-opus-5` と `--effort ${REPORT_EFFORT:-high}` を追加（A/B 決着までの暫定デフォルトは high）
-- [ ] `claude -p` の生 stream-json を `tee` で `<ref>/logs/report-<タイムスタンプ>.jsonl` に保存（logs/ が無ければ作成。stream_progress.py の表示は現状維持）
-- [ ] 既存フォルダで1本走らせ、現行方式のベースライン（所要時間・ターン数・トークン）を JSONL から集計して本 plan のログに記録する
+- [x] `report.sh` に `--model claude-opus-5` と `--effort ${REPORT_EFFORT:-high}` を追加（A/B 決着までの暫定デフォルトは high）
+- [x] `claude -p` の生 stream-json を `tee` で `<ref>/logs/report-<タイムスタンプ>.jsonl` に保存（logs/ が無ければ作成。stream_progress.py の表示は現状維持）
+- [x] 既存フォルダで1本走らせ、現行方式のベースライン（所要時間・ターン数・トークン）を JSONL から集計して本 plan のログに記録する
 
 ### Phase 1: report.py — 【機】充填とダイジェスト生成 [AI🤖]
 
-- [ ] `report-template.md` の【機】箇所に `{{...}}` 置換マーカーを埋め込む。**本文型【判】は開始・終了マーカー（HTML コメント）で囲み、表・インライン型【判】はセル内にインラインマーカー対＋間に可視プレースホルダを置く**（report.py はどちらもそのまま通すだけ — マーカー・プレースホルダの真実の源もテンプレ）。末尾の閾値表を削除し report.py へのポインタに置換
-- [ ] 必要なら `gates.py` を拡張（テンプレの「キー確定手順」のうち機械化できる部分を gates 側に寄せる。**report.py では再実装しない** — card.py と真実の源を共有する）
-- [ ] `tools/reference/report.py` 新設:
+- [x] `report-template.md` の【機】箇所に `{{...}}` 置換マーカーを埋め込む。**本文型【判】は開始・終了マーカー（HTML コメント）で囲み、表・インライン型【判】はセル内にインラインマーカー対＋間に可視プレースホルダを置く**（report.py はどちらもそのまま通すだけ — マーカー・プレースホルダの真実の源もテンプレ）。末尾の閾値表を削除し report.py へのポインタに置換
+- [x] 必要なら `gates.py` を拡張（テンプレの「キー確定手順」のうち機械化できる部分を gates 側に寄せる。**report.py では再実装しない** — card.py と真実の源を共有する）
+- [x] `tools/reference/report.py` 新設:
   - analysis/*.json を読み、マーカーを充填したドラフトを**引数で渡された出力パス**へ書く（report.sh からは `report.md.next` を渡す）
   - `source.info.json` は**任意**: あれば「動画公開日」・チャンネル・URL を充填、無ければフォルダ名から曲名だけ埋めて該当行を省略
   - **判定の所有を明文化**: gates.py が「測定可否・確度」（テンポ安定・小節頭・スウィング測定可否・キー確度・ハーモニー可否）を持ち、report.py は**ゲート通過後の表現分類だけ**（ハネの程度・クオンタイズ・ループ長/コード確信度・ステム分離・basic-pitch の線引き）をコードで実装。gates が持つ判定は report.py で再実装しない
@@ -94,31 +94,31 @@
   - **【判】のマーカー（本文型・インライン型とも）はテンプレから素通しで出力**（完成検査の対象。プロンプトでも「本文はマーカーの内側に書く・表セルはマーカー間のプレースホルダを判断語で置き換える・マーカーはどちらも消さない」を指示する）
   - BPM ゲート落ちなら非ゼロ終了（ドラフトを出さない。report.sh の短絡が主で、こちらは防御）
   - 【判】用ダイジェスト JSON の生成
-- [ ] `tests/test_report.py` 追加（test_card.py と同じ fixture 方式）: 機充填・判定語の境界値・ゲート焼き込み・BPM ゲートでの非生成・**source.info.json 無しでも生成できること**・ダイジェストに禁止データが含まれないこと・**カードとレポートでキーが一致すること**
-- [ ] 楽園ベイベーの実データでドラフトを生成し、既存 report.md（他曲）の【機】値と目視突き合わせ
+- [x] `tests/test_report.py` 追加（test_card.py と同じ fixture 方式）: 機充填・判定語の境界値・ゲート焼き込み・BPM ゲートでの非生成・**source.info.json 無しでも生成できること**・ダイジェストに禁止データが含まれないこと・**カードとレポートでキーが一致すること**
+- [x] 楽園ベイベーの実データでドラフトを生成し、既存 report.md（他曲）の【機】値と目視突き合わせ
 
 ### Phase 2: report.sh と report-prompt.md の書き換え [AI🤖]
 
-- [ ] `report.sh` を新フロー（ゲート短絡 → report.py が `report.md.next` へ → claude → 検査 → rename）に書き換え。インターフェースは `./report.sh <フォルダ>` のまま。**先行 plan のロック（lockf fd 形式）・trap・stale `.next` 掃除・旧 md/html 維持・成功時の report.html 削除はそのまま維持**し、既存シェルテストが通ることを確認
-- [ ] `--allowedTools` を **`Read Edit` のみに変更**（現行の Write/Glob/Grep/Bash を外す。ドラフトの Edit と analysis/ の不足時 Read だけで足り、逸脱の余地も減る）
-- [ ] `report-prompt.md` を全面改訂: ドラフト（`report.md.next`）を Read → 【判】をセクション別 Edit、見本とダイジェストはプロンプト同梱、gates.json・テンプレは読まない、ヘッダの作文禁止、analysis/ は不足時のみ、3点報告は維持
-- [ ] 完成検査の実装: 先行 plan の妥当性検査に加え、①`{{...}}`・可視プレースホルダ（表インライン型のマーカー間の未置換分を含む）の残存ゼロ ②必須の各論見出しの存在 ③**本文型【判】**: 各領域マーカーの内側に実質的な文章段落がある（見出し・表・箇条書き・HTML コメント・空行・`**定石通りのところ**` 等の単独強調ラベル行は数えない） ④**表・インライン型【判】**: セル内マーカー対の間が空・空白のみでない、を検査し、不合格なら rename せずエラー報告（旧 md/html は維持される）
-- [ ] シェルテスト追加（fake claude 方式）: **現在の実テンプレートと fixture に対する実際の report.py 出力**を入力に「見出しだけ変更して【判】の文章を書かない」fake claude を通し、検査が失敗すること（空の簡易ドラフトで代用しない — 【機】の表・単独強調ラベル行が存在する状態でも検出できることの検証が目的）。**表インライン型のマーカー間を空にした（プレースホルダを消しただけの）ケースでも失敗すること**（機の数値がセルに残っていても検出できることの検証）／BPM ゲート落ちフォルダ（fixture でよい）で **claude 未起動・非ゼロ終了・旧 md/html 維持**となること
+- [x] `report.sh` を新フロー（ゲート短絡 → report.py が `report.md.next` へ → claude → 検査 → rename）に書き換え。インターフェースは `./report.sh <フォルダ>` のまま。**先行 plan のロック（lockf fd 形式）・trap・stale `.next` 掃除・旧 md/html 維持・成功時の report.html 削除はそのまま維持**し、既存シェルテストが通ることを確認
+- [x] `--allowedTools` を **`Read Edit` のみに変更**（現行の Write/Glob/Grep/Bash を外す。ドラフトの Edit と analysis/ の不足時 Read だけで足り、逸脱の余地も減る）
+- [x] `report-prompt.md` を全面改訂: ドラフト（`report.md.next`）を Read → 【判】をセクション別 Edit、見本とダイジェストはプロンプト同梱、gates.json・テンプレは読まない、ヘッダの作文禁止、analysis/ は不足時のみ、3点報告は維持
+- [x] 完成検査の実装: 先行 plan の妥当性検査に加え、①`{{...}}`・可視プレースホルダ（表インライン型のマーカー間の未置換分を含む）の残存ゼロ ②必須の各論見出しの存在 ③**本文型【判】**: 各領域マーカーの内側に実質的な文章段落がある（見出し・表・箇条書き・HTML コメント・空行・`**定石通りのところ**` 等の単独強調ラベル行は数えない） ④**表・インライン型【判】**: セル内マーカー対の間が空・空白のみでない、を検査し、不合格なら rename せずエラー報告（旧 md/html は維持される）
+- [x] シェルテスト追加（fake claude 方式）: **現在の実テンプレートと fixture に対する実際の report.py 出力**を入力に「見出しだけ変更して【判】の文章を書かない」fake claude を通し、検査が失敗すること（空の簡易ドラフトで代用しない — 【機】の表・単独強調ラベル行が存在する状態でも検出できることの検証が目的）。**表インライン型のマーカー間を空にした（プレースホルダを消しただけの）ケースでも失敗すること**（機の数値がセルに残っていても検出できることの検証）／BPM ゲート落ちフォルダ（fixture でよい）で **claude 未起動・非ゼロ終了・旧 md/html 維持**となること
 
 ### Phase 3: 通し実行と effort A/B [AI🤖 + 人間👨‍💻]
 
-- [ ] [AI🤖] 楽園ベイベーで `REPORT_EFFORT=low` → `REPORT_EFFORT=high` の順に通し実行。各ランで claude 起動直前の `report.md.next` を `logs/draft-<effort>.md` に退避し、完了後の `report.md` を `report-low.md` / `report-high.md` へ **cp**（正規 `report.md` は維持）。ログ名は `logs/report-<effort>-<タイムスタンプ>.jsonl`
-- [ ] [AI🤖] 2つの退避ドラフトを diff し完全一致を確認（不一致なら実験中止・原因調査）
-- [ ] [AI🤖] logs/ の JSONL から所要時間・ターン数・トークン・コストを集計し、Phase 0 のベースラインと比較して本 plan のログに記録
-- [ ] [人間👨‍💻] report-low.md / report-high.md の【判】（特に総合節）を読み比べ、low で足りるか判定（1回ずつは予備比較。差が微妙なら追加ランを依頼する）
-- [ ] [AI🤖] 勝者を `report.sh` のデフォルト effort に固定し、勝者の退避ファイルを **cp** で `report.md` に確定してから `report-low.md` / `report-high.md` を削除。実験結果を `docs/labs/reference-beat.md` に記録
+- [x] [AI🤖] 楽園ベイベーで `REPORT_EFFORT=low` → `REPORT_EFFORT=high` の順に通し実行。各ランで claude 起動直前の `report.md.next` を `logs/draft-<effort>.md` に退避し、完了後の `report.md` を `report-low.md` / `report-high.md` へ **cp**（正規 `report.md` は維持）。ログ名は `logs/report-<effort>-<タイムスタンプ>.jsonl`
+- [x] [AI🤖] 2つの退避ドラフトを diff し完全一致を確認（不一致なら実験中止・原因調査）
+- [x] [AI🤖] logs/ の JSONL から所要時間・ターン数・トークン・コストを集計し、Phase 0 のベースラインと比較して本 plan のログに記録
+- [x] [人間👨‍💻] report-low.md / report-high.md の【判】（特に総合節）を読み比べ、low で足りるか判定（1回ずつは予備比較。差が微妙なら追加ランを依頼する）→ **high が全然良い**。追加で Opus max / Fable medium / Fable max も比較し、バランスで **Opus 5 high に確定**（2026-08-06）
+- [x] [AI🤖] 勝者を `report.sh` のデフォルト effort に固定し、勝者の退避ファイルを **cp** で `report.md` に確定してから `report-low.md` / `report-high.md` を削除。実験結果を `docs/labs/reference-beat.md` に記録
 
 ### Phase 4: 後始末 [AI🤖]
 
-- [ ] `docs/design/reference-beat.md` の Phase 1 項（report.py 要否未決）を完了に更新
-- [ ] `tools/reference/README.md` のスクリプト表・所要時間の記述を更新
-- [ ] in-app 側の所要時間文言「10〜15分」を実測値に更新（`grep -rn "10〜15"` で洗える。GachaPanelView.cpp のボタン・右クリックメニュー・ツールチップ／MainComponent.cpp の書き直し確認ダイアログ／Main.cpp・MainComponent.h のコメント／report.sh の echo とヘッダコメント）
-- [ ] `VERIFY.md` に再利用可能な確認手順があれば追記
+- [x] `docs/design/reference-beat.md` の Phase 1 項（report.py 要否未決）を完了に更新
+- [x] `tools/reference/README.md` のスクリプト表・所要時間の記述を更新
+- [x] in-app 側の所要時間文言「10〜15分」を実測値に更新（`grep -rn "10〜15"` で洗える。GachaPanelView.cpp のボタン・右クリックメニュー・ツールチップ／MainComponent.cpp の書き直し確認ダイアログ／Main.cpp・MainComponent.h のコメント／report.sh の echo とヘッダコメント）
+- [x] `VERIFY.md` に再利用可能な確認手順があれば追記
 
 ### 動作確認 [人間👨‍💻]
 
@@ -128,7 +128,31 @@
 ## ログ
 
 ### 試したこと・わかったこと
-（実装中に随時追記）
+
+- 2026-08-06 実装レビューで3件修正: ①信頼度表の「コード進行の骨格」が4分割 other を合議に数えていた
+  （gates.HARMONY_STEMS で6分割に限定。楽園ベイベーは 高→中 に訂正。生成済み3本は該当行のみ機械修正 —
+  再生成すると【判】が引き直されて A/B の読み比べが無効になるため）②downbeat ゲート落ち時、
+  位置依存データ（16分表・進行表・セクション表・出入り・ダイジェストの位置配列）を省略して
+  「測れなかった」に置換（card.py と同じ判断）③【判】マーカー一覧のハードコードをやめ、
+  生成済みドラフトから抽出（対の欠落・重複はエラー）。テスト68件に拡充
+
+- 2026-08-06 A/B の high 1本目が完成検査で誤検知落ち（exit 65・トランザクションが正しく旧レポートを守った）。
+  原因: 検査の「文章段落」判定が箇条書きを除外していたが、**見本レポート自体がグルーヴ・構成節を
+  箇条書き主体で書いており**、見本に忠実な high の実出力（全節を `- **…**` で執筆）が全滅した。
+  【判】マーカーの内側に来る箇条書きは AI の本文でしかあり得ないので「数える」に修正（テスト追加）。
+  「見出しだけ・本文空」は空行とラベルだけになるので引き続き検出できる
+- 2026-08-06 追加A/B（ユーザー判定: low より high が全然良い → さらに上と他モデルを比較）:
+  report.sh に `REPORT_MODEL` 上書き口を追加しログ名を `report-<モデル>-<effort>-<時刻>.jsonl` に拡張。
+  **Opus max = 11.4分・出力41.6K・$3.00 ／ Fable medium = 5.4分・18.3K・$3.37 ／
+  Fable max = 10.5分・35.5K・$4.39**（Fable は単価高。時間は effort にほぼ線形・モデル間の速度差は小）。
+  成果物は report-opus-max.md / report-fable-medium.md / report-fable-max.md。読み比べ待ち
+- 2026-08-06 Phase 3 A/B 実測（楽園ベイベー・新フロー・ドラフトは diff で同一確認済み）:
+  **low = 4.1分・出力11.4K tok・$1.90 ／ high = 8.2分・出力26.8K tok・$1.73（キャッシュ温）**。
+  旧フロー10.5分 → 新フロー high 8.2分・low 4.1分。読み比べ（report-low.md / report-high.md）待ち
+- 2026-08-06 Phase 0 ベースライン（楽園ベイベー・旧フロー・Opus 5・effort high）:
+  **10.5分・17ターン（ツール16回）・出力 40,597 tok・入力の新規読み 148K tok・$3.03**。
+  読み（テンプレ15KB＋見本18KB＋analysis JSON群 ≈ 148K tok）と、出力40K tok（thinking込み）が両輪。
+  ログ: `<ref>/logs/report-high-20260806-000834.jsonl`
 
 ### 方針変更
 （実装中に随時追記）

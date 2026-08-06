@@ -4,7 +4,7 @@
 #include <juce_core/juce_core.h>
 
 // ガチャパネル「レポートを書く」のワーカー。tools/reference/report.sh（Claude Code の
-// ヘッドレス実行・10〜15分）を外部プロセスとして走らせる。ReferenceAnalyzer と同じ形
+// ヘッドレス実行・5〜10分）を外部プロセスとして走らせる。ReferenceAnalyzer と同じ形
 // （専用スレッド＋atomic状態＋pull型の完了通知）。readUntilFinished() は終了まで
 // ブロックする API なので、UI スレッドは status()/currentLine() だけをポーリングする。
 // 進捗は stream_progress.py が流す stdout の最新行をそのまま出す。

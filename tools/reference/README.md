@@ -91,8 +91,9 @@ cd ~/daw/tools/reference
 | `excerpts.py` | **耳で確認するための短いクリップ**を確認する順に番号を振って切り出す | `listen/*.wav` `listen/README.md` |
 | `card.py` | **制約カード** — ゲートを通った値だけをガチャの生成器向けに1枚へ厳選 | `<ref>/card.json` |
 | `tests/test_card.py` | card.py / gates.py の回帰テスト（実曲でなく最小 fixture で固定） | — |
-| `report-template.md` | レポートの雛形（節構成・各節に何を書くか・JSONキーの対応・判定語の閾値）。Phase 1 の `report.py` の入力 | — |
-| `report.sh` / `report-prompt.md` | 分析済みフォルダから `report.md` を書く（Claude Code のヘッドレスモードを呼ぶ） | `report.md` |
+| `report.py` | **レポートの【機】充填と完成検査**。`fill` = テンプレの二重波括弧を analysis/*.json から充填したドラフト＋【判】用ダイジェストを出力（判定語の線引きはここが単一の真実の源）。`check` = AI が【判】を書き終えたかの機械検査 | `report.md.next` `logs/report-digest.json` |
+| `report-template.md` | レポートの雛形（節構成・機械充填プレースホルダ・【判】マーカー）。`report.py fill` の入力 | — |
+| `report.sh` / `report-prompt.md` | 分析済みフォルダから `report.md` を書く（`report.py fill` → Claude Code ヘッドレス = **Opus 5 固定・【判】のみ執筆**・見本とダイジェストはプロンプト同梱 → `report.py check` → atomic rename）。生の stream-json を `logs/` に保存 | `report.md` |
 | `report-example.md` | 雛形に沿って実際に書いたレポートの見本（第1号のコピー） | — |
 
 ## 制約カード（card.json）

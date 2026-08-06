@@ -6,28 +6,28 @@
 #     build/daw_artefacts/Debug/LaLa-dev.app/Contents/MacOS/LaLa-dev
 #
 # report.sh は CLAUDE_BIN があれば実 claude の代わりにこれを呼ぶ。
-# cwd はリファレンスフォルダで呼ばれ、stream-json 風の行を吐いて report.md.next を書く
+# cwd はリファレンスフォルダ。report.py fill 済みの report.md.next があるので、
+# 実フローと同じく【判】プレースホルダを埋める（完成検査を通すため。中身はダミー文章）
 emit() {
   printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}\n' "$1"
 }
-emit "（疑似実行）gates.json を読んでいます"
+emit "（疑似実行）ドラフトを読んでいます"
 sleep 4
 emit "（疑似実行）グルーヴの節を書いています"
 sleep 4
-emit "（疑似実行）report.md.next を書き出しています"
-cat > report.md.next <<'MD'
-# 疑似レポート — フロー確認用
-
-これは fake claude（tests/fake-claude-demo.sh）が書いたレポートです。
-実レポートを作るときはターミナルで `CLAUDE_BIN` を付けずに実行してください。
-
-| 項目 | 値 |
-|---|---|
-| 生成 | 疑似（トークン消費なし） |
-MD
-# report.sh のサイズ下限（部分出力ガード・2000B）を満たす詰め物
-for i in $(seq 1 60); do
-  echo "本文行 $i — 疑似レポートのサイズ下限を満たすための行です。" >> report.md.next
-done
+emit "（疑似実行）【判】を書き上げています"
+python3 - <<'EOF'
+import re, pathlib
+p = pathlib.Path("report.md.next")
+t = p.read_text()
+parts = []
+def stash(m):
+    parts.append(m.group(0)); return "\0" + str(len(parts) - 1) + "\0"
+t = re.sub(r"<!--.*?-->", stash, t, flags=re.DOTALL)
+t = re.sub(r"〈[^〉\n]*〉",
+           "（疑似実行のダミー文章。実レポートを作るときは CLAUDE_BIN を付けずに実行する。）", t)
+t = re.sub("\0(\\d+)\0", lambda m: parts[int(m.group(1))], t)
+p.write_text(t)
+EOF
 sleep 2
 emit "（疑似実行）完了"

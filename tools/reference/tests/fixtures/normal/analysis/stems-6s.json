@@ -1,0 +1,38 @@
+{
+  "model": "6s",
+  "stems": {
+    "drums": {
+      "rms_db": -14.0,
+      "band_balance": { "sub_20_80": 0.1, "low_80_250": 0.2, "mid_250_2k": 0.3, "hi_2k_6k": 0.3, "air_6k_11k": 0.1 },
+      "spectral_centroid_hz_median": 1500.0,
+      "stereo_width": 0.11,
+      "harmonic_percussive_ratio": 0.4,
+      "floor_below_peak_db": -18.0
+    },
+    "bass": {
+      "rms_db": -22.0,
+      "band_balance": { "sub_20_80": 0.4, "low_80_250": 0.35, "mid_250_2k": 0.2, "hi_2k_6k": 0.04, "air_6k_11k": 0.01 },
+      "spectral_centroid_hz_median": 350.0,
+      "stereo_width": 0.02,
+      "harmonic_percussive_ratio": 6.0,
+      "floor_below_peak_db": -60.0
+    },
+    "piano": {
+      "rms_db": -26.0,
+      "band_balance": { "sub_20_80": 0.01, "low_80_250": 0.1, "mid_250_2k": 0.8, "hi_2k_6k": 0.07, "air_6k_11k": 0.02 },
+      "spectral_centroid_hz_median": 1036.0,
+      "stereo_width": 0.33,
+      "harmonic_percussive_ratio": 4.0,
+      "floor_below_peak_db": -65.0
+    },
+    "vocals": {
+      "rms_db": -18.0,
+      "band_balance": { "sub_20_80": 0.01, "low_80_250": 0.08, "mid_250_2k": 0.41, "hi_2k_6k": 0.4, "air_6k_11k": 0.1 },
+      "spectral_centroid_hz_median": 2600.0,
+      "stereo_width": 0.16,
+      "harmonic_percussive_ratio": 0.9,
+      "floor_below_peak_db": -59.0
+    }
+  },
+  "reconstruction": { "mix_rms_db": -12.0, "residual_rms_db": -32.3, "residual_below_mix_db": -20.3 }
+}

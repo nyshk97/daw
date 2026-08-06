@@ -5,10 +5,56 @@
   "loop_progression": {
     "loop_bars": 2,
     "progression": [
-      { "bar": 1, "sub": 0, "chord": "Am7" },
-      { "bar": 1, "sub": 1, "chord": "Am7" },
-      { "bar": 2, "sub": 0, "chord": "F" },
-      { "bar": 2, "sub": 1, "chord": "G" }
-    ]
+      {
+        "bar": 1,
+        "sub": 0,
+        "chord": "Am7",
+        "conf": 0.9,
+        "stability": 0.9
+      },
+      {
+        "bar": 1,
+        "sub": 1,
+        "chord": "Am7",
+        "conf": 0.88,
+        "stability": 0.9
+      },
+      {
+        "bar": 2,
+        "sub": 0,
+        "chord": "F",
+        "conf": 0.6,
+        "stability": 0.7
+      },
+      {
+        "bar": 2,
+        "sub": 1,
+        "chord": "G",
+        "conf": 0.85,
+        "stability": 0.9
+      }
+    ],
+    "repetitions_folded": 16
+  },
+  "loop": {
+    "similarity_by_lag": {
+      "1bar": 0.7,
+      "2bar": 0.9,
+      "4bar": 0.75
+    },
+    "most_likely": "2bar"
+  },
+  "timbre": {
+    "attack_ms_median": 31.0,
+    "sustain_ratio_250ms": 0.3,
+    "centroid_hz_median": 1036.0,
+    "flatness_median": 0.05,
+    "onsets_per_sec": 2.0
+  },
+  "midi": {
+    "count": 480,
+    "notes_per_bar": 5.2,
+    "chord_tone_ratio": 0.85,
+    "grid_dev_ms_within_30ms": 0.75
   }
 }

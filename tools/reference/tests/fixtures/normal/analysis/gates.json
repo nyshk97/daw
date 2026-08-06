@@ -1,8 +1,51 @@
 {
-  "bpm": { "value": 120.0, "octave_ok": true },
-  "tempo_stable": { "ok": true },
-  "downbeat": { "ok": true },
-  "swing": { "ok": true, "ratio": 0.55 },
-  "key": { "value": "A minor", "confidence": "高" },
-  "harmony": { "ok": true, "source_stem": "6s-piano" }
+  "bpm": {
+    "value": 120.0,
+    "octave_ok": true
+  },
+  "tempo_stable": {
+    "ok": true,
+    "grid_contrast_by_eighth": [
+      1.3,
+      1.4,
+      1.35,
+      1.5,
+      1.2,
+      1.45,
+      1.4,
+      1.6
+    ],
+    "local_bpm_std": 0.3
+  },
+  "downbeat": {
+    "ok": true,
+    "backbeat_strength": 0.95
+  },
+  "swing": {
+    "ok": true,
+    "ratio": 0.55
+  },
+  "key": {
+    "value": "A minor",
+    "confidence": "高",
+    "top7_mass": 0.95
+  },
+  "harmony": {
+    "ok": true,
+    "source_stem": "6s-piano",
+    "stems": [
+      {
+        "stem": "6s-piano",
+        "usable": true,
+        "rms_below_mix_db": -18.0,
+        "loop": "2bar"
+      },
+      {
+        "stem": "6s-other",
+        "usable": true,
+        "rms_below_mix_db": -19.0,
+        "loop": "2bar"
+      }
+    ]
+  }
 }

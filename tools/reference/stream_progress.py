@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """`claude -p --output-format stream-json` の出力を、経過時間つきの1行ログに畳む。
 
-レポート生成は10〜15分かかる。既定の出力は全部書き終わるまで無言なので、
+レポート生成は5〜10分かかる。既定の出力は全部書き終わるまで無言なので、
 止まったように見えて Ctrl-C したくなる。何をしているかだけ流す。
 
 使い方: claude -p ... --output-format stream-json --verbose | stream_progress.py
