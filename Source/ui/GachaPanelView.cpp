@@ -359,8 +359,10 @@ void GachaPanelView::updateControls()
         reportProgressLabel.setVisible (generatingThis);
         reportCancelButton.setVisible (generatingThis);
 
+        reportButton.placeholder = ! hasReport;
         if (hasReport)
         {
+            reportButton.removeColour (juce::TextButton::textColourOffId);
             reportButton.setButtonText (jp (u8"📄 レポートを開く"));
             reportButton.setEnabled (ReferenceTools::renderAvailable());
             reportButton.setTooltip (ReferenceTools::renderAvailable()
@@ -369,7 +371,9 @@ void GachaPanelView::updateControls()
         }
         else
         {
-            reportButton.setButtonText (jp (u8"✍️ レポートを書く（約8分）"));
+            reportButton.setColour (juce::TextButton::textColourOffId,
+                                    juce::Colours::white.withAlpha (0.55f));
+            reportButton.setButtonText (jp (u8"＋ レポートを書く（約8分）"));
             const bool canGenerate = hasCard && ReferenceTools::reportAvailable()
                                      && generating == juce::File();
             reportButton.setEnabled (canGenerate);

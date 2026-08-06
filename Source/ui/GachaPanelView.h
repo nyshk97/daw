@@ -99,10 +99,42 @@ private:
     juce::TextButton rollButton; // 「残す」は独立ボタンでなく選択行のバッジ（KeepChipRow）が担う
     juce::TextButton alignButton; // 原曲を頭出し（カード行の右端）
     // 右クリック（書き直しメニュー）を通常クリックと分離するボタン。素の TextButton は
-    // 右クリックでも onClick が発火するため、popup 系の押下は Button に渡さない
+    // 右クリックでも onClick が発火するため、popup 系の押下は Button に渡さない。
+    // placeholder = レポート未生成（押すと作る）。破線枠で「まだ無い」を形で示し、
+    // 実線の「開く」（押すと読む）とひと目で区別する。文字の沈みは textColourOffId 側で行う
     struct ReportButton final : juce::TextButton
     {
         std::function<void()> onRightClick;
+        bool placeholder = false;
+        void paintButton (juce::Graphics& g, bool highlighted, bool down) override
+        {
+            if (! placeholder)
+            {
+                juce::TextButton::paintButton (g, highlighted, down);
+                return;
+            }
+            // 塗り・角丸・hover/押下の変化量は AppLookAndFeel::drawButtonBackground と揃える
+            const float cornerSize = 6.0f;
+            const auto bounds = getLocalBounds().toFloat().reduced (0.5f);
+            auto fill = findColour (buttonColourId).withMultipliedAlpha (isEnabled() ? 1.0f : 0.5f);
+            if (down)
+                fill = fill.darker (0.25f);
+            else if (highlighted)
+                fill = fill.brighter (0.08f);
+            g.setColour (fill);
+            g.fillRoundedRectangle (bounds, cornerSize);
+
+            juce::Path outline;
+            outline.addRoundedRectangle (bounds, cornerSize);
+            juce::Path dashed;
+            const float dashes[] = { 4.0f, 3.0f };
+            juce::PathStrokeType (1.0f).createDashedStroke (dashed, outline, dashes, 2);
+            g.setColour (findColour (juce::ComboBox::outlineColourId)
+                             .withMultipliedAlpha (isEnabled() ? 1.0f : 0.5f));
+            g.fillPath (dashed);
+
+            getLookAndFeel().drawButtonText (g, *this, highlighted, down);
+        }
         void mouseDown (const juce::MouseEvent& e) override
         {
             if (e.mods.isPopupMenu())
