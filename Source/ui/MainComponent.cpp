@@ -2743,7 +2743,7 @@ void MainComponent::confirmRewriteReport()
         juce::MessageBoxOptions()
             .withIconType (juce::MessageBoxIconType::QuestionIcon)
             .withTitle (jp (u8"レポートを書き直す"))
-            .withMessage (folder.getFileName() + jp (u8" の既存レポートを書き直します（5〜10分）。"
+            .withMessage (folder.getFileName() + jp (u8" の既存レポートを書き直します（約8分）。"
                                                      u8"完成すると現在の report.md は置き換わります。"))
             .withButton (jp (u8"書き直す"))
             .withButton (jp (u8"キャンセル")),

@@ -589,7 +589,7 @@ CLAUDE_BIN="$PWD/tools/reference/tests/fake-claude-demo.sh" \
   build/daw_artefacts/Debug/LaLa-dev.app/Contents/MacOS/LaLa-dev
 ```
 
-- report.md が**無い**リファレンスを選ぶ → ボタンが「📄 レポートを書く（5〜10分・AI）」→ 押すと経過行（`0:04 ｜ （疑似実行）…`）とキャンセルに変わる → 約10秒で完了トースト（右下）→ クリックでレポートウィンドウが開く
+- report.md が**無い**リファレンスを選ぶ → ボタンが「✍️ レポートを書く（約8分）」→ 押すと経過行（`0:04 ｜ （疑似実行）…`）とキャンセルに変わる → 約10秒で完了トースト（右下）→ クリックでレポートウィンドウが開く
 - ログの並び: `report.generate.start` → `report.generate.spawn` → `report.generate.end status=2`（2=success）→ `report.open`
 - 生成中に ⌘Q →「レポート生成中です」の確認が**未保存確認より先に**出る。キャンセルを選ぶと生成は継続（経過行が進み続ける）、「中断して終了」で `report.generate.cancel reason=close`
-- 実 claude での生成（5〜10分・Claude Code の利用枠を消費）: `CLAUDE_BIN` を付けずに起動したアプリのボタンから、またはターミナルで `./tools/reference/report.sh <リファレンスフォルダ>`（アプリと同じトランザクション・排他が効く）
+- 実 claude での生成（約8分・Claude Code の利用枠を消費）: `CLAUDE_BIN` を付けずに起動したアプリのボタンから、またはターミナルで `./tools/reference/report.sh <リファレンスフォルダ>`（アプリと同じトランザクション・排他が効く）

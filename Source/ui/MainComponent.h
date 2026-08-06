@@ -413,7 +413,7 @@ private:
     // キャンセル・失敗時は今回作成したフォルダを丸ごと削除する（analyze.sh はステム出力
     // ディレクトリの存在だけで分離をスキップするため、残骸が次回実行を壊す）
     ReferenceAnalyzer referenceAnalyzer;
-    ReferenceReportGenerator reportGenerator; // 「レポートを書く」（report.sh・5〜10分・非モーダル）
+    ReferenceReportGenerator reportGenerator; // 「レポートを書く」（report.sh・約8分・非モーダル）
     ReferenceAnalysisOverlay referenceOverlay;
     bool analysisActive = false;
     juce::File analysisFolder; // 今回作成した references/<名前>

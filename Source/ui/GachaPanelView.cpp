@@ -142,7 +142,7 @@ GachaPanelView::GachaPanelView()
             || ! ReferenceReport::exists (folder) || ! ReferenceTools::reportAvailable())
             return;
         juce::PopupMenu menu;
-        menu.addItem (1, jp (u8"レポートを書き直す（5〜10分・AI）"));
+        menu.addItem (1, jp (u8"レポートを書き直す（約8分）"));
         juce::Component::SafePointer<GachaPanelView> safe (this);
         menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&reportButton),
                             [safe] (int result)
@@ -345,7 +345,7 @@ void GachaPanelView::updateControls()
                                 ? jp (u8"原曲クリップをBPM設定＋小節グリッドに合わせる（生成ドラムと重ねて聴ける）")
                                 : alignReason);
 
-    // レポート: report.md 無し=書く（AI・5〜10分）／有り=開く。選択中カードを生成中なら
+    // レポート: report.md 無し=書く（AI・約8分）／有り=開く。選択中カードを生成中なら
     // ボタンの代わりに経過行を出す。存在チェックはファイルI/Oを含むが、updateControls は
     // ユーザー操作起点でしか呼ばれないので許容（alignと同じ扱い）
     {
@@ -369,7 +369,7 @@ void GachaPanelView::updateControls()
         }
         else
         {
-            reportButton.setButtonText (jp (u8"📄 レポートを書く（5〜10分・AI）"));
+            reportButton.setButtonText (jp (u8"✍️ レポートを書く（約8分）"));
             const bool canGenerate = hasCard && ReferenceTools::reportAvailable()
                                      && generating == juce::File();
             reportButton.setEnabled (canGenerate);
