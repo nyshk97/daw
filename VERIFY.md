@@ -440,6 +440,12 @@ lanes->mouseUp (ev (start.translated (120, 0), start));
 - **pass/fail はスクショの目視でなくモデルの値で裏取りする**（例: フェードを上限まで引いて `fadeIn == 全長 - fadeOut` かつ相手が変わっていないこと、ループを縮めてから同じジェスチャー内で戻すとフェードが元の長さへ復元されること）
 - 1ジェスチャー内で複数の `mouseDrag` を送れるので、「縮めてから戻す」ような**経路依存のバグ**（現在値クランプ vs 元値クランプ）もここで捕まえられる
 
+**操作系ウィジェット（ボタン・コンボ）もオフスクリーンで駆動できる**（GachaPanelView のタブ切り替え・カード選択バグの実証に使用。対象の .cpp を daw_tests へ一時追加 → 確認後に削除、の流儀は上と同じ）:
+
+- `MessageManager::runDispatchLoopUntil` はこのビルドでは使えない（modal loop 無効）。Button は `triggerClick()`（非同期）でなく public な `onClick()` を直接呼ぶ
+- private な子ウィジェットは再帰 `getChildComponent` ＋ `dynamic_cast<juce::TextButton*>` 等で外から特定できる（`getButtonText()` で照合）
+- ComboBox は `setSelectedId (id, juce::sendNotificationSync)` で onChange まで同期実行される。「onChange が変更前の状態を読んでいる」系の配線バグはこれで再現・修正実証できる（UI の .cpp は常設テストに含めない設計なので、この一時ハーネスが配線の唯一の検証手段）
+
 ## サンプルレート自動追従の確認（CLI）
 
 プロジェクトを開くとデバイスSRがプロジェクトSRへ自動で合わせられる（`audio.device.rate_change` がログに出る）。
