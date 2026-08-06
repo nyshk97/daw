@@ -68,6 +68,22 @@ grep -q 'old report' "$REF/report.md"; ok $? "失敗時は旧 report.md を維�
 [ -f "$REF/report.html" ]; ok $? "失敗時は旧 report.html を維持"
 [ ! -f "$REF/report.md.next" ]; ok $? "失敗時に .next が残らない"
 
+# ---- 2b. claude の API エラー: 理由は stream-json（stdout）にしか出ない → RUN_LOG から
+#          抽出して stderr に出す（LaLa のトーストが stderr 末尾行を表示するため）----
+REF="$TMP/apierr"; make_ref "$REF"
+make_fake_claude "$TMP/claude-apierr" 'cat <<JSONEOF
+{"type":"assistant","message":{"content":[{"type":"text","text":"OAuth token has expired. Please run /login."}]},"error":"authentication_error","is_api_error_message":true}
+{"type":"result","is_error":true,"terminal_reason":"api_error","result":"OAuth token has expired. Please run /login."}
+JSONEOF
+exit 1'
+ERR=$(CLAUDE_BIN="$TMP/claude-apierr" bash "$TOOLS/report.sh" "$REF" 2>&1 >/dev/null)
+RC=$?
+[ "$RC" -eq 1 ]; ok $? "API エラーは claude の exit code で失敗（実測: ${RC}）"
+LAST_ERR=$(printf '%s\n' "$ERR" | grep -v '^$' | tail -1)
+[[ "$LAST_ERR" == *"OAuth token has expired"* ]]; ok $? "stderr の末尾行にエラー理由が出る（実測: ${LAST_ERR}）"
+grep -q 'old report' "$REF/report.md"; ok $? "API エラーでは旧 report.md を維持"
+[ ! -f "$REF/report.md.next" ]; ok $? "API エラーで .next が残らない"
+
 # ---- 3. 何も書かず exit 0: 完成検査で弾いて旧を維持 ----
 REF="$TMP/noop"; make_ref "$REF"
 make_fake_claude "$TMP/claude-noop" 'true'

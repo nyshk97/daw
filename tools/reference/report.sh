@@ -99,12 +99,40 @@ echo "==> レポートを書いています。何をしているかを流しま�
 cd "$REF"
 
 # 既定の出力は「全部書き終わるまで無言」なので、だんまりに見える。stream-json で経過を流す。
+set +e
 "$CLAUDE_BIN" -p "$PROMPT" \
   --model "$MODEL" --effort "$EFFORT" \
   --allowedTools Read Edit \
   --output-format stream-json --verbose \
   | tee "$RUN_LOG" \
   | "$PY" -u "$TOOLS/stream_progress.py"
+CLAUDE_RC=${PIPESTATUS[0]}
+set -e
+
+# claude の失敗理由（認証切れ・API エラー等）は stderr でなく stream-json（stdout）に入る。
+# RUN_LOG から取り出して stderr へ出す — LaLa のトーストは stderr の末尾行を表示する実装
+# （ReferenceReportGenerator.cpp）なので、これで理由がトーストまで届く
+if [ "$CLAUDE_RC" -ne 0 ]; then
+  echo "claude が exit ${CLAUDE_RC} で失敗しました（詳細: ${RUN_LOG}）" >&2
+  "$PY" - "$RUN_LOG" <<'PYEOF' >&2 || true
+import json, sys
+msg = None
+for line in open(sys.argv[1]):
+    try:
+        d = json.loads(line)
+    except Exception:
+        continue
+    if d.get("type") == "result" and d.get("is_error"):
+        msg = d.get("result") or msg
+    elif d.get("is_api_error_message"):
+        for c in (d.get("message") or {}).get("content", []):
+            if c.get("type") == "text":
+                msg = c.get("text") or msg
+if msg:
+    print(msg.replace("\n", " ").strip()[:300])
+PYEOF
+  exit "$CLAUDE_RC"
+fi
 
 # 妥当性検査 → 完成検査 → atomic rename（trap は有効なまま。mv 失敗時も EXIT cleanup が回収）
 [ -s "$NEXT" ] || { echo "ドラフトが消えています（claude が削除した可能性。旧レポートを維持）" >&2; exit 65; }
