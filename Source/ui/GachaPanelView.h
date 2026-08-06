@@ -6,23 +6,28 @@
 #include "../shared/GachaSession.h"
 #include "../shared/Project.h"
 
-// 右パネル第3モード「ガチャ」の中身。カード選択・候補8件の一覧・レーンロック・
-// 振り直す/残す。モデルへの仮配置・確定は MainComponent（GachaSession 経由）が行い、
-// このビューは表示と操作の通知だけを担当する。
+// 右パネル第3モード「ガチャ」の中身。パーツ（Drums / Bass）切り替え・カード選択・
+// 候補8件の一覧・レーンロック・振り直す/残す。カード・候補・ロックは**パーツごとに独立**
+// （ドラムは曲A・ベースは曲Bのカード参照が成立する）。モデルへの仮配置・確定は
+// MainComponent（GachaSession 経由）が行い、このビューは表示と操作の通知だけを担当する。
 class GachaPanelView : public juce::Component,
                        private juce::ListBoxModel
 {
 public:
+    using Part = GachaSession::Part;
+
     GachaPanelView();
 
     void setProject (Project* projectToUse);
     void refreshCards();       // <project>/references/*/card.json を列挙し直す（モードを開くたび）
     void refreshAvailability(); // ツール（~/daw）の存在チェック
 
-    std::function<void()> onRoll;        // 振り直す（カード・ロックは getter で読む）
+    Part selectedPart() const { return currentPart; }
+
+    std::function<void()> onRoll;        // 振り直す（パーツ・カード・ロックは getter で読む）
     std::function<void (int)> onPick;    // 候補クリック（index は candidates() の添字）
-    std::function<void()> onKeep;        // 残す
-    std::function<void()> onCardChanged; // カード変更（仮配置の撤去用）
+    std::function<void()> onKeep;        // 残す（全パーツ一括確定）
+    std::function<void (Part)> onCardChanged; // カード変更（そのパーツの仮配置の撤去用）
     std::function<void()> onAlignReference; // 「原曲を頭出し」（実行側がクリック時に再解決する）
     // 頭出しの可否問い合わせ（空文字=可、非空=理由。source/groove/gates のファイルI/Oを含むため
     // updateControls 経由でのみ呼ぶ — タイマーから毎tick呼んではいけない）
@@ -54,48 +59,71 @@ public:
     // 下部ガイドへ一時メッセージを出す（クリック時の再解決失敗の理由など）
     void showStatus (const juce::String& text);
 
-    juce::File selectedCardFolder() const; // 選択中カードのリファレンスフォルダ（未選択は空File）
+    juce::File selectedCardFolder() const; // 表示中パーツの選択カード（未選択は空File）
+    juce::File selectedCardFolder (Part part) const;
 
     // ロック中レーンの seed（8桁hex。空 = ロックなし）。トグルをONにした瞬間に選択中候補から
     // 確保する（振り直しで選択が外れても、表示がONなら必ずこの seed が --lock に渡る —
-    // 「点灯しているのに次の振り直しで変わる」を作らない）
-    juce::String lockedKickSeed() const { return lockedKick; }
-    juce::String lockedSnareSeed() const { return lockedSnare; }
-    juce::String lockedHatSeed() const { return lockedHat; }
+    // 「点灯しているのに次の振り直しで変わる」を作らない）。
+    // drums パーツ: kick/snare/hat、bass パーツ: prog/rhythm
+    juce::String lockedKickSeed() const { return parts[0].locks[0]; }
+    juce::String lockedSnareSeed() const { return parts[0].locks[1]; }
+    juce::String lockedHatSeed() const { return parts[0].locks[2]; }
+    juce::String lockedProgSeed() const { return parts[1].locks[0]; }
+    juce::String lockedRhythmSeed() const { return parts[1].locks[1]; }
 
-    void setCandidates (std::vector<GachaSession::Candidate> list);
-    const std::vector<GachaSession::Candidate>& candidates() const { return items; }
+    void setCandidates (std::vector<GachaSession::Candidate> list); // 表示中パーツへ反映
+    const std::vector<GachaSession::Candidate>& candidates() const
+    {
+        return parts[(size_t) currentPart].items;
+    }
     int selectedCandidate() const { return listBox.getSelectedRow(); }
     void clearCandidateSelection() { listBox.deselectAllRows(); }
-    // 仮配置の有無（「残す」の有効/無効・選択行の「▶ 仮配置中」バッジ・案内文が連動する）
-    void setKeepEnabled (bool enabled);
+    // パーツの仮配置の有無（選択行の「▶ 仮配置中」バッジ・案内文が連動する）。
+    // 「残す」は全パーツ一括確定なので、バッジはどのパーツから押しても同じ意味
+    void setPreviewActive (Part part, bool active);
+    void clearAllPreviewBadges(); // 「残す」確定・全撤去後（両パーツのバッジ・選択を畳む）
 
     void resized() override;
     void paint (juce::Graphics& g) override;
 
 private:
-    class KeepChipRow; // 選択行の「仮配置中」バッジ（ホバーで「残す」ボタンに変わる）
+    class KeepChipRow; // 選択行の「仮配置中」バッジ（ホバーで「ビートを残す」ボタンに変わる）
 
-    int getNumRows() override { return (int) items.size(); }
+    // パーツごとに独立して保持する状態（切り替えでウィジェットに入れ替える）
+    struct PartUiState
+    {
+        juce::File cardFolder;                       // 選択中カード（切替時に復元）
+        std::vector<GachaSession::Candidate> items;  // 候補一覧
+        juce::String locks[3];                       // 確保済み seed（空=ロックなし）
+        bool previewActive = false;                  // 仮配置中（バッジ表示）
+    };
+
+    int getNumRows() override { return (int) parts[(size_t) currentPart].items.size(); }
     void paintListBoxItem (int row, juce::Graphics& g, int width, int height, bool selected) override;
     juce::Component* refreshComponentForRow (int row, bool selected,
                                              juce::Component* existing) override;
     void listBoxItemClicked (int row, const juce::MouseEvent& e) override;
     void selectedRowsChanged (int) override; // ロックトグルの有効/無効が選択に依存する
+    void switchPart (Part part);   // タブ切り替え（状態の退避・復元）
+    void applyCardSelection (const juce::File& folder); // cardBox へ通知なしで反映
     void updateControls(); // 全ロック時の「振り直す」無効化・案内文の切り替え
     void clearLocks();     // トグルOFF＋確保済みseedの破棄（カード変更時）
-    void handleLockToggle (juce::TextButton& button, juce::String& stored);
+    void handleLockToggle (int laneIndex);
+    int numLanes() const { return currentPart == Part::drums ? 3 : 2; }
+    const char* laneName (int laneIndex) const;
 
     Project* project = nullptr;
     bool toolsAvailable = false;
-    bool previewActive = false; // 仮配置中（選択行のバッジ・「候補Nを残す」表示）
-    std::vector<GachaSession::Candidate> items;
+    bool bassToolAvailable = false;
+    Part currentPart = Part::drums;
+    PartUiState parts[GachaSession::numParts];
     std::vector<juce::File> cardFolders; // コンボの並びと対応
-    juce::String lockedKick, lockedSnare, lockedHat; // トグルON時に確保した seed（空=ロックなし）
 
+    juce::TextButton drumsTab { "Drums" }, bassTab { "Bass" }; // パーツ切り替え（ラジオ動作）
     juce::ComboBox cardBox;
     juce::Label lockCaption;   // トグル行の「ロック」ラベル
-    juce::TextButton kickLock { "kick" }, snareLock { "snare" }, hatLock { "hat" };
+    juce::TextButton lockButtons[3]; // drums: kick/snare/hat / bass: 進行/リズム（3つ目は隠す）
     juce::TextButton rollButton; // 「残す」は独立ボタンでなく選択行のバッジ（KeepChipRow）が担う
     juce::TextButton alignButton; // 原曲を頭出し（カード行の右端）
     // 右クリック（書き直しメニュー）を通常クリックと分離するボタン。素の TextButton は

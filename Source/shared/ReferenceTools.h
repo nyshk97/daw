@@ -15,6 +15,7 @@ inline juce::File repoRoot()
 inline juce::File analyzeScript() { return repoRoot().getChildFile ("tools/reference/analyze.sh"); }
 inline juce::File venvPython()    { return repoRoot().getChildFile ("tools/reference/.venv/bin/python"); }
 inline juce::File drumsScript()   { return repoRoot().getChildFile ("tools/gacha/drums.py"); }
+inline juce::File bassScript()    { return repoRoot().getChildFile ("tools/gacha/bass.py"); }
 inline juce::File renderScript()  { return repoRoot().getChildFile ("tools/reference/render_report.py"); }
 inline juce::File reportScript()  { return repoRoot().getChildFile ("tools/reference/report.sh"); }
 
@@ -23,6 +24,10 @@ inline bool analyzeAvailable() { return analyzeScript().existsAsFile() && venvPy
 
 // ガチャ（右パネル第3モード）に必要なツールが揃っているか
 inline bool gachaAvailable() { return drumsScript().existsAsFile() && venvPython().existsAsFile(); }
+
+// ベースガチャ（Bass パーツ）に必要なツールが揃っているか。drums と独立判定 —
+// bass.py だけ欠けた checkout でもドラムガチャは使える
+inline bool bassGachaAvailable() { return bassScript().existsAsFile() && venvPython().existsAsFile(); }
 
 // レポート閲覧（report.md→HTML変換）に必要なツールが揃っているか。
 // ガチャや生成とは独立に判定する — ドラム生成器が欠けただけで閲覧まで無効にしない

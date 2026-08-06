@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <vector>
 #include <juce_audio_formats/juce_audio_formats.h>
 
@@ -207,6 +208,40 @@ namespace SectionMarkers
     juce::String displayName (const std::vector<SectionMarker>& markers, int index);
 }
 
+// プロジェクトのキー（曲の調）。生成MIDI（ベースガチャ等）は常にこのキーで作る。
+// キーは「曲がどの音を中心に回るか」の宣言で、BPMと同格の基本情報として扱う
+// （BPMがグリッドの座標系なら、キーは音高の座標系）。拍子4/4固定と同じ引き算で
+// モードは major / minor の2択（教会旋法は扱わない）
+enum class KeyMode { major, minor };
+
+struct ProjectKey
+{
+    int root = 0;                    // ピッチクラス 0..11（0=C）
+    KeyMode mode = KeyMode::minor;
+
+    bool operator== (const ProjectKey& other) const { return root == other.root && mode == other.mode; }
+    bool operator!= (const ProjectKey& other) const { return ! (*this == other); }
+};
+
+namespace ProjectKeys
+{
+    juce::String modeName (KeyMode mode);                        // "major" / "minor"（JSON・CLI用）
+    bool modeFromName (const juce::String& name, KeyMode& out);  // 未知名は false
+
+    juce::String rootName (int root);                            // 表示用 "C" "C♯" …（♯表記固定）
+    bool rootFromName (const juce::String& name, int& out);      // "C#"/"Db"/"F♯" 等（カードの値）を受ける
+
+    // 表示名。Logic等の慣例に合わせ major は素の音名、minor は m を付ける（例: "F♯" / "F♯m"）
+    juce::String displayName (const ProjectKey& key);
+
+    // bass.py の --key 形式（ASCII。例: "F#:minor"）
+    juce::String cliText (const ProjectKey& key);
+
+    // カードの表示テキスト "F# major"（ReferenceAnalyzer::Result::keyText）→ ProjectKey。
+    // 読めなければ nullopt（キーのゲート落ちで空のことがある）
+    std::optional<ProjectKey> fromCardText (const juce::String& text);
+}
+
 // MIDIトラックの音源種別。gm = macOS内蔵GM音源（DLSMusicDevice）/ sample = 外部ワンショット
 enum class InstrumentKind { gm, sample };
 
@@ -258,11 +293,14 @@ public:
     // v9: リージョン/クリップのループ（loopCount。欠損＝ループなし）/
     // v10: オーディオリージョンのゲイン（clips[].gain。線形倍率・欠損＝1.0）/
     // v11: オーディオリージョンのフェード（clips[].fadeInSamples / fadeOutSamples。欠損＝0）/
-    // v12: 曲末フェードアウト（fadeOut.start / fadeOut.end。16分音符単位・欠損＝未設定）
-    static constexpr int currentVersion = 12;
+    // v12: 曲末フェードアウト（fadeOut.start / fadeOut.end。16分音符単位・欠損＝未設定）/
+    // v13: キー（key.root 0..11 / key.mode major|minor。欠損＝未設定。旧LaLaがキー付き
+    //      projectを開いて保存するとキーを黙って消すため、追加時に版を上げている）
+    static constexpr int currentVersion = 13;
 
     juce::File directory;
     double bpm = 120.0;
+    std::optional<ProjectKey> key; // 未設定 = nullopt（キーを決めていない曲を壊さない）
     double sampleRate = 0.0; // 0 = 未確定（最初の録音時にデバイスレートで確定）
     juce::String memo;       // プロジェクトごとの自由記述メモ（v7。旧形式は空文字）
     std::vector<Track> tracks;

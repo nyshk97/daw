@@ -44,7 +44,7 @@ public:
             willBegin();
         undoStates.push_back ({ project.tracks, project.markers,
                                 project.fadeOutStartSixteenths, project.fadeOutEndSixteenths,
-                                project.bpm, kind });
+                                project.bpm, project.key, kind });
         if ((int) undoStates.size() > maxDepth)
             undoStates.erase (undoStates.begin());
         redoStates.clear();
@@ -58,7 +58,7 @@ public:
     {
         undoStates.push_back ({ std::move (beforeTracks), project.markers,
                                 project.fadeOutStartSixteenths, project.fadeOutEndSixteenths,
-                                project.bpm, EditKind::structure });
+                                project.bpm, project.key, EditKind::structure });
         if ((int) undoStates.size() > maxDepth)
             undoStates.erase (undoStates.begin());
         redoStates.clear();
@@ -72,7 +72,7 @@ public:
         kind = undoStates.back().kind;
         redoStates.push_back ({ std::move (project.tracks), std::move (project.markers),
                                 project.fadeOutStartSixteenths, project.fadeOutEndSixteenths,
-                                project.bpm, kind });
+                                project.bpm, project.key, kind });
         restoreFrom (undoStates, project);
         return true;
     }
@@ -84,7 +84,7 @@ public:
         kind = redoStates.back().kind;
         undoStates.push_back ({ std::move (project.tracks), std::move (project.markers),
                                 project.fadeOutStartSixteenths, project.fadeOutEndSixteenths,
-                                project.bpm, kind });
+                                project.bpm, project.key, kind });
         restoreFrom (redoStates, project);
         return true;
     }
@@ -118,6 +118,7 @@ private:
         int fadeOutStartSixteenths = 0;
         int fadeOutEndSixteenths = 0;
         double bpm = 120.0; // BPM変更（LCD・「BPMをプロジェクトに設定」）もundo対象
+        std::optional<ProjectKey> key; // キー変更（LCD・「BPMとキーを設定」）もundo対象
         EditKind kind = EditKind::structure;
     };
 
@@ -129,6 +130,7 @@ private:
         project.fadeOutStartSixteenths = states.back().fadeOutStartSixteenths;
         project.fadeOutEndSixteenths = states.back().fadeOutEndSixteenths;
         project.bpm = states.back().bpm;
+        project.key = states.back().key;
         states.pop_back();
     }
 

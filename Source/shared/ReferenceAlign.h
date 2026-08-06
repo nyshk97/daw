@@ -69,8 +69,16 @@ enum class ApplyResult
     notFound  // クリップを同定できない・前提が壊れている（何も変更していない）
 };
 
-// BPM設定＋クリップ頭出しの複合適用。undo は全体で1件。
-// BPM と移動先の両方が現在値と同値なら begin() せず noChange を返す
+// BPM設定（＋キー設定）＋クリップ頭出しの複合適用。undo は全体で1件。
+// key は nullopt = キーに触らない（現行の「BPMを設定して頭出し」と同じ）。
+// no-op 判定は対象項目すべて（BPM・key・移動先）で行い、全同値なら begin() せず noChange
 ApplyResult apply (Project& project, UndoStack& undoStack, const ClipDescriptor& descriptor,
-                   double bpm, double firstDownbeatSec);
+                   double bpm, double firstDownbeatSec,
+                   const std::optional<ProjectKey>& key = std::nullopt);
+
+// BPM＋キーのみの複合設定（キーあり・頭出し不可の経路）。undo は全体で1件。
+// 両方同値なら noChange / BPM が範囲外なら notFound。
+// 分析完了ダイアログの undo 粒度（経路別に1件）の判断をUIから切り離すためここに置く
+ApplyResult applyBpmAndKey (Project& project, UndoStack& undoStack,
+                            double bpm, const std::optional<ProjectKey>& key);
 }

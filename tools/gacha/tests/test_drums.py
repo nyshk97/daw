@@ -54,16 +54,16 @@ ok(drums.derive_audio_seed("kick", 0xDEADBEEF) == 0x80E3052070AF92A6, "audio see
 # wav 合成を変えても両方が同じ新出力になって素通りする。ここが落ちたら「同じファイル名で
 # 以前と違う音が出る」変更をしたということ。意図的な変更なら GENERATOR_VERSION を上げて
 # （ファイル名の cfg ハッシュ部が変わり旧候補と共存できる）、この既知値を採り直す。
-# full.json は quantize_dev_ms 0 でスウィング位置の厳密テスト用。ジッター経路（σ換算・
-# 乱数消費・クリップ・tick 丸め）は素通りするので、実カード相当（dev 11.3ms）の jitter.json
-# でもゴールデンを焼き、両経路の変更を検出する
+# full.json は swing 0.6 のスウィング位置の厳密テスト用。jitter.json は実カード相当の
+# 第2fixture（v3 でジッターは廃止 — カードに quantize_dev_ms が残っていても読まないことを
+# 含めて焼き込む。swing 0.482 の「突っ込む側」経路）
 GOLDENS = (
-    ("full.json", "42", "drums-kcf50d9fe-s27068bbd-hcefb6b8a-6da2db",
+    ("full.json", "42", "drums-kcf50d9fe-s27068bbd-hcefb6b8a-c58664",
      "d772cc3bc0425c2a4861872a85bf40016baf5091a2cf8e8975760a4afdbda5b6",
      "13f791414863873a04c80898ac167225626cc263c01cec4259e23128650d96aa"),
-    ("jitter.json", "7", "drums-k5d935960-sbf6a240a-h7b19edc8-61761c",
-     "7e4bf02e479e6a5fbbdb41c381692ff6570ad3fe3c44d702d0c43b6a5b6342aa",
-     "7ad9b82929a2a2910c2e398338ad9ddb2aa8f43c28b7c14e4f9e84bd1ddf422f"),
+    ("jitter.json", "7", "drums-k5d935960-sbf6a240a-h7b19edc8-065e69",
+     "6da9d305869f2f712f93c24c4b4d7c21989eda493d267de1add885057a9d75d3",
+     "728372a3bfe542536fc5022aa1e6521761efc1a6dd763dc0bf23d8e59e3d6409"),
 )
 with tempfile.TemporaryDirectory() as tmp:
     for fixture, seed, base, mid_sha, wav_sha in GOLDENS:
@@ -174,7 +174,6 @@ for label, mutate in (
     ("swing が plausible 上限超え", lambda c: c["drums"].update(swing_ratio=0.801)),
     ("swing が 1 近傍（単調化で小節末に積み重なる）", lambda c: c["drums"].update(swing_ratio=0.999)),
     ("swing が plausible 下限未満", lambda c: c["drums"].update(swing_ratio=0.44)),
-    ("quantize_dev が負", lambda c: c["drums"].update(quantize_dev_ms=-3)),
 ):
     broken = copy.deepcopy(base)
     mutate(broken)

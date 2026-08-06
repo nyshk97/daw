@@ -5,14 +5,14 @@
 #include "Fonts.h"
 #include "Theme.h"
 
-// トランスポート情報（BPM・経過時間）をまとめて表示するLCD風パネル
+// トランスポート情報（BPM・キー・経過時間）をまとめて表示するLCD風パネル
 // （Logic Proの中央ディスプレイのイメージ）。表示に徹してモデルへの参照を持たない。
 // BPMはクリックで編集できるLabelのままにし、値の検証・反映は所有側が
-// tempoLabel().onTextChange で行う
+// tempoLabel().onTextChange で行う。KEYはクリックで onKeyClick（所有側がメニューを出す）
 class TransportLcd : public juce::Component
 {
 public:
-    static constexpr int preferredWidth = 156;
+    static constexpr int preferredWidth = 156 + 48;
 
     TransportLcd()
     {
@@ -24,9 +24,13 @@ public:
             label.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.87f));
         };
         setupValue (tempo);
+        setupValue (keyValue);
         setupValue (time);
 
         time.setInterceptsMouseClicks (false, false);
+        // キーはテキスト編集でなくメニュー編集（12ルート×2モード）なので、クリックは
+        // 自分（mouseDown → onKeyClick）で受ける
+        keyValue.setInterceptsMouseClicks (false, false);
 
         tempo.setEditable (true, false, false);
         tempo.setMouseCursor (juce::MouseCursor::IBeamCursor);
@@ -38,6 +42,26 @@ public:
     juce::Label& tempoLabel() { return tempo; }
 
     void setTimeText (const juce::String& text) { time.setText (text, juce::dontSendNotification); }
+
+    // キー表示（例: "F♯m"）。未設定は "—"（薄字）
+    void setKeyText (const juce::String& text)
+    {
+        const bool unset = text.isEmpty();
+        keyValue.setText (unset ? juce::String::fromUTF8 (u8"—") : text, juce::dontSendNotification);
+        keyValue.setColour (juce::Label::textColourId,
+                            juce::Colours::white.withAlpha (unset ? 0.35f : 0.87f));
+    }
+
+    std::function<void()> onKeyClick; // KEYセクションのクリック（編集メニューは所有側が出す）
+
+    // メニューのアンカー用（KEYセクションの矩形。スクリーン変換は呼び出し側）
+    juce::Rectangle<int> keySectionBounds() const { return sectionBounds (1); }
+
+    void mouseDown (const juce::MouseEvent& event) override
+    {
+        if (onKeyClick != nullptr && sectionBounds (1).contains (event.getPosition()))
+            onKeyClick();
+    }
 
     void paint (juce::Graphics& g) override
     {
@@ -79,16 +103,16 @@ public:
 
     void resized() override
     {
-        juce::Label* labels[numSections] = { &tempo, &time };
+        juce::Label* labels[numSections] = { &tempo, &keyValue, &time };
         for (int i = 0; i < numSections; ++i)
             labels[i]->setBounds (sectionBounds (i).withTrimmedTop (captionHeight));
     }
 
 private:
-    static constexpr int numSections = 2;
+    static constexpr int numSections = 3;
     static constexpr int captionHeight = 14;
-    static constexpr int sectionWidths[numSections] = { 64, 92 };
-    static constexpr const char* captions[numSections] = { "BPM", "TIME" };
+    static constexpr int sectionWidths[numSections] = { 64, 48, 92 };
+    static constexpr const char* captions[numSections] = { "BPM", "KEY", "TIME" };
 
     juce::Rectangle<int> sectionBounds (int index) const
     {
@@ -98,7 +122,7 @@ private:
         return { x, 0, sectionWidths[index], getHeight() };
     }
 
-    juce::Label tempo, time;
+    juce::Label tempo, keyValue, time;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TransportLcd)
 };

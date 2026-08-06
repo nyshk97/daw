@@ -151,10 +151,22 @@ private:
     void applyBpmText();
     void setProjectBpm (double value); // BPM変更の一本化（undo対象。同値ならno-op）
     void applyProjectBpm (double value); // begin しない適用部（transport・project->bpm・LCD の同期のみ）
+    void setProjectKey (const ProjectKey& value); // キー変更の一本化（undo対象。同値ならno-op）
+    void refreshKeyDisplay();                     // LCDのKEY表示をモデルに追従させる
+    void showKeyMenu();                           // KEYクリック → ルート12×モード2のメニュー
     // 原曲クリップの頭出し（BPM設定＋クリップ移動を undo 1件で）。本体は ReferenceAlign::apply、
-    // ここは録音ガードと transport/LCD/スナップショット/再描画の同期だけを担当する
+    // ここは録音ガードと transport/LCD/スナップショット/再描画の同期だけを担当する。
+    // key 付き（分析完了ダイアログの「BPMとキーを設定」）は同じ undo 1件にキーも同乗する
     void performReferenceAlign (const ReferenceAlign::ClipDescriptor& descriptor,
-                                double bpm, double firstDownbeatSec);
+                                double bpm, double firstDownbeatSec,
+                                const std::optional<ProjectKey>& key = std::nullopt);
+    // キーあり・頭出し不可の経路（BPM＋キーを undo 1件で）。本体は ReferenceAlign::applyBpmAndKey
+    void performBpmAndKey (double bpm, const std::optional<ProjectKey>& key);
+    // 分析完了ダイアログ（カードにキーがある場合）: ルート/モードを確認・変更してから適用できる
+    void showAnalysisKeyDialog (const juce::String& title, const juce::String& message,
+                                double cardBpm, bool canAlign,
+                                const ReferenceAlign::ClipDescriptor& descriptor,
+                                double fdSec, const ProjectKey& cardKey);
     void performGachaAlign(); // ガチャパネルの「原曲を頭出し」（クリック時に記述子から再解決）
     void toggleReportWindow(); // ガチャパネルのレポートボタン（表示中の同カードなら閉じる）
     void handleReportAction();                    // レポートボタン（report有無で開く/書くに分岐）
@@ -196,14 +208,29 @@ private:
     void pollReferenceAnalysis();                         // 同上の完了ポーリング・stdout行の反映
     void pollReportGeneration();                          // レポート生成の経過行・完了トースト
 
-    // ドラムガチャ（右パネル第3モード）。仮配置・確定の判断は shared/GachaSession
-    void performGachaRoll();          // drums.py --porcelain を同期実行して候補一覧を更新
+    // ガチャ（右パネル第3モード。Drums / Bass のパーツ切り替え型）。
+    // 仮配置・確定の判断は shared/GachaSession
+    void performGachaRoll();          // 表示中パーツで分岐（drums.py / bass.py を同期実行）
+    void performDrumsRoll();          // drums.py --porcelain → 候補一覧を更新
+    void performBassRoll();           // キーガード → ドラム解決・延長 → bass.py → 候補一覧
+    bool extendDrumsPreview (int bars); // ガチャ産仮配置ドラムの同一seed・--bars変更の延長再生成
     void pickGachaCandidate (int index); // 候補クリック → 仮配置（差し替え）
-    void keepGachaCandidate();        // 「残す」→ pushCommitted で undo 1件・dirty化
+    void keepGachaCandidate();        // 「残す」→ 全パーツ一括で pushCommitted 1件・dirty化
+    // ベース仮配置の基準になるドラムの解決（仮配置中 Drums → 選択中の Drum Kit リージョン → 無し）
+    struct DrumsSource
+    {
+        int trackIndex = -1, regionIndex = -1;
+        bool fromPreview = false;              // ガチャ産仮配置（seed 持ち＝延長再生成できる）
+        bool isValid() const { return trackIndex >= 0 && regionIndex >= 0; }
+    };
+    DrumsSource resolveDrumsSource() const;
     // 仮配置の中央撤去。モデルに触る全入口（undo/redo・保存・バウンス・書き出し・録音開始・
-    // モード離脱・カード変更・仮オブジェクトへの操作）から呼ぶ。ヘッダの rebuild は非同期
+    // モード離脱・仮オブジェクトへの操作）から呼ぶ。ヘッダの rebuild は非同期
     //（ヘッダ自身のコールバック内から begin フック経由で呼ばれることがあるため）
     void cancelGachaPreview();
+    // パーツ単位の撤去（カード変更・候補クリア時。他パーツの仮配置は維持する）
+    void cancelGachaPart (GachaSession::Part part);
+    void afterGachaCancel (bool trackRemoved); // 撤去後のUI・スナップショット同期（共通の尻尾）
     void cleanupUrlTempDir();                             // URL取り込みの一時ディレクトリを畳む
     void finishImport (const AudioImporter::Result& result); // 成功時: リネーム→クリップ/トラック追加→保存
     void finishInstrumentImport (const AudioImporter::Result& result); // 同上（サンプル音源の割り当て）

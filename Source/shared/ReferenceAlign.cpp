@@ -106,8 +106,17 @@ juce::int64 alignedClipStart (juce::int64 currentStart, juce::int64 fdSamples, d
     return (juce::int64) std::llround ((double) bar * barLenSamples) - fdSamples;
 }
 
+namespace
+{
+// キーの no-op 判定（nullopt = 触らない = 常に同値扱い）
+bool keySame (const Project& project, const std::optional<ProjectKey>& key)
+{
+    return ! key.has_value() || (project.key.has_value() && *project.key == *key);
+}
+}
+
 ApplyResult apply (Project& project, UndoStack& undoStack, const ClipDescriptor& descriptor,
-                   double bpm, double firstDownbeatSec)
+                   double bpm, double firstDownbeatSec, const std::optional<ProjectKey>& key)
 {
     if (project.sampleRate <= 0.0 || bpm < 30.0 || bpm > 300.0
         || ! std::isfinite (firstDownbeatSec) || firstDownbeatSec < 0.0)
@@ -122,17 +131,36 @@ ApplyResult apply (Project& project, UndoStack& undoStack, const ClipDescriptor&
     const auto& clip = project.tracks[(size_t) located.trackIndex].clips[(size_t) located.clipIndex];
     const auto newStart = alignedClipStart (clip.startSample, fdSamples, barLen);
 
-    // 両方同値なら begin() 前に返す（頭出し済みで再度押したとき、⌘Zの1回目が
+    // 対象項目すべて同値なら begin() 前に返す（頭出し済みで再度押したとき、⌘Zの1回目が
     // 「何も戻らない」no-op 履歴にならないように。setProjectBpm の同値ガードと同じ流儀）
     const bool bpmSame = std::abs (project.bpm - bpm) < 1e-9;
-    if (bpmSame && newStart == clip.startSample)
+    if (bpmSame && keySame (project, key) && newStart == clip.startSample)
         return ApplyResult::noChange;
 
     // begin の willBegin フック（ガチャ仮配置の撤去）は末尾に追加された仮オブジェクトしか
     // 消さないため、上で解決した track/clip の index は begin 後も有効
     undoStack.begin (project);
     project.bpm = bpm;
+    if (key.has_value())
+        project.key = key;
     project.tracks[(size_t) located.trackIndex].clips[(size_t) located.clipIndex].startSample = newStart;
+    return ApplyResult::applied;
+}
+
+ApplyResult applyBpmAndKey (Project& project, UndoStack& undoStack,
+                            double bpm, const std::optional<ProjectKey>& key)
+{
+    if (bpm < 30.0 || bpm > 300.0)
+        return ApplyResult::notFound;
+
+    const bool bpmSame = std::abs (project.bpm - bpm) < 1e-9;
+    if (bpmSame && keySame (project, key))
+        return ApplyResult::noChange;
+
+    undoStack.begin (project);
+    project.bpm = bpm;
+    if (key.has_value())
+        project.key = key;
     return ApplyResult::applied;
 }
 }

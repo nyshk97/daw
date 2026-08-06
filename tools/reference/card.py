@@ -50,9 +50,14 @@ def normalize_chord(label: str) -> tuple[int, str]:
 
 
 def chord_character(progression: list[dict]) -> dict:
-    """畳んだ進行のスロット列から、進行の性格3値を導出する。
+    """畳んだ進行のスロット列から、進行の性格4値を導出する。
 
-    - changes_per_loop: 骨格レベルで隣接比較（循環＝末尾→先頭を含む）した変化の回数
+    - changes_per_loop: 骨格レベルで隣接比較（循環＝末尾→先頭を含む）した変化の回数。
+      同ルートで maj→min のようなクオリティのみの変化も数える（定義は据え置き —
+      レポート等の既存用途を守る）
+    - root_changes_per_loop: ルート音程クラスだけの変化回数（クオリティのみの変化は数えない）。
+      ベース生成のルート列制約はこちらを使う（ベースが弾くのはルートで、クオリティの変化は
+      ルート列に現れないため）
     - root_motion: 変化ごとのルート移動を半音数 (-6, +6] で取り（トライトーンは +6）、
       0（クオリティのみの変化）は方向の集計から除外。2/3 以上が同方向なら up/down、
       非ゼロの移動が無い・変化が1回以下なら static、それ以外は mixed
@@ -60,13 +65,15 @@ def chord_character(progression: list[dict]) -> dict:
     labels = [p["chord"] for p in progression if p.get("chord")]
     slots = [normalize_chord(c) for c in labels]
     has_7th = any(re.search(r"(7|9|11|13)", c) for c in labels)
-    changes, moves = 0, []
+    changes, root_changes, moves = 0, 0, []
     for i in range(len(slots)):
         a, b = slots[i], slots[(i + 1) % len(slots)]
         if a != b:
             changes += 1
             iv = (b[0] - a[0]) % 12
             moves.append(iv - 12 if iv > 6 else iv)
+        if a[0] != b[0]:
+            root_changes += 1
     nonzero = [m for m in moves if m != 0]
     up, down = sum(1 for m in nonzero if m > 0), sum(1 for m in nonzero if m < 0)
     if changes <= 1 or not nonzero:
@@ -77,7 +84,12 @@ def chord_character(progression: list[dict]) -> dict:
         motion = "down"
     else:
         motion = "mixed"
-    return {"has_7th_or_more": has_7th, "changes_per_loop": changes, "root_motion": motion}
+    return {
+        "has_7th_or_more": has_7th,
+        "changes_per_loop": changes,
+        "root_changes_per_loop": root_changes,
+        "root_motion": motion,
+    }
 
 
 def fold_kick_by_beat(profile_16th: list[float]) -> list[float]:
@@ -166,7 +178,11 @@ def build_card(name: str, gates: dict, groove: dict, arrangement: dict, topline:
         drop("chords", "downbeat.ok", "スロットの区切りが小節グリッドに依存する")
     else:
         prog = topline["loop_progression"]
-        card["chords"] = {"loop_bars": prog["loop_bars"], **chord_character(prog["progression"])}
+        # slots_per_bar: 分析器（topline.py）のハーモニーグリッドは1小節を2分割で固定。
+        # カードの契約として明示する（生成器はこの値でルート列のスロット数を決める。
+        # 旧カード互換: 読み手は欠損時に 2 を補完する）
+        card["chords"] = {"loop_bars": prog["loop_bars"], "slots_per_bar": 2,
+                          **chord_character(prog["progression"])}
 
     # --- arrangement ---
     arr: dict = {"n_bars": arrangement["n_bars"]}
@@ -201,8 +217,10 @@ FIELD_TYPES = {
     "bass.note_length_16ths": NUM,
     "bass.quantize_dev_ms": NUM,
     "chords.loop_bars": (int,),
+    "chords.slots_per_bar": (int,),
     "chords.has_7th_or_more": (bool,),
     "chords.changes_per_loop": (int,),
+    "chords.root_changes_per_loop": (int,),
     "chords.root_motion": (str,),
     "arrangement.n_bars": (int,),
 }

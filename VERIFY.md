@@ -569,9 +569,32 @@ mise run ref:test     # tools/reference/ の card.py / gates.py / analyze.py / r
 mise run gacha:test   # tools/gacha/ の drums.py
 ```
 
-- 判定: 末尾に `OK: <N> 件のチェックが通った` が出て exit 0。assert で落ちたらメッセージに期待値と実測値が出る
-- `gacha:test` は固定 fixture・固定 seed の出力を**既知 SHA-256 で焼き込んでいる**ため、seed 導出式・生成ロジック・wav 合成のどれを変えても落ちるのが正しい（落ちたら「同じファイル名で以前と違う音が出る」変更をした、ということ。意図的なら GENERATOR_VERSION を上げてテスト内の既知ハッシュを採り直す）
+- 判定: 末尾に `OK: <N> 件のチェックが通った` が出て exit 0。assert で落ちたらメッセージに期待値と実測値が出る（gacha:test は drums / bass の2ファイルで OK 行が2行）
+- `gacha:test`（drums 側）は固定 fixture・固定 seed の出力を**既知 SHA-256 で焼き込んでいる**ため、seed 導出式・生成ロジック・wav 合成のどれを変えても落ちるのが正しい（落ちたら「同じファイル名で以前と違う音が出る」変更をした、ということ。意図的なら GENERATOR_VERSION を上げてテスト内の既知ハッシュを採り直す）
 - 実カードでの通し確認: `mise run gacha:drums <リファレンスフォルダ> -- --seed <固定値>` → 3ファイル×候補数が `gacha/` にでき、stdout の密度・swing がカードの性格と大きく乖離しないこと（少サンプルの密度は二項ノイズで ±1発/小節 程度ぶれる。乖離を疑うときは 1000 seed のシミュレーションで発火率 vs profile を見る — plan 2026-08-04 のログ参照）
+
+### ベースガチャ（CLI）
+
+```sh
+# ドラム候補を1件作り、そのサイドカーを --drums に渡してベース＋mixを生成（耳チェックの最短経路）
+mise run gacha:drums <リファレンスフォルダ> -- --seed 100 --count 1 --bars 4
+mise run gacha:bass <リファレンスフォルダ> -- --key F#:major --seed 200 --count 4 \
+  --drums <リファレンスフォルダ>/gacha/drums-*.json
+```
+
+- 判定: `gacha/` に `bass-p*-r*-<hash>` の3点セット×候補数と、候補ごとの `*.mix-<drumsID>.wav`（使い捨て）ができる。mix を再生してドラムとベースが同じ小節境界で鳴っていること
+- chords ありのカード（my-way 等）はルートが動き、chords 無し/変化0（kzm・watson）はルート連打へ退化する（stderr の `[退化]` 申告）
+- キー・実効BPM・キック位置のどれかを変えると候補ファイル名（設定ハッシュ部）が変わる＝別候補として共存する
+
+## ベースガチャ（LaLa 統合）の確認
+
+- 前提: card.json のあるプロジェクト・プロジェクトキー設定済み（ヘッダーLCDの KEY をクリック）
+- ガチャパネル（🎲）上部の Drums / Bass タブでパーツを切り替える。カード・候補・ロックはパーツ別
+- 手順: Drums で候補を仮配置 → Bass タブ → 振り直す → 候補クリックで**ドラムと同じ開始位置**に仮配置（Bass トラック自動作成・Finger Bass）→ どちらかの行の「仮配置中」チップ →「ビートを残す」で全パーツ一括確定（⌘Z 1回で両方戻る）
+- キー未設定で Bass を振ると下部ガイドに「キーが未設定です—」が出て何も起きない（ログ `gacha.bass_roll_blocked reason=no_key`）
+- ログの裏取り: `gacha.roll part=bass key=<F#:minor等> bars=<N> kicks=<M>` → `gacha.pick part=bass` → `gacha.keep`。ドラム延長が走ったときは `gacha.extend bars=<N>`
+- Bass のカード変更は Bass の仮配置だけ撤去する（Drums の仮配置は残る。ログ `gacha.cancel_part part=bass`）
+- 1小節ベース（watson 等）＋4小節ドラムの組で、仮配置されたベースリージョンが4小節（パターン繰り返し）になり後半が無音でないこと
 
 ## 分析レポートの生成・閲覧の確認
 

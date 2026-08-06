@@ -80,10 +80,18 @@ ok(rc == 0 and c is not None, "正常系でカードが生成されるはず")
 ok(c["global"] == {"bpm": 120.0, "key": {"root": "A", "mode": "minor"}}, f"global: {c['global']}")
 ok(c["meta"]["assumptions"] == {"time_signature": "4/4"}, "拍子は決め打ちとして meta.assumptions に置く")
 ok(c["meta"]["excluded"] == [], "正常系に省略は無いはず")
-# Am7 Am7 F G（循環）: 変化3回・移動 [-4,+2,+2] → 上行 2/3 → up
+# Am7 Am7 F G（循環）: 変化3回（ルート A→F→G→A の3回とも動く）・移動 [-4,+2,+2] → 上行 2/3 → up
 ok(
-    c["chords"] == {"loop_bars": 2, "has_7th_or_more": True, "changes_per_loop": 3, "root_motion": "up"},
+    c["chords"] == {"loop_bars": 2, "slots_per_bar": 2, "has_7th_or_more": True,
+                    "changes_per_loop": 3, "root_changes_per_loop": 3, "root_motion": "up"},
     f"chords: {c['chords']}",
+)
+# クオリティのみの変化（同ルート maj→min）は changes に数え root_changes には数えない
+ok(
+    card.chord_character([{"chord": "C"}, {"chord": "Cm"}, {"chord": "C"}, {"chord": "Cm"}])
+    == {"has_7th_or_more": False, "changes_per_loop": 4, "root_changes_per_loop": 0,
+        "root_motion": "static"},
+    "クオリティのみの変化は root_changes_per_loop に現れない",
 )
 ok(c["drums"]["kick_profile_by_beat"] == [1.0, 0.5, 0.75, 0.25], f"kick畳み: {c['drums']['kick_profile_by_beat']}")
 ok(c["drums"]["quantize_dev_ms"] == 4.0, f"qdev（|2|,|-4|,|6| の平均）: {c['drums']['quantize_dev_ms']}")

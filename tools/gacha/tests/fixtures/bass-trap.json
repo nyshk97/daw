@@ -1,0 +1,20 @@
+{
+  "card_version": 1,
+  "meta": {
+    "reference": "fixture-bass-trap",
+    "generated_at": "2026-08-06T00:00:00+09:00",
+    "assumptions": { "time_signature": "4/4" },
+    "excluded": [
+      { "path": "chords", "gate": "harmony.ok", "reason": "fixture: chords 欠落での退化経路を固定する" }
+    ]
+  },
+  "global": { "bpm": 140.0 },
+  "bass": {
+    "notes_per_bar": 3.0,
+    "core_range_semitones": 5,
+    "pitch_center": "F1",
+    "note_length_16ths": 4.0,
+    "quantize_dev_ms": 8.0,
+    "onset_rate_by_16th": [1.0, 0.0, 0.05, 0.3, 0.1, 0.0, 0.5, 0.05, 0.7, 0.0, 0.05, 0.4, 0.1, 0.0, 0.3, 0.1]
+  }
+}

@@ -51,9 +51,21 @@ eval "set -- $usage_args"
 exec tools/reference/.venv/bin/python tools/gacha/drums.py "$@"
 '''
 
+[tasks."gacha:bass"]
+description = 'カードとキーからベース候補をガチャ生成する（.mid＋耳チェック用.wav。--drums でmixも）'
+usage = 'arg "<args>" var=#true help="<リファレンスフォルダ|card.json> --key ROOT:MODE [--bpm N] [--seed N] [--count N] [--bars N] [--lock prog=HEX8,rhythm=HEX8] [--drums SIDECAR.json] [--out DIR]"'
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+exec tools/reference/.venv/bin/python tools/gacha/bass.py "$@"
+'''
+
 [tasks."gacha:test"]
-description = 'ドラムガチャの回帰テスト（fixture のみで数秒）'
-run = 'tools/reference/.venv/bin/python tools/gacha/tests/test_drums.py'
+description = 'ガチャ（drums.py / bass.py）の回帰テスト（fixture のみで数十秒）'
+run = '''
+tools/reference/.venv/bin/python tools/gacha/tests/test_drums.py
+tools/reference/.venv/bin/python tools/gacha/tests/test_bass.py
+'''
 
 [tasks.start]
 description = 'dev版アプリ（LaLa-dev.app）を起動する'

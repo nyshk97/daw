@@ -1,0 +1,26 @@
+{
+  "card_version": 1,
+  "meta": {
+    "reference": "fixture-bass-chill",
+    "generated_at": "2026-08-06T00:00:00+09:00",
+    "assumptions": { "time_signature": "4/4" },
+    "excluded": []
+  },
+  "global": { "bpm": 100.0, "key": { "root": "F#", "mode": "major" } },
+  "bass": {
+    "notes_per_bar": 4.09,
+    "core_range_semitones": 11,
+    "pitch_center": "B1",
+    "note_length_16ths": 1.82,
+    "quantize_dev_ms": 24.4,
+    "onset_rate_by_16th": [0.81, 0.032, 0.079, 0.016, 0.151, 0.087, 0.571, 0.262, 0.833, 0.008, 0.087, 0.016, 0.135, 0.063, 0.571, 0.365]
+  },
+  "chords": {
+    "loop_bars": 8,
+    "slots_per_bar": 2,
+    "has_7th_or_more": true,
+    "changes_per_loop": 14,
+    "root_changes_per_loop": 14,
+    "root_motion": "mixed"
+  }
+}

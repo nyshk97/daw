@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """ドラムガチャ — 制約カード(card.json)からドラム候補を生成する（Phase 2 の最小版）。
 
-リファレンスの「グルーヴの性格」（スウィング・クオンタイズ度合い・16分の出現強度）だけを
+リファレンスの「グルーヴの性格」（スウィング・16分の出現強度）だけを
 借りて、1小節のドラムパターンをルールベースで振る。パターンそのものはコピーしない —
 プロファイルは平均オンセット強度であってヒット列ではないので、骨格（強度0.35以上=必ず鳴る）と
 装飾（それ未満=強度を確率としてサンプリング）の2層に解釈し、ガチャの振れは装飾層から出す。
@@ -18,21 +18,28 @@
 設計は docs/plans/2026-08-04-1158-drum-gacha-cli.md と docs/design/reference-beat.md。
 """
 import argparse
-import hashlib
 import json
 import math
-import os
 import secrets
 import sys
-import tempfile
 from pathlib import Path
 
 import mido
 import numpy as np
-import soundfile as sf
 from scipy.signal import butter, lfilter
 
-GENERATOR_VERSION = 2  # v2: note_off を bars×TICKS_BAR にクランプ（LaLa 取り込みで5小節化しない）
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from common import (  # noqa: E402
+    GachaError, candidate_hash, candidate_status, cfg_hash, derive_audio_seed as _derive_audio_seed,
+    derive_lane_seed as _derive_lane_seed, is_num as _is_num, parse_locks as _parse_locks,
+    publish_candidate as _publish_candidate, resolve_card_path,
+    resolve_lane_seeds as _resolve_lane_seeds,
+)
+
+# v2: note_off を bars×TICKS_BAR にクランプ（LaLa 取り込みで5小節化しない）
+# v3: ジッター廃止（グルーヴはスウィングのみ。カードの drums.quantize_dev_ms は読まない —
+#     無相関ランダムの揺れは実聴で「ヨレ」にしか聞こえなかった。bass.py v4 と同じ判断）
+GENERATOR_VERSION = 3
 PPQ = 480          # MIDI の分解能（4分音符あたり tick）
 TICKS_16TH = PPQ // 4
 TICKS_BAR = PPQ * 4
@@ -53,18 +60,14 @@ PROFILE_LEN = {"kick_profile_by_beat": 4, "snare_profile_by_16th": 16, "hat_prof
 
 # ゲート落ちで省略されたフィールドの既定値（「無い＝生成器の無難な既定」）。
 # snare は2・4拍のバックビート、kick は拍1・3強、hat は8分刻み（表拍強）。
+# カードの quantize_dev_ms は読まない（v3 — グルーヴはスウィングのみで出す）
 DEFAULTS = {
     "swing_ratio": 0.5,
-    "quantize_dev_ms": 0.0,
     "kick_profile_by_beat": [1.0, 0.25, 0.85, 0.25],
     "snare_profile_by_16th": [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
                               0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
     "hat_profile_by_16th": [1.0, 0.0, 0.75, 0.0] * 4,
 }
-
-
-class GachaError(Exception):
-    """カードの壊れた値・候補ファイルの衝突など、黙って進んではいけない状態。"""
 
 
 # ---------------------------------------------------------------- カード読み込み
@@ -102,9 +105,6 @@ def parse_card(card: dict, source: str) -> tuple[dict, float, list[str]]:
             # 積み重なり、生成結果自体が壊れる
             if not _is_num(v) or not (0.45 <= v <= 0.80):
                 raise GachaError(f"{source}: drums.swing_ratio が 0.45〜0.80 の外: {v!r}")
-        elif field == "quantize_dev_ms":
-            if not _is_num(v) or not math.isfinite(v) or v < 0:
-                raise GachaError(f"{source}: drums.quantize_dev_ms が不正: {v!r}")
         else:
             n = PROFILE_LEN[field]
             if not isinstance(v, list) or len(v) != n:
@@ -113,10 +113,6 @@ def parse_card(card: dict, source: str) -> tuple[dict, float, list[str]]:
                 raise GachaError(f"{source}: drums.{field} に 0〜1 の外の値がある: {v!r}")
         effective[field] = v
     return effective, float(bpm), defaulted
-
-
-def _is_num(v) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
 def load_card(path: Path) -> tuple[dict, float, list[str], str | None]:
@@ -129,55 +125,47 @@ def load_card(path: Path) -> tuple[dict, float, list[str], str | None]:
     return effective, bpm, defaulted, reference if isinstance(reference, str) else None
 
 
-# ---------------------------------------------------------------- seed 導出
+# ---------------------------------------------------------------- seed 導出（本体は common.py）
 
 def derive_lane_seed(global_seed: int, lane: str) -> int:
-    """全体 seed からレーン seed を決定的に導出する（32bit）。
-
-    Python の hash() は PYTHONHASHSEED でプロセスごとに変わるので SHA-256 を使う。
-    """
-    digest = hashlib.sha256(f"drums:{lane}:{global_seed}".encode()).digest()
-    return int.from_bytes(digest[:4], "big")
+    return _derive_lane_seed("drums", lane, global_seed)
 
 
 def derive_audio_seed(lane: str, lane_seed: int) -> int:
-    """音声合成用 seed。パターン生成用と独立に導出する（wav の決定性のため）。"""
-    digest = hashlib.sha256(f"audio:{lane}:{lane_seed:08x}".encode()).digest()
-    return int.from_bytes(digest[:8], "big")
+    return _derive_audio_seed(lane, lane_seed)
 
 
 def resolve_lane_seeds(global_seed: int, locks: dict[str, int]) -> dict[str, int]:
-    return {lane: locks.get(lane, derive_lane_seed(global_seed, lane)) for lane in LANES}
+    return _resolve_lane_seeds("drums", LANES, global_seed, locks)
 
 
 # ---------------------------------------------------------------- パターン生成
 
 def generate_pattern(effective: dict, lane_seeds: dict[str, int], bars: int, bpm: float) -> dict[str, list[tuple[int, int]]]:
-    """レーンごとに1小節パターンを振り、bars 回繰り返した (tick, velocity) 列を返す。"""
+    """レーンごとに1小節パターンを振り、bars 回繰り返した (tick, velocity) 列を返す。
+
+    bpm はパターン生成には使わない（v3 でジッターを廃止し ms→tick 換算が消えた）が、
+    呼び出し側の契約（sidecar 経由の再現・テスト）を保つため引数は残す。
+    """
+    del bpm
     swing = effective["swing_ratio"]
-    dev_ms = effective["quantize_dev_ms"]
     notes: dict[str, list[tuple[int, int]]] = {}
     for lane in LANES:
         rng = np.random.default_rng(lane_seeds[lane])
         profile = effective[PROFILE_FIELD[lane]]
-        bar_notes = _generate_bar(lane, profile, swing, dev_ms, bpm, rng)
+        bar_notes = _generate_bar(lane, profile, swing, rng)
         notes[lane] = [(tick + b * TICKS_BAR, vel) for b in range(bars) for tick, vel in bar_notes]
     return notes
 
 
-def _generate_bar(lane: str, profile: list[float], swing: float, dev_ms: float,
-                  bpm: float, rng: np.random.Generator) -> list[tuple[int, int]]:
+def _generate_bar(lane: str, profile: list[float], swing: float,
+                  rng: np.random.Generator) -> list[tuple[int, int]]:
     # kick は拍単位4値（16分位置を信用しない、という分析側の判断を引き継ぐ）
     slots = [(i * 4, v) for i, v in enumerate(profile)] if lane == "kick" \
         else list(enumerate(profile))
 
-    # マイクロタイミング: quantize_dev_ms は |ズレ| の平均（半正規分布の平均とみなし
-    # σ = dev×√(π/2) に換算）。±3σ とスロット間隔の40%（分析側の許容 tol と同じ）でクリップ
-    sigma_ms = dev_ms * math.sqrt(math.pi / 2)
-    ms_16th = 60000.0 / bpm / 4
-    clip_ms = min(3 * sigma_ms, 0.4 * ms_16th)
-    ticks_per_ms = PPQ * bpm / 60000.0
-
+    # タイミングはグリッド正位置＋スウィング（8分裏の符号付きシフト）のみ。
+    # ジッターは掛けない（v3 — 無相関ランダムの揺れはグルーヴでなくヨレに聞こえる）
     events: list[tuple[int, int]] = []
     prev_tick = -1
     for slot, v in slots:
@@ -189,8 +177,6 @@ def _generate_bar(lane: str, profile: list[float], swing: float, dev_ms: float,
         tick = slot * TICKS_16TH
         if slot % 4 == 2:  # 8分裏だけスウィングで動かす（符号付き。分析側の定義の逆変換）
             tick += round((swing - 0.5) * PPQ)
-        jitter_ms = float(np.clip(rng.normal(0, sigma_ms), -clip_ms, clip_ms)) if sigma_ms > 0 else 0.0
-        tick += round(jitter_ms * ticks_per_ms)
         # スウィング適用後の最終 tick 列で単調性を守る（swing 0.8 は裏拍が次スロットを追い越す）
         tick = max(tick, 0, prev_tick + 1)
         tick = min(tick, TICKS_BAR - 1)  # 小節をはみ出して次小節の頭と衝突させない
@@ -288,27 +274,6 @@ def synth_wav(notes: dict[str, list[tuple[int, int]]], bpm: float, bars: int,
     return buf * _MASTER_GAIN
 
 
-def verify_wav_data(data: np.ndarray, label: str) -> None:
-    """書き込む前の float 配列を検算する。peak は PCM 化で黙ってクリップされ読み戻しでは検出できない。"""
-    if not np.all(np.isfinite(data)):
-        raise GachaError(f"{label}: wav に有限でないサンプルがある")
-    peak = float(np.max(np.abs(data))) if len(data) else 0.0
-    if peak > 0.999:
-        raise GachaError(f"{label}: wav が 0dBFS を超えている（peak={peak:.3f}。同時発音のクリップ）")
-
-
-def verify_wav_file(path: Path, label: str) -> None:
-    """書き出したファイルを読み戻して検算する（「ファイルがある・長さが正しい」では確認しない）。"""
-    data, sr = sf.read(path)
-    if sr != SAMPLE_RATE:
-        raise GachaError(f"{label}: サンプルレートが不正: {sr}")
-    if not np.all(np.isfinite(data)):
-        raise GachaError(f"{label}: 読み戻した wav に有限でないサンプルがある")
-    rms = float(np.sqrt(np.mean(np.square(data)))) if len(data) else 0.0
-    if rms < 1e-3:
-        raise GachaError(f"{label}: wav がほぼ無音（rms={rms:.2e}）")
-
-
 # ---------------------------------------------------------------- 候補の公開（原子的）
 
 def cfg_payload(effective: dict, bpm: float, bars: int) -> dict:
@@ -323,114 +288,19 @@ def cfg_payload(effective: dict, bpm: float, bars: int) -> dict:
     }
 
 
-def cfg_hash(payload: dict) -> str:
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
-def candidate_hash(payload: dict, lane_seeds_hex: dict[str, str]) -> str:
-    """候補1件の完全な同一性（実効設定＋レーン seed）のハッシュ。
-
-    cfg_hash は設定だけでレーン seed を含まないため、--from の照合を cfg_hash だけに
-    頼ると seed の改変を検出できない（実測で hat seed 差し替えが素通りした）。
-    """
-    body = {"config": payload, "lane_seeds": lane_seeds_hex}
-    return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
 def candidate_basename(lane_seeds: dict[str, int], cfg_sha: str) -> str:
     return f"drums-k{lane_seeds['kick']:08x}-s{lane_seeds['snare']:08x}-h{lane_seeds['hat']:08x}-{cfg_sha[:6]}"
 
 
-def candidate_status(outdir: Path, base: str, payload: dict, lane_seeds_hex: dict[str, str]) -> str:
-    """'new' / 'skip'（完成済み）/ 'regen'（不完全）。期待との不一致は衝突・編集なのでエラー。
-
-    完成判定は --from の照合と同じ基準で行う。基準がずれると「スキップは通るのに --from は
-    失敗する」半端な候補が残り続ける。保存済みハッシュだけを比較すると本文（config）の編集を
-    見逃すため、**本文そのものを期待値と突き合わせる**（本文が一致すれば本文からの再計算
-    ハッシュは期待ハッシュと必然一致する）。判定順が肝心: 本文と cfg の検証を先に済ませてから
-    candidate_sha256 の欠損（＝旧形式。再生成で現行形式に上がる）を regen 扱いにする。
-    欠損チェックを先に返すと、欠損＋cfg 不一致の壊れたサイドカーが衝突エラーを迂回して
-    黙って上書きされる。
-    """
-    cfg_sha = cfg_hash(payload)
-    cand_sha = candidate_hash(payload, lane_seeds_hex)
-    mid, wav, sc = (outdir / f"{base}{ext}" for ext in (".mid", ".wav", ".json"))
-    if sc.exists():
-        try:
-            old = json.loads(sc.read_text())
-        except (OSError, json.JSONDecodeError):
-            return "regen"  # 壊れた書きかけ＝不完全候補として作り直す
-        if (old.get("cfg_sha256") != cfg_sha or old.get("lane_seeds") != lane_seeds_hex
-                or old.get("config") != payload):
-            raise GachaError(
-                f"{base}: 既存サイドカーと生成入力が一致しない（短縮ハッシュ衝突か編集の疑い）。"
-                f"既存の候補を手で退避してから再実行すること"
-            )
-        if "candidate_sha256" not in old:
-            return "regen"
-        if old["candidate_sha256"] != cand_sha:
-            raise GachaError(
-                f"{base}: 既存サイドカーの candidate ハッシュが一致しない（編集の疑い）。"
-                f"既存の候補を手で退避してから再実行すること"
-            )
-        return "skip" if mid.exists() and wav.exists() else "regen"
-    if mid.exists() or wav.exists():
-        return "regen"  # サイドカー（完成マーカー）が無い＝途中失敗の残骸
-    return "new"
-
-
 def publish_candidate(outdir: Path, base: str, mid: mido.MidiFile, wav_data: np.ndarray,
                       sidecar: dict) -> None:
-    """一時ファイル→検算→リネームで原子的に公開する。サイドカーは最後＝完成マーカー。"""
-    verify_wav_data(wav_data, base)
-    tmp_paths = []
-    try:
-        for ext, write in ((".mid", lambda p: mid.save(p)),
-                           (".wav", lambda p: sf.write(p, wav_data, SAMPLE_RATE, subtype="PCM_16"))):
-            fd, tmp = tempfile.mkstemp(dir=outdir, prefix=".gacha-", suffix=ext)
-            os.close(fd)
-            tmp_paths.append((tmp, outdir / f"{base}{ext}"))
-            write(tmp)
-        verify_wav_file(Path(tmp_paths[1][0]), base)
-        for tmp, dest in tmp_paths:
-            os.replace(tmp, dest)
-        tmp_paths = []
-        fd, tmp = tempfile.mkstemp(dir=outdir, prefix=".gacha-", suffix=".json")
-        with os.fdopen(fd, "w") as f:
-            f.write(json.dumps(sidecar, indent=2, ensure_ascii=False) + "\n")
-        os.replace(tmp, outdir / f"{base}.json")
-    finally:
-        for tmp, _ in tmp_paths:
-            Path(tmp).unlink(missing_ok=True)
+    _publish_candidate(outdir, base, mid, wav_data, sidecar, SAMPLE_RATE)
 
 
 # ---------------------------------------------------------------- CLI
 
 def parse_locks(text: str) -> dict[str, int]:
-    """--lock kick=8f3a21bc,hat=00ff00ff（ファイル名と同じ8桁hex）を読む。"""
-    locks: dict[str, int] = {}
-    for part in text.split(","):
-        lane, sep, value = part.partition("=")
-        lane = lane.strip()
-        if not sep or lane not in LANES:
-            raise GachaError(f"--lock の形式が不正: {part!r}（kick=HEX8,snare=HEX8,hat=HEX8）")
-        try:
-            seed = int(value.strip(), 16)
-        except ValueError:
-            raise GachaError(f"--lock {lane} の seed が16進数でない: {value!r}") from None
-        if not (0 <= seed <= 0xFFFFFFFF):
-            raise GachaError(f"--lock {lane} の seed が32bitの範囲外: {value}")
-        locks[lane] = seed
-    return locks
-
-
-def resolve_card_path(arg: str) -> Path:
-    p = Path(arg).expanduser()
-    if p.is_dir():
-        p = p / "card.json"
-    if not p.exists():
-        raise GachaError(f"card.json が見つからない: {p}")
-    return p
+    return _parse_locks(text, LANES)
 
 
 def load_sidecar(path: Path) -> tuple[dict, float, int, list[str], dict[str, int], int, str | None]:

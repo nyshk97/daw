@@ -7522,6 +7522,15 @@ MidiImport::Result makeDrumResult()
     return result;
 }
 
+// GachaSession 用の最小ベース変換結果（8小節・2ノート。ch1 相当なので otherNotes 側）
+MidiImport::Result makeBassResult()
+{
+    MidiImport::Result result;
+    result.otherNotes = { MidiNote { 0, 30, 0, 960, 96 }, MidiNote { 0, 34, 1920, 960, 90 } };
+    result.otherRegionLengthPpq = Ppq::ticksPerBar * 8;
+    return result;
+}
+
 void testGachaPorcelainParse()
 {
     beginTest ("GachaSession porcelain parse");
@@ -7581,7 +7590,7 @@ void testGachaSessionPreview()
     // --- 自動作成: Drum Kit トラックが無ければ「Drums」を作って配置 ---
     {
         GachaSession session;
-        expect (session.previewCandidate (*project, makeDrumResult(), -1, Ppq::ticksPerBar * 2),
+        expect (session.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), -1, Ppq::ticksPerBar * 2),
                 "仮配置できる");
         expect ((int) project->tracks.size() == 1, "Drumsトラックが自動作成される");
         const auto& track = project->tracks[0];
@@ -7598,7 +7607,7 @@ void testGachaSessionPreview()
         // --- 差し替え: 2候補目でもリージョンは1つ・同じ場所 ---
         auto second = makeDrumResult();
         second.drumNotes[0].pitch = 38;
-        expect (session.previewCandidate (*project, second, -1, Ppq::ticksPerBar * 9),
+        expect (session.previewCandidate (GachaSession::Part::drums, *project, second, -1, Ppq::ticksPerBar * 9),
                 "差し替えできる");
         expect ((int) project->tracks.size() == 1 && (int) project->tracks[0].midiRegions.size() == 1,
                 "差し替えでリージョンは増えない");
@@ -7623,7 +7632,7 @@ void testGachaSessionPreview()
         project->tracks.push_back (std::move (drumKit));
 
         GachaSession session;
-        expect (session.previewCandidate (*project, makeDrumResult(), 0, 0), "既存トラックへ配置");
+        expect (session.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), 0, 0), "既存トラックへ配置");
         expect ((int) project->tracks.size() == 1, "トラックは増えない");
         expect ((int) project->tracks[0].midiRegions.size() == 1, "リージョンが載る");
         expect (! session.trackIsPreviewOwned (project->tracks[0].id),
@@ -7648,7 +7657,7 @@ void testGachaSessionPreview()
         expect (undo.canRedo(), "前提: redo履歴がある");
 
         GachaSession session;
-        expect (session.previewCandidate (*project, makeDrumResult(), -1, 0), "仮配置");
+        expect (session.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), -1, 0), "仮配置");
         expect (session.keep (*project, undo), "keepは「確定変更あり」を返す");
         expect (! undo.canRedo(), "pushCommittedはredo履歴を破棄する");
         expect ((int) project->tracks.size() == 1
@@ -7675,7 +7684,7 @@ void testGachaSessionPreview()
         GachaSession session;
         undo.willBegin = [&] { session.cancelPreview (*project); };
 
-        expect (session.previewCandidate (*project, makeDrumResult(), -1, 0), "仮配置");
+        expect (session.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), -1, 0), "仮配置");
         expect ((int) project->tracks.size() == 1, "仮トラックがある");
 
         // 別の編集（トラック追加）: begin のフックが先に仮配置を撤去する
@@ -7693,6 +7702,227 @@ void testGachaSessionPreview()
     }
 
     dir.deleteRecursively();
+}
+
+// パーツ別仮配置（Drums / Bass の同時保持・パーツ単位のキャンセル・全パーツ一括の keep）
+void testGachaSessionParts()
+{
+    beginTest ("GachaSession per-part previews / partial cancel / combined keep");
+
+    using Part = GachaSession::Part;
+    const auto dir = makeTempDir();
+    juce::String error;
+    auto project = Project::createNew (dir.getChildFile ("proj"), error);
+    expect (project != nullptr, "プロジェクト作成");
+    project->tracks.clear();
+
+    // --- bass の porcelain / ミニチュア ---
+    {
+        GachaSession::Candidate c;
+        expect (GachaSession::parseBassPorcelainLine (
+                    R"({"base": "bass-p01-r02-abc", "lane_seeds": {"prog": "0000ab01", "rhythm": "0000ab02"}, "status": "generated"})",
+                    c),
+                "bass の porcelain 行をパースできる");
+        expect (c.base == "bass-p01-r02-abc" && c.progSeed == "0000ab01"
+                    && c.rhythmSeed == "0000ab02", "prog/rhythm が入る");
+        expect (! GachaSession::parseBassPorcelainLine (
+                    R"({"base": "x", "lane_seeds": {"kick": "01", "snare": "02", "hat": "03"}, "status": "generated"})",
+                    c),
+                "drums の行は bass としては拒否");
+
+        const std::vector<MidiNote> notes = { MidiNote { 0, 28, 0, 960, 96 },
+                                              MidiNote { 0, 51, 1920, 960, 96 },
+                                              MidiNote { 0, 40, Ppq::ticksPerBar * 8, 960, 96 } };
+        const auto dots = GachaSession::bassDotsFromNotes (notes, Ppq::ticksPerBar * 8);
+        expect ((int) dots.size() == 2, "パターン1周を超えるノートは描かない");
+        expect (std::abs (dots[0].x) < 1e-6 && std::abs (dots[0].y) < 1e-6,
+                "最低音（MIDI 28）は y=0");
+        expect (std::abs (dots[1].y - 1.0f) < 1e-6, "最高音（MIDI 51）は y=1");
+    }
+
+    // --- Drums 仮配置 → Bass 仮配置（同時保持）→ keep が全パーツまとめて 1 undo ---
+    {
+        UndoStack undo;
+        GachaSession session;
+        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), -1, 0),
+                "Drums 仮配置");
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), -1, 0),
+                "Bass 仮配置（Drums 仮配置のまま）");
+        expect (session.hasPreview (Part::drums) && session.hasPreview (Part::bass),
+                "両パーツが同時に仮配置中");
+        expect ((int) project->tracks.size() == 2, "Drums / Bass の2トラック");
+        const auto& bassTrack = project->tracks[1];
+        expect (bassTrack.type == TrackType::midi && ! bassTrack.drums
+                    && bassTrack.instrument == InstrumentKind::gm && bassTrack.gmProgram == 33
+                    && bassTrack.name == "Bass",
+                "自動作成の Bass トラックは GM Finger Bass (33)");
+
+        expect (session.keep (*project, undo), "keep は全パーツ一括で確定する");
+        expect ((int) project->tracks.size() == 2, "確定後も2トラック残る");
+        auto kind = UndoStack::EditKind::structure;
+        expect (undo.undo (*project, kind), "undo できる");
+        expect (! undo.canUndo(), "undo は1件だけ（全パーツで1操作）");
+        expect (project->tracks.empty(), "undo 1回で Drums / Bass とも仮配置前に戻る");
+        expect (undo.redo (*project, kind), "redo で両方復活する");
+        expect ((int) project->tracks.size() == 2, "redo 後も2トラック");
+        project->tracks.clear();
+    }
+
+    // --- パーツ単位のキャンセル: Bass のカード変更相当（cancelPart）でも Drums は残る ---
+    {
+        GachaSession session;
+        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), -1, 0),
+                "Drums 仮配置");
+        expect (! session.cancelPart (Part::bass, *project),
+                "Bass 未配置のパーツキャンセルは no-op");
+        expect (session.hasPreview (Part::drums) && (int) project->tracks.size() == 1,
+                "Drums 仮配置は維持される");
+
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), -1, 0),
+                "Bass も仮配置");
+        expect (session.cancelPart (Part::bass, *project), "Bass だけキャンセル");
+        expect (session.hasPreview (Part::drums) && ! session.hasPreview (Part::bass),
+                "Drums は残り Bass だけ消える");
+        expect ((int) project->tracks.size() == 1 && project->tracks[0].name == "Drums",
+                "Bass トラックだけ撤去される");
+
+        // 逆向き: Bass 仮配置後の Drums カード変更では Bass が残る
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), -1, 0),
+                "Bass を配置し直す");
+        expect (session.cancelPart (Part::drums, *project), "Drums だけキャンセル");
+        expect (! session.hasPreview (Part::drums) && session.hasPreview (Part::bass),
+                "Bass は残り Drums だけ消える");
+        expect ((int) project->tracks.size() == 1 && project->tracks[0].name == "Bass",
+                "Drums トラックだけ撤去される");
+
+        // 最後の1件が消えたら baseline 破棄（＝以後の keep は no-op）
+        expect (session.cancelPart (Part::bass, *project), "最後のパーツもキャンセル");
+        expect (! session.hasPreview(), "全パーツが畳まれる");
+        UndoStack undo;
+        expect (! session.keep (*project, undo), "baseline 破棄後の keep は false");
+        expect (project->tracks.empty(), "何も残らない");
+    }
+
+    // --- baseline はセッション全体で1回: 後から始めた Bass の undo に Drums が混ざらない ---
+    {
+        UndoStack undo;
+        GachaSession session;
+        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), -1, 0),
+                "Drums 仮配置（ここが baseline）");
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), -1, 0),
+                "Bass 仮配置");
+        // Drums をキャンセルしても baseline は維持され、keep の undo は「両方なし」へ戻る
+        expect (session.cancelPart (Part::drums, *project), "Drums キャンセル");
+        expect (session.keep (*project, undo), "Bass だけ残す");
+        expect ((int) project->tracks.size() == 1 && project->tracks[0].name == "Bass",
+                "Bass だけ確定される");
+        auto kind = UndoStack::EditKind::structure;
+        expect (undo.undo (*project, kind), "undo できる");
+        expect (project->tracks.empty(), "undo でセッション開始前（空）に戻る — 未確定 Drums が混ざらない");
+        project->tracks.clear();
+    }
+
+    // --- GM ベース系（program 32..39）の選択トラックは流用し、Keys（program 0）は流用しない ---
+    {
+        Track keys;
+        keys.id = project->allocateId();
+        keys.type = TrackType::midi;
+        keys.gmProgram = 0; // Acoustic Grand Piano
+        keys.name = "Keys";
+        project->tracks.push_back (std::move (keys));
+
+        GachaSession session;
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), 0, 0),
+                "Keys を選択中でも仮配置できる");
+        expect ((int) project->tracks.size() == 2 && project->tracks[1].name == "Bass",
+                "Keys へは配置せず Bass を自動作成する");
+        session.cancelPreview (*project);
+        project->tracks.clear();
+
+        Track synthBass;
+        synthBass.id = project->allocateId();
+        synthBass.type = TrackType::midi;
+        synthBass.gmProgram = 38; // Synth Bass 1（GM ベースファミリー 32..39）
+        synthBass.name = "808";
+        project->tracks.push_back (std::move (synthBass));
+
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), 0, 0),
+                "GM ベース系トラックへ配置できる");
+        expect ((int) project->tracks.size() == 1
+                    && (int) project->tracks[0].midiRegions.size() == 1,
+                "ベース系トラックを流用する（自動作成しない）");
+        session.cancelPreview (*project);
+        expect ((int) project->tracks.size() == 1 && project->tracks[0].midiRegions.empty(),
+                "流用トラックはリージョンだけ消え残る");
+        project->tracks.clear();
+    }
+
+    dir.deleteRecursively();
+}
+
+// ベース振り直しの実行計画（試聴長・キック抽出。UIから切り出した判断ロジック）
+void testGachaBassRollPlan()
+{
+    beginTest ("GachaSession::planBassRoll bars rounding / kick extraction");
+
+    Project project;
+    Track drums;
+    drums.id = 1;
+    drums.type = TrackType::midi;
+    drums.drums = true;
+    MidiRegion region;
+    region.id = 2;
+    region.startPpq = Ppq::ticksPerBar * 4; // 絶対位置は抽出に影響しない（リージョン相対で返す）
+    region.lengthPpq = Ppq::ticksPerBar;    // 1小節パターン
+    region.loopCount = 3;                   // ×4回 = 4小節
+    region.notes = { MidiNote { 0, 36, 0, 120, 100 },        // kick @0
+                     MidiNote { 0, 36, 1450, 120, 100 },     // kick @1450（オフグリッド）
+                     MidiNote { 0, 38, 960, 120, 100 } };    // snare（対象外）
+    drums.midiRegions.push_back (region);
+    project.tracks.push_back (std::move (drums));
+
+    // ドラム4小節 × loop_bars 1 → 試聴長4小節・ループ反復込みで kick 8発（PPQ 960→480 換算）
+    {
+        const auto plan = GachaSession::planBassRoll (project, 0, 0, 1);
+        expect (plan.drumsBars == 4 && plan.previewBars == 4, "1小節パターンはドラム長へ伸ばす");
+        expect (plan.kickTicks.size() == 8, "ループ反復込みで kick 8発");
+        expect (plan.kickTicks[0] == "0" && plan.kickTicks[1] == "725",
+                "PPQ 960 → 480 の換算（1450/2=725）");
+        expect (plan.kickTicks[2] == juce::String (Ppq::ticksPerBar / 2),
+                "2小節目の反復が展開される");
+    }
+
+    // ドラム4小節 × loop_bars 8 → 試聴長8小節（ベースが長い側）
+    {
+        const auto plan = GachaSession::planBassRoll (project, 0, 0, 8);
+        expect (plan.previewBars == 8 && plan.drumsBars == 4, "ベースの loop_bars が試聴長を決める");
+    }
+
+    // ドラム6小節相当（1小節×6）× loop_bars 4 → 8小節へ倍数切り上げ
+    {
+        project.tracks[0].midiRegions[0].loopCount = 5;
+        const auto plan = GachaSession::planBassRoll (project, 0, 0, 4);
+        expect (plan.drumsBars == 6 && plan.previewBars == 8,
+                "試聴長は loop_bars の倍数へ切り上げ（bass.py は倍数のみ受ける）");
+        project.tracks[0].midiRegions[0].loopCount = 3;
+    }
+
+    // 固定ピッチ打楽器トラック（Kick 専用トラック）: ノートのピッチに依らず実効ピッチで判定
+    {
+        project.tracks[0].drumPitch = 36;
+        project.tracks[0].midiRegions[0].notes[2].pitch = 60; // 何を書いても kick として鳴る
+        const auto plan = GachaSession::planBassRoll (project, 0, 0, 1);
+        expect (plan.kickTicks.size() == 12, "固定ピッチ 36 のトラックは全ノートが kick");
+        project.tracks[0].drumPitch = -1;
+        project.tracks[0].midiRegions[0].notes[2].pitch = 38;
+    }
+
+    // ドラムソース無し → loop_bars のまま・キック無し
+    {
+        const auto plan = GachaSession::planBassRoll (project, -1, -1, 8);
+        expect (plan.previewBars == 8 && plan.drumsBars == 0 && plan.kickTicks.isEmpty(),
+                "ソース無しはブーストなしで loop_bars のまま");
+    }
 }
 
 void testReferenceAlign()
@@ -7975,12 +8205,186 @@ void testUndoStackBpm()
     dir.deleteRecursively();
 }
 
+// ---- v13: プロジェクトキー（root+mode・Optional）の保存/読込・破損時の未設定化・undo ----
+void testProjectKey()
+{
+    beginTest ("project key roundtrip / invalid values / undo");
+
+    // 名前ヘルパー（表示・CLI・カードテキストの相互変換）
+    expect (ProjectKeys::rootName (6) == juce::String::fromUTF8 (u8"F♯"), "rootName は♯表記");
+    expect (ProjectKeys::displayName ({ 6, KeyMode::minor }) == juce::String::fromUTF8 (u8"F♯m"),
+            "minor は m を付ける");
+    expect (ProjectKeys::displayName ({ 6, KeyMode::major }) == juce::String::fromUTF8 (u8"F♯"),
+            "major は素の音名");
+    expect (ProjectKeys::cliText ({ 6, KeyMode::minor }) == "F#:minor", "CLI形式はASCII");
+    int root = -1;
+    expect (ProjectKeys::rootFromName ("Db", root) && root == 1, "♭表記の別名も同じピッチクラスへ");
+    expect (! ProjectKeys::rootFromName ("H", root), "未知の音名は拒否");
+    {
+        const auto parsed = ProjectKeys::fromCardText ("F# major");
+        expect (parsed.has_value() && parsed->root == 6 && parsed->mode == KeyMode::major,
+                "カードのキーテキストを読める");
+        expect (! ProjectKeys::fromCardText ("").has_value(), "空（キーのゲート落ち）は nullopt");
+        expect (! ProjectKeys::fromCardText ("F# dorian").has_value(), "未知モードは nullopt");
+    }
+
+    const auto dir = makeTempDir();
+    Project project;
+    project.directory = dir;
+    juce::String error;
+    juce::StringArray warnings;
+
+    // 未設定のまま保存 → key を書かない・未設定のまま読める
+    expect (project.save (error), "未設定のまま保存できる");
+    {
+        const auto parsed = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
+        expect ((int) parsed.getProperty ("version", 0) == 13, "currentVersion は 13");
+        expect (! parsed.hasProperty ("key"), "未設定は JSON を汚さない");
+        auto reloaded = Project::load (dir, warnings, error);
+        expect (reloaded != nullptr && ! reloaded->key.has_value(), "未設定のまま往復する");
+    }
+
+    // 設定して保存 → 往復で一致
+    project.key = ProjectKey { 6, KeyMode::minor };
+    expect (project.save (error), "キー付きで保存できる");
+    {
+        warnings.clear();
+        auto reloaded = Project::load (dir, warnings, error);
+        expect (reloaded != nullptr && reloaded->key.has_value()
+                    && *reloaded->key == ProjectKey ({ 6, KeyMode::minor }),
+                "設定値が往復で一致する");
+        expect (warnings.isEmpty(), "正常値に警告は出ない");
+    }
+
+    // v12 以前（key 欠損）は未設定として読める
+    dir.getChildFile ("project.json").replaceWithText (R"({
+        "version": 12, "bpm": 120.0, "sampleRate": 0.0, "nextId": 1, "tracks": []
+    })");
+    {
+        warnings.clear();
+        auto legacy = Project::load (dir, warnings, error);
+        expect (legacy != nullptr && ! legacy->key.has_value(), "v12 の key 欠損は未設定");
+        expect (warnings.isEmpty(), "欠損は破損ではないので警告しない");
+    }
+
+    // 破損値（root 範囲外・未知 mode）は未設定化＋警告（拒否しない — 両ケース同じ扱い）
+    for (const char* json : {
+             R"({"version": 13, "bpm": 120.0, "nextId": 1, "tracks": [], "key": {"root": 12, "mode": "minor"}})",
+             R"({"version": 13, "bpm": 120.0, "nextId": 1, "tracks": [], "key": {"root": 3, "mode": "dorian"}})" })
+    {
+        dir.getChildFile ("project.json").replaceWithText (json);
+        warnings.clear();
+        auto broken = Project::load (dir, warnings, error);
+        expect (broken != nullptr, "破損キーでもプロジェクト自体は開ける");
+        expect (broken != nullptr && ! broken->key.has_value(), "破損キーは未設定化される");
+        expect (! warnings.isEmpty(), "破損キーは警告される");
+    }
+
+    // undo/redo: キーの set が往復する
+    {
+        Project undoProject;
+        undoProject.directory = dir;
+        UndoStack undo;
+        undo.begin (undoProject);
+        undoProject.key = ProjectKey { 9, KeyMode::major };
+        auto kind = UndoStack::EditKind::structure;
+        expect (undo.undo (undoProject, kind), "キー変更をundoできる");
+        expect (! undoProject.key.has_value(), "undoで未設定に戻る");
+        expect (undo.redo (undoProject, kind), "redoできる");
+        expect (undoProject.key.has_value() && undoProject.key->root == 9, "redoで再適用される");
+    }
+
+    dir.deleteRecursively();
+}
+
+// ---- 分析完了ダイアログの undo 粒度（経路別に1件）: BPM＋キー（＋クリップ移動）----
+void testReferenceAlignWithKey()
+{
+    beginTest ("ReferenceAlign with key: combined single undo per path");
+
+    const auto dir = makeTempDir();
+    juce::String error;
+    auto project = Project::createNew (dir.getChildFile ("proj"), error);
+    expect (project != nullptr, "プロジェクト作成");
+    project->sampleRate = 48000.0;
+    project->bpm = 100.0;
+    project->tracks.clear();
+
+    Track track;
+    track.id = project->allocateId();
+    track.type = TrackType::audio;
+    Clip clip;
+    clip.fileName = "clip-001.wav";
+    clip.offsetSamples = 0;
+    clip.lengthSamples = 480000;
+    track.clips.push_back (clip);
+    project->tracks.push_back (std::move (track));
+    const ReferenceAlign::ClipDescriptor descriptor { "clip-001.wav", 0, 480000 };
+
+    const ProjectKey key { 6, KeyMode::minor };
+    UndoStack undo;
+    auto kind = UndoStack::EditKind::structure;
+
+    // 経路1: キーあり＋頭出し可 → BPM・key・クリップ移動が 1 undo
+    expect (ReferenceAlign::apply (*project, undo, descriptor, 112.938, 1.3595, key)
+                == ReferenceAlign::ApplyResult::applied,
+            "キー付きで適用できる");
+    expect (project->key.has_value() && *project->key == key, "キーが設定される");
+    expect (std::abs (project->bpm - 112.938) < 1e-9, "BPMが変わる");
+    expect (project->tracks[0].clips[0].startSample != 0, "クリップが動く");
+    expect (undo.undo (*project, kind), "undoできる");
+    expect (! undo.canUndo(), "undoは1件だけ（複合1操作）");
+    expect (! project->key.has_value() && std::abs (project->bpm - 100.0) < 1e-9
+                && project->tracks[0].clips[0].startSample == 0,
+            "undo 1回でBPM・キー・クリップ位置がすべて戻る");
+    expect (undo.redo (*project, kind), "redoできる");
+    expect (project->key.has_value() && *project->key == key, "redoでキーも再適用される");
+
+    // no-op 判定は対象項目すべて: BPM・移動先が同値でもキーが違えば applied
+    const ProjectKey other { 4, KeyMode::major };
+    expect (ReferenceAlign::apply (*project, undo, descriptor, 112.938, 1.3595, other)
+                == ReferenceAlign::ApplyResult::applied,
+            "キーだけ違えば適用される");
+    // 全項目同値 → noChange（begin されない）
+    expect (ReferenceAlign::apply (*project, undo, descriptor, 112.938, 1.3595, other)
+                == ReferenceAlign::ApplyResult::noChange,
+            "全項目同値は noChange");
+    // key = nullopt はキーに触らない（既存の「BPMを設定して頭出し」互換）
+    expect (ReferenceAlign::apply (*project, undo, descriptor, 112.938, 1.3595)
+                == ReferenceAlign::ApplyResult::noChange,
+            "nullopt キーは同値扱い（既存経路の no-op を壊さない）");
+
+    // 経路2: キーあり＋頭出し不可 → BPM・key が 1 undo（クリップは動かない）
+    UndoStack undo2;
+    Project project2;
+    project2.directory = dir;
+    project2.bpm = 100.0;
+    expect (ReferenceAlign::applyBpmAndKey (project2, undo2, 92.5, key)
+                == ReferenceAlign::ApplyResult::applied,
+            "BPM＋キーを適用できる");
+    expect (undo2.undo (project2, kind), "undoできる");
+    expect (! undo2.canUndo(), "undoは1件だけ");
+    expect (! project2.key.has_value() && std::abs (project2.bpm - 100.0) < 1e-9,
+            "undo 1回でBPMとキーが両方戻る");
+    expect (undo2.redo (project2, kind), "redoできる");
+    expect (ReferenceAlign::applyBpmAndKey (project2, undo2, 92.5, key)
+                == ReferenceAlign::ApplyResult::noChange,
+            "同値の再適用は noChange");
+    expect (ReferenceAlign::applyBpmAndKey (project2, undo2, 20.0, key)
+                == ReferenceAlign::ApplyResult::notFound,
+            "BPM範囲外は notFound");
+
+    dir.deleteRecursively();
+}
+
 } // namespace
 
 
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit; // MessageManager 初期化（AUインスタンス化に必要）
+
+
 
 
     testV1ToV2Roundtrip();
@@ -8002,13 +8406,17 @@ int main()
     testSectionMarkersInvalidLoad();
     testUndoStack();
     testUndoStackBpm();
+    testProjectKey();
     testReferenceExport();
     testReferenceAlign();
+    testReferenceAlignWithKey();
     testReferenceReport();
     testReferenceReportGenerator();
     testGachaPorcelainParse();
     testGachaPatternMiniature();
     testGachaSessionPreview();
+    testGachaSessionParts();
+    testGachaBassRollPlan();
     testSaveGcProtectsUndoWavs();
     testSaveGcProtectsClipboardWav();
     testRegionEditShortcuts();

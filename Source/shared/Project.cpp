@@ -183,6 +183,91 @@ bool splitMidiRegion (const MidiRegion& region, juce::int64 splitPpq, MidiRegion
     return true;
 }
 
+juce::String ProjectKeys::modeName (KeyMode mode)
+{
+    return mode == KeyMode::major ? "major" : "minor";
+}
+
+bool ProjectKeys::modeFromName (const juce::String& name, KeyMode& out)
+{
+    if (name == "major")
+    {
+        out = KeyMode::major;
+        return true;
+    }
+    if (name == "minor")
+    {
+        out = KeyMode::minor;
+        return true;
+    }
+    return false;
+}
+
+namespace
+{
+// 表示は♯表記固定（Logicの初期設定と同じ。♭併記はUIの情報量を増やすだけなので引き算）
+constexpr const char* keyRootNamesSharp[12] = { "C",  "C\xe2\x99\xaf", "D",  "D\xe2\x99\xaf",
+                                                "E",  "F",             "F\xe2\x99\xaf", "G",
+                                                "G\xe2\x99\xaf", "A",  "A\xe2\x99\xaf", "B" };
+constexpr const char* keyRootNamesAscii[12] = { "C", "C#", "D", "D#", "E", "F",
+                                                "F#", "G", "G#", "A", "A#", "B" };
+}
+
+juce::String ProjectKeys::rootName (int root)
+{
+    return root >= 0 && root < 12 ? juce::String::fromUTF8 (keyRootNamesSharp[root]) : juce::String();
+}
+
+bool ProjectKeys::rootFromName (const juce::String& name, int& out)
+{
+    const auto trimmed = name.trim();
+    if (trimmed.isEmpty())
+        return false;
+
+    static constexpr int letterPc[7] = { 9, 11, 0, 2, 4, 5, 7 }; // A B C D E F G
+    const auto letter = (juce::juce_wchar) trimmed[0];
+    if (letter < 'A' || letter > 'G')
+        return false;
+
+    int pc = letterPc[letter - 'A'];
+    const auto accidental = trimmed.substring (1);
+    if (accidental == "#" || accidental == juce::String::fromUTF8 (u8"♯"))
+        pc += 1;
+    else if (accidental == "b" || accidental == juce::String::fromUTF8 (u8"♭"))
+        pc -= 1;
+    else if (accidental.isNotEmpty())
+        return false;
+
+    out = (pc + 12) % 12;
+    return true;
+}
+
+juce::String ProjectKeys::displayName (const ProjectKey& key)
+{
+    return rootName (key.root) + (key.mode == KeyMode::minor ? "m" : "");
+}
+
+juce::String ProjectKeys::cliText (const ProjectKey& key)
+{
+    return juce::String (key.root >= 0 && key.root < 12 ? keyRootNamesAscii[key.root] : "C")
+           + ":" + modeName (key.mode);
+}
+
+std::optional<ProjectKey> ProjectKeys::fromCardText (const juce::String& text)
+{
+    // "F# major" — 末尾の空白区切りがモード、残りがルート（card.py の parse_key と同じ分け方）
+    const auto trimmed = text.trim();
+    const int lastSpace = trimmed.lastIndexOfChar (' ');
+    if (lastSpace <= 0)
+        return std::nullopt;
+
+    ProjectKey key;
+    if (! rootFromName (trimmed.substring (0, lastSpace), key.root)
+        || ! modeFromName (trimmed.substring (lastSpace + 1), key.mode))
+        return std::nullopt;
+    return key;
+}
+
 juce::String SectionMarkers::typeName (SectionType type)
 {
     switch (type)
@@ -304,6 +389,15 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
     root->setProperty ("bpm", bpm);
     root->setProperty ("sampleRate", sampleRate);
     root->setProperty ("memo", memo);
+
+    // キー（v13）。未設定はJSONを汚さない（loopCountと同じ流儀）
+    if (key.has_value())
+    {
+        auto* keyObj = new juce::DynamicObject();
+        keyObj->setProperty ("root", key->root);
+        keyObj->setProperty ("mode", ProjectKeys::modeName (key->mode));
+        root->setProperty ("key", juce::var (keyObj));
+    }
 
     juce::Array<juce::var> tracksArray;
     for (auto& track : tracks)
@@ -500,6 +594,20 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
     project->bpm = juce::jlimit (30.0, 300.0, (double) parsed.getProperty ("bpm", 120.0));
     project->sampleRate = juce::jmax (0.0, (double) parsed.getProperty ("sampleRate", 0.0));
     project->memo = parsed.getProperty ("memo", "").toString();
+
+    // キー（v12以前は無い → 未設定）。壊れた値（root範囲外・未知mode）は未設定化して警告する
+    // — プロジェクト全体を開けなくするほどの破損ではなく、既存データを救う側に倒す
+    if (const auto keyVar = parsed.getProperty ("key", {}); keyVar.isObject())
+    {
+        const int keyRoot = (int) keyVar.getProperty ("root", -1);
+        const auto modeText = keyVar.getProperty ("mode", "").toString();
+        KeyMode keyMode;
+        if (keyRoot >= 0 && keyRoot < 12 && ProjectKeys::modeFromName (modeText, keyMode))
+            project->key = ProjectKey { keyRoot, keyMode };
+        else
+            warnings.add (jp (u8"キーの値が不正なため未設定として読み込みました: root=")
+                          + juce::String (keyRoot) + " mode=" + modeText);
+    }
     project->nextId = (juce::uint64) juce::jmax ((juce::int64) 1, (juce::int64) parsed.getProperty ("nextId", 1));
 
     // 同一WAVを参照する複数クリップ（分割・複製後）が別々の全量バッファを持たないよう、

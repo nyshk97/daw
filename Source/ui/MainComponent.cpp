@@ -350,14 +350,16 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         importMidiFile (juce::File (files[0]), playheadBarStartPpq(), files.size() > 1);
     };
 
-    // ---- ドラムガチャ（右パネル第3モード）----
+    // ---- ガチャ（右パネル第3モード。Drums / Bass のパーツ切り替え型）----
     rightPanel.gachaPanel().onRoll = [this] { performGachaRoll(); };
     rightPanel.gachaPanel().onPick = [this] (int index) { pickGachaCandidate (index); };
     rightPanel.gachaPanel().onKeep = [this] { keepGachaCandidate(); };
-    rightPanel.gachaPanel().onCardChanged = [this]
+    rightPanel.gachaPanel().onCardChanged = [this] (GachaSession::Part part)
     {
-        cancelGachaPreview();
-        gachaSession.setCandidates ({}); // 前カードの候補一覧はパネル側でもクリア済み
+        // カード変更は**そのパーツの仮配置だけ**撤去する（他パーツ維持 —
+        // 「Drums 仮配置 → Bass のカード選択 → Drums が消える」でコア導線を壊さない）
+        cancelGachaPart (part);
+        gachaSession.setCandidates (part, {}); // 前カードの候補一覧はパネル側でもクリア済み
     };
     // 「原曲を頭出し」の可否（空文字=可）。ファイルI/Oを含むためパネルの updateControls 経由でのみ呼ばれる
     rightPanel.gachaPanel().alignUnavailableReason = [this]() -> juce::String
@@ -553,6 +555,8 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
 
     lcd.tempoLabel().setText (juce::String (project->bpm), juce::dontSendNotification);
     lcd.tempoLabel().onTextChange = [this] { applyBpmText(); };
+    refreshKeyDisplay();
+    lcd.onKeyClick = [this] { showKeyMenu(); };
 
     srWarningLabel.setFont (Fonts::body());
     srWarningLabel.setColour (juce::Label::textColourId, Theme::warning);
@@ -1264,6 +1268,7 @@ void MainComponent::afterHistoryRestore (UndoStack::EditKind kind)
         transport.bpm.store (project->bpm);
         lcd.tempoLabel().setText (juce::String (project->bpm), juce::dontSendNotification);
     }
+    refreshKeyDisplay(); // キーもStateに含まれる
 
     if (kind == UndoStack::EditKind::sampleValue)
     {
@@ -1758,24 +1763,95 @@ void MainComponent::setProjectBpm (double value)
     timeline.refresh(); // 小節幅（サンプル換算）が変わる
 }
 
-// 原曲クリップの頭出し。モデル変更（no-op判定・begin 1回・BPM＋クリップ移動）は
+// キー変更の一本化（LCDのKEYメニュー経路）。undo対象。
+// undo粒度は「ユーザーから見た1操作＝1件」— 編集経路はこのメニューのみ（経路を増やさない）
+void MainComponent::setProjectKey (const ProjectKey& value)
+{
+    if (project->key.has_value() && *project->key == value)
+        return; // 同値なら何もしない（undo履歴にno-opを積まない）
+    Log::info ("project.key", "value=" + ProjectKeys::cliText (value));
+    undoStack.begin (*project);
+    project->key = value;
+    setDirty (true);
+    refreshKeyDisplay();
+}
+
+void MainComponent::refreshKeyDisplay()
+{
+    lcd.setKeyText (project->key.has_value() ? ProjectKeys::displayName (*project->key)
+                                             : juce::String());
+}
+
+// KEYセクションのクリック → フラット24項目・2列（メジャー列/マイナー列）のメニュー。
+// 「F♯m」の形で直接選ぶ（サブメニューの1段を省く。モック案Cで確定）。
+// 列の割り付け: 見出し込みで各列13項目になるよう [見出し+12メジャー][見出し+12マイナー] の順で足す
+void MainComponent::showKeyMenu()
+{
+    juce::PopupMenu menu;
+    const auto current = project->key;
+    for (const auto mode : { KeyMode::major, KeyMode::minor })
+    {
+        menu.addSectionHeader (mode == KeyMode::major ? jp (u8"メジャー") : jp (u8"マイナー"));
+        for (int root = 0; root < 12; ++root)
+        {
+            const ProjectKey candidate { root, mode };
+            menu.addItem (ProjectKeys::displayName (candidate),
+                          true, current.has_value() && *current == candidate,
+                          [this, candidate] { setProjectKey (candidate); });
+        }
+    }
+    menu.showMenuAsync (juce::PopupMenu::Options()
+                            .withTargetScreenArea (lcd.localAreaToGlobal (lcd.keySectionBounds()))
+                            .withMinimumNumColumns (2)
+                            .withMaximumNumColumns (2));
+}
+
+// キーあり・頭出し不可の経路（BPM＋キーを undo 1件で）。判断は ReferenceAlign::applyBpmAndKey
+void MainComponent::performBpmAndKey (double bpm, const std::optional<ProjectKey>& key)
+{
+    if (engine.isRecording())
+        return;
+
+    switch (ReferenceAlign::applyBpmAndKey (*project, undoStack, bpm, key))
+    {
+        case ReferenceAlign::ApplyResult::applied:
+            applyProjectBpm (project->bpm);
+            refreshKeyDisplay();
+            setDirty (true);
+            timeline.refresh(); // 小節幅（サンプル換算）が変わる
+            Log::info ("project.bpm_key",
+                       "bpm=" + juce::String (bpm, 3)
+                           + " key=" + (key.has_value() ? ProjectKeys::cliText (*key) : "none"));
+            break;
+
+        case ReferenceAlign::ApplyResult::noChange:
+        case ReferenceAlign::ApplyResult::notFound: // BPM範囲外（カード検証済みの値では来ない）
+            break;
+    }
+}
+
+// 原曲クリップの頭出し。モデル変更（no-op判定・begin 1回・BPM＋キー＋クリップ移動）は
 // ReferenceAlign::apply が担当し、ここは録音ガードとUI同期だけを行う
 void MainComponent::performReferenceAlign (const ReferenceAlign::ClipDescriptor& descriptor,
-                                           double bpm, double firstDownbeatSec)
+                                           double bpm, double firstDownbeatSec,
+                                           const std::optional<ProjectKey>& key)
 {
     if (engine.isRecording())
         return; // 最終防衛線（パネル側はボタンも disabled にする）
 
-    switch (ReferenceAlign::apply (*project, undoStack, descriptor, bpm, firstDownbeatSec))
+    switch (ReferenceAlign::apply (*project, undoStack, descriptor, bpm, firstDownbeatSec, key))
     {
         case ReferenceAlign::ApplyResult::applied:
             applyProjectBpm (project->bpm); // transport・LCD を適用後の値に同期
+            refreshKeyDisplay();
             pushSnapshot();                 // クリップ位置の変更を再生へ反映
             setDirty (true);
             timeline.refresh();
             Log::info ("reference.align", "bpm=" + juce::String (bpm, 3)
                                               + " file=" + descriptor.fileName
-                                              + " fdSec=" + juce::String (firstDownbeatSec, 4));
+                                              + " fdSec=" + juce::String (firstDownbeatSec, 4)
+                                              + " key=" + (key.has_value() ? ProjectKeys::cliText (*key)
+                                                                           : juce::String ("none")));
             break;
 
         case ReferenceAlign::ApplyResult::noChange:
@@ -2652,24 +2728,35 @@ void MainComponent::pollReferenceAnalysis()
                 const bool canAlign = alignInfo.available && descriptor.isValid()
                                       && ReferenceAlign::locateClip (*project, descriptor).matches == 1;
                 const double fdSec = alignInfo.firstDownbeatSec;
-                juce::Component::SafePointer<MainComponent> safe (this);
-                juce::NativeMessageBox::showAsync (
-                    juce::MessageBoxOptions()
-                        .withIconType (juce::MessageBoxIconType::InfoIcon)
-                        .withTitle (jp (u8"分析が完了しました（") + folder.getFileName() + jp (u8"）"))
-                        .withMessage (message)
-                        .withButton (canAlign ? jp (u8"BPM を設定して原曲を頭出し")
-                                              : jp (u8"BPM をプロジェクトに設定"))
-                        .withButton (jp (u8"閉じる")),
-                    [safe, cardBpm, canAlign, descriptor, fdSec] (int button)
-                    {
-                        if (button != 0 || safe == nullptr)
-                            return;
-                        if (canAlign)
-                            safe->performReferenceAlign (descriptor, cardBpm, fdSec);
-                        else
-                            safe->setProjectBpm (cardBpm); // undo対応済みの経路（⌘Zで戻せる）
-                    });
+                const auto title = jp (u8"分析が完了しました（") + folder.getFileName() + jp (u8"）");
+
+                // カードにキーがあれば、ルート/モードを確認・変更できるダイアログへ
+                // （ルート変更=声域合わせ・モード変更=平行調取り違えの保険）。無ければ現行のBPMのみ
+                if (const auto cardKey = ProjectKeys::fromCardText (result.keyText); cardKey.has_value())
+                {
+                    showAnalysisKeyDialog (title, message, cardBpm, canAlign, descriptor, fdSec, *cardKey);
+                }
+                else
+                {
+                    juce::Component::SafePointer<MainComponent> safe (this);
+                    juce::NativeMessageBox::showAsync (
+                        juce::MessageBoxOptions()
+                            .withIconType (juce::MessageBoxIconType::InfoIcon)
+                            .withTitle (title)
+                            .withMessage (message)
+                            .withButton (canAlign ? jp (u8"BPM を設定して原曲を頭出し")
+                                                  : jp (u8"BPM をプロジェクトに設定"))
+                            .withButton (jp (u8"閉じる")),
+                        [safe, cardBpm, canAlign, descriptor, fdSec] (int button)
+                        {
+                            if (button != 0 || safe == nullptr)
+                                return;
+                            if (canAlign)
+                                safe->performReferenceAlign (descriptor, cardBpm, fdSec);
+                            else
+                                safe->setProjectBpm (cardBpm); // undo対応済みの経路（⌘Zで戻せる）
+                        });
+                }
             }
             else
             {
@@ -2698,6 +2785,51 @@ void MainComponent::pollReferenceAnalysis()
             break;
     }
     refreshMacMenu();
+}
+
+// 分析完了ダイアログ（カードにキーがある場合）。NativeMessageBox はコンボボックスを
+// 載せられないため AlertWindow を使う。初期値はカードの検出値で、適用前にルート
+// （声域に合わせて移調する）とモード（キー検出器の平行調取り違えの保険）を変更できる
+void MainComponent::showAnalysisKeyDialog (const juce::String& title, const juce::String& message,
+                                           double cardBpm, bool canAlign,
+                                           const ReferenceAlign::ClipDescriptor& descriptor,
+                                           double fdSec, const ProjectKey& cardKey)
+{
+    auto* window = new juce::AlertWindow (title, message, juce::MessageBoxIconType::InfoIcon, this);
+    juce::StringArray rootItems;
+    for (int root = 0; root < 12; ++root)
+        rootItems.add (ProjectKeys::rootName (root));
+    window->addComboBox ("root", rootItems, jp (u8"ルート"));
+    window->addComboBox ("mode", { jp (u8"メジャー"), jp (u8"マイナー") }, jp (u8"モード"));
+    window->getComboBoxComponent ("root")->setSelectedItemIndex (cardKey.root, juce::dontSendNotification);
+    window->getComboBoxComponent ("mode")->setSelectedItemIndex (
+        cardKey.mode == KeyMode::minor ? 1 : 0, juce::dontSendNotification);
+    window->addButton (canAlign ? jp (u8"BPM とキーを設定して原曲を頭出し")
+                                : jp (u8"BPM とキーを設定"),
+                       1, juce::KeyPress (juce::KeyPress::returnKey));
+    window->addButton (jp (u8"閉じる"), 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    juce::Component::SafePointer<MainComponent> safe (this);
+    window->enterModalState (true,
+        juce::ModalCallbackFunction::create (
+            [safe, window, cardBpm, canAlign, descriptor, fdSec] (int button)
+            {
+                // window はコールバック後に deleteWhenDismissed=true で破棄される。
+                // コンボの読み出しは破棄前のここで行う
+                if (button != 1 || safe == nullptr)
+                    return;
+                const ProjectKey key {
+                    juce::jlimit (0, 11, window->getComboBoxComponent ("root")->getSelectedItemIndex()),
+                    window->getComboBoxComponent ("mode")->getSelectedItemIndex() == 1 ? KeyMode::minor
+                                                                                       : KeyMode::major
+                };
+                // undo は経路別に1件: 頭出し可 → BPM＋キー＋クリップ移動 / 不可 → BPM＋キー
+                if (canAlign)
+                    safe->performReferenceAlign (descriptor, cardBpm, fdSec, key);
+                else
+                    safe->performBpmAndKey (cardBpm, key);
+            }),
+        true);
 }
 
 // ---- ドラムガチャ（右パネル第3モード）----
@@ -2869,10 +3001,44 @@ void MainComponent::performGachaAlign()
     panel.refreshAlignAvailability();
 }
 
+namespace
+{
+// ガチャCLI（drums.py / bass.py）の同期実行。実測0.5秒程度なので同期で読み切る。
+// venv破損等で固まらないよう10秒で見切る。失敗時は detail に stderr の最終行
+bool runGachaTool (const juce::StringArray& argv, juce::StringArray& stdoutLines,
+                   juce::String& detail)
+{
+    SpawnedProcess proc;
+    if (! proc.start (argv))
+        return false;
+    const auto deadline = juce::Time::getMillisecondCounter() + 10000;
+    juce::StringArray stderrLines;
+    const bool finished = proc.readUntilFinished (
+        [deadline] { return juce::Time::getMillisecondCounter() > deadline; },
+        [&stdoutLines] (const juce::String& line) { stdoutLines.add (line); },
+        [&stderrLines] (const juce::String& line) { stderrLines.add (line); });
+    if (finished && proc.exitCode() == 0)
+        return true;
+    for (int i = stderrLines.size(); --i >= 0 && detail.isEmpty();)
+        detail = stderrLines[i].trim();
+    if (detail.isEmpty())
+        detail = "exit=" + juce::String (proc.exitCode());
+    return false;
+}
+}
+
 void MainComponent::performGachaRoll()
 {
+    if (rightPanel.gachaPanel().selectedPart() == GachaSession::Part::bass)
+        performBassRoll();
+    else
+        performDrumsRoll();
+}
+
+void MainComponent::performDrumsRoll()
+{
     auto& panel = rightPanel.gachaPanel();
-    const auto cardFolder = panel.selectedCardFolder();
+    const auto cardFolder = panel.selectedCardFolder (GachaSession::Part::drums);
     if (cardFolder == juce::File() || ! ReferenceTools::gachaAvailable())
         return;
 
@@ -2896,26 +3062,11 @@ void MainComponent::performGachaRoll()
         argv.add (lockParts.joinIntoString (","));
     }
 
-    SpawnedProcess proc;
-    if (! proc.start (argv))
+    juce::StringArray stdoutLines;
+    juce::String detail;
+    if (! runGachaTool (argv, stdoutLines, detail))
     {
-        showAlert (jp (u8"ガチャを実行できません"), jp (u8"drums.py を起動できませんでした。"));
-        return;
-    }
-    // 実測0.5秒程度なので同期で読み切る。venv破損等で固まらないよう10秒で見切る
-    const auto deadline = juce::Time::getMillisecondCounter() + 10000;
-    juce::StringArray stdoutLines, stderrLines;
-    const bool finished = proc.readUntilFinished (
-        [deadline] { return juce::Time::getMillisecondCounter() > deadline; },
-        [&stdoutLines] (const juce::String& line) { stdoutLines.add (line); },
-        [&stderrLines] (const juce::String& line) { stderrLines.add (line); });
-    if (! finished || proc.exitCode() != 0)
-    {
-        juce::String detail;
-        for (int i = stderrLines.size(); --i >= 0 && detail.isEmpty();)
-            detail = stderrLines[i].trim();
-        Log::error ("gacha.roll_failed", "exit=" + juce::String (proc.exitCode())
-                                             + " detail=" + detail);
+        Log::error ("gacha.roll_failed", "part=drums detail=" + detail);
         showAlert (jp (u8"ガチャに失敗しました"),
                    detail.isNotEmpty() ? detail : jp (u8"drums.py がエラーで終了しました。"));
         return;
@@ -2952,10 +3103,214 @@ void MainComponent::performGachaRoll()
         }
     }
 
-    Log::info ("gacha.roll", "count=" + juce::String ((int) candidates.size())
+    Log::info ("gacha.roll", "part=drums count=" + juce::String ((int) candidates.size())
                                  + " locks=" + (lockParts.isEmpty() ? juce::String ("none")
                                                                     : lockParts.joinIntoString (",")));
-    gachaSession.setCandidates (candidates);
+    gachaSession.setCandidates (GachaSession::Part::drums, candidates);
+    panel.setCandidates (std::move (candidates));
+}
+
+MainComponent::DrumsSource MainComponent::resolveDrumsSource() const
+{
+    DrumsSource source;
+
+    // 1. 仮配置中の Drums（ガチャ産＝seed 持ちで延長再生成できる）
+    if (gachaSession.hasPreview (GachaSession::Part::drums))
+    {
+        const auto trackId = gachaSession.previewTrackId (GachaSession::Part::drums);
+        const auto regionId = gachaSession.previewRegionId (GachaSession::Part::drums);
+        for (int t = 0; t < (int) project->tracks.size(); ++t)
+        {
+            if (project->tracks[(size_t) t].id != trackId)
+                continue;
+            const auto& regions = project->tracks[(size_t) t].midiRegions;
+            for (int r = 0; r < (int) regions.size(); ++r)
+                if (regions[(size_t) r].id == regionId)
+                    return { t, r, true };
+        }
+    }
+
+    // 2. 選択中の Drum Kit リージョン（手直し済み・手打ち。延長対象外）
+    const auto& sel = timeline.getRegionSelection();
+    if (sel.isValid() && sel.track < (int) project->tracks.size())
+    {
+        const auto& track = project->tracks[(size_t) sel.track];
+        if (track.type == TrackType::midi && track.drums
+            && sel.region < (int) track.midiRegions.size())
+            source = { sel.track, sel.region, false };
+    }
+    return source; // 3. 無し（キックブーストなしで生成する）
+}
+
+// 仮配置中のガチャ産ドラムを同一 seed・--bars 変更で延長再生成する（1小節ベース＋
+// 4小節ドラムの逆= 8小節ベース＋4小節ドラムで後半が無音にならないための処置）。
+// 失敗しても致命ではない（そのまま= 後半ドラム無しで鳴る）ので false を返すだけ
+bool MainComponent::extendDrumsPreview (int bars)
+{
+    const auto& source = gachaSession.previewSource (GachaSession::Part::drums);
+    if (! source.isValid() || source.laneSeeds.size() != 3)
+        return false;
+
+    juce::StringArray argv { ReferenceTools::venvPython().getFullPathName(),
+                             ReferenceTools::drumsScript().getFullPathName(),
+                             source.cardFolder.getFullPathName(),
+                             "--count", "1", "--bars", juce::String (bars),
+                             "--lock",
+                             "kick=" + source.laneSeeds[0] + ",snare=" + source.laneSeeds[1]
+                                 + ",hat=" + source.laneSeeds[2],
+                             "--porcelain" };
+    juce::StringArray stdoutLines;
+    juce::String detail;
+    if (! runGachaTool (argv, stdoutLines, detail))
+    {
+        Log::error ("gacha.extend_failed", "detail=" + detail);
+        return false;
+    }
+    GachaSession::Candidate candidate;
+    juce::String firstLine;
+    for (const auto& line : stdoutLines)
+        if (firstLine.isEmpty() && line.trim().isNotEmpty())
+            firstLine = line;
+    if (! GachaSession::parsePorcelainLine (firstLine, candidate))
+    {
+        Log::error ("gacha.extend_failed", "message=porcelain_parse line=" + firstLine);
+        return false;
+    }
+
+    MidiImport::Result parsed;
+    juce::String error;
+    const auto midFile = source.cardFolder.getChildFile ("gacha").getChildFile (candidate.base + ".mid");
+    if (! MidiImport::parseFile (midFile, parsed, error))
+    {
+        Log::error ("gacha.extend_failed", "file=" + midFile.getFileName()
+                                               + " message=" + error.replace ("\n", " / "));
+        return false;
+    }
+    // 差し替え（仮配置は active のまま同じ場所に置き直される）
+    if (! gachaSession.previewCandidate (GachaSession::Part::drums, *project, parsed,
+                                         selectedTrack, 0))
+        return false;
+    auto extended = source;
+    extended.bars = bars;
+    gachaSession.setPreviewSource (GachaSession::Part::drums, std::move (extended));
+    Log::info ("gacha.extend", "bars=" + juce::String (bars) + " candidate=" + candidate.base);
+    return true;
+}
+
+void MainComponent::performBassRoll()
+{
+    auto& panel = rightPanel.gachaPanel();
+    const auto cardFolder = panel.selectedCardFolder (GachaSession::Part::bass);
+    if (cardFolder == juce::File() || ! ReferenceTools::bassGachaAvailable())
+        return;
+
+    // 1. キー未設定ガード（生成は常にプロジェクトのキーで行う — コピー導線へ誘導）
+    if (! project->key.has_value())
+    {
+        panel.showStatus (jp (u8"キーが未設定です — ヘッダーの KEY をクリックして設定するか、"
+                              u8"リージョンの分析完了時に「BPM とキーを設定」でコピーしてください"));
+        Log::info ("gacha.bass_roll_blocked", "reason=no_key");
+        return;
+    }
+
+    // 2. Bass カードから loop_bars を読む（chords 無し・欠損は 1 = ルート連打パターン）
+    const auto card = juce::JSON::parse (cardFolder.getChildFile ("card.json").loadFileAsString());
+    int loopBars = 1;
+    if (const auto chords = card.getProperty ("chords", {}); chords.isObject())
+        loopBars = juce::jlimit (1, 16, (int) chords.getProperty ("loop_bars", 1));
+
+    // 3. ドラムソースを解決し、試聴長・キック抽出を計画する（判断は GachaSession::planBassRoll —
+    //    試聴長 = max(ドラム長, loop_bars) の loop_bars 倍数切り上げ・PPQ 960→480 換算込み）
+    auto source = resolveDrumsSource();
+    auto plan = GachaSession::planBassRoll (*project, source.trackIndex, source.regionIndex, loopBars);
+
+    // 4. ベースが長ければ seed 持ちのガチャ産仮配置ドラムのみ延長再生成
+    //    （手直し済み・手打ちリージョンは v1 では延長対象外＝そのまま）
+    if (source.fromPreview && plan.drumsBars > 0 && plan.previewBars > plan.drumsBars)
+    {
+        extendDrumsPreview (plan.previewBars);
+        source = resolveDrumsSource(); // 延長でリージョンが差し替わったので引き直す
+        pushSnapshot();                // 延長後のドラムを再生へ反映
+        timeline.refresh();
+        // 5. 延長後のドラムリージョンからキックを抽出し直す
+        plan = GachaSession::planBassRoll (*project, source.trackIndex, source.regionIndex, loopBars);
+    }
+    const int previewBars = plan.previewBars;
+    const auto& kickTicks = plan.kickTicks;
+
+    // 6. bass.py 呼び出し（--bpm にプロジェクト BPM を必ず渡す — カード BPM とプロジェクトの
+    //    再生テンポのずれを作らない。BPM の契約は plan/bass.py 参照）
+    juce::StringArray lockParts;
+    if (panel.lockedProgSeed().isNotEmpty())
+        lockParts.add ("prog=" + panel.lockedProgSeed());
+    if (panel.lockedRhythmSeed().isNotEmpty())
+        lockParts.add ("rhythm=" + panel.lockedRhythmSeed());
+
+    juce::StringArray argv { ReferenceTools::venvPython().getFullPathName(),
+                             ReferenceTools::bassScript().getFullPathName(),
+                             cardFolder.getFullPathName(),
+                             "--key", ProjectKeys::cliText (*project->key),
+                             "--bpm", juce::String (project->bpm),
+                             "--count", "8", "--porcelain" };
+    if (previewBars != loopBars)
+    {
+        argv.add ("--bars");
+        argv.add (juce::String (previewBars));
+    }
+    if (! kickTicks.isEmpty())
+    {
+        argv.add ("--kick-ticks");
+        argv.add (kickTicks.joinIntoString (","));
+    }
+    if (! lockParts.isEmpty())
+    {
+        argv.add ("--lock");
+        argv.add (lockParts.joinIntoString (","));
+    }
+
+    juce::StringArray stdoutLines;
+    juce::String detail;
+    if (! runGachaTool (argv, stdoutLines, detail))
+    {
+        Log::error ("gacha.roll_failed", "part=bass detail=" + detail);
+        showAlert (jp (u8"ガチャに失敗しました"),
+                   detail.isNotEmpty() ? detail : jp (u8"bass.py がエラーで終了しました。"));
+        return;
+    }
+
+    std::vector<GachaSession::Candidate> candidates;
+    for (const auto& line : stdoutLines)
+    {
+        if (line.trim().isEmpty())
+            continue;
+        GachaSession::Candidate candidate;
+        if (! GachaSession::parseBassPorcelainLine (line, candidate))
+        {
+            Log::error ("gacha.roll_failed", "message=porcelain_parse line=" + line);
+            showAlert (jp (u8"ガチャに失敗しました"), jp (u8"bass.py の出力を解釈できませんでした。"));
+            return;
+        }
+        candidates.push_back (std::move (candidate));
+    }
+
+    // ミニチュア（音高ストリップ）用に各候補の .mid を読む。パターン1周ぶんだけ描く
+    for (auto& candidate : candidates)
+    {
+        MidiImport::Result parsed;
+        juce::String parseError;
+        const auto midFile = cardFolder.getChildFile ("gacha").getChildFile (candidate.base + ".mid");
+        if (MidiImport::parseFile (midFile, parsed, parseError))
+            candidate.bassDots = GachaSession::bassDotsFromNotes (
+                parsed.otherNotes, (juce::int64) loopBars * Ppq::ticksPerBar);
+    }
+
+    Log::info ("gacha.roll", "part=bass count=" + juce::String ((int) candidates.size())
+                                 + " key=" + ProjectKeys::cliText (*project->key)
+                                 + " bars=" + juce::String (previewBars)
+                                 + " kicks=" + juce::String (kickTicks.size())
+                                 + " locks=" + (lockParts.isEmpty() ? juce::String ("none")
+                                                                    : lockParts.joinIntoString (",")));
+    gachaSession.setCandidates (GachaSession::Part::bass, candidates);
     panel.setCandidates (std::move (candidates));
 }
 
@@ -2964,13 +3319,14 @@ void MainComponent::pickGachaCandidate (int index)
     if (engine.isRecording())
         return;
     auto& panel = rightPanel.gachaPanel();
+    const auto part = panel.selectedPart();
     if (index < 0 || index >= (int) panel.candidates().size())
         return;
     const auto cardFolder = panel.selectedCardFolder();
     if (cardFolder == juce::File())
         return;
-    const auto base = panel.candidates()[(size_t) index].base;
-    const auto midFile = cardFolder.getChildFile ("gacha").getChildFile (base + ".mid");
+    const auto candidate = panel.candidates()[(size_t) index];
+    const auto midFile = cardFolder.getChildFile ("gacha").getChildFile (candidate.base + ".mid");
 
     MidiImport::Result parsed;
     juce::String error;
@@ -2982,43 +3338,63 @@ void MainComponent::pickGachaCandidate (int index)
         return;
     }
 
-    // 仮配置（2回目以降は差し替え）。対象は選択中の Drum Kit トラック、無ければ「Drums」を自動作成。
-    // 位置は再生ヘッドの小節頭（録音開始位置と同じ丸め）。undo には積まない（「残す」で1件積む）
-    if (! gachaSession.previewCandidate (*project, parsed, selectedTrack, playheadBarStartPpq()))
+    // 配置位置（パーツ初回のみ有効。差し替えは同じ場所）:
+    // - Drums: 再生ヘッドの小節頭（録音開始位置と同じ丸め）
+    // - Bass: 共通の試聴開始 PPQ = 仮配置中ドラム → その開始 / 選択中 Drum Kit リージョン →
+    //   その先頭 / 無し → 再生ヘッドの小節頭（ドラムと重なって初めて評価できるため）
+    juce::int64 startPpq = playheadBarStartPpq();
+    if (part == GachaSession::Part::bass)
+    {
+        if (gachaSession.hasPreview (GachaSession::Part::drums))
+            startPpq = gachaSession.previewStartPpq (GachaSession::Part::drums);
+        else if (const auto source = resolveDrumsSource(); source.isValid())
+            startPpq = project->tracks[(size_t) source.trackIndex]
+                           .midiRegions[(size_t) source.regionIndex].startPpq;
+    }
+
+    // 仮配置（2回目以降は差し替え）。対象トラックの決定は GachaSession（Drum Kit / GM ベース系の
+    // 流用 or 自動作成）。undo には積まない（「残す」で全パーツまとめて1件積む）
+    if (! gachaSession.previewCandidate (part, *project, parsed, selectedTrack, startPpq))
         return;
+
+    // 延長再生成用に「どのカードのどの seed から来た候補か」を記録する
+    GachaSession::PreviewSource source;
+    source.cardFolder = cardFolder;
+    const auto lengthPpq = part == GachaSession::Part::drums ? parsed.drumRegionLengthPpq
+                                                             : parsed.otherRegionLengthPpq;
+    source.bars = (int) ((lengthPpq + Ppq::ticksPerBar - 1) / Ppq::ticksPerBar);
+    if (part == GachaSession::Part::drums)
+        source.laneSeeds = { candidate.kickSeed, candidate.snareSeed, candidate.hatSeed };
+    else
+        source.laneSeeds = { candidate.progSeed, candidate.rhythmSeed };
+    gachaSession.setPreviewSource (part, std::move (source));
 
     headers.rebuild(); // 自動作成トラックが増えたかもしれない
     for (int i = 0; i < (int) project->tracks.size(); ++i)
-        if (project->tracks[(size_t) i].id == gachaSession.previewTrackId())
+        if (project->tracks[(size_t) i].id == gachaSession.previewTrackId (part))
             selectTrackFromUser (i);
     pushSnapshot(); // 普段の再生で曲と一緒に鳴らす（単体プレビュー経路は作らない）
     timeline.refresh();
-    panel.setKeepEnabled (true);
-    Log::info ("gacha.pick", "candidate=" + base);
+    panel.setPreviewActive (part, true);
+    Log::info ("gacha.pick", juce::String ("part=") + (part == GachaSession::Part::drums ? "drums" : "bass")
+                                 + " candidate=" + candidate.base);
 }
 
 void MainComponent::keepGachaCandidate()
 {
     if (! gachaSession.hasPreview())
         return;
-    if (! gachaSession.keep (*project, undoStack)) // pushCommitted（redo履歴破棄）で undo 1件
+    if (! gachaSession.keep (*project, undoStack)) // 全パーツ一括で pushCommitted 1件（redo履歴破棄）
         return;
     setDirty (true); // 「残す」で初めてプロジェクトの変更として扱う（保存は⌘S）
-    rightPanel.gachaPanel().setKeepEnabled (false);
-    rightPanel.gachaPanel().clearCandidateSelection();
+    rightPanel.gachaPanel().clearAllPreviewBadges();
     timeline.refresh();
     Log::info ("gacha.keep");
 }
 
-void MainComponent::cancelGachaPreview()
+// 撤去後のUI・スナップショット同期（全撤去・パーツ撤去の共通の尻尾）
+void MainComponent::afterGachaCancel (bool trackRemoved)
 {
-    if (! gachaSession.hasPreview())
-        return;
-    const bool trackRemoved = gachaSession.trackIsPreviewOwned (gachaSession.previewTrackId());
-    if (! gachaSession.cancelPreview (*project))
-        return;
-
-    Log::info ("gacha.cancel_preview");
     timeline.clearSelection();
     if (trackRemoved)
     {
@@ -3036,8 +3412,34 @@ void MainComponent::cancelGachaPreview()
     }
     pushSnapshot(); // 仮リージョンを消した状態を再生へ反映
     timeline.refresh();
-    rightPanel.gachaPanel().setKeepEnabled (false);
-    rightPanel.gachaPanel().clearCandidateSelection();
+}
+
+void MainComponent::cancelGachaPreview()
+{
+    if (! gachaSession.hasPreview())
+        return;
+    bool trackRemoved = false;
+    for (const auto part : { GachaSession::Part::drums, GachaSession::Part::bass })
+        trackRemoved = trackRemoved
+                       || gachaSession.trackIsPreviewOwned (gachaSession.previewTrackId (part));
+    gachaSession.cancelPreview (*project);
+
+    Log::info ("gacha.cancel_preview");
+    rightPanel.gachaPanel().clearAllPreviewBadges();
+    afterGachaCancel (trackRemoved);
+}
+
+void MainComponent::cancelGachaPart (GachaSession::Part part)
+{
+    if (! gachaSession.hasPreview (part))
+        return;
+    const bool trackRemoved = gachaSession.trackIsPreviewOwned (gachaSession.previewTrackId (part));
+    gachaSession.cancelPart (part, *project);
+
+    Log::info ("gacha.cancel_part",
+               juce::String ("part=") + (part == GachaSession::Part::drums ? "drums" : "bass"));
+    rightPanel.gachaPanel().setPreviewActive (part, false);
+    afterGachaCancel (trackRemoved);
 }
 
 void MainComponent::cancelReferenceAnalysisForClose()

@@ -7,97 +7,164 @@
 #include "Project.h"
 #include "UndoStack.h"
 
-// ドラムガチャの候補管理と仮配置（右パネル第3モードの判断ロジック側）。
+// ガチャの候補管理と仮配置（右パネル第3モードの判断ロジック側）。
+// パーツ（Drums / Bass）ごとに独立した仮配置を同時に保持できる — パーツを行き来して
+// 「ベースを聴いてからドラムを振り直す」を成立させるため（将来 Keys 等が +1 される）。
 // UI（RightPanel のガチャモード）は候補一覧の表示とクリックだけを担当し、
 // モデルへの仮配置・差し替え・撤去・「残す」確定はすべてここを通す
 // （daw_tests は UI の .cpp を含まないため、ここに置いて CTest で固定する）。
 //
-// undo との整合（docs/plans/2026-08-04-1546 で確定）:
+// undo との整合（docs/plans/2026-08-04-1546 / 2026-08-06-1809 で確定）:
 // - 候補の切り替えは UndoStack を経由せず Project を直接書き換える（呼び出し側が
 //   スナップショットを再pushする）。仮配置を undo 履歴に混入させないため
-// - 「残す」は仮配置**前**の tracks を before として UndoStack::pushCommitted に1件積む
-//   （begin 方式だと「残した後の状態」が before になり undo が no-op になる）
-// - キャンセルは仮リージョンを外科的に取り除く（このセッションで自動作成した
-//   「Drums」トラックはトラックごと撤去）
+// - baseline（仮配置前の tracks）は**セッション全体で1回だけ**、最初の仮配置時に保存する。
+//   パーツごとに持つと、後から始めたパーツの before に未確定の他パーツが混ざる
+// - 「残す」は**全パーツをまとめて**、baseline を before として UndoStack::pushCommitted に
+//   1件積む（begin 方式だと「残した後の状態」が before になり undo が no-op になる）
+// - キャンセルは2層: cancelPart はそのパーツだけ外科的に撤去（他パーツ維持。最後の1件が
+//   消えたら baseline 破棄）/ cancelPreview は全パーツ撤去（通常編集・undo・保存・モード
+//   離脱の入口用）。このセッションで自動作成したトラックはトラックごと撤去する
 class GachaSession
 {
 public:
-    // パターン・ミニチュア（候補一覧の1行に描く1小節ぶんのドット譜）。
+    // パーツ。candidates / previews の添字にも使う
+    enum class Part { drums = 0, bass = 1 };
+    static constexpr int numParts = 2;
+
+    // パターン・ミニチュア（ドラム候補一覧の1行に描く1小節ぶんのドット譜）。
     // レーンは [kick, snare, hat]、スロットは16分×16。値: 0=なし / 1=装飾（ゴースト）/ 2=骨格
     static constexpr int patternLanes = 3;
     static constexpr int patternSlots = 16;
     using Pattern = std::array<std::array<int, patternSlots>, patternLanes>;
 
-    // drums.py --porcelain の1行ぶん（候補一覧の1件）
-    struct Candidate
+    // ベース候補のミニチュア（音高ストリップ）。x = パターン内位置 0..1 / y = 音高 0..1
+    // （ハード範囲 MIDI 28..51 を正規化。y は上が高音になるよう描画側で反転する）
+    struct BassDot
     {
-        juce::String base;                       // ファイル名の共通部（.mid/.wav/.json が並ぶ）
-        juce::String kickSeed, snareSeed, hatSeed; // 8桁hex（--lock に渡す形式そのまま）
-        juce::String status;                     // generated / regenerated / skipped
-        Pattern pattern {};                      // .mid から抽出したミニチュア（hasPattern=false なら未取得）
-        bool hasPattern = false;
+        float x = 0.0f;
+        float y = 0.0f;
     };
 
-    // 取り込み済みノート列（PPQ 960）から1小節ぶんのミニチュアを作る。
+    // porcelain の1行ぶん（候補一覧の1件）。ドラムは kick/snare/hat、ベースは prog/rhythm の
+    // seed を持つ（使わない側は空のまま）
+    struct Candidate
+    {
+        juce::String base;                         // ファイル名の共通部（.mid/.wav/.json が並ぶ）
+        juce::String kickSeed, snareSeed, hatSeed; // 8桁hex（drums の --lock に渡す形式そのまま）
+        juce::String progSeed, rhythmSeed;         // 8桁hex（bass の --lock に渡す形式そのまま）
+        juce::String status;                       // generated / regenerated / skipped
+        Pattern pattern {};                        // ドラムのミニチュア（hasPattern=false なら未取得）
+        bool hasPattern = false;
+        std::vector<BassDot> bassDots;             // ベースのミニチュア（空なら未取得）
+    };
+
+    // 取り込み済みノート列（PPQ 960）から1小節ぶんのドラム・ミニチュアを作る。
     // - スロットはスウィング・ジッター込みの位置を最近傍の16分へ丸める（生成側のクリップ幅
     //   ±40%×16分 < 半スロットなので取り違えない）
     // - 濃淡は velocity で分ける: 生成器は vel ≈ 20 + 強度×96 なので、骨格閾値 0.35 に相当する
     //   ≈53 を境に 骨格(2)/装飾(1) とみなす（表示専用の近似。境界の±ノイズは許容）
-    // - 2小節目以降のノートは無視する（ガチャは1小節パターンの繰り返し）
+    // - 2小節目以降のノートは無視する（ドラムガチャは1小節パターンの繰り返し）
     static Pattern patternFromDrumNotes (const std::vector<MidiNote>& notes);
 
+    // ベース候補のミニチュア。patternTicks = パターン長（LaLa PPQ。loop_bars × ticksPerBar）。
+    // パターン1周ぶん（patternTicks 未満）のノートだけを x 0..1 へ正規化する
+    static std::vector<BassDot> bassDotsFromNotes (const std::vector<MidiNote>& notes,
+                                                   juce::int64 patternTicks);
+
     // porcelain 1行をパースする。JSON でない・キー欠損は false（呼び出し側は行を捨てずエラー扱いに）
-    static bool parsePorcelainLine (const juce::String& line, Candidate& out);
+    static bool parsePorcelainLine (const juce::String& line, Candidate& out);     // drums（kick/snare/hat）
+    static bool parseBassPorcelainLine (const juce::String& line, Candidate& out); // bass（prog/rhythm）
+
+    // ベース振り直しの実行計画（試聴長・キック抽出）。判断をUIから切り離してテスト可能にする。
+    // - previewBars = max(ドラム長, loopBars) を loopBars の倍数へ切り上げ（bass.py は倍数のみ受ける）
+    // - kickTicks = ドラムリージョン先頭基準の相対 tick 列（**bass.py の PPQ 480**。LaLa の 960 から
+    //   換算済み）。ループ反復は previewBars ぶんまで展開する。固定ピッチ打楽器トラック
+    //   （drumPitch >= 0）は実効ピッチで判定する
+    struct BassRollPlan
+    {
+        int previewBars = 1;
+        int drumsBars = 0;           // 0 = ドラムソース無し
+        juce::StringArray kickTicks; // 空 = キックブーストなし
+    };
+    static BassRollPlan planBassRoll (const Project& project, int drumsTrackIndex,
+                                      int drumsRegionIndex, int loopBars);
 
     // ---- 候補一覧（今回の実行で申告されたファイルだけ。gacha/ の全列挙はしない）----
-    void setCandidates (std::vector<Candidate> list) { candidates = std::move (list); }
-    const std::vector<Candidate>& getCandidates() const { return candidates; }
+    void setCandidates (Part part, std::vector<Candidate> list)
+    {
+        candidates[(size_t) part] = std::move (list);
+    }
+    const std::vector<Candidate>& getCandidates (Part part) const
+    {
+        return candidates[(size_t) part];
+    }
 
     // ---- 仮配置 ----
-    bool hasPreview() const { return previewActive; }
-    juce::uint64 previewRegionId() const { return previewActive ? regionId : 0; }
-    juce::uint64 previewTrackId() const { return previewActive ? trackId : 0; }
+    bool hasPreview() const;           // どれかのパーツが仮配置中
+    bool hasPreview (Part part) const { return previews[(size_t) part].active; }
+    juce::uint64 previewRegionId (Part part) const;
+    juce::uint64 previewTrackId (Part part) const;
+    juce::int64 previewStartPpq (Part part) const;
 
-    // (trackId, regionId) が仮オブジェクトか（仮リージョン・自動作成トラックへの操作を
-    // 「撤去して中止」するための判定。トラックだけの判定は trackIsPreview）
-    bool isPreviewObject (juce::uint64 objectTrackId, juce::uint64 objectRegionId) const
-    {
-        return previewActive
-               && (objectRegionId == regionId
-                   || (autoCreatedTrack && objectTrackId == trackId));
-    }
+    // (trackId, regionId) がいずれかのパーツの仮オブジェクトか（仮リージョン・自動作成トラックへの
+    // 操作を「撤去して中止」するための判定。トラックだけの判定は trackIsPreviewOwned）
+    bool isPreviewObject (juce::uint64 objectTrackId, juce::uint64 objectRegionId) const;
+    bool trackIsPreviewOwned (juce::uint64 objectTrackId) const;
 
-    bool trackIsPreviewOwned (juce::uint64 objectTrackId) const
+    // 仮配置元の情報（延長再生成に使う: どのカードのどの seed から来た候補か）。
+    // MainComponent が previewCandidate 成功後に setPreviewSource で記録し、
+    // そのパーツの撤去で消える。bars = 生成時の書き出し小節数
+    struct PreviewSource
     {
-        return previewActive && autoCreatedTrack && objectTrackId == trackId;
-    }
+        juce::File cardFolder;
+        juce::StringArray laneSeeds; // drums: kick,snare,hat / bass: prog,rhythm（--lock の順）
+        int bars = 0;
+        bool isValid() const { return cardFolder != juce::File() && ! laneSeeds.isEmpty(); }
+    };
+    void setPreviewSource (Part part, PreviewSource source);
+    const PreviewSource& previewSource (Part part) const { return sources[(size_t) part]; }
 
     // 候補を仮配置する（2回目以降は差し替え）。
-    // - 初回: 仮配置前の tracks を保存し、対象トラックを決める。preferredTrackIndex が
-    //   Drum Kit（midi かつ drums=true）ならそれ、でなければ「Drums」トラックを自動作成
-    // - 開始位置は初回の startPpq で固定（差し替えは同じ場所。「別の場所で聴きたい」は
-    //   一度キャンセルして仮配置し直す操作になる）
-    // 失敗（ドラムノートが無い等）は false（状態は変えない）
-    bool previewCandidate (Project& project, const MidiImport::Result& parsed,
+    // - セッション初回: 仮配置前の tracks を baseline として保存
+    // - パーツ初回: 対象トラックを決める。drums は preferredTrackIndex が Drum Kit（midi かつ
+    //   drums=true）ならそれ、bass は GM ベース系（midi・gm・drums=false・program 32..39）
+    //   ならそれ。該当しなければ「Drums」/「Bass」（Finger Bass 33）トラックを自動作成
+    // - 開始位置はパーツ初回の startPpq で固定（差し替えは同じ場所）
+    // 失敗（対象ノートが無い等）は false（状態は変えない）
+    bool previewCandidate (Part part, Project& project, const MidiImport::Result& parsed,
                            int preferredTrackIndex, juce::int64 startPpq);
 
-    // 仮リージョン（＋自動作成トラック）を取り除く。何か取り除いたら true。
+    // そのパーツの仮リージョン（＋自動作成トラック）だけを取り除く。何か取り除いたら true。
+    // 最後の仮配置が消えたときだけセッション baseline を破棄する（他パーツは維持）
+    bool cancelPart (Part part, Project& project);
+
+    // 全パーツの仮配置を取り除く。何か取り除いたら true。
     // 全編集入口の cancelGachaPreview() から呼ばれる想定（呼び出し側が再描画・再pushする）
     bool cancelPreview (Project& project);
 
-    // 「残す」: 仮配置前の状態を before として undo に1件積み、セッションを畳む。
-    // 確定変更があれば true（呼び出し側が dirty 化・保存・再push する）
+    // 「残す」: baseline を before として undo に1件積み、**全パーツをまとめて確定**して
+    // セッションを畳む。確定変更があれば true（呼び出し側が dirty 化・保存・再push する）
     bool keep (Project& project, UndoStack& undoStack);
 
 private:
-    int findPreviewTrack (const Project& project) const;   // trackId → index（無ければ -1）
+    struct PartPreview
+    {
+        bool active = false;
+        bool autoCreatedTrack = false; // このセッションで作った（キャンセルでトラックごと撤去）
+        juce::uint64 trackId = 0;      // 仮配置先トラック
+        juce::uint64 regionId = 0;     // 仮リージョン
+        juce::int64 startPpq = 0;      // パーツ初回の配置位置（差し替えでも維持）
+    };
 
-    std::vector<Candidate> candidates;
+    int findTrack (const Project& project, juce::uint64 trackId) const; // id → index（無ければ -1）
+    bool removePartObjects (Part part, Project& project); // 仮リージョン/自動作成トラックの撤去
+    void resetPart (Part part);
+    void resetSession();
 
-    bool previewActive = false;
-    bool autoCreatedTrack = false;   // このセッションで「Drums」を作った（キャンセルでトラックごと撤去）
-    juce::uint64 trackId = 0;        // 仮配置先トラック
-    juce::uint64 regionId = 0;       // 仮リージョン
-    juce::int64 previewStartPpq = 0; // 初回配置位置（差し替えでも維持）
-    std::vector<Track> beforeTracks; // 仮配置開始時点の tracks（「残す」の before）
+    std::array<std::vector<Candidate>, numParts> candidates;
+    std::array<PartPreview, numParts> previews;
+    std::array<PreviewSource, numParts> sources;
+
+    bool baselineValid = false;      // beforeTracks が有効（どれかのパーツが仮配置中）
+    std::vector<Track> beforeTracks; // セッション開始時点の tracks（「残す」の before）
 };
