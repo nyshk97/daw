@@ -102,25 +102,32 @@ def scale_notes(pitch_class_weight: list, key_value: str) -> str:
 
     実測の転記なのでキーのスケール音とは限らない。差分を注記しないと
     スケール音の一覧に見えて紛らわしい（キー確度「中」の曲で実例あり）。
+    重みが最大の1/10未満の音は落とす — 3音リフの曲で出席率0.1%の音まで
+    「使う音」に昇格し、スケール注記が意図的な音使いに見えてしまうため
+    （docs/labs/reference-beat.md 2026-08-07）。
     """
     root_name, mode = key_value.split(" ")
     root_name = root_name.replace("♯", "#").replace("♭", "b")
     flat_to_sharp = {"Cb": "B", "Db": "C#", "Eb": "D#", "Fb": "E", "Gb": "F#", "Ab": "G#", "Bb": "A#"}
     root_pc = PC_NAMES.index(flat_to_sharp.get(root_name, root_name))
-    top7 = sorted(range(12), key=lambda pc: pitch_class_weight[pc], reverse=True)[:7]
-    ordered = sorted(top7, key=lambda pc: (pc - root_pc) % 12)
+    floor = max(pitch_class_weight) / 10
+    kept = sorted((pc for pc in range(12) if pitch_class_weight[pc] >= floor),
+                  key=lambda pc: pitch_class_weight[pc], reverse=True)[:7]
+    ordered = sorted(kept, key=lambda pc: (pc - root_pc) % 12)
     notes = " ".join(PC_NAMES[pc] for pc in ordered)
 
     scale = {(root_pc + s) % 12 for s in (MAJOR_STEPS if mode == "major" else MINOR_STEPS)}
-    missing = sorted(scale - set(top7), key=lambda pc: (pc - root_pc) % 12)
-    extra = sorted(set(top7) - scale, key=lambda pc: (pc - root_pc) % 12)
-    if missing:  # 上位7音とスケール7音は同数なので、欠けと外は必ず対で出る
-        m = "・".join(PC_NAMES[p] for p in missing)
-        e = "・".join(PC_NAMES[p] for p in extra)
-        note = f"{key_value} のスケールの {m} は踏まず、外の {e} を踏む"
-    else:
-        note = "キーのスケールと一致"
-    return f"**{notes}**（ベース実測の上位7音。{note}）"
+    missing = sorted(scale - set(kept), key=lambda pc: (pc - root_pc) % 12)
+    extra = sorted(set(kept) - scale, key=lambda pc: (pc - root_pc) % 12)
+    m = "・".join(PC_NAMES[p] for p in missing)
+    e = "・".join(PC_NAMES[p] for p in extra)
+    if len(kept) == 7:
+        # スケール7音と同数なので、欠けと外は必ず対で出るか、完全一致か
+        note = f"{key_value} のスケールの {m} は踏まず、外の {e} を踏む" if missing else "キーのスケールと一致"
+        return f"**{notes}**（ベース実測の上位7音。{note}）"
+    pct = round(sum(pitch_class_weight[pc] for pc in kept) * 100)
+    note = f"{e} はスケール外" if extra else f"いずれも {key_value} のスケール内"
+    return f"**{notes}**（ベース実測。この{len(kept)}音で全体の{pct}%。{note}）"
 
 
 # ---------------------------------------------------------------- 楽器編成・構成
