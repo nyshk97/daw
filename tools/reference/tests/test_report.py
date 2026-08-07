@@ -118,6 +118,8 @@ ok("| 2 | **F**（確信度低め） | **G** |" in draft,
    "進行表が畳んだ進行から組まれ、conf が最大-0.2より低いスロットに確信度低めが付く")
 ok("分析元は LaLa のリージョン書き出し" in draft, "source.info.json 無しでも生成できる（曲名はフォルダ名）")
 ok("# normal — 分析レポート" in draft, "info 無しの曲名はフォルダ名")
+ok("```sh\nopen " in draft and "/listen\n```" in draft.replace("'", ""),
+   "耳で検算する節に listen/ を開くコマンドが機械充填される")
 ok("動画公開日" not in draft, "info 無しでは日付・チャンネル・URL 行を省略する")
 
 # ダイジェスト

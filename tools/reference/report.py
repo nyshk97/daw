@@ -453,6 +453,7 @@ def build_fills(ref: Path) -> tuple:
         "groove_gate_note": ("\n".join(gate_notes) + "\n") if gate_notes else "",
         "structure_table": structure_table(arrangement, downbeat_ok),
         "analysis_conditions": analysis_conditions(ref, info, basics, groove),
+        "listen_cmd": listen_cmd(ref),
         "measured_16th_block": measured_16th_block(groove, downbeat_ok),
         "measured_stems_block": measured_stems_block(stems6, timbres),
         "loop_judgement_block": loop_judgement_block(gates, topline_src),
@@ -491,6 +492,17 @@ def build_fills(ref: Path) -> tuple:
         "arrangement": arrangement["sections"] if downbeat_ok else None,
     }
     return fills, digest
+
+
+def listen_cmd(ref: Path) -> str:
+    """listen/ を Finder で開くコマンド。ホーム配下は ~ 省略形（スペースを含むパスだけクォート付き絶対パス）"""
+    p = str((ref / "listen").resolve())
+    if " " in p:
+        return f"open '{p}'"
+    home = str(Path.home())
+    if p.startswith(home + "/"):
+        p = "~" + p[len(home):]
+    return f"open {p}"
 
 
 def analysis_conditions(ref: Path, info: dict | None, basics: dict, groove: dict) -> str:
