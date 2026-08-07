@@ -186,7 +186,8 @@ def instrumentation_section(stems6: dict, arrangement: dict, timbres: dict, down
         cell = (f"<!-- 判i:{marker}:start -->〈呼び名（〜系）と一言〉<!-- 判i:{marker}:end -->"
                 f" — {('・'.join(facts))}")
         lines.append(f"| {STEM_LABELS[stem]} | {cell} | {in_out_text(sections, stem, downbeat_ok)} |")
-    lines += ["", "系統の名前は demucs の分類なので、実楽器と1対1ではない（呼び名は音色の測定値からの推定）。"]
+    lines += ["", "系統は AI のパート分解（demucs）が振り分けた先の名前で、実際にその楽器が"
+                  "鳴っているとは限らない（シンセが piano に入る等）。「中身」の呼び名は音色の実測からの推定。"]
     return "\n".join(lines)
 
 
@@ -411,7 +412,8 @@ def build_fills(ref: Path) -> tuple:
     sw, gsw = gates["swing"], groove.get("swing") or {}
     if sw["ok"]:
         ratio = sw["ratio"]
-        swing_line = f"**{swing_word(ratio)}**（スウィング比 {ratio:.3f} / 0.500がイーブン・0.667が3連）"
+        swing_line = (f"**{swing_word(ratio)}**（スウィング比 {ratio:.3f} — 8分裏を後ろにずらす"
+                      f"のがハネ。0.500=ずらし無し・0.667=3連ノリの強いハネ）")
     else:
         swing_line = "測れなかった（ハットが無く高域が別の音を拾っている。「ハネ無し」とは別）"
 
@@ -432,7 +434,7 @@ def build_fills(ref: Path) -> tuple:
         adopted = topline_src["loop"]["most_likely"]
         n = adopted.removesuffix("bar")
         loop_line = f"**{n}小節**で1周する進行を、曲中ずっと繰り返す" \
-            + ("" if loop_confident(sim, adopted) else "（確信度低め — 他のラグと僅差）")
+            + ("" if loop_confident(sim, adopted) else "（確信度低め — 他のループ長候補との差が小さい）")
     else:
         loop_line = "測れなかった（採用ステムのループ判定が無い）"
 
