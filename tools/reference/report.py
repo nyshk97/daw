@@ -55,10 +55,12 @@ def swing_word(ratio: float) -> str:
 
 
 def quantize_word(max_abs_dev_ms: float) -> str:
+    """閾値は据え置き（★2026-08-03 第1号で仮決め）。文言は「ズレてないのか」が一読で分かる形に
+    （2026-08-07 ユーザーレビュー: 「完全（打ち込み）」だけでは何を言いたいのか通じなかった）"""
     if max_abs_dev_ms <= 10:
-        return "完全（打ち込み）"
+        return "打ち込みか100%クオンタイズ（人の手では出ない精度）"
     if max_abs_dev_ms <= 25:
-        return "甘い（人力 or 意図的なヨレ）"
+        return "人力の揺れ、または意図的なヨレ"
     return "生演奏、またはグリッドがずれている（先にグリッドを疑う）"
 
 
@@ -416,7 +418,7 @@ def build_fills(ref: Path) -> tuple:
     beat_devs = [abs(groove["drums"]["mid"]["dev_ms_by_16th"][i])
                  for i in (0, 4, 8, 12) if groove["drums"]["mid"]["dev_ms_by_16th"][i] is not None]
     if beat_devs:
-        quantize_line = f"{quantize_word(max(beat_devs))}（グリッドからのズレ ±{max(beat_devs):.0f}ms）"
+        quantize_line = f"グリッドからのズレ ±{max(beat_devs):.0f}ms — {quantize_word(max(beat_devs))}"
     else:
         quantize_line = "測れなかった（中域の拍位置に十分なオンセットが無い）"
 
@@ -429,7 +431,8 @@ def build_fills(ref: Path) -> tuple:
         sim = topline_src["loop"]["similarity_by_lag"]
         adopted = topline_src["loop"]["most_likely"]
         n = adopted.removesuffix("bar")
-        loop_line = f"**{n}小節**" + ("" if loop_confident(sim, adopted) else "（確信度低め — 他のラグと僅差）")
+        loop_line = f"**{n}小節**で1周する進行を、曲中ずっと繰り返す" \
+            + ("" if loop_confident(sim, adopted) else "（確信度低め — 他のラグと僅差）")
     else:
         loop_line = "測れなかった（採用ステムのループ判定が無い）"
 
@@ -454,7 +457,7 @@ def build_fills(ref: Path) -> tuple:
         "swing_line": swing_line,
         "quantize_line": quantize_line,
         "loop_line": loop_line,
-        "master_line": f"平均RMS {db(overview['mean_rms_dbfs'])}dBFS / ピーク {db(overview['peak_dbfs'])}dBFS",
+        "master_line": master_line(overview['mean_rms_dbfs'], overview['peak_dbfs']),
         "instrumentation_section": inst_block,
         "harmony_block": harmony_block(gates, topline_src),
         "groove_gate_note": ("\n".join(gate_notes) + "\n") if gate_notes else "",
@@ -499,6 +502,13 @@ def build_fills(ref: Path) -> tuple:
         "arrangement": arrangement["sections"] if downbeat_ok else None,
     }
     return fills, digest
+
+
+def master_line(mean_rms_dbfs: float, peak_dbfs: float) -> str:
+    """基本情報のマスター行。dBFS は読者の未習用語なので、行内で読み方まで示す"""
+    note = "。ピークが0超え＝上限いっぱいまで音圧を上げてある" if peak_dbfs > 0 else ""
+    return (f"平均RMS {db(mean_rms_dbfs)}dBFS / ピーク {db(peak_dbfs)}dBFS"
+            f"（RMS=ならした平均音量・0dBFS=デジタルの上限{note}）")
 
 
 def listen_cmd(ref: Path) -> str:

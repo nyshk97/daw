@@ -76,8 +76,8 @@ ok(report.swing_word(0.52) == "軽くハネる", "swing 0.52は軽くハネる")
 ok(report.swing_word(0.58) == "軽くハネる", "swing 0.58は軽くハネる")
 ok(report.swing_word(0.581) == "はっきりハネる", "swing 0.58超ははっきり")
 
-ok(report.quantize_word(10).startswith("完全"), "quantize 10ms以下は完全")
-ok(report.quantize_word(10.1).startswith("甘い"), "quantize 10ms超は甘い")
+ok(report.quantize_word(10).startswith("打ち込みか100%クオンタイズ"), "quantize 10ms以下は打ち込み判定")
+ok(report.quantize_word(10.1).startswith("人力の揺れ"), "quantize 10ms超は人力判定")
 ok(report.quantize_word(25.1).startswith("生演奏"), "quantize 25ms超は生演奏疑い")
 
 ok(report.separation_word(-20).startswith("使える"), "分離 -20dB以下は使える")
@@ -127,9 +127,13 @@ ok(report.scale_notes(w, "C major")
    == "**C F# G**（ベース実測。この3音で全体の95%。F# はスケール外）",
    "7音未満でもスケール外の音は注記される")
 ok("**軽くハネる**（スウィング比 0.550" in draft, "スウィングの判定語と数値")
-ok("完全（打ち込み）（グリッドからのズレ ±4ms）" in draft, "クオンタイズ判定（mid の拍位置 |−4| が最大）")
-ok("**2小節**" in draft and "確信度低め — 他のラグ" not in draft, "ループ長は断定（マージン0.15）")
-ok("平均RMS -12.0dBFS / ピーク +0.4dBFS" in draft, "マスター行（正のピークは+付き）")
+ok("グリッドからのズレ ±4ms — 打ち込みか100%クオンタイズ（人の手では出ない精度）" in draft,
+   "クオンタイズ判定（mid の拍位置 |−4| が最大）が読み方つきで出る")
+ok("**2小節**で1周する進行を、曲中ずっと繰り返す" in draft and "確信度低め — 他のラグ" not in draft,
+   "ループ長は断定（マージン0.15）で、繰り返しの意味まで書かれる")
+ok("平均RMS -12.0dBFS / ピーク +0.4dBFS（RMS=ならした平均音量・0dBFS=デジタルの上限。"
+   "ピークが0超え＝上限いっぱいまで音圧を上げてある）" in draft,
+   "マスター行（正のピークは+付き・読み方の注釈・0超えの一言つき）")
 ok("2ステムが独立に同じ 2bar を出した" in draft, "コード骨格の信頼度根拠")
 ok("| 2 | **F**（確信度低め） | **G** |" in draft,
    "進行表が畳んだ進行から組まれ、conf が最大-0.2より低いスロットに確信度低めが付く")
