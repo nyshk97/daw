@@ -35,7 +35,7 @@ docs/design/reference-beat.md 「分析レポートの書き方」を参照。
 | BPM | **{{bpm}}**{{bpm_note}} |
 | 拍子 | 4/4 |
 | キー | **{{key_value}}**（確度: {{key_confidence}}） — <!-- 判i:key-lean:start -->〈同じ7音の中で長短どちらに寄って聴こえるか。進行の帰着先から判断〉<!-- 判i:key-lean:end --> |
-| 使う音 | **{{scale_notes}}**。帰ってくる和音は <!-- 判i:home-chord:start -->〈ループが帰着する和音。進行表から判断〉<!-- 判i:home-chord:end --> |
+| 使う音 | {{scale_notes}}。帰ってくる和音は <!-- 判i:home-chord:start -->〈ループが帰着する和音。進行表から判断〉<!-- 判i:home-chord:end --> |
 | ハネ | {{swing_line}} |
 | クオンタイズ | {{quantize_line}} |
 | コードループ | {{loop_line}} |

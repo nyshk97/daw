@@ -93,14 +93,34 @@ def db(v: float) -> str:
     return f"+{v:.1f}" if v > 0 else f"{v:.1f}"
 
 
+MAJOR_STEPS = (0, 2, 4, 5, 7, 9, 11)
+MINOR_STEPS = (0, 2, 3, 5, 7, 8, 10)  # 自然的短音階を比較基準にする（和声・旋律的短音階の変位音はスケール外扱いになる）
+
+
 def scale_notes(pitch_class_weight: list, key_value: str) -> str:
-    """ベースの音名重み上位7音を、キーのルートから時計回りの順で（ピアノロール表記=#）"""
-    root_name = key_value.split(" ")[0].replace("♯", "#").replace("♭", "b")
+    """ベースの音名重み上位7音を、キーのルートから時計回りの順で（ピアノロール表記=#）。
+
+    実測の転記なのでキーのスケール音とは限らない。差分を注記しないと
+    スケール音の一覧に見えて紛らわしい（キー確度「中」の曲で実例あり）。
+    """
+    root_name, mode = key_value.split(" ")
+    root_name = root_name.replace("♯", "#").replace("♭", "b")
     flat_to_sharp = {"Cb": "B", "Db": "C#", "Eb": "D#", "Fb": "E", "Gb": "F#", "Ab": "G#", "Bb": "A#"}
     root_pc = PC_NAMES.index(flat_to_sharp.get(root_name, root_name))
     top7 = sorted(range(12), key=lambda pc: pitch_class_weight[pc], reverse=True)[:7]
     ordered = sorted(top7, key=lambda pc: (pc - root_pc) % 12)
-    return " ".join(PC_NAMES[pc] for pc in ordered)
+    notes = " ".join(PC_NAMES[pc] for pc in ordered)
+
+    scale = {(root_pc + s) % 12 for s in (MAJOR_STEPS if mode == "major" else MINOR_STEPS)}
+    missing = sorted(scale - set(top7), key=lambda pc: (pc - root_pc) % 12)
+    extra = sorted(set(top7) - scale, key=lambda pc: (pc - root_pc) % 12)
+    if missing:  # 上位7音とスケール7音は同数なので、欠けと外は必ず対で出る
+        m = "・".join(PC_NAMES[p] for p in missing)
+        e = "・".join(PC_NAMES[p] for p in extra)
+        note = f"{key_value} のスケールの {m} は踏まず、外の {e} を踏む"
+    else:
+        note = "キーのスケールと一致"
+    return f"**{notes}**（ベース実測の上位7音。{note}）"
 
 
 # ---------------------------------------------------------------- 楽器編成・構成
