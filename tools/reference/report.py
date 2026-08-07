@@ -187,7 +187,9 @@ def instrumentation_section(stems6: dict, arrangement: dict, timbres: dict, down
                 f" — {('・'.join(facts))}")
         lines.append(f"| {STEM_LABELS[stem]} | {cell} | {in_out_text(sections, stem, downbeat_ok)} |")
     lines += ["", "系統は AI のパート分解（demucs）が振り分けた先の名前で、実際にその楽器が"
-                  "鳴っているとは限らない（シンセが piano に入る等）。「中身」の呼び名は音色の実測からの推定。"]
+                  "鳴っているとは限らない（シンセが piano に入る等）。「中身」の呼び名は音色の実測からの推定。",
+              "数値の読み方: 重心=音のエネルギーの真ん中の高さ（低いほど太く暗い）・"
+              "幅=左右の広がり（0=モノ・1=いっぱい）・250ms後=鳴ってから0.25秒後に残っている音量（元の音量比）。"]
     return "\n".join(lines)
 
 
@@ -221,8 +223,9 @@ def harmony_block(gates: dict, topline: dict) -> str:
     by_bar = {}
     for p in slots:
         by_bar.setdefault(p["bar"], {})[p.get("sub", 0)] = p
-    lines = [f"{prog['loop_bars']}小節ループを{prog.get('repetitions_folded', '?')}回ぶん重ねてから推定した結果"
-             f"（採用ステム: {gates['harmony']['source_stem']}。ステム間の一致は付録「ループ長の判定」）。", "",
+    lines = [f"同じ{prog['loop_bars']}小節の繰り返しを{prog.get('repetitions_folded', '?')}回ぶん重ねて"
+             "平均してから推定した（1回ごとの読み間違いに強くなる。どのパートから読んだかは"
+             "付録「ループ長の判定」）。", "",
              "| 小節 | 前半（1-2拍） | 後半（3-4拍） |", "|---|---|---|"]
 
     def cell(p):
@@ -235,7 +238,7 @@ def harmony_block(gates: dict, topline: dict) -> str:
 
     for bar in sorted(by_bar):
         lines.append(f"| {bar} | {cell(by_bar[bar].get(0))} | {cell(by_bar[bar].get(1))} |")
-    lines += ["", "「確信度低め」= 同ループ内の最大confから-0.2より低いスロット。耳での確認（listen/02）に回す。"]
+    lines += ["", "「確信度低め」= 他の和音より推定の自信がはっきり低い枠。耳での確認（listen/02）に回す。"]
     return "\n".join(lines)
 
 
