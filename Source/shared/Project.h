@@ -24,6 +24,10 @@ struct Clip
 
     juce::String fileName;      // プロジェクトフォルダ相対（例: clip-001.wav）
     juce::String name;          // 表示名。取り込みクリップのみ元ファイル名が入る（録音クリップは空=無ラベル）
+    // 採用ループ由来のクリップの出自（ライブラリ相対パス。v14）。**表示専用**で、
+    // アンカー（Project::loopAnchor）のライフサイクルには関与しない — 分割・複製・ペーストで
+    // 構造体コピーにより継承されるが、それで挙動が変わることはない（設計は loop-track plan）
+    juce::String loopSource;
     juce::int64 startSample = 0;
     juce::int64 offsetSamples = 0;  // ソースWAV内の読み出し開始位置
     juce::int64 lengthSamples = 0;  // 再生長（サンプル）
@@ -242,6 +246,57 @@ namespace ProjectKeys
     std::optional<ProjectKey> fromCardText (const juce::String& text);
 }
 
+// 採用ループ（ハーモニーのアンカー。v14）。上モノのループが進行とキーを決め、ベースガチャは
+// これに従う（docs/design/reference-beat.md「音色の調達」）。
+// - **Project 所有でクリップとは独立**: 由来クリップを全部消しても残り、消えるのは Loops タブ
+//   での差し替えか明示解除のみ。同時に持てるのは1本だけ
+// - roots は採用時に looproots.py が1回検出した値の永続化（ベースガチャは保存済みの
+//   この値を読む。契約の真実の源は tools/library/looproots.py の docstring）
+struct LoopAnchor
+{
+    juce::String libraryPath;      // ライブラリ相対パス（出自の表示・差し替え判定用）
+    double bpm = 0.0;              // ループの表記BPM（逆コピーの源）
+    ProjectKey key;                // ループのキー（逆コピーの源）
+    int loopBars = 0;              // ループ小節数（4/4）
+    int slotsPerBar = 0;           // 1小節あたりのハーモニースロット数（1/2/4/8/16）
+    std::vector<int> roots;        // ルート列 0..11。長さ = loopBars × slotsPerBar
+    std::vector<float> confidence; // スロット別の検出信頼度 0..1（roots と同長）
+    bool degraded = false;         // 低信頼でトニック連打に退化した契約か
+
+    // 契約（looproots.py）と同じ規則。読込時の検証と、書き込み側の事故防止の両方で使う
+    bool isValid() const
+    {
+        const bool slotsOk = slotsPerBar == 1 || slotsPerBar == 2 || slotsPerBar == 4
+                          || slotsPerBar == 8 || slotsPerBar == 16;
+        // BPM は bass.py の実効 BPM と同じ 30..300（NaN/inf は範囲比較が false になり弾かれる）
+        if (! slotsOk || loopBars < 1 || ! (bpm >= 30.0 && bpm <= 300.0))
+            return false;
+        // アンカー自身のキーも契約どおりに（root 12 等を save が書き込むと、次回 load で
+        // アンカーごと消える「時限破損」になる。mode は enum 外の値のキャスト混入に対する防御）
+        if (key.root < 0 || key.root > 11
+            || (key.mode != KeyMode::major && key.mode != KeyMode::minor))
+            return false;
+        // ライブラリ**相対**パスの契約（index.json と同じ）。空・絶対パス・.. 上り は不正。
+        // ".." は**パス要素として**のみ拒否する（"foo..bar.wav" のような正常なファイル名は通す）
+        if (libraryPath.isEmpty() || libraryPath.startsWithChar ('/'))
+            return false;
+        for (const auto& segment : juce::StringArray::fromTokens (libraryPath, "/", ""))
+            if (segment == "..")
+                return false;
+        // 長さ比較は size_t で行う（int の loopBars × slotsPerBar は巨大値で符号付きオーバーフロー）
+        if (roots.size() != (size_t) loopBars * (size_t) slotsPerBar
+            || confidence.size() != roots.size())
+            return false;
+        for (int r : roots)
+            if (r < 0 || r > 11)
+                return false;
+        for (float c : confidence)
+            if (! (c >= 0.0f && c <= 1.0f))
+                return false;
+        return true;
+    }
+};
+
 // MIDIトラックの音源種別。gm = macOS内蔵GM音源（DLSMusicDevice）/ sample = 外部ワンショット
 enum class InstrumentKind { gm, sample };
 
@@ -295,12 +350,15 @@ public:
     // v11: オーディオリージョンのフェード（clips[].fadeInSamples / fadeOutSamples。欠損＝0）/
     // v12: 曲末フェードアウト（fadeOut.start / fadeOut.end。16分音符単位・欠損＝未設定）/
     // v13: キー（key.root 0..11 / key.mode major|minor。欠損＝未設定。旧LaLaがキー付き
-    //      projectを開いて保存するとキーを黙って消すため、追加時に版を上げている）
-    static constexpr int currentVersion = 13;
+    //      projectを開いて保存するとキーを黙って消すため、追加時に版を上げている）/
+    // v14: 採用ループのアンカー（loopAnchor。欠損＝未採用）とクリップの出自（clips[].loopSource。
+    //      欠損＝ループ由来でない）。旧LaLaが開いて保存するとアンカーが黙って消えるため版を上げる
+    static constexpr int currentVersion = 14;
 
     juce::File directory;
     double bpm = 120.0;
     std::optional<ProjectKey> key; // 未設定 = nullopt（キーを決めていない曲を壊さない）
+    std::optional<LoopAnchor> loopAnchor; // 採用ループ（v14）。未採用 = nullopt
     double sampleRate = 0.0; // 0 = 未確定（最初の録音時にデバイスレートで確定）
     juce::String memo;       // プロジェクトごとの自由記述メモ（v7。旧形式は空文字）
     std::vector<Track> tracks;

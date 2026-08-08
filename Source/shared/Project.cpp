@@ -399,6 +399,30 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
         root->setProperty ("key", juce::var (keyObj));
     }
 
+    // 採用ループのアンカー（v14）。未採用はJSONを汚さない。
+    // 不正な値は書き込まない（読込側の検証と対にして、壊れたアンカーを永続化の外で殺す）
+    if (loopAnchor.has_value() && loopAnchor->isValid())
+    {
+        auto* anchorObj = new juce::DynamicObject();
+        anchorObj->setProperty ("libraryPath", loopAnchor->libraryPath);
+        anchorObj->setProperty ("bpm", loopAnchor->bpm);
+        auto* anchorKey = new juce::DynamicObject();
+        anchorKey->setProperty ("root", loopAnchor->key.root);
+        anchorKey->setProperty ("mode", ProjectKeys::modeName (loopAnchor->key.mode));
+        anchorObj->setProperty ("key", juce::var (anchorKey));
+        anchorObj->setProperty ("loopBars", loopAnchor->loopBars);
+        anchorObj->setProperty ("slotsPerBar", loopAnchor->slotsPerBar);
+        juce::Array<juce::var> rootsArray, confArray;
+        for (int r : loopAnchor->roots)
+            rootsArray.add (r);
+        for (float c : loopAnchor->confidence)
+            confArray.add ((double) c);
+        anchorObj->setProperty ("roots", rootsArray);
+        anchorObj->setProperty ("confidence", confArray);
+        anchorObj->setProperty ("degraded", loopAnchor->degraded);
+        root->setProperty ("loopAnchor", juce::var (anchorObj));
+    }
+
     juce::Array<juce::var> tracksArray;
     for (auto& track : tracks)
     {
@@ -435,6 +459,8 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
                 clipObj->setProperty ("file", clip.fileName);
                 if (clip.name.isNotEmpty()) // 表示名は取り込みクリップのみ（録音クリップのJSONを汚さない）
                     clipObj->setProperty ("name", clip.name);
+                if (clip.loopSource.isNotEmpty()) // ループ由来クリップのみ（v14。出自表示専用）
+                    clipObj->setProperty ("loopSource", clip.loopSource);
                 clipObj->setProperty ("startSample", clip.startSample);
                 clipObj->setProperty ("offsetSamples", clip.offsetSamples);
                 clipObj->setProperty ("lengthSamples", clip.lengthSamples);
@@ -608,6 +634,85 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
             warnings.add (jp (u8"キーの値が不正なため未設定として読み込みました: root=")
                           + juce::String (keyRoot) + " mode=" + modeText);
     }
+
+    // 採用ループのアンカー（v13以前は無い → 未採用）。壊れた値は未採用化して警告する
+    // — キーと同じ「既存データを救う側」の方針。生成入力としての厳密検証（即エラー）は
+    // bass.py 側の契約で行われるので、ここで捨てておけば壊れた値が生成に届くことはない。
+    // オブジェクトですらない値（"broken" 等）も「欠損」と区別して警告する
+    if (const auto anchorVar = parsed.getProperty ("loopAnchor", {});
+        ! anchorVar.isVoid() && ! anchorVar.isObject())
+        warnings.add (jp (u8"採用ループの値が不正なため未採用として読み込みました: ")
+                      + anchorVar.toString());
+    if (const auto anchorVar = parsed.getProperty ("loopAnchor", {}); anchorVar.isObject())
+    {
+        // 整数フィールドは**型も**契約どおりに要求する（2.0 のような浮動小数を黙って切り捨てて
+        // 正常値に化けさせない — 契約は looproots.py の「0..11 の整数」）
+        const auto strictInt = [] (const juce::var& v, int& out) -> bool
+        {
+            if (! v.isInt() && ! v.isInt64())
+                return false;
+            // 64bit値は int の範囲確認をしてから落とす（4294967296 が環境依存で 0 へ化けるのを防ぐ）
+            const auto raw = (juce::int64) v;
+            if (raw < std::numeric_limits<int>::min() || raw > std::numeric_limits<int>::max())
+                return false;
+            out = (int) raw;
+            return true;
+        };
+
+        LoopAnchor anchor;
+        bool typesOk = true;
+
+        // 文字列・数値・boolも型を要求する（"85" の bpm・数値の libraryPath 等が
+        // toString/キャストで正常値に化けるのを防ぐ）
+        const auto libVar = anchorVar.getProperty ("libraryPath", {});
+        typesOk = libVar.isString() && typesOk;
+        anchor.libraryPath = libVar.toString();
+        const auto bpmVar = anchorVar.getProperty ("bpm", {});
+        typesOk = (bpmVar.isDouble() || bpmVar.isInt() || bpmVar.isInt64()) && typesOk;
+        anchor.bpm = (double) bpmVar;
+        typesOk = strictInt (anchorVar.getProperty ("loopBars", {}), anchor.loopBars) && typesOk;
+        typesOk = strictInt (anchorVar.getProperty ("slotsPerBar", {}), anchor.slotsPerBar) && typesOk;
+        const auto degVar = anchorVar.getProperty ("degraded", {});
+        typesOk = degVar.isBool() && typesOk;
+        anchor.degraded = (bool) degVar;
+
+        bool keyOk = false;
+        if (const auto akVar = anchorVar.getProperty ("key", {}); akVar.isObject())
+        {
+            int akRoot = -1;
+            auto akMode = KeyMode::major;
+            if (strictInt (akVar.getProperty ("root", {}), akRoot) // 11.9 を 11 に化けさせない
+                && akRoot >= 0 && akRoot < 12
+                && ProjectKeys::modeFromName (akVar.getProperty ("mode", "").toString(), akMode))
+            {
+                anchor.key = ProjectKey { akRoot, akMode };
+                keyOk = true;
+            }
+        }
+        if (auto* rootsArray = anchorVar.getProperty ("roots", {}).getArray())
+        {
+            for (auto& r : *rootsArray)
+            {
+                int value = -1;
+                typesOk = strictInt (r, value) && typesOk;
+                anchor.roots.push_back (value);
+            }
+        }
+        if (auto* confArray = anchorVar.getProperty ("confidence", {}).getArray())
+        {
+            for (auto& c : *confArray)
+            {
+                typesOk = (c.isDouble() || c.isInt() || c.isInt64()) && typesOk;
+                anchor.confidence.push_back ((float) (double) c);
+            }
+        }
+
+        if (keyOk && typesOk && anchor.isValid())
+            project->loopAnchor = std::move (anchor);
+        else
+            warnings.add (jp (u8"採用ループの値が不正なため未採用として読み込みました: ")
+                          + anchor.libraryPath);
+    }
     project->nextId = (juce::uint64) juce::jmax ((juce::int64) 1, (juce::int64) parsed.getProperty ("nextId", 1));
 
     // 同一WAVを参照する複数クリップ（分割・複製後）が別々の全量バッファを持たないよう、
@@ -655,6 +760,7 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
                         Clip clip;
                         clip.fileName = clipVar.getProperty ("file", "").toString();
                         clip.name = clipVar.getProperty ("name", "").toString(); // v5以前は無い（空=無ラベル）
+                        clip.loopSource = clipVar.getProperty ("loopSource", "").toString(); // v13以前は無い（空=ループ由来でない）
                         clip.startSample = (juce::int64) clipVar.getProperty ("startSample", 0);
                         clip.muted = (bool) clipVar.getProperty ("muted", false);
                         // v8以前は無い（欠損＝ループなし）。上限は展開量の暴走を防ぐ安全弁

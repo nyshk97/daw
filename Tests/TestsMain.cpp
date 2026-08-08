@@ -6189,6 +6189,259 @@ void testSongFadeRoundtrip()
 }
 
 // ---- 曲末フェード: RT再生・境界分割・BPM/SR追従・バウンス一致 ----
+// ---- 採用ループのアンカー（v14）の保存・再読込・移行・不正値 ----
+void testLoopAnchorRoundtrip()
+{
+    beginTest ("loop anchor roundtrip, v13 migration and invalid values");
+    const auto dir = makeTempDir();
+
+    juce::String error;
+    auto project = Project::createNew (dir.getChildFile ("proj"), error);
+    expect (project != nullptr, "createNewできること");
+    if (project == nullptr)
+        { dir.deleteRecursively(); return; }
+
+    expect (! project->loopAnchor.has_value(), "新規プロジェクトはアンカー未採用");
+
+    // 有効なアンカー＋出自付きクリップを保存
+    LoopAnchor anchor;
+    anchor.libraryPath = "loops/PackA/guitar_Bm_85bpm.wav";
+    anchor.bpm = 85.0;
+    anchor.key = ProjectKey { 11, KeyMode::minor };
+    anchor.loopBars = 2;
+    anchor.slotsPerBar = 2;
+    anchor.roots = { 2, 2, 9, 6 };
+    anchor.confidence = { 0.9f, 0.85f, 0.8f, 0.88f };
+    anchor.degraded = false;
+    expect (anchor.isValid(), "有効なアンカーがisValidを通ること");
+    project->loopAnchor = anchor;
+
+    constexpr int wavLength = 4410;
+    expect (writeTestWav (project->directory.getChildFile ("clip-001.wav"), wavLength), "テストWAVを書けること");
+    Track track;
+    track.type = TrackType::audio;
+    track.name = "Loops";
+    Clip clip;
+    clip.fileName = "clip-001.wav";
+    clip.loopSource = anchor.libraryPath;
+    clip.audio = Project::loadWav (project->directory.getChildFile ("clip-001.wav"));
+    clip.lengthSamples = wavLength;
+    track.clips.push_back (clip);
+    project->tracks.push_back (std::move (track));
+
+    expect (project->save (error), "保存できること");
+    const auto saved = juce::JSON::parse (project->directory.getChildFile ("project.json").loadFileAsString());
+    expect ((int) saved.getProperty ("version", 0) == 14, "v14で保存されること");
+    expect (saved.getProperty ("loopAnchor", {}).isObject(), "loopAnchorが保存されること");
+
+    juce::StringArray warnings;
+    auto reloaded = Project::load (project->directory, warnings, error);
+    expect (reloaded != nullptr && reloaded->loopAnchor.has_value(), "再読込でアンカーが復元されること");
+    if (reloaded != nullptr && reloaded->loopAnchor.has_value())
+    {
+        const auto& a = *reloaded->loopAnchor;
+        expect (a.libraryPath == anchor.libraryPath && a.bpm == 85.0
+                    && a.key == anchor.key && a.loopBars == 2 && a.slotsPerBar == 2
+                    && a.roots == anchor.roots && a.degraded == false,
+                "アンカーの全フィールドが往復すること");
+        expect (a.confidence.size() == 4 && std::abs (a.confidence[0] - 0.9f) < 1e-4f,
+                "スロット別信頼度が往復すること");
+    }
+    // createNew は既定の「トラック 1」を作るので、クリップを載せたのは末尾のトラック
+    expect (reloaded != nullptr && ! reloaded->tracks.empty() && ! reloaded->tracks.back().clips.empty()
+                && reloaded->tracks.back().clips[0].loopSource == anchor.libraryPath,
+            "クリップの出自（loopSource）が往復すること");
+
+    // v13（loopAnchorキーなし）は未採用として読む
+    {
+        auto legacy = juce::JSON::parse (project->directory.getChildFile ("project.json").loadFileAsString());
+        if (auto* obj = legacy.getDynamicObject())
+        {
+            obj->removeProperty ("loopAnchor");
+            obj->setProperty ("version", 13);
+            project->directory.getChildFile ("project.json").replaceWithText (juce::JSON::toString (legacy));
+        }
+        auto old = Project::load (project->directory, warnings, error);
+        expect (old != nullptr && ! old->loopAnchor.has_value(), "v13は未採用として読むこと");
+    }
+
+    // 壊れたアンカー（rootsの長さ不一致）は未採用へ落として警告する
+    {
+        auto bad = juce::JSON::parse (project->directory.getChildFile ("project.json").loadFileAsString());
+        if (auto* obj = bad.getDynamicObject())
+        {
+            auto* anchorObj = new juce::DynamicObject();
+            anchorObj->setProperty ("libraryPath", "loops/x.wav");
+            anchorObj->setProperty ("bpm", 85.0);
+            auto* keyObj = new juce::DynamicObject();
+            keyObj->setProperty ("root", 11);
+            keyObj->setProperty ("mode", "minor");
+            anchorObj->setProperty ("key", juce::var (keyObj));
+            anchorObj->setProperty ("loopBars", 2);
+            anchorObj->setProperty ("slotsPerBar", 2);
+            juce::Array<juce::var> shortRoots; // 長さ3（4必須）
+            shortRoots.add (2); shortRoots.add (2); shortRoots.add (9);
+            anchorObj->setProperty ("roots", shortRoots);
+            anchorObj->setProperty ("confidence", shortRoots);
+            obj->setProperty ("loopAnchor", juce::var (anchorObj));
+            project->directory.getChildFile ("project.json").replaceWithText (juce::JSON::toString (bad));
+        }
+        warnings.clear();
+        auto broken = Project::load (project->directory, warnings, error);
+        expect (broken != nullptr && ! broken->loopAnchor.has_value(), "壊れたアンカーは未採用へ落とすこと");
+        expect (! warnings.isEmpty(), "壊れたアンカーは警告されること");
+    }
+
+    // 型違いは切り捨て・暗黙変換せず未採用へ落とす（strict契約: string/number/bool/整数を型で要求）
+    {
+        const auto writeAnchor = [&] (const std::function<void (juce::DynamicObject&)>& mutate)
+        {
+            auto base = juce::JSON::parse (project->directory.getChildFile ("project.json").loadFileAsString());
+            auto* obj = base.getDynamicObject();
+            if (obj == nullptr)
+                return;
+            auto* anchorObj = new juce::DynamicObject();
+            anchorObj->setProperty ("libraryPath", "loops/x.wav");
+            anchorObj->setProperty ("bpm", 85.0);
+            auto* keyObj = new juce::DynamicObject();
+            keyObj->setProperty ("root", 11);
+            keyObj->setProperty ("mode", "minor");
+            anchorObj->setProperty ("key", juce::var (keyObj));
+            anchorObj->setProperty ("loopBars", 2);
+            anchorObj->setProperty ("slotsPerBar", 2);
+            juce::Array<juce::var> roots4;
+            roots4.add (2); roots4.add (2); roots4.add (9); roots4.add (6);
+            anchorObj->setProperty ("roots", roots4);
+            juce::Array<juce::var> conf4;
+            conf4.add (0.9); conf4.add (0.9); conf4.add (0.9); conf4.add (0.9);
+            anchorObj->setProperty ("confidence", conf4);
+            anchorObj->setProperty ("degraded", false); // 必須フィールド（欠損も型違い扱いで拒否される）
+            mutate (*anchorObj);
+            obj->setProperty ("loopAnchor", juce::var (anchorObj));
+            project->directory.getChildFile ("project.json").replaceWithText (juce::JSON::toString (base));
+        };
+        const auto expectRejected = [&] (const char* label)
+        {
+            juce::StringArray typeWarnings;
+            auto p = Project::load (project->directory, typeWarnings, error);
+            expect (p != nullptr && ! p->loopAnchor.has_value() && ! typeWarnings.isEmpty(), label);
+        };
+
+        writeAnchor ([] (juce::DynamicObject& a) { a.setProperty ("loopBars", 2.0); });
+        expectRejected ("浮動小数の loopBars は未採用（暗黙の切り捨て禁止）");
+        writeAnchor ([] (juce::DynamicObject& a)
+        {
+            auto* k = new juce::DynamicObject();
+            k->setProperty ("root", 11.9);
+            k->setProperty ("mode", "minor");
+            a.setProperty ("key", juce::var (k));
+        });
+        expectRejected ("浮動小数の key.root は未採用（11.9 を 11 に化けさせない）");
+        writeAnchor ([] (juce::DynamicObject& a) { a.setProperty ("libraryPath", 85.0); });
+        expectRejected ("数値の libraryPath は未採用");
+        writeAnchor ([] (juce::DynamicObject& a) { a.setProperty ("bpm", "85"); });
+        expectRejected ("文字列の bpm は未採用");
+        writeAnchor ([] (juce::DynamicObject& a) { a.setProperty ("degraded", "no"); });
+        expectRejected ("文字列の degraded は未採用");
+        writeAnchor ([] (juce::DynamicObject& a)
+        {
+            auto* k = new juce::DynamicObject();
+            k->setProperty ("root", (juce::int64) 4294967296); // int範囲外の64bit値
+            k->setProperty ("mode", "minor");
+            a.setProperty ("key", juce::var (k));
+        });
+        expectRejected ("int範囲外の64bit root は未採用（切り詰めで 0 に化けさせない）");
+
+        // loopAnchor 自体がオブジェクトでない値も「欠損」と区別して警告される
+        {
+            auto base = juce::JSON::parse (project->directory.getChildFile ("project.json").loadFileAsString());
+            if (auto* obj = base.getDynamicObject())
+            {
+                obj->setProperty ("loopAnchor", "broken");
+                project->directory.getChildFile ("project.json").replaceWithText (juce::JSON::toString (base));
+            }
+            expectRejected ("オブジェクトでない loopAnchor は未採用＋警告");
+        }
+
+        // 対照: 変異なし（契約どおり）なら採用される — 検証がきつすぎて正常系を殺していないこと
+        writeAnchor ([] (juce::DynamicObject&) {});
+        juce::StringArray okWarnings;
+        auto ok = Project::load (project->directory, okWarnings, error);
+        expect (ok != nullptr && ok->loopAnchor.has_value(), "契約どおりのJSONは採用されること");
+    }
+
+    // isValid の境界（契約 looproots.py と同じ規則）
+    {
+        auto v = anchor;
+        v.slotsPerBar = 3;
+        expect (! v.isValid(), "slotsPerBar=3は不正");
+        v = anchor; v.roots[0] = 12;
+        expect (! v.isValid(), "root=12は不正");
+        v = anchor; v.confidence[0] = 1.5f;
+        expect (! v.isValid(), "confidence>1は不正");
+        v = anchor; v.loopBars = 0;
+        expect (! v.isValid(), "loopBars=0は不正");
+        v = anchor; v.bpm = 500.0;
+        expect (! v.isValid(), "BPM範囲外(30..300)は不正");
+        v = anchor; v.libraryPath = "";
+        expect (! v.isValid(), "空のlibraryPathは不正");
+        v = anchor; v.libraryPath = "/Users/x/loops/a.wav";
+        expect (! v.isValid(), "絶対パスは不正（ライブラリ相対の契約）");
+        v = anchor; v.libraryPath = "loops/../secret.wav";
+        expect (! v.isValid(), "..を含むパスは不正");
+        v = anchor; v.libraryPath = "loops/foo..bar.wav";
+        expect (v.isValid(), "パス要素でない .. を含む正常なファイル名は通ること");
+        v = anchor; v.loopBars = 1 << 29; v.slotsPerBar = 16; // int積は溢れる組み合わせ
+        expect (! v.isValid(), "巨大な loopBars×slotsPerBar でもオーバーフローせず不正判定できること");
+        v = anchor; v.key.root = 12;
+        expect (! v.isValid(), "アンカーのkey root範囲外は不正（saveが書くと次回loadで消える時限破損）");
+        v = anchor; v.key.mode = (KeyMode) 7;
+        expect (! v.isValid(), "enum外のkey modeは不正");
+        // 不正なアンカーはそもそもJSONに書かれない
+        auto p2 = Project::createNew (dir.getChildFile ("proj2"), error);
+        expect (p2 != nullptr, "proj2をcreateNewできること");
+        if (p2 != nullptr)
+        {
+            v = anchor; v.roots.pop_back();
+            p2->loopAnchor = v;
+            expect (p2->save (error), "保存自体は成功すること");
+            const auto saved2 = juce::JSON::parse (p2->directory.getChildFile ("project.json").loadFileAsString());
+            expect (! saved2.getProperty ("loopAnchor", {}).isObject(), "不正なアンカーは書き込まれないこと");
+        }
+    }
+
+    // アンカーは通常 undo に載る（明示解除は tracks に触らないので、State に無いと⌘Zが取り残す）
+    {
+        UndoStack undoStack;
+        Project p;
+        p.loopAnchor = anchor;
+        undoStack.begin (p);   // 解除の直前
+        p.loopAnchor.reset();  // 明示解除
+        UndoStack::EditKind kind;
+        expect (undoStack.undo (p, kind) && p.loopAnchor.has_value()
+                    && p.loopAnchor->libraryPath == anchor.libraryPath
+                    && p.loopAnchor->roots == anchor.roots,
+                "解除は⌘Z 1回でアンカーが戻ること");
+        expect (undoStack.redo (p, kind) && ! p.loopAnchor.has_value(), "redoで解除し直せること");
+
+        // pushCommitted（ガチャ「残す」）経路: before はセッション baseline の値。
+        // ループ採用で仮配置中に BPM/キー/アンカーが変わっていても、⌘Z で仮配置前へ戻ること
+        UndoStack stack2;
+        Project q;
+        q.bpm = 93.0; // 仮配置前（baseline）
+        stack2.pushCommitted (std::vector<Track> {}, q,
+                              /*beforeBpm*/ 93.0, /*beforeKey*/ std::nullopt, /*beforeAnchor*/ std::nullopt);
+        q.bpm = 85.0;          // 逆コピー後の値（「残す」時点の現在値）
+        q.loopAnchor = anchor; // 採用済みアンカー
+        expect (stack2.undo (q, kind) && ! q.loopAnchor.has_value() && q.bpm == 93.0,
+                "pushCommitted の⌘Zで仮配置前の BPM・アンカー無しへ戻ること");
+        expect (stack2.redo (q, kind) && q.loopAnchor.has_value() && q.bpm == 85.0,
+                "redo で採用状態（新BPM＋アンカー）へ戻れること");
+    }
+
+    dir.deleteRecursively();
+}
+
 void testEngineSongFade()
 {
     beginTest ("engine applies song fade");
@@ -7678,6 +7931,96 @@ void testGachaSessionPreview()
         expect (! empty.keep (*project, undo), "仮配置なしのkeepはfalse");
     }
 
+    // --- セッショントランザクション: 仮配置中の BPM/キー/アンカー変更（ループ採用の逆コピー相当）が
+    //     キャンセルで baseline へ戻り、keep 後の ⌘Z 1回でも仮配置前へ全復元される ---
+    {
+        LoopAnchor adopted;
+        adopted.libraryPath = "loops/P/x_Bm_85bpm.wav";
+        adopted.bpm = 85.0;
+        adopted.key = ProjectKey { 11, KeyMode::minor };
+        adopted.loopBars = 2;
+        adopted.slotsPerBar = 2;
+        adopted.roots = { 2, 2, 9, 6 };
+        adopted.confidence = { 0.9f, 0.9f, 0.9f, 0.9f };
+
+        const auto setBaselineValues = [&]
+        {
+            project->tracks.clear();
+            project->bpm = 93.0;
+            project->key = ProjectKey { 9, KeyMode::minor };
+            project->loopAnchor.reset();
+        };
+        const auto adoptLoopValues = [&]
+        {
+            project->bpm = 85.0;
+            project->key = adopted.key;
+            project->loopAnchor = adopted;
+        };
+        const auto atBaseline = [&]
+        {
+            return project->bpm == 93.0 && project->key == ProjectKey { 9, KeyMode::minor }
+                && ! project->loopAnchor.has_value();
+        };
+
+        // cancelPreview（全撤去）で値が戻る
+        setBaselineValues();
+        GachaSession session;
+        expect (session.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), -1, 0), "仮配置");
+        adoptLoopValues();
+        expect (session.cancelPreview (*project), "キャンセル");
+        expect (atBaseline(), "cancelPreview で BPM/キー/アンカーが baseline へ戻る");
+
+        // cancelPart で最後の仮配置が消えたときも戻る
+        setBaselineValues();
+        GachaSession session2;
+        expect (session2.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), -1, 0), "仮配置2");
+        adoptLoopValues();
+        expect (session2.cancelPart (GachaSession::Part::drums, *project), "パーツ撤去");
+        expect (atBaseline(), "最後の cancelPart でも baseline へ戻る");
+
+        // keep → ⌘Z 1回で仮配置前へ全復元 → redo で採用状態へ
+        setBaselineValues();
+        GachaSession session3;
+        UndoStack undo3;
+        expect (session3.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), -1, 0), "仮配置3");
+        adoptLoopValues();
+        expect (session3.keep (*project, undo3), "keep");
+        expect (project->bpm == 85.0 && project->loopAnchor.has_value(), "keep 直後は採用状態のまま");
+        auto kind3 = UndoStack::EditKind::structure;
+        expect (undo3.undo (*project, kind3), "undoできる");
+        expect (atBaseline() && project->tracks.empty(), "⌘Z 1回で仮配置前（トラック・BPM・キー・アンカー）へ全復元");
+        expect (undo3.redo (*project, kind3), "redoできる");
+        expect (project->bpm == 85.0 && project->loopAnchor.has_value()
+                    && ! project->tracks.empty(),
+                "redoで採用状態（候補＋新BPM＋アンカー）へ戻る");
+
+        // 失敗経路でも候補値を取り残さない:
+        // (a) 対象トラック消失（入口の撤去漏れ）で差し替えに失敗してセッションが畳まれるとき
+        setBaselineValues();
+        GachaSession session4;
+        expect (session4.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), -1, 0), "仮配置4");
+        adoptLoopValues();
+        project->tracks.clear(); // 外部でトラックが消えた想定
+        expect (! session4.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), -1, 0),
+                "トラック消失時の差し替えは失敗する");
+        expect (atBaseline(), "失敗でセッションが畳まれたら BPM/キー/アンカーは baseline へ戻る");
+
+        // (b) keep 対象が1つも実在しないとき（キャンセル相当）
+        setBaselineValues();
+        GachaSession session5;
+        UndoStack undo5;
+        expect (session5.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), -1, 0), "仮配置5");
+        adoptLoopValues();
+        project->tracks.clear();
+        expect (! session5.keep (*project, undo5), "実在しない keep は false");
+        expect (atBaseline(), "keep 不成立でも BPM/キー/アンカーは baseline へ戻る");
+
+        project->tracks.clear();
+        project->bpm = 120.0;
+        project->key.reset();
+        project->loopAnchor.reset();
+    }
+
     // --- begin フック（willBegin）で撤去 → その後の undo で仮リージョンが復活しない ---
     {
         UndoStack undo;
@@ -8238,7 +8581,7 @@ void testProjectKey()
     expect (project.save (error), "未設定のまま保存できる");
     {
         const auto parsed = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
-        expect ((int) parsed.getProperty ("version", 0) == 13, "currentVersion は 13");
+        expect ((int) parsed.getProperty ("version", 0) == 14, "currentVersion は 14");
         expect (! parsed.hasProperty ("key"), "未設定は JSON を汚さない");
         auto reloaded = Project::load (dir, warnings, error);
         expect (reloaded != nullptr && ! reloaded->key.has_value(), "未設定のまま往復する");
@@ -8462,6 +8805,7 @@ int main()
     testEngineBounceStereoConsistency();
     testSongFadeGainCurve();
     testSongFadeRoundtrip();
+    testLoopAnchorRoundtrip();
     testEngineSongFade();
     testBounceSongFade();
     testAudioImporter();

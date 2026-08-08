@@ -231,6 +231,9 @@ private:
     // パーツ単位の撤去（カード変更・候補クリア時。他パーツの仮配置は維持する）
     void cancelGachaPart (GachaSession::Part part);
     void afterGachaCancel (bool trackRemoved); // 撤去後のUI・スナップショット同期（共通の尻尾）
+    // GachaSession が BPM・キー・アンカーを baseline へ戻した可能性のある箇所の共通後処理
+    // （キャンセル・差し替え失敗・keep不成立）。transport / LCD / キー表示を project へ追従させる
+    void syncTransportAfterGachaRestore();
     void cleanupUrlTempDir();                             // URL取り込みの一時ディレクトリを畳む
     void finishImport (const AudioImporter::Result& result); // 成功時: リネーム→クリップ/トラック追加→保存
     void finishInstrumentImport (const AudioImporter::Result& result); // 同上（サンプル音源の割り当て）

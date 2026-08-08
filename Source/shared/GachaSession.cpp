@@ -208,6 +208,9 @@ bool GachaSession::previewCandidate (Part part, Project& project, const MidiImpo
         if (! baselineValid)
         {
             beforeTracks = project.tracks;
+            beforeBpm = project.bpm;
+            beforeKey = project.key;
+            beforeAnchor = project.loopAnchor;
             baselineValid = true;
         }
         preview.startPpq = juce::jmax ((juce::int64) 0, startPpq);
@@ -252,10 +255,15 @@ bool GachaSession::previewCandidate (Part part, Project& project, const MidiImpo
     const int trackIndex = findTrack (project, preview.trackId);
     if (trackIndex < 0)
     {
-        // 対象トラックが消えている＝入口の撤去漏れ。このパーツの状態だけ畳んで失敗を返す（触らない）
+        // 対象トラックが消えている＝入口の撤去漏れ。このパーツの状態だけ畳んで失敗を返す（触らない）。
+        // セッションが終わるなら BPM・キー・アンカーは baseline へ戻す（失敗経路でも
+        // 候補値を取り残さない — 通常のキャンセルと同じ規則）
         resetPart (part);
         if (! hasPreview())
+        {
+            restoreProjectValues (project);
             resetSession();
+        }
         return false;
     }
     auto& regions = project.tracks[(size_t) trackIndex].midiRegions;
@@ -322,6 +330,24 @@ void GachaSession::resetSession()
 {
     baselineValid = false;
     beforeTracks.clear();
+    beforeBpm = 120.0;
+    beforeKey.reset();
+    beforeAnchor.reset();
+}
+
+bool GachaSession::restoreProjectValues (Project& project)
+{
+    if (! baselineValid)
+        return false;
+    const bool changed = ! juce::approximatelyEqual (project.bpm, beforeBpm)
+                      || project.key != beforeKey
+                      || project.loopAnchor.has_value() != beforeAnchor.has_value()
+                      || (project.loopAnchor.has_value() && beforeAnchor.has_value()
+                          && project.loopAnchor->libraryPath != beforeAnchor->libraryPath);
+    project.bpm = beforeBpm;
+    project.key = beforeKey;
+    project.loopAnchor = beforeAnchor;
+    return changed;
 }
 
 bool GachaSession::cancelPart (Part part, Project& project)
@@ -331,7 +357,10 @@ bool GachaSession::cancelPart (Part part, Project& project)
     const bool removed = removePartObjects (part, project);
     resetPart (part);
     if (! hasPreview())
+    {
+        restoreProjectValues (project); // BPM・キー・アンカーを仮配置前へ（ループ採用の巻き戻し）
         resetSession(); // 最後の仮配置が消えた → baseline を破棄
+    }
     return removed;
 }
 
@@ -347,6 +376,7 @@ bool GachaSession::cancelPreview (Project& project)
             resetPart (part);
         }
     }
+    removed = restoreProjectValues (project) || removed;
     resetSession();
     return removed;
 }
@@ -373,11 +403,14 @@ bool GachaSession::keep (Project& project, UndoStack& undoStack)
     {
         for (int i = 0; i < numParts; ++i)
             resetPart ((Part) i);
+        restoreProjectValues (project); // 確定するものが無い＝キャンセル相当。候補値を取り残さない
         resetSession();
         return false;
     }
 
-    undoStack.pushCommitted (std::move (beforeTracks), project);
+    // before は baseline の値（現在値ではない）。ループ採用で BPM/キー/アンカーが
+    // 仮配置中に変わっていても、⌘Z 1回で仮配置前へ丸ごと戻る
+    undoStack.pushCommitted (std::move (beforeTracks), project, beforeBpm, beforeKey, beforeAnchor);
     for (int i = 0; i < numParts; ++i)
         resetPart ((Part) i);
     resetSession();

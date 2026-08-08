@@ -165,6 +165,17 @@ private:
     std::array<PartPreview, numParts> previews;
     std::array<PreviewSource, numParts> sources;
 
-    bool baselineValid = false;      // beforeTracks が有効（どれかのパーツが仮配置中）
+    // セッション単位のトランザクション（「残す」＋⌘Z 1回＝全復元の土台）。
+    // tracks だけでなく BPM・キー・アンカーも保存する — ループ採用（逆コピー）が仮配置中に
+    // これらを書き換えるため。Project だけ戻しても transport が古い値を持ち直す事故は
+    // 呼び出し側（MainComponent）が復元後に transport / LCD を同期して防ぐ
+    bool baselineValid = false;      // 以下の before* が有効（どれかのパーツが仮配置中）
     std::vector<Track> beforeTracks; // セッション開始時点の tracks（「残す」の before）
+    double beforeBpm = 120.0;
+    std::optional<ProjectKey> beforeKey;
+    std::optional<LoopAnchor> beforeAnchor;
+
+    // キャンセル系で BPM・キー・アンカーを baseline へ戻す（tracks の撤去とは別枠。
+    // 復元したら true — 呼び出し側が transport / LCD の同期を行う合図）
+    bool restoreProjectValues (Project& project);
 };

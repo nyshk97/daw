@@ -3189,7 +3189,11 @@ bool MainComponent::extendDrumsPreview (int bars)
     // 差し替え（仮配置は active のまま同じ場所に置き直される）
     if (! gachaSession.previewCandidate (GachaSession::Part::drums, *project, parsed,
                                          selectedTrack, 0))
+    {
+        // 対象トラック消失等でセッションが畳まれた可能性がある（他の失敗経路と同じ共通同期）
+        syncTransportAfterGachaRestore();
         return false;
+    }
     auto extended = source;
     extended.bars = bars;
     gachaSession.setPreviewSource (GachaSession::Part::drums, std::move (extended));
@@ -3228,7 +3232,16 @@ void MainComponent::performBassRoll()
     //    （手直し済み・手打ちリージョンは v1 では延長対象外＝そのまま）
     if (source.fromPreview && plan.drumsBars > 0 && plan.previewBars > plan.drumsBars)
     {
-        extendDrumsPreview (plan.previewBars);
+        // 延長の失敗は2種類ある: (a) 単なる再生成失敗（セッション健在 → 元の長さのドラムで
+        // 続行してよい）と (b) セッション中断（対象トラック消失等 → baseline 復元でキーが
+        // 未設定へ戻り得る）。(b) は続行すると空の optional 参照・候補と違うキーでの生成になる
+        if (! extendDrumsPreview (plan.previewBars)
+            && ! gachaSession.hasPreview (GachaSession::Part::drums))
+        {
+            panel.showStatus (jp (u8"ドラムの延長に失敗したため、ベースの振り直しを中止しました"));
+            Log::error ("gacha.bass_roll_aborted", "reason=extend_terminated_session");
+            return;
+        }
         source = resolveDrumsSource(); // 延長でリージョンが差し替わったので引き直す
         pushSnapshot();                // 延長後のドラムを再生へ反映
         timeline.refresh();
@@ -3355,7 +3368,11 @@ void MainComponent::pickGachaCandidate (int index)
     // 仮配置（2回目以降は差し替え）。対象トラックの決定は GachaSession（Drum Kit / GM ベース系の
     // 流用 or 自動作成）。undo には積まない（「残す」で全パーツまとめて1件積む）
     if (! gachaSession.previewCandidate (part, *project, parsed, selectedTrack, startPpq))
+    {
+        // 失敗でセッションが畳まれた場合、BPM・キー・アンカーが baseline へ戻っている
+        syncTransportAfterGachaRestore();
         return;
+    }
 
     // 延長再生成用に「どのカードのどの seed から来た候補か」を記録する
     GachaSession::PreviewSource source;
@@ -3385,7 +3402,11 @@ void MainComponent::keepGachaCandidate()
     if (! gachaSession.hasPreview())
         return;
     if (! gachaSession.keep (*project, undoStack)) // 全パーツ一括で pushCommitted 1件（redo履歴破棄）
+    {
+        // keep 不成立＝キャンセル相当の復元が走っている（BPM・キー・アンカーが baseline へ）
+        syncTransportAfterGachaRestore();
         return;
+    }
     setDirty (true); // 「残す」で初めてプロジェクトの変更として扱う（保存は⌘S）
     rightPanel.gachaPanel().clearAllPreviewBadges();
     timeline.refresh();
@@ -3393,8 +3414,30 @@ void MainComponent::keepGachaCandidate()
 }
 
 // 撤去後のUI・スナップショット同期（全撤去・パーツ撤去の共通の尻尾）
+// GachaSession の復元（キャンセル・差し替え失敗・keep不成立）は Project の BPM・キー・アンカーを
+// baseline へ戻すことがある。transport と LCD をここで追従させる — 同期しないと、直後の保存が
+// project->bpm = transport.bpm.load() で候補BPMを再代入し「アンカー無し・BPMだけ候補値」が
+// 保存される（undo復元後の同期と同じ規則）
+void MainComponent::syncTransportAfterGachaRestore()
+{
+    if (! juce::approximatelyEqual (transport.bpm.load(), project->bpm))
+    {
+        transport.bpm.store (project->bpm);
+        lcd.tempoLabel().setText (juce::String (project->bpm), juce::dontSendNotification);
+        timeline.refresh(); // BPM が変わったら小節幅を描き直す
+    }
+    refreshKeyDisplay();
+
+    // バッジもセッションの真実へ同期する — 失敗でセッションが畳まれた場合に「仮配置中」の
+    // 表示だけ残ると、Keep もキャンセルも効かない見た目になる（GachaSession 側は破棄済みのため）
+    for (const auto part : { GachaSession::Part::drums, GachaSession::Part::bass })
+        rightPanel.gachaPanel().setPreviewActive (part, gachaSession.hasPreview (part));
+}
+
 void MainComponent::afterGachaCancel (bool trackRemoved)
 {
+    syncTransportAfterGachaRestore();
+
     timeline.clearSelection();
     if (trackRemoved)
     {
