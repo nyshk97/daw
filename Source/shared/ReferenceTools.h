@@ -29,6 +29,21 @@ inline bool gachaAvailable() { return drumsScript().existsAsFile() && venvPython
 // bass.py だけ欠けた checkout でもドラムガチャは使える
 inline bool bassGachaAvailable() { return bassScript().existsAsFile() && venvPython().existsAsFile(); }
 
+// ループ検索（Loops パーツ）。おすすめ5＝recommend.py・採用時の進行検出＝looproots.py
+inline juce::File recommendScript() { return repoRoot().getChildFile ("tools/library/recommend.py"); }
+inline juce::File looprootsScript() { return repoRoot().getChildFile ("tools/library/looproots.py"); }
+// サンプルライブラリの実体（~/Music/daw/library。setup.sh が iCloud への symlink を張る）
+inline juce::File libraryRoot()
+{
+    return juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+        .getChildFile ("Music/daw/library");
+}
+inline bool loopGachaAvailable()
+{
+    return recommendScript().existsAsFile() && looprootsScript().existsAsFile()
+        && venvPython().existsAsFile() && libraryRoot().getChildFile ("index.json").existsAsFile();
+}
+
 // レポート閲覧（report.md→HTML変換）に必要なツールが揃っているか。
 // ガチャや生成とは独立に判定する — ドラム生成器が欠けただけで閲覧まで無効にしない
 inline bool renderAvailable() { return renderScript().existsAsFile() && venvPython().existsAsFile(); }
@@ -42,5 +57,15 @@ inline juce::String unavailableReason()
 {
     return juce::String::fromUTF8 (u8"~/daw のツールが見つかりません（リポジトリを ~/daw に置き、"
                                    u8"mise run ref:setup で .venv を作成してください）");
+}
+
+// Loops タブ無効時の理由（ツール不在と index 未作成を区別する）
+inline juce::String loopGachaUnavailableReason()
+{
+    if (! recommendScript().existsAsFile() || ! looprootsScript().existsAsFile()
+        || ! venvPython().existsAsFile())
+        return unavailableReason();
+    return juce::String::fromUTF8 (u8"ライブラリの index.json がありません"
+                                   u8"（パックを置いて mise run lib:index を実行してください）");
 }
 }

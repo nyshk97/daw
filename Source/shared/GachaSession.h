@@ -106,6 +106,10 @@ public:
         // 配置位置。**差し替えでも毎回使う**（BPM が変わると同じ絶対サンプルは小節頭で
         // なくなるため、呼び出し側が「逆コピー→新BPMで小節頭換算」の順で毎回計算して渡す）
         juce::int64 startSample = 0;
+        // audio を変換したレート。SR 未確定プロジェクトでは keep 時にこの値で確定する
+        // （プレビュー段階で SR を確定させない — キャンセルだけで dirty が残るため。
+        // ダイアログ中にデバイス SR が変わっても、変換に使った値がここに残るので狂わない）
+        double audioSampleRate = 0.0;
         int loopCount = 1;           // Clip::loopCount（0 = 1周のみ）
         bool applyKeyBpm = true;     // 逆コピー（「設定して敷く」）。false = 敷くだけ
     };
@@ -115,6 +119,36 @@ public:
     // 受け持つ）。BPM/キーが実際に変わるときは**ベースの仮配置だけ撤去**する
     // （進行がループ由来のため。ドラムは維持 — plan の決定）
     bool previewLoopCandidate (Project& project, const LoopPreviewInput& input, int preferredTrackIndex);
+
+    // ループ仮配置の audio が変換されたレート（未配置は 0）。SR 未確定プロジェクトの keep 前に
+    // 呼び出し側がこの値で project.sampleRate を確定する（実体化はプロジェクト SR で書くため）
+    double loopPreviewSampleRate() const { return previews[(size_t) Part::loops].audioSampleRate; }
+
+    // ---- ループ候補（recommend.py --json の1ページぶん）----
+    // MIDI 候補（Candidate）と違い seed を持たない: おすすめは決定的なランキングで、
+    // 「振り直し」でなく「次の5本」のページングで探索する（plan の確定仕様）
+    struct LoopCandidate
+    {
+        juce::String path;         // ライブラリ相対パス
+        double bpm = 0.0;          // ループの表記 BPM
+        int loopBars = 0;          // index の尺推定（0 = 不明。採用時 looproots へ --bars で渡す）
+        int keyRoot = 0;           // 0..11
+        KeyMode keyMode = KeyMode::minor;
+        int transposeSemitones = 0; // リファレンスのキー圏に合わせる移調量（表示用）
+        double bpmRatio = 1.0;      // ループ/リファレンスの BPM 比（表示用）
+        juce::String reason;        // 平易語の一行
+    };
+    struct LoopRecommendation
+    {
+        double refBpm = 0.0;
+        juce::String refKeyText;   // 表示用（例 "A minor"）
+        bool keyTrusted = true;    // false = カードのキーがゲート落ちで推定値
+        int page = 1;
+        int total = 0;             // フィルタ通過の総数
+        std::vector<LoopCandidate> candidates;
+    };
+    // recommend.py --json の出力をパースする。形式不備（キー欠損・型違い）は false
+    static bool parseRecommendJson (const juce::String& json, LoopRecommendation& out);
 
     // ---- 候補一覧（今回の実行で申告されたファイルだけ。gacha/ の全列挙はしない）----
     void setCandidates (Part part, std::vector<Candidate> list)
@@ -186,7 +220,8 @@ private:
         juce::int64 startPpq = 0;      // パーツ初回の配置位置（差し替えでも維持）
         // loops パーツ用（クリップは ID を持たないため fileName で識別する）
         juce::String clipFileName;     // マーカー → keep の実体化で clip-NNN.wav へ
-        juce::int64 startSample = 0;   // パーツ初回の配置位置（サンプル。差し替えでも維持）
+        juce::int64 startSample = 0;   // 配置位置（サンプル。差し替えごとに input の値で更新）
+        double audioSampleRate = 0.0;  // audio の変換レート（SR 未確定プロジェクトの keep 用）
     };
 
     // ループ仮クリップの実体化（keep 内から呼ぶ）。バッファを 24bit WAV として

@@ -297,6 +297,20 @@ struct LoopAnchor
     }
 };
 
+namespace LoopAnchors
+{
+    // bass.py --roots に渡す契約 JSON（真実の源は tools/library/looproots.py の docstring）。
+    // アンカーの永続化と同じ値から生成する — 採用時に1回検出した進行を、生成のたびに
+    // 再検出せずここから配る
+    juce::String rootsContractJson (const LoopAnchor& anchor);
+
+    // looproots.py が出力した契約 JSON から anchor を組み立てる（**生の型まで strict に検証** —
+    // 変換後の isValid だけだと roots: [9.5] のような型違反が 9 に化けて通ってしまう）。
+    // bpm は契約に無いので呼び出し側が候補から設定し、libraryPath も候補のライブラリ相対パスで
+    // 上書きしてから isValid を通すこと（契約の source は表示用のファイル名にすぎない）
+    bool anchorFromContractJson (const juce::String& json, LoopAnchor& out);
+}
+
 // MIDIトラックの音源種別。gm = macOS内蔵GM音源（DLSMusicDevice）/ sample = 外部ワンショット
 enum class InstrumentKind { gm, sample };
 
@@ -441,6 +455,13 @@ public:
     // 再生比率の計算に使うため必須。クリップ読込はプロジェクトSRへ変換済みなので不要）
     static std::shared_ptr<juce::AudioBuffer<float>> loadWav (const juce::File& file,
                                                              double* sourceSampleRate = nullptr);
+
+    // loadWav ＋ targetRate へのリサンプル（WindowedSinc・レイテンシ補償込み。AudioImporter と
+    // 同じ変換品質）。ループ採用のように「ライブラリの wav をプロジェクト SR のバッファとして
+    // メモリに欲しい」用途向け — クリップの契約（audio は常にプロジェクト SR）を守るための入口。
+    // SR が一致していれば変換せずそのまま返す。失敗は nullptr
+    static std::shared_ptr<juce::AudioBuffer<float>> loadWavResampled (const juce::File& file,
+                                                                       double targetRate);
 
 private:
     juce::uint64 nextId = 1; // 永続化される採番カウンタ

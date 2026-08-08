@@ -354,12 +354,22 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     rightPanel.gachaPanel().onRoll = [this] { performGachaRoll(); };
     rightPanel.gachaPanel().onPick = [this] (int index) { pickGachaCandidate (index); };
     rightPanel.gachaPanel().onKeep = [this] { keepGachaCandidate(); };
+    rightPanel.gachaPanel().onLoopAudition = [this] (int index) { toggleLoopAudition (index); };
+    rightPanel.gachaPanel().onLoopAdopt = [this] (int index) { adoptLoopCandidate (index); };
+    rightPanel.gachaPanel().onLoopPageRequested = [this] (int page) { performLoopRecommend (page); };
+    rightPanel.gachaPanel().onAnchorRelease = [this] { releaseLoopAnchor(); };
     rightPanel.gachaPanel().onCardChanged = [this] (GachaSession::Part part)
     {
         // カード変更は**そのパーツの仮配置だけ**撤去する（他パーツ維持 —
         // 「Drums 仮配置 → Bass のカード選択 → Drums が消える」でコア導線を壊さない）
         cancelGachaPart (part);
         gachaSession.setCandidates (part, {}); // 前カードの候補一覧はパネル側でもクリア済み
+        if (part == GachaSession::Part::loops)
+        {
+            // 旧カードのおすすめ・試聴を残さない（残すと新カードの顔で旧候補を採用できてしまう）
+            filePreview.stop();
+            rightPanel.gachaPanel().setAuditioningRow (-1);
+        }
     };
     // 「原曲を頭出し」の可否（空文字=可）。ファイルI/Oを含むためパネルの updateControls 経由でのみ呼ばれる
     rightPanel.gachaPanel().alignUnavailableReason = [this]() -> juce::String
@@ -1298,6 +1308,7 @@ void MainComponent::afterHistoryRestore (UndoStack::EditKind kind)
         lcd.tempoLabel().setText (juce::String (project->bpm), juce::dontSendNotification);
     }
     refreshKeyDisplay(); // キーもStateに含まれる
+    rightPanel.gachaPanel().refreshAnchorRow(); // アンカーもStateに含まれる（採用・解除のundo/redo）
 
     if (kind == UndoStack::EditKind::sampleValue)
     {
@@ -3058,10 +3069,12 @@ bool runGachaTool (const juce::StringArray& argv, juce::StringArray& stdoutLines
 
 void MainComponent::performGachaRoll()
 {
-    if (rightPanel.gachaPanel().selectedPart() == GachaSession::Part::bass)
-        performBassRoll();
-    else
-        performDrumsRoll();
+    switch (rightPanel.gachaPanel().selectedPart())
+    {
+        case GachaSession::Part::bass:  performBassRoll(); break;
+        case GachaSession::Part::loops: performLoopRecommend (1); break;
+        case GachaSession::Part::drums: performDrumsRoll(); break;
+    }
 }
 
 void MainComponent::performDrumsRoll()
@@ -3237,19 +3250,30 @@ void MainComponent::performBassRoll()
     if (cardFolder == juce::File() || ! ReferenceTools::bassGachaAvailable())
         return;
 
-    // 1. キー未設定ガード（生成は常にプロジェクトのキーで行う — コピー導線へ誘導）
-    if (! project->key.has_value())
+    // 1. 生成キーの解決。**アンカー（採用ループ）があればアンカーのキー**で生成する —
+    //    ルート列はループの絶対音高なので、プロジェクトキーが違う（「敷くだけ」・手動変更）と
+    //    装飾音のスケールフィルタが進行と噛み合わず、候補が空になり得る（実測: A–F–G の
+    //    アンカー＋C# major で bass.py が ValueError）。
+    //    アンカーが無いときだけ従来の「生成は常にプロジェクトのキー」＋未設定ガード
+    const bool followAnchor = project->loopAnchor.has_value();
+    if (! followAnchor && ! project->key.has_value())
     {
         panel.showStatus (jp (u8"キーが未設定です — ヘッダーの KEY をクリックして設定するか、"
                               u8"リージョンの分析完了時に「BPM とキーを設定」でコピーしてください"));
         Log::info ("gacha.bass_roll_blocked", "reason=no_key");
         return;
     }
+    const ProjectKey generationKey = followAnchor ? project->loopAnchor->key : *project->key;
 
-    // 2. Bass カードから loop_bars を読む（chords 無し・欠損は 1 = ルート連打パターン）
+    // 2. パターン長を決める。追従時は進行がループのルート列に固定される（--roots）—
+    //    パターン長もカードの chords でなくアンカーのループ長が勝つ
+    //    （カード=曲A・進行=採用ループ、のパーツ別参照が普通のため）。
+    //    アンカーが無ければ従来どおりカード駆動（chords 無し・欠損は 1 = ルート連打）
     const auto card = juce::JSON::parse (cardFolder.getChildFile ("card.json").loadFileAsString());
     int loopBars = 1;
-    if (const auto chords = card.getProperty ("chords", {}); chords.isObject())
+    if (followAnchor)
+        loopBars = project->loopAnchor->loopBars;
+    else if (const auto chords = card.getProperty ("chords", {}); chords.isObject())
         loopBars = juce::jlimit (1, 16, (int) chords.getProperty ("loop_bars", 1));
 
     // 3. ドラムソースを解決し、試聴長・キック抽出を計画する（判断は GachaSession::planBassRoll —
@@ -3283,7 +3307,8 @@ void MainComponent::performBassRoll()
     // 6. bass.py 呼び出し（--bpm にプロジェクト BPM を必ず渡す — カード BPM とプロジェクトの
     //    再生テンポのずれを作らない。BPM の契約は plan/bass.py 参照）
     juce::StringArray lockParts;
-    if (panel.lockedProgSeed().isNotEmpty())
+    // 追従時は進行がループ由来で固定されるため prog ロックは送らない（bass.py 側は併用を拒否する）
+    if (! followAnchor && panel.lockedProgSeed().isNotEmpty())
         lockParts.add ("prog=" + panel.lockedProgSeed());
     if (panel.lockedRhythmSeed().isNotEmpty())
         lockParts.add ("rhythm=" + panel.lockedRhythmSeed());
@@ -3291,7 +3316,7 @@ void MainComponent::performBassRoll()
     juce::StringArray argv { ReferenceTools::venvPython().getFullPathName(),
                              ReferenceTools::bassScript().getFullPathName(),
                              cardFolder.getFullPathName(),
-                             "--key", ProjectKeys::cliText (*project->key),
+                             "--key", ProjectKeys::cliText (generationKey),
                              "--bpm", juce::String (project->bpm),
                              "--count", "8", "--porcelain" };
     if (previewBars != loopBars)
@@ -3310,9 +3335,29 @@ void MainComponent::performBassRoll()
         argv.add (lockParts.joinIntoString (","));
     }
 
+    // ループ追従: アンカーの契約 JSON を一時ファイルで渡す（runGachaTool は同期なので実行後に消す）
+    juce::File rootsFile;
+    if (followAnchor)
+    {
+        rootsFile = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                        .getChildFile ("lala-roots-" + juce::Uuid().toString() + ".json");
+        if (! rootsFile.replaceWithText (LoopAnchors::rootsContractJson (*project->loopAnchor)))
+        {
+            Log::error ("gacha.roll_failed", "part=bass detail=roots_write file="
+                                                 + rootsFile.getFullPathName());
+            showAlert (jp (u8"ガチャに失敗しました"), jp (u8"ルート列の一時ファイルを書けませんでした。"));
+            return;
+        }
+        argv.add ("--roots");
+        argv.add (rootsFile.getFullPathName());
+    }
+
     juce::StringArray stdoutLines;
     juce::String detail;
-    if (! runGachaTool (argv, stdoutLines, detail))
+    const bool toolOk = runGachaTool (argv, stdoutLines, detail);
+    if (rootsFile != juce::File())
+        rootsFile.deleteFile(); // 出力は取り込み済み。契約は project.json のアンカーが持ち続ける
+    if (! toolOk)
     {
         Log::error ("gacha.roll_failed", "part=bass detail=" + detail);
         showAlert (jp (u8"ガチャに失敗しました"),
@@ -3347,8 +3392,9 @@ void MainComponent::performBassRoll()
     }
 
     Log::info ("gacha.roll", "part=bass count=" + juce::String ((int) candidates.size())
-                                 + " key=" + ProjectKeys::cliText (*project->key)
+                                 + " key=" + ProjectKeys::cliText (generationKey)
                                  + " bars=" + juce::String (previewBars)
+                                 + " roots=" + (followAnchor ? "anchor" : "card")
                                  + " kicks=" + juce::String (kickTicks.size())
                                  + " locks=" + (lockParts.isEmpty() ? juce::String ("none")
                                                                     : lockParts.joinIntoString (",")));
@@ -3439,8 +3485,61 @@ void MainComponent::keepGachaCandidate()
                               gachaSession.previewTrackId ((GachaSession::Part) i));
     const bool hadLoops = gachaSession.hasPreview (GachaSession::Part::loops);
 
+    // SR 未確定プロジェクトのループ確定（確定をここまで遅らせるのは、キャンセルだけで
+    // SR と dirty が残るのを避けるため）。仮配置から「残す」までの間にデバイス SR が
+    // 変わっていることがある（44.1k→48k 等）— 変換時のレートのまま確定すると、以後この
+    // プロジェクトは現デバイスと恒久的にずれる。**keep 直前に現在レートと突き合わせ、
+    // ずれていたら現在レートで変換し直して**（同一アンカーの差し替え＝進行・値は不変）から確定する
+    const double sampleRateBeforeKeep = project->sampleRate;
+    bool loopReconverted = false;
+    if (hadLoops && project->sampleRate <= 0.0)
+    {
+        const double deviceRate = transport.sampleRate.load();
+        if (deviceRate > 0.0 && gachaSession.loopPreviewSampleRate() > 0.0
+            && ! juce::approximatelyEqual (deviceRate, gachaSession.loopPreviewSampleRate())
+            && project->loopAnchor.has_value())
+        {
+            const auto wavFile = ReferenceTools::libraryRoot()
+                                     .getChildFile (project->loopAnchor->libraryPath);
+            auto audio = Project::loadWavResampled (wavFile, deviceRate);
+            bool replaced = false;
+            if (audio != nullptr)
+            {
+                GachaSession::LoopPreviewInput input;
+                input.anchor = *project->loopAnchor;
+                input.audio = std::move (audio);
+                input.audioSampleRate = deviceRate;
+                input.displayName = wavFile.getFileNameWithoutExtension();
+                input.startSample = 0;
+                input.loopCount = 1;
+                input.applyKeyBpm = false; // 値は適用済み。クリップだけ現在レートに入れ替える
+                replaced = gachaSession.previewLoopCandidate (*project, input, selectedTrack);
+            }
+            if (! replaced)
+            {
+                // 再変換できないまま確定すると変換時レートで固定され、現デバイスと恒久的にずれる。
+                // また差し替え失敗（対象トラック消失）を無視すると、ループだけ欠けた部分確定になる。
+                // どちらも Keep を中止し、通常キャンセルと同じ後処理まで通す（差し替え失敗は
+                // ループ取り消し相当の巻き戻し＝追従ベースの撤去・値の復元を伴うため、
+                // transport 同期だけでなくヘッダ・スナップショットの整理が要る）
+                afterGachaCancel (trackRemoved);
+                showAlert (jp (u8"残せません"),
+                           jp (u8"デバイスのサンプルレートが変わったため、ループを変換し直せません"
+                               u8"でした。もう一度お試しください。"));
+                Log::error ("gacha.keep_failed", audio == nullptr ? "reason=loop_reconvert_load"
+                                                                  : "reason=loop_reconvert_replace");
+                return;
+            }
+            loopReconverted = true;
+            Log::info ("gacha.loop_reconvert", "rate=" + juce::String (deviceRate));
+        }
+        if (gachaSession.loopPreviewSampleRate() > 0.0)
+            project->sampleRate = gachaSession.loopPreviewSampleRate();
+    }
+
     if (! gachaSession.keep (*project, undoStack)) // 全パーツ一括で pushCommitted 1件（redo履歴破棄）
     {
+        project->sampleRate = sampleRateBeforeKeep; // keep 不成立なら SR 確定も巻き戻す
         // keep 不成立＝キャンセル相当（仮オブジェクトの撤去・値の復元が走っている）。
         // transport 同期だけでなく、通常キャンセルと同じ後処理（選択解除・ヘッダの
         // unbind/rebuild・pushSnapshot）まで通す — 省くと削除済みプレビューが鳴り続ける
@@ -3453,6 +3552,8 @@ void MainComponent::keepGachaCandidate()
         return;
     }
     setDirty (true); // 「残す」で初めてプロジェクトの変更として扱う（保存は⌘S）
+    if (loopReconverted)
+        pushSnapshot(); // エンジンは旧バッファの shared_ptr を掴んだまま — 差し替えを再生へ反映する
     rightPanel.gachaPanel().clearAllPreviewBadges();
     timeline.refresh();
     Log::info ("gacha.keep");
@@ -3501,6 +3602,271 @@ void MainComponent::afterGachaCancel (bool trackRemoved)
     }
     pushSnapshot(); // 仮リージョンを消した状態を再生へ反映
     timeline.refresh();
+}
+
+// ---- Loops タブ（ループ検索ガチャ）。候補作りは recommend.py・進行検出は looproots.py・
+// 仮配置と実体化は GachaSession（判断ロジックは shared 側でテスト済み）----
+
+void MainComponent::performLoopRecommend (int page)
+{
+    auto& panel = rightPanel.gachaPanel();
+    const auto refdir = panel.selectedCardFolder (GachaSession::Part::loops);
+    if (refdir == juce::File())
+        return;
+    filePreview.stop(); // ページが変わると行の意味が変わる
+    panel.setAuditioningRow (-1);
+
+    juce::StringArray argv { ReferenceTools::venvPython().getFullPathName(),
+                             ReferenceTools::recommendScript().getFullPathName(),
+                             refdir.getFullPathName(),
+                             "--page", juce::String (juce::jmax (1, page)),
+                             "--json" };
+    juce::StringArray stdoutLines;
+    juce::String detail;
+    if (! runGachaTool (argv, stdoutLines, detail))
+    {
+        Log::error ("gacha.loop_recommend_failed", "detail=" + detail);
+        showAlert (jp (u8"おすすめの取得に失敗しました"),
+                   detail.isNotEmpty() ? detail : jp (u8"recommend.py がエラーで終了しました。"));
+        return;
+    }
+    GachaSession::LoopRecommendation recommendation;
+    if (! GachaSession::parseRecommendJson (stdoutLines.joinIntoString ("\n"), recommendation))
+    {
+        Log::error ("gacha.loop_recommend_failed", "message=json_parse");
+        showAlert (jp (u8"おすすめの取得に失敗しました"),
+                   jp (u8"recommend.py の出力を解釈できませんでした。"));
+        return;
+    }
+    const bool empty = recommendation.candidates.empty();
+    Log::info ("gacha.loop_recommend", "ref=" + refdir.getFileName()
+                                           + " page=" + juce::String (recommendation.page)
+                                           + " total=" + juce::String (recommendation.total)
+                                           + " count=" + juce::String ((int) recommendation.candidates.size()));
+    panel.setLoopPage (std::move (recommendation));
+    if (empty)
+        panel.showStatus (jp (u8"キーと BPM の条件に合うループがありません — ライブラリを増やすか、"
+                              u8"別のリファレンスで試してください"));
+}
+
+void MainComponent::toggleLoopAudition (int index)
+{
+    auto& panel = rightPanel.gachaPanel();
+    const auto& page = panel.loopPage();
+    if (index < 0 || index >= (int) page.candidates.size())
+        return;
+    if (panel.auditionRow() == index) // 同じ行の再クリック＝停止
+    {
+        filePreview.stop();
+        panel.setAuditioningRow (-1);
+        return;
+    }
+    const auto file = ReferenceTools::libraryRoot().getChildFile (page.candidates[(size_t) index].path);
+    if (! file.existsAsFile())
+    {
+        panel.showStatus (jp (u8"ファイルが見つかりません: ") + page.candidates[(size_t) index].path);
+        return;
+    }
+    if (filePreview.start (file))
+    {
+        panel.setAuditioningRow (index);
+        Log::info ("gacha.loop_audition", "file=" + file.getFileName());
+    }
+}
+
+void MainComponent::adoptLoopCandidate (int index)
+{
+    if (engine.isRecording())
+        return;
+    auto& panel = rightPanel.gachaPanel();
+    const auto& page = panel.loopPage();
+    if (index < 0 || index >= (int) page.candidates.size())
+        return;
+    const auto candidate = page.candidates[(size_t) index]; // コピー（非同期ダイアログの間のページ差し替え対策）
+
+    filePreview.stop();
+    panel.setAuditioningRow (-1);
+
+    const auto wavFile = ReferenceTools::libraryRoot().getChildFile (candidate.path);
+    if (! wavFile.existsAsFile())
+    {
+        showAlert (jp (u8"敷けません"), jp (u8"ライブラリにファイルがありません: ") + candidate.path);
+        return;
+    }
+
+    // SR の確認だけ先に行う（wav の変換は**ダイアログ確定後**の placeLoopPreview — ダイアログ中に
+    // デバイス SR が変わっても、決定時点のレートで変換するので速度・音程が狂わない。
+    // キャンセル時に変換を捨てる無駄も無い）
+    if (project->sampleRate <= 0.0 && transport.sampleRate.load() <= 0.0)
+    {
+        showAlert (jp (u8"敷けません"), jp (u8"オーディオデバイスが準備できていません。"));
+        return;
+    }
+
+    // 進行検出（採用時に1回だけ。結果はアンカーとして project.json に永続化され、
+    // ベースガチャは保存済みの値を読む — 生成のたびに再検出しない）
+    const auto rootsFile = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                               .getChildFile ("lala-looproots-" + juce::Uuid().toString() + ".json");
+    const ProjectKey loopKey { candidate.keyRoot, candidate.keyMode };
+    juce::StringArray argv { ReferenceTools::venvPython().getFullPathName(),
+                             ReferenceTools::looprootsScript().getFullPathName(),
+                             wavFile.getFullPathName(),
+                             "--bpm", juce::String (candidate.bpm),
+                             "--key", ProjectKeys::cliText (loopKey),
+                             "--out", rootsFile.getFullPathName() };
+    if (candidate.loopBars > 0) // index の尺推定
+    {
+        argv.add ("--bars");
+        argv.add (juce::String (candidate.loopBars));
+    }
+    else
+    {
+        // 尺推定が立たなかった素材（余韻付き書き出し等）は wav の実尺から**切り下げ**で
+        // 小節数を決めて渡す — looproots は 8% 以内の丸めしか許さず、余韻付きはそこで
+        // 確定できない（実地で✓が行き止まりになった）。尻尾の余韻は進行検出のグリッド外に
+        // なるだけで害はない
+        juce::AudioFormatManager formatManager;
+        formatManager.registerBasicFormats();
+        if (auto reader = std::unique_ptr<juce::AudioFormatReader> (
+                formatManager.createReaderFor (wavFile));
+            reader != nullptr && reader->sampleRate > 0.0)
+        {
+            const double duration = (double) reader->lengthInSamples / reader->sampleRate;
+            const int flooredBars = (int) std::floor (duration * candidate.bpm / 240.0);
+            if (flooredBars >= 1)
+            {
+                argv.add ("--bars");
+                argv.add (juce::String (flooredBars));
+            }
+        }
+    }
+    juce::StringArray stdoutLines;
+    juce::String detail;
+    const bool toolOk = runGachaTool (argv, stdoutLines, detail);
+    const auto contractText = toolOk ? rootsFile.loadFileAsString() : juce::String();
+    rootsFile.deleteFile();
+    if (! toolOk)
+    {
+        Log::error ("gacha.loop_adopt_failed", "stage=looproots detail=" + detail);
+        showAlert (jp (u8"敷けません"), jp (u8"ループの進行検出に失敗しました。") + detail);
+        return;
+    }
+
+    // 契約は**生JSONの型まで** strict に検証する（project.json のアンカー読込と同じ方針・
+    // 同じヘルパー。変換後の isValid だけだと roots: [9.5] が 9 に化けて通る）
+    LoopAnchor anchor;
+    if (! LoopAnchors::anchorFromContractJson (contractText, anchor))
+    {
+        Log::error ("gacha.loop_adopt_failed", "stage=contract_types file=" + candidate.path);
+        showAlert (jp (u8"敷けません"), jp (u8"進行検出の出力が契約に合いません（looproots.py の形式退行の疑い）。"));
+        return;
+    }
+    anchor.libraryPath = candidate.path; // 契約の source は表示用ファイル名 — ライブラリ相対パスで上書き
+    anchor.bpm = candidate.bpm;
+    if (! anchor.isValid())
+    {
+        Log::error ("gacha.loop_adopt_failed", "stage=contract file=" + candidate.path);
+        showAlert (jp (u8"敷けません"), jp (u8"進行検出の結果が契約に合いません（looproots.py の出力）。"));
+        return;
+    }
+
+    // 逆コピーの確認（モック確定仕様: 設定して敷く / 敷くだけ / キャンセル）
+    const auto keyText = ProjectKeys::displayName (loopKey);
+    const auto bpmText = juce::String (candidate.bpm,
+                                       candidate.bpm == std::floor (candidate.bpm) ? 0 : 1);
+    juce::Component::SafePointer<MainComponent> safe (this);
+    juce::NativeMessageBox::showAsync (
+        juce::MessageBoxOptions()
+            .withIconType (juce::MessageBoxIconType::QuestionIcon)
+            .withTitle (jp (u8"ループを敷く"))
+            .withMessage (jp (u8"このループのキーと BPM をプロジェクトに設定しますか？\n\n")
+                          + jp (u8"ループ: ") + keyText + " / " + bpmText + "bpm\n"
+                          + jp (u8"プロジェクト: ")
+                          + (project->key.has_value() ? ProjectKeys::displayName (*project->key)
+                                                      : jp (u8"キー未設定"))
+                          + " / " + juce::String (project->bpm) + "bpm\n\n"
+                          + jp (u8"設定するとベースガチャはこのループの進行に自動で追従します"
+                                u8"（⌘Z で採用ごと戻せます）。既存のベースの仮配置は撤去されます。"))
+            .withButton (jp (u8"設定して敷く"))
+            .withButton (jp (u8"敷くだけ"))
+            .withButton (jp (u8"キャンセル")),
+        [safe, anchor, wavFile] (int result)
+        {
+            if (safe == nullptr || result >= 2)
+                return; // キャンセル
+            safe->placeLoopPreview (anchor, wavFile, /*applyKeyBpm=*/ result == 0);
+        });
+}
+
+void MainComponent::placeLoopPreview (const LoopAnchor& anchor, const juce::File& wavFile,
+                                      bool applyKeyBpm)
+{
+    if (engine.isRecording())
+        return;
+    // wav の変換は**この時点のレート**で行う（ダイアログ中にデバイス SR が変わっても、
+    // 決定時の実レートに合わせるので再生速度・音程が狂わない）。
+    // SR はここでも**確定しない**（確定は dirty 化を伴い、キャンセルで元に戻せないため）。
+    // 変換に使ったレートをセッションに預け、keep 時にその値で確定する
+    const double targetRate = project->sampleRate > 0.0 ? project->sampleRate
+                                                        : transport.sampleRate.load();
+    if (targetRate <= 0.0)
+    {
+        showAlert (jp (u8"敷けません"), jp (u8"オーディオデバイスが準備できていません。"));
+        return;
+    }
+    auto audio = Project::loadWavResampled (wavFile, targetRate);
+    if (audio == nullptr)
+    {
+        showAlert (jp (u8"敷けません"), jp (u8"wav を読み込めませんでした: ") + wavFile.getFileName());
+        return;
+    }
+
+    GachaSession::LoopPreviewInput input;
+    input.anchor = anchor;
+    input.audio = std::move (audio);
+    input.audioSampleRate = targetRate;
+    input.displayName = wavFile.getFileNameWithoutExtension();
+    input.startSample = 0; // ループはアンカー（曲のベッド）なので1小節目の頭に敷く
+    input.loopCount = 1;   // 2周ぶん（ドラム・ベースを重ねたとき展開が分かる最小）
+    input.applyKeyBpm = applyKeyBpm;
+
+    if (! gachaSession.previewLoopCandidate (*project, input, selectedTrack))
+    {
+        syncTransportAfterGachaRestore(); // 失敗でセッションが畳まれた可能性
+        return;
+    }
+
+    headers.rebuild(); // 自動作成トラックが増えたかもしれない
+    for (int i = 0; i < (int) project->tracks.size(); ++i)
+        if (project->tracks[(size_t) i].id == gachaSession.previewTrackId (GachaSession::Part::loops))
+            selectTrackFromUser (i);
+    syncTransportAfterGachaRestore(); // 逆コピー後の transport / LCD / バッジを project の真実へ
+    pushSnapshot();
+    timeline.refresh();
+    rightPanel.gachaPanel().refreshAnchorRow();
+    Log::info ("gacha.loop_pick", "loop=" + anchor.libraryPath
+                                      + " applyKeyBpm=" + (applyKeyBpm ? juce::String ("1") : juce::String ("0"))
+                                      + " degraded=" + (anchor.degraded ? juce::String ("1") : juce::String ("0")));
+}
+
+void MainComponent::releaseLoopAnchor()
+{
+    if (gachaSession.hasPreview (GachaSession::Part::loops))
+    {
+        // 仮配置中の解除＝ループパーツのキャンセル（クリップ・逆コピー・追従ベースまで巻き戻す）
+        cancelGachaPart (GachaSession::Part::loops);
+        rightPanel.gachaPanel().refreshAnchorRow();
+        return;
+    }
+    if (! project->loopAnchor.has_value())
+        return;
+    // 確定済みアンカーの解除は通常の undo 1件。クリップ・BPM・キーは維持してアンカーだけ消す
+    // （以後のベースガチャはカード駆動に戻り、⌘Z で追従へ復帰する）
+    undoStack.begin (*project);
+    project->loopAnchor.reset();
+    setDirty (true);
+    rightPanel.gachaPanel().refreshAnchorRow();
+    Log::info ("gacha.anchor_release");
 }
 
 void MainComponent::cancelGachaPreview()

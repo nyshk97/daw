@@ -216,6 +216,14 @@ private:
     bool extendDrumsPreview (int bars); // ガチャ産仮配置ドラムの同一seed・--bars変更の延長再生成
     void pickGachaCandidate (int index); // 候補クリック → 仮配置（差し替え）
     void keepGachaCandidate();        // 「残す」→ 全パーツ一括で pushCommitted 1件・dirty化
+    // Loops タブ（ループ検索ガチャ）。候補は recommend.py の決定的ランキング（ページング型）
+    void performLoopRecommend (int page); // recommend.py --json を同期実行 → ページ表示
+    void toggleLoopAudition (int index);  // 行クリック＝試聴のトグル（AudioFilePreview）
+    void adoptLoopCandidate (int index);  // ✓ → looproots で進行検出 → ダイアログ → 仮配置
+    // ダイアログの選択後に実際に敷く（この時点のレートで wav を変換 → アンカー更新＋
+    // 任意で逆コピー＋仮配置＋UI同期。SR 未確定プロジェクトは keep 時に変換レートで確定）
+    void placeLoopPreview (const LoopAnchor& anchor, const juce::File& wavFile, bool applyKeyBpm);
+    void releaseLoopAnchor();             // アンカーの明示解除（仮配置中はパーツ撤去・確定後は undo 1件）
     // ベース仮配置の基準になるドラムの解決（仮配置中 Drums → 選択中の Drum Kit リージョン → 無し）
     struct DrumsSource
     {

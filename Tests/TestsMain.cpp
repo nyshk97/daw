@@ -6410,6 +6410,53 @@ void testLoopAnchorRoundtrip()
         }
     }
 
+    // bass.py --roots へ渡す契約 JSON（looproots.py の契約 v1 と同じ形で出ること）
+    {
+        const auto parsedContract = juce::JSON::parse (LoopAnchors::rootsContractJson (anchor));
+        expect ((int) parsedContract.getProperty ("version", 0) == 1, "契約 version=1");
+        expect ((int) parsedContract.getProperty ("slots_per_bar", 0) == 2
+                    && (int) parsedContract.getProperty ("loop_bars", 0) == 2,
+                "slots_per_bar / loop_bars が転記されること");
+        auto* rootsArr = parsedContract.getProperty ("roots", {}).getArray();
+        auto* confArr = parsedContract.getProperty ("confidence", {}).getArray();
+        expect (rootsArr != nullptr && rootsArr->size() == 4 && (int) (*rootsArr)[0] == 2
+                    && confArr != nullptr && confArr->size() == 4,
+                "roots / confidence が長さ込みで転記されること");
+        expect (! (bool) parsedContract.getProperty ("degraded", true)
+                    && (int) parsedContract.getProperty ("key_root", -1) == 11
+                    && parsedContract.getProperty ("key_mode", "").toString() == "minor"
+                    && parsedContract.getProperty ("source", "").toString() == anchor.libraryPath,
+                "degraded / key / source が転記されること");
+    }
+
+    // looproots 契約 JSON → anchor の strict パース（rootsContractJson との往復＋型違反の拒否）
+    {
+        LoopAnchor parsed;
+        expect (LoopAnchors::anchorFromContractJson (LoopAnchors::rootsContractJson (anchor), parsed),
+                "自分が書いた契約を読み戻せること");
+        parsed.bpm = anchor.bpm;                 // 契約に無い値は呼び出し側が設定する契約
+        parsed.libraryPath = anchor.libraryPath; // source はファイル名にすぎないので上書き
+        expect (parsed.isValid() && parsed.roots == anchor.roots
+                    && parsed.slotsPerBar == anchor.slotsPerBar && parsed.key == anchor.key
+                    && parsed.confidence.size() == anchor.confidence.size(),
+                "契約の往復で進行・キーが保たれること");
+
+        const auto reject = [] (const char* json, const char* label)
+        {
+            LoopAnchor out;
+            expect (! LoopAnchors::anchorFromContractJson (juce::String::fromUTF8 (json), out), label);
+        };
+        reject (R"({"version": 2, "slots_per_bar": 2, "loop_bars": 2, "roots": [9,9,5,7],
+                    "confidence": [0.9,0.9,0.9,0.9], "degraded": false, "key_root": 11, "key_mode": "minor"})",
+                "version違いは拒否");
+        reject (R"({"version": 1, "slots_per_bar": 2, "loop_bars": 2, "roots": [9,9,5,9.5],
+                    "confidence": [0.9,0.9,0.9,0.9], "degraded": false, "key_root": 11, "key_mode": "minor"})",
+                "浮動小数の roots は拒否（9に化けさせない）");
+        reject (R"({"version": 1, "slots_per_bar": 2, "loop_bars": 2, "roots": [9,9,5,7],
+                    "confidence": [0.9,0.9,0.9,0.9], "degraded": "no", "key_root": 11, "key_mode": "minor"})",
+                "文字列の degraded は拒否");
+    }
+
     // アンカーは通常 undo に載る（明示解除は tracks に触らないので、State に無いと⌘Zが取り残す）
     {
         UndoStack undoStack;
@@ -8204,6 +8251,118 @@ void testGachaSessionParts()
 }
 
 // ベース振り直しの実行計画（試聴長・キック抽出。UIから切り出した判断ロジック）
+// ---- recommend.py --json のパース（ループ候補ページ）----
+void testParseRecommendJson()
+{
+    beginTest ("parse recommend json page");
+
+    const char* good = R"({
+        "reference": "/x/refs/totsuka", "ref_bpm": 93.0, "ref_key": "A minor",
+        "key_trusted": true, "total": 32, "page": 1,
+        "candidates": [
+            { "path": "loops/P/a.wav", "bpm": 85.0, "key_root": 11, "key_mode": "minor",
+              "transpose_semitones": -2, "tempo_relation": "same", "bpm_ratio": 0.914,
+              "score": 0.42, "reason": "明るさがほぼ同じ", "is_contrast": false },
+            { "path": "loops/P/b.wav", "bpm": 90.0, "key_root": 7, "key_mode": "major",
+              "transpose_semitones": 2, "tempo_relation": "same", "bpm_ratio": 0.968,
+              "score": 0.55, "reason": "音数が同じくらい", "is_contrast": false }
+        ]
+    })";
+    GachaSession::LoopRecommendation rec;
+    expect (GachaSession::parseRecommendJson (juce::String::fromUTF8 (good), rec), "正常ページを読めること");
+    expect (rec.refBpm == 93.0 && rec.refKeyText == "A minor" && rec.keyTrusted
+                && rec.total == 32 && rec.page == 1 && (int) rec.candidates.size() == 2,
+            "参照情報とページ情報");
+    expect (rec.candidates[0].path == "loops/P/a.wav" && rec.candidates[0].bpm == 85.0
+                && rec.candidates[0].keyRoot == 11 && rec.candidates[0].keyMode == KeyMode::minor
+                && rec.candidates[0].transposeSemitones == -2
+                && rec.candidates[0].reason == juce::String::fromUTF8 (u8"明るさがほぼ同じ"),
+            "候補のフィールド");
+
+    // 壊れたページは丸ごと拒否（読める分だけ表示すると順位がずれる）
+    GachaSession::LoopRecommendation bad;
+    expect (! GachaSession::parseRecommendJson ("not json", bad), "非JSONはfalse");
+    expect (! GachaSession::parseRecommendJson (R"({"ref_bpm": 93.0, "total": 1, "page": 1})", bad),
+            "candidates欠損はfalse");
+    expect (! GachaSession::parseRecommendJson (
+                R"({"ref_bpm": 93.0, "ref_key": "A minor", "key_trusted": true, "total": 1, "page": 1,
+                    "candidates": [{ "path": "x.wav", "bpm": 85.0, "key_root": 12, "key_mode": "minor",
+                                     "transpose_semitones": 0, "bpm_ratio": 1.0, "reason": "r" }]})",
+                bad),
+            "key_root範囲外はfalse");
+    expect (! GachaSession::parseRecommendJson (
+                R"({"ref_bpm": 93.0, "ref_key": "A minor", "key_trusted": true, "total": 1, "page": 1,
+                    "candidates": [{ "path": "x.wav", "bpm": 85.0, "key_root": 1.5, "key_mode": "minor",
+                                     "transpose_semitones": 0, "bpm_ratio": 1.0, "reason": "r" }]})",
+                bad),
+            "浮動小数の key_root は型違いとして拒否（1に切り捨てて受理しない）");
+    expect (! GachaSession::parseRecommendJson (
+                R"({"ref_bpm": 93.0, "ref_key": "A minor", "key_trusted": true, "total": 1, "page": 1,
+                    "candidates": [{ "path": "x.wav", "bpm": 85.0, "key_root": 4294967296, "key_mode": "minor",
+                                     "transpose_semitones": 0, "bpm_ratio": 1.0, "reason": "r" }]})",
+                bad),
+            "int範囲外の64bit key_root は拒否（0 へ切り詰めて範囲検証を通さない）");
+    // loop_bars は nullable — int範囲外は「不明(0)」に落ちるがページは受理される
+    GachaSession::LoopRecommendation hugeBars;
+    expect (GachaSession::parseRecommendJson (
+                R"({"ref_bpm": 93.0, "ref_key": "A minor", "key_trusted": true, "total": 1, "page": 1,
+                    "candidates": [{ "path": "x.wav", "bpm": 85.0, "loop_bars": 4294967296,
+                                     "key_root": 9, "key_mode": "minor",
+                                     "transpose_semitones": 0, "bpm_ratio": 1.0, "reason": "r" }]})",
+                hugeBars)
+                && hugeBars.candidates.size() == 1 && hugeBars.candidates[0].loopBars == 0,
+            "int範囲外の loop_bars は不明(0)扱い（切り詰めた巨大値を --bars に渡さない）");
+}
+
+// ---- loadWavResampled: ライブラリ wav をプロジェクト SR のバッファとして読む ----
+void testLoadWavResampled()
+{
+    beginTest ("loadWavResampled converts sample rate in memory");
+    const auto dir = makeTempDir();
+
+    // 22050Hz・440Hz サイン・0.5秒 の wav を書く
+    const auto file = dir.getChildFile ("loop-22050.wav");
+    {
+        constexpr double sr = 22050.0;
+        constexpr int frames = 11025;
+        juce::AudioBuffer<float> buffer (1, frames);
+        for (int i = 0; i < frames; ++i)
+            buffer.setSample (0, i, 0.5f * (float) std::sin (2.0 * juce::MathConstants<double>::pi
+                                                             * 440.0 * i / sr));
+        std::unique_ptr<juce::OutputStream> stream { file.createOutputStream() };
+        juce::WavAudioFormat wav;
+        using Opts = juce::AudioFormatWriterOptions;
+        auto writer = wav.createWriterFor (stream, Opts {}.withSampleRate (sr)
+                                                          .withNumChannels (1)
+                                                          .withBitsPerSample (24));
+        expect (writer != nullptr && writer->writeFromAudioSampleBuffer (buffer, 0, frames),
+                "テスト wav を書けること");
+    }
+
+    auto resampled = Project::loadWavResampled (file, 44100.0);
+    expect (resampled != nullptr, "読めること");
+    if (resampled == nullptr)
+        { dir.deleteRecursively(); return; }
+    expect (std::abs (resampled->getNumSamples() - 22050) <= 2,
+            "長さが 2倍（44100Hz で 0.5秒 = 22050サンプル）になること");
+
+    // 内容の裏取り: 440Hz サインなら 0.5秒でゼロクロス約440回・RMS ≈ 0.5/√2
+    int crossings = 0;
+    const auto* data = resampled->getReadPointer (0);
+    for (int i = 1; i < resampled->getNumSamples(); ++i)
+        if ((data[i - 1] < 0.0f) != (data[i] < 0.0f))
+            ++crossings;
+    expect (std::abs (crossings - 440) <= 6, "440Hz の音程が保たれること（ゼロクロス数）");
+    const float rms = resampled->getRMSLevel (0, 0, resampled->getNumSamples());
+    expect (std::abs (rms - 0.3536f) < 0.02f, "振幅が保たれること（RMS）");
+
+    // SR 一致なら変換せずそのまま読める
+    auto same = Project::loadWavResampled (file, 22050.0);
+    expect (same != nullptr && same->getNumSamples() == 11025, "SR一致は無変換で全長のまま");
+
+    dir.deleteRecursively();
+}
+
 // ---- ループ（音声）仮配置: 敷く・差し替え・逆コピー・ベース撤去・キャンセル・実体化 ----
 void testGachaSessionLoops()
 {
@@ -8374,6 +8533,26 @@ void testGachaSessionLoops()
             for (const auto& clip : track.clips)
                 clipFound = clipFound || clip.fileName == GachaSession::loopPreviewMarker;
         expect (clipFound, "仮クリップが正しいトラックに載っている（indexずれで消えない）");
+        session.cancelPreview (*project);
+    }
+
+    // --- 差し替え失敗（Loopsトラック消失）: 他パーツが残っていても値は戻り、アンカーを取り残さない ---
+    {
+        GachaSession session;
+        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), -1, 0), "ドラム");
+        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11), -1), "ループ採用");
+        // Loops トラックだけ外部で消す（入口の撤去漏れの想定）
+        const auto loopsTrackId = session.previewTrackId (Part::loops);
+        project->tracks.erase (std::remove_if (project->tracks.begin(), project->tracks.end(),
+                                               [loopsTrackId] (const Track& t)
+                                               { return t.id == loopsTrackId; }),
+                               project->tracks.end());
+        expect (! session.previewLoopCandidate (*project, makeInput (90.0, 7), -1), "差し替えは失敗する");
+        expect (session.hasPreview (Part::drums), "ドラムの仮配置は残る");
+        expect (! session.hasPreview (Part::loops), "ループの仮配置は畳まれる");
+        expect (project->bpm == 93.0 && ! project->loopAnchor.has_value(),
+                "他パーツが残っていても BPM・アンカーは baseline へ戻る"
+                "（取り残すと「アンカーあり・ループ無し」のまま Keep できてしまう）");
         session.cancelPreview (*project);
     }
 
@@ -8967,6 +9146,8 @@ int main()
     testGachaSessionPreview();
     testGachaSessionParts();
     testGachaSessionLoops();
+    testLoadWavResampled();
+    testParseRecommendJson();
     testGachaBassRollPlan();
     testSaveGcProtectsUndoWavs();
     testSaveGcProtectsClipboardWav();

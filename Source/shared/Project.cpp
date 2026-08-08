@@ -379,6 +379,138 @@ std::shared_ptr<juce::AudioBuffer<float>> Project::loadWav (const juce::File& fi
     return buffer;
 }
 
+std::shared_ptr<juce::AudioBuffer<float>> Project::loadWavResampled (const juce::File& file,
+                                                                     double targetRate)
+{
+    double sourceRate = 0.0;
+    auto source = loadWav (file, &sourceRate);
+    if (source == nullptr || targetRate <= 0.0)
+        return nullptr;
+    if (std::abs (sourceRate - targetRate) <= 0.5) // 「一致」の判定は AudioImporter と同じ
+        return source;
+
+    // WindowedSinc で各chを独立に変換（AudioImporter と同じ品質）。
+    // レイテンシ補償: WindowedSinc は入力100サンプル分のアルゴリズム遅延を持つ
+    // （juce_Interpolators.h の WindowedSincTraits::algorithmicLatency = 100 と照合済み。
+    // 8.0.9 からバージョンを上げるときは再照合すること）。先頭の遅延分を捨てて頭を合わせる
+    const double speedRatio = sourceRate / targetRate;
+    const auto inputFrames = source->getNumSamples();
+    const auto outputFrames = (int) std::llround ((double) inputFrames / speedRatio);
+    const auto latencyOut = (int) std::llround (100.0 * targetRate / sourceRate);
+    const int numChannels = source->getNumChannels();
+    if (outputFrames <= 0)
+        return nullptr;
+
+    // 入力の末尾にゼロパディングを足し、遅延補償で余計に消費する分（約100入力サンプル＋端数）を賄う
+    juce::AudioBuffer<float> padded (numChannels, inputFrames + 356);
+    padded.clear();
+    for (int ch = 0; ch < numChannels; ++ch)
+        padded.copyFrom (ch, 0, *source, ch, 0, inputFrames);
+
+    auto out = std::make_shared<juce::AudioBuffer<float>> (numChannels, outputFrames);
+    juce::AudioBuffer<float> scratch (1, outputFrames + latencyOut);
+    for (int ch = 0; ch < numChannels; ++ch)
+    {
+        juce::Interpolators::WindowedSinc interpolator;
+        interpolator.reset();
+        interpolator.process (speedRatio, padded.getReadPointer (ch),
+                              scratch.getWritePointer (0), outputFrames + latencyOut);
+        out->copyFrom (ch, 0, scratch, 0, latencyOut, outputFrames);
+    }
+    return out;
+}
+
+namespace
+{
+// JSON の整数契約を型まで検証する（浮動小数の切り捨て・int64 の切り詰めで正常値に化けさせない）。
+// project.json のアンカー読込と looproots 契約の解釈で共有する
+bool strictIntVar (const juce::var& v, int& out)
+{
+    if (! v.isInt() && ! v.isInt64())
+        return false;
+    const auto raw = (juce::int64) v;
+    if (raw < std::numeric_limits<int>::min() || raw > std::numeric_limits<int>::max())
+        return false;
+    out = (int) raw;
+    return true;
+}
+
+bool isNumberVar (const juce::var& v)
+{
+    return v.isDouble() || v.isInt() || v.isInt64();
+}
+} // namespace
+
+bool LoopAnchors::anchorFromContractJson (const juce::String& json, LoopAnchor& out)
+{
+    const auto parsed = juce::JSON::parse (json);
+    if (! parsed.isObject())
+        return false;
+    int version = 0;
+    if (! strictIntVar (parsed.getProperty ("version", {}), version) || version != 1)
+        return false;
+
+    LoopAnchor anchor;
+    if (! strictIntVar (parsed.getProperty ("slots_per_bar", {}), anchor.slotsPerBar)
+        || ! strictIntVar (parsed.getProperty ("loop_bars", {}), anchor.loopBars))
+        return false;
+    const auto degradedVar = parsed.getProperty ("degraded", {});
+    if (! degradedVar.isBool())
+        return false;
+    anchor.degraded = (bool) degradedVar;
+
+    int keyRoot = -1;
+    auto keyMode = KeyMode::major;
+    if (! strictIntVar (parsed.getProperty ("key_root", {}), keyRoot) || keyRoot < 0 || keyRoot > 11
+        || ! ProjectKeys::modeFromName (parsed.getProperty ("key_mode", "").toString(), keyMode))
+        return false;
+    anchor.key = ProjectKey { keyRoot, keyMode };
+
+    auto* rootsArray = parsed.getProperty ("roots", {}).getArray();
+    auto* confArray = parsed.getProperty ("confidence", {}).getArray();
+    if (rootsArray == nullptr || confArray == nullptr)
+        return false;
+    for (auto& r : *rootsArray)
+    {
+        int value = -1;
+        if (! strictIntVar (r, value))
+            return false;
+        anchor.roots.push_back (value);
+    }
+    for (auto& c : *confArray)
+    {
+        if (! isNumberVar (c))
+            return false;
+        anchor.confidence.push_back ((float) (double) c);
+    }
+    const auto sourceVar = parsed.getProperty ("source", {});
+    if (sourceVar.isString())
+        anchor.libraryPath = sourceVar.toString();
+
+    out = std::move (anchor);
+    return true; // 長さ・値域の最終判定は bpm / libraryPath を設定した後の isValid で行う
+}
+
+juce::String LoopAnchors::rootsContractJson (const LoopAnchor& anchor)
+{
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty ("version", 1);
+    obj->setProperty ("slots_per_bar", anchor.slotsPerBar);
+    obj->setProperty ("loop_bars", anchor.loopBars);
+    juce::Array<juce::var> roots, confidence;
+    for (int r : anchor.roots)
+        roots.add (r);
+    for (float c : anchor.confidence)
+        confidence.add ((double) c);
+    obj->setProperty ("roots", roots);
+    obj->setProperty ("confidence", confidence);
+    obj->setProperty ("degraded", anchor.degraded);
+    obj->setProperty ("key_root", anchor.key.root);
+    obj->setProperty ("key_mode", ProjectKeys::modeName (anchor.key.mode));
+    obj->setProperty ("source", anchor.libraryPath);
+    return juce::JSON::toString (juce::var (obj));
+}
+
 bool Project::save (juce::String& error, const juce::StringArray& keepReferencedWavs)
 {
     directory.createDirectory();
@@ -646,18 +778,9 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
     if (const auto anchorVar = parsed.getProperty ("loopAnchor", {}); anchorVar.isObject())
     {
         // 整数フィールドは**型も**契約どおりに要求する（2.0 のような浮動小数を黙って切り捨てて
-        // 正常値に化けさせない — 契約は looproots.py の「0..11 の整数」）
-        const auto strictInt = [] (const juce::var& v, int& out) -> bool
-        {
-            if (! v.isInt() && ! v.isInt64())
-                return false;
-            // 64bit値は int の範囲確認をしてから落とす（4294967296 が環境依存で 0 へ化けるのを防ぐ）
-            const auto raw = (juce::int64) v;
-            if (raw < std::numeric_limits<int>::min() || raw > std::numeric_limits<int>::max())
-                return false;
-            out = (int) raw;
-            return true;
-        };
+        // 正常値に化けさせない — 契約は looproots.py の「0..11 の整数」）。
+        // strictIntVar / isNumberVar は契約 JSON の解釈（anchorFromContractJson）と共有
+        const auto strictInt = strictIntVar;
 
         LoopAnchor anchor;
         bool typesOk = true;

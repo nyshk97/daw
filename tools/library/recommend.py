@@ -218,6 +218,7 @@ def rank(entries: list[dict], ref_meta: dict, ref_features: dict,
         out.append({
             "path": e["path"],
             "bpm": e["bpm"],
+            "loop_bars": e.get("loop_bars_estimate"),  # null あり（採用時の looproots へ渡す）
             "key_root": e["key_root"],
             "key_mode": e["key_mode"],
             "transpose_semitones": semis,

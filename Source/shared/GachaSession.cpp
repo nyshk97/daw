@@ -1,6 +1,7 @@
 #include "GachaSession.h"
 
 #include <algorithm>
+#include <limits>
 
 namespace
 {
@@ -299,6 +300,76 @@ bool GachaSession::previewCandidate (Part part, Project& project, const MidiImpo
     return true;
 }
 
+bool GachaSession::parseRecommendJson (const juce::String& json, LoopRecommendation& out)
+{
+    // 必須フィールドは**型まで**要求する（key_root: 1.5 のような値を黙って切り捨てて受理すると
+    // recommend.py 側の形式退行を検出できない — アンカー永続化の strict 検証と同じ方針）
+    const auto isNumber = [] (const juce::var& v)
+    { return v.isDouble() || v.isInt() || v.isInt64(); };
+    const auto strictInt = [] (const juce::var& v, int& value) -> bool
+    {
+        if (! v.isInt() && ! v.isInt64())
+            return false;
+        // int64 は範囲確認してから落とす（4294967296 が 0 へ切り詰められて範囲検証を通るのを防ぐ）
+        const auto raw = (juce::int64) v;
+        if (raw < std::numeric_limits<int>::min() || raw > std::numeric_limits<int>::max())
+            return false;
+        value = (int) raw;
+        return true;
+    };
+
+    const auto parsed = juce::JSON::parse (json);
+    if (! parsed.isObject())
+        return false;
+    out = {};
+    const auto bpmVar = parsed.getProperty ("ref_bpm", {});
+    const auto refKeyVar = parsed.getProperty ("ref_key", {});
+    const auto trustedVar = parsed.getProperty ("key_trusted", {});
+    if (! isNumber (bpmVar) || ! refKeyVar.isString() || ! trustedVar.isBool())
+        return false;
+    out.refBpm = (double) bpmVar;
+    out.refKeyText = refKeyVar.toString();
+    out.keyTrusted = (bool) trustedVar;
+    if (! strictInt (parsed.getProperty ("page", {}), out.page)
+        || ! strictInt (parsed.getProperty ("total", {}), out.total)
+        || out.total < 0 || out.page < 1)
+        return false;
+    auto* array = parsed.getProperty ("candidates", {}).getArray();
+    if (array == nullptr)
+        return false;
+    for (const auto& item : *array)
+    {
+        if (! item.isObject())
+            return false;
+        LoopCandidate candidate;
+        const auto pathVar = item.getProperty ("path", {});
+        const auto candBpmVar = item.getProperty ("bpm", {});
+        const auto ratioVar = item.getProperty ("bpm_ratio", {});
+        const auto reasonVar = item.getProperty ("reason", {});
+        int root = -1;
+        KeyMode mode = KeyMode::major;
+        if (! pathVar.isString() || ! isNumber (candBpmVar) || ! isNumber (ratioVar)
+            || ! reasonVar.isString()
+            || ! strictInt (item.getProperty ("key_root", {}), root) || root < 0 || root > 11
+            || ! strictInt (item.getProperty ("transpose_semitones", {}), candidate.transposeSemitones)
+            || ! ProjectKeys::modeFromName (item.getProperty ("key_mode", "").toString(), mode))
+            return false; // 1件でも壊れていたらページごと捨てる（読める分だけ表示すると順位がずれる）
+        candidate.path = pathVar.toString();
+        candidate.bpm = (double) candBpmVar;
+        if (candidate.path.isEmpty() || candidate.bpm <= 0.0)
+            return false;
+        candidate.keyRoot = root;
+        candidate.keyMode = mode;
+        // loop_bars は nullable（尺が半端な素材）。型違い・int範囲外も「不明」扱いに落とす
+        int bars = 0;
+        candidate.loopBars = strictInt (item.getProperty ("loop_bars", {}), bars) ? bars : 0;
+        candidate.bpmRatio = (double) ratioVar;
+        candidate.reason = reasonVar.toString();
+        out.candidates.push_back (std::move (candidate));
+    }
+    return true;
+}
+
 bool GachaSession::previewLoopCandidate (Project& project, const LoopPreviewInput& input,
                                          int preferredTrackIndex)
 {
@@ -363,13 +434,18 @@ bool GachaSession::previewLoopCandidate (Project& project, const LoopPreviewInpu
     const int trackIndex = findTrack (project, preview.trackId);
     if (trackIndex < 0)
     {
-        // 対象トラックが消えている＝入口の撤去漏れ（MIDI パーツの失敗経路と同じ規則）
+        // 対象トラックが消えている＝入口の撤去漏れ。**ループの取り消しと同じ復元**を通す —
+        // 他パーツが残っていても値（BPM・キー・アンカー）を巻き戻し、追従ベースも連動撤去する
+        // （restoreProjectValues を省くと「アンカーあり・ループ無し」のまま他パーツを確定できてしまう）
         resetPart (Part::loops);
-        if (! hasPreview())
+        if (previews[(size_t) Part::bass].active)
         {
-            restoreProjectValues (project);
-            resetSession();
+            removePartObjects (Part::bass, project);
+            resetPart (Part::bass);
         }
+        restoreProjectValues (project);
+        if (! hasPreview())
+            resetSession();
         return false;
     }
 
@@ -377,6 +453,7 @@ bool GachaSession::previewLoopCandidate (Project& project, const LoopPreviewInpu
     // BPM が変わると同じ絶対サンプルは小節頭でなくなる — 呼び出し側が新 BPM で
     // 小節頭を換算し直して渡す契約）
     preview.startSample = juce::jmax ((juce::int64) 0, input.startSample);
+    preview.audioSampleRate = input.audioSampleRate;
 
     // 差し替え: 前候補の仮クリップを取り除いてから置き直す
     auto& clips = project.tracks[(size_t) trackIndex].clips;

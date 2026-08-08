@@ -27,6 +27,12 @@ public:
     std::function<void()> onRoll;        // 振り直す（パーツ・カード・ロックは getter で読む）
     std::function<void (int)> onPick;    // 候補クリック（index は candidates() の添字）
     std::function<void()> onKeep;        // 残す（全パーツ一括確定）
+
+    // ---- Loops タブ（モック確定仕様: 行クリック=試聴・✓=敷く・ページング・アンカー行）----
+    std::function<void (int)> onLoopAudition;      // 行クリック＝試聴のトグル（同じ行の再クリックで停止）
+    std::function<void (int)> onLoopAdopt;         // ✓（タイムラインに敷く）
+    std::function<void (int)> onLoopPageRequested; // 「← 前の5本 / 次の5本 →」（引数 = 要求ページ）
+    std::function<void()> onAnchorRelease;         // アンカーの明示解除（差し替えと並ぶ唯一の削除経路）
     std::function<void (Part)> onCardChanged; // カード変更（そのパーツの仮配置の撤去用）
     std::function<void()> onAlignReference; // 「原曲を頭出し」（実行側がクリック時に再解決する）
     // 頭出しの可否問い合わせ（空文字=可、非空=理由。source/groove/gates のファイルI/Oを含むため
@@ -84,11 +90,25 @@ public:
     void setPreviewActive (Part part, bool active);
     void clearAllPreviewBadges(); // 「残す」確定・全撤去後（両パーツのバッジ・選択を畳む）
 
+    // ---- Loops タブの状態 ----
+    void setLoopPage (GachaSession::LoopRecommendation page); // おすすめ1ページぶんを表示へ反映
+    const GachaSession::LoopRecommendation& loopPage() const { return loopRecommendation; }
+    void setAuditioningRow (int row); // 試聴中の行（-1 = 停止。行の ▶/▮▮ 表示に反映）
+    int auditionRow() const { return auditioningRow; }
+    // アンカー行の再描画（採用・解除・undo/redo 後に MainComponent から呼ぶ。
+    // 表示は project->loopAnchor の真実から導出する）
+    void refreshAnchorRow()
+    {
+        updateControls();
+        resized();
+    }
+
     void resized() override;
     void paint (juce::Graphics& g) override;
 
 private:
     class KeepChipRow; // 選択行の「仮配置中」バッジ（ホバーで「ビートを残す」ボタンに変わる）
+    class LoopAdoptRow; // Loops 行の ✓（敷く）ボタン＋選択行の keep チップ
 
     // パーツごとに独立して保持する状態（切り替えでウィジェットに入れ替える）
     struct PartUiState
@@ -99,7 +119,11 @@ private:
         bool previewActive = false;                  // 仮配置中（バッジ表示）
     };
 
-    int getNumRows() override { return (int) parts[(size_t) currentPart].items.size(); }
+    int getNumRows() override
+    {
+        return currentPart == Part::loops ? (int) loopRecommendation.candidates.size()
+                                          : (int) parts[(size_t) currentPart].items.size();
+    }
     void paintListBoxItem (int row, juce::Graphics& g, int width, int height, bool selected) override;
     juce::Component* refreshComponentForRow (int row, bool selected,
                                              juce::Component* existing) override;
@@ -110,17 +134,30 @@ private:
     void updateControls(); // 全ロック時の「振り直す」無効化・案内文の切り替え
     void clearLocks();     // トグルOFF＋確保済みseedの破棄（カード変更時）
     void handleLockToggle (int laneIndex);
-    int numLanes() const { return currentPart == Part::drums ? 3 : 2; }
+    int numLanes() const
+    {
+        return currentPart == Part::drums ? 3
+             : currentPart == Part::bass  ? 2
+                                          : 0; // loops はレーンロックを持たない（決定的ランキング）
+    }
     const char* laneName (int laneIndex) const;
 
     Project* project = nullptr;
     bool toolsAvailable = false;
     bool bassToolAvailable = false;
+    bool loopToolAvailable = false;
     Part currentPart = Part::drums;
     PartUiState parts[GachaSession::numParts];
+    GachaSession::LoopRecommendation loopRecommendation; // Loops タブの表示中ページ
+    int auditioningRow = -1;                             // 試聴中の行（-1 = なし）
     std::vector<juce::File> cardFolders; // コンボの並びと対応
 
-    juce::TextButton drumsTab { "Drums" }, bassTab { "Bass" }; // パーツ切り替え（ラジオ動作）
+    juce::TextButton drumsTab { "Drums" }, bassTab { "Bass" }, loopsTab { "Loops" }; // パーツ切り替え（ラジオ動作）
+    // Loops タブ専用（他パーツでは非表示）
+    juce::Label anchorLabel;                 // 採用中アンカーの表示（project->loopAnchor から導出）
+    juce::TextButton anchorReleaseButton { juce::String::fromUTF8 (u8"解除") };
+    juce::TextButton prevPageButton, nextPageButton;
+    juce::Label pageInfoLabel;               // 「候補 N本中 x〜y位」
     juce::ComboBox cardBox;
     juce::Label lockCaption;   // トグル行の「ロック」ラベル
     juce::TextButton lockButtons[3]; // drums: kick/snare/hat / bass: 進行/リズム（3つ目は隠す）

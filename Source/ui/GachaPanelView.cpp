@@ -76,10 +76,102 @@ private:
     Chip chip;
 };
 
+// Loops 行の右端の ✓（タイムラインに敷く）。行クリック＝試聴と役割を分離する（モック確定仕様）。
+// 仮配置中の選択行には KeepChipRow と同じ「仮配置中/ビートを残す」チップも並べる
+class GachaPanelView::LoopAdoptRow final : public juce::Component
+{
+public:
+    LoopAdoptRow()
+    {
+        setInterceptsMouseClicks (false, true); // 行は透過（試聴クリックは ListBox 側が受ける）
+        addAndMakeVisible (adopt);
+        addChildComponent (keepChip);
+    }
+
+    void update (bool showKeepChip, std::function<void()> onAdoptClick,
+                 std::function<void()> onKeepClick)
+    {
+        adopt.onAdoptClick = std::move (onAdoptClick);
+        keepChip.onKeepClick = std::move (onKeepClick);
+        keepChip.setVisible (showKeepChip);
+    }
+
+    void resized() override
+    {
+        adopt.setBounds (getWidth() - adoptSize - 8, getHeight() / 2 - adoptSize / 2,
+                         adoptSize, adoptSize);
+        keepChip.setBounds (adopt.getX() - 84 - 6, getHeight() / 2 - 9, 84, 18);
+    }
+
+private:
+    static constexpr int adoptSize = 24;
+
+    struct AdoptButton final : public juce::Component,
+                               public juce::SettableTooltipClient
+    {
+        AdoptButton()
+        {
+            setMouseCursor (juce::MouseCursor::PointingHandCursor);
+            setTooltip (juce::String::fromUTF8 (u8"タイムラインに敷く（キー/BPM の設定を確認します）"));
+        }
+        void mouseEnter (const juce::MouseEvent&) override { hovered = true; repaint(); }
+        void mouseExit (const juce::MouseEvent&) override { hovered = false; repaint(); }
+        void mouseDown (const juce::MouseEvent&) override
+        {
+            if (onAdoptClick != nullptr)
+                onAdoptClick();
+        }
+        void paint (juce::Graphics& g) override
+        {
+            const auto bounds = getLocalBounds().toFloat();
+            g.setColour (hovered ? Theme::accent.brighter (0.15f) : Theme::accent);
+            g.fillRoundedRectangle (bounds, 5.0f);
+            g.setColour (juce::Colours::white);
+            g.setFont (Fonts::small());
+            g.drawText (juce::CharPointer_UTF8 ("\xe2\x9c\x93"), getLocalBounds(),
+                        juce::Justification::centred);
+        }
+        std::function<void()> onAdoptClick;
+        bool hovered = false;
+    };
+
+    struct KeepChip final : public juce::Component,
+                            public juce::SettableTooltipClient
+    {
+        KeepChip()
+        {
+            setMouseCursor (juce::MouseCursor::PointingHandCursor);
+            setTooltip (juce::String::fromUTF8 (u8"仮配置中の全パーツをプロジェクトに残す（確定）"));
+        }
+        void mouseEnter (const juce::MouseEvent&) override { hovered = true; repaint(); }
+        void mouseExit (const juce::MouseEvent&) override { hovered = false; repaint(); }
+        void mouseDown (const juce::MouseEvent&) override
+        {
+            if (onKeepClick != nullptr)
+                onKeepClick();
+        }
+        void paint (juce::Graphics& g) override
+        {
+            const auto bounds = getLocalBounds().toFloat();
+            g.setColour (hovered ? Theme::playGreen.withAlpha (0.9f) : Theme::accent);
+            g.fillRoundedRectangle (bounds, 4.0f);
+            g.setColour (juce::Colours::white);
+            g.setFont (Fonts::small());
+            g.drawText (hovered ? jp (u8"ビートを残す") : jp (u8"仮配置中"), getLocalBounds(),
+                        juce::Justification::centred);
+        }
+        std::function<void()> onKeepClick;
+        bool hovered = false;
+    };
+
+    AdoptButton adopt;
+    KeepChip keepChip;
+};
+
 GachaPanelView::GachaPanelView()
 {
     // パーツタブ（ラジオ動作）。将来 Keys 等が +1 されるだけの構造
-    for (auto* tab : { &drumsTab, &bassTab })
+    for (auto* tab : { &drumsTab, &bassTab, &loopsTab })
     {
         addAndMakeVisible (*tab);
         tab->setClickingTogglesState (false);
@@ -91,7 +183,40 @@ GachaPanelView::GachaPanelView()
     }
     drumsTab.onClick = [this] { switchPart (Part::drums); };
     bassTab.onClick = [this] { switchPart (Part::bass); };
+    loopsTab.onClick = [this] { switchPart (Part::loops); };
     drumsTab.setToggleState (true, juce::dontSendNotification);
+
+    // ---- Loops タブ専用（他パーツでは非表示。可視切り替えは updateControls / resized）----
+    addChildComponent (anchorLabel);
+    anchorLabel.setFont (Fonts::small());
+    anchorLabel.setColour (juce::Label::textColourId, Theme::accent);
+    anchorLabel.setMinimumHorizontalScale (0.8f);
+    addChildComponent (anchorReleaseButton);
+    anchorReleaseButton.setTooltip (jp (u8"アンカーを解除する（クリップは残る。ベースガチャは"
+                                        u8"カード駆動に戻る・⌘Zで戻せる）"));
+    anchorReleaseButton.onClick = [this]
+    {
+        if (onAnchorRelease)
+            onAnchorRelease();
+    };
+    addChildComponent (prevPageButton);
+    addChildComponent (nextPageButton);
+    addChildComponent (pageInfoLabel);
+    prevPageButton.setButtonText (jp (u8"← 前の5本"));
+    nextPageButton.setButtonText (jp (u8"次の5本 →"));
+    pageInfoLabel.setJustificationType (juce::Justification::centred);
+    pageInfoLabel.setFont (Fonts::small());
+    pageInfoLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.55f));
+    prevPageButton.onClick = [this]
+    {
+        if (onLoopPageRequested && loopRecommendation.page > 1)
+            onLoopPageRequested (loopRecommendation.page - 1);
+    };
+    nextPageButton.onClick = [this]
+    {
+        if (onLoopPageRequested)
+            onLoopPageRequested (loopRecommendation.page + 1);
+    };
 
     addAndMakeVisible (cardBox);
     cardBox.setTextWhenNoChoicesAvailable (jp (u8"カードがありません"));
@@ -108,7 +233,10 @@ GachaPanelView::GachaPanelView()
             return; // switchPart の復元などで発火した同値変更は無視
         state.cardFolder = folder;
         // 前カードの候補・ロックはこのカードでは意味を持たない（存在しない .mid を開く事故になる）
-        setCandidates ({});
+        if (currentPart == Part::loops)
+            setLoopPage ({}); // Loops の候補は loopRecommendation 側（旧カードのおすすめを残さない）
+        else
+            setCandidates ({});
         clearLocks();
         updateControls();
         if (onCardChanged)
@@ -251,6 +379,7 @@ void GachaPanelView::refreshAvailability()
 {
     toolsAvailable = ReferenceTools::gachaAvailable();
     bassToolAvailable = ReferenceTools::bassGachaAvailable();
+    loopToolAvailable = ReferenceTools::loopGachaAvailable();
     updateControls();
 }
 
@@ -258,9 +387,13 @@ void GachaPanelView::switchPart (Part part)
 {
     if (part == currentPart)
         return;
+    // Loops を離れるとき試聴を止める（同じ行の再クリック＝停止のトグルをそのまま使う）
+    if (currentPart == Part::loops && auditioningRow >= 0 && onLoopAudition)
+        onLoopAudition (auditioningRow);
     currentPart = part;
     drumsTab.setToggleState (part == Part::drums, juce::dontSendNotification);
     bassTab.setToggleState (part == Part::bass, juce::dontSendNotification);
+    loopsTab.setToggleState (part == Part::loops, juce::dontSendNotification);
 
     // 状態はすべて parts[] にあるので、ウィジェットへ反映し直すだけ（退避は不要 —
     // cardBox.onChange / handleLockToggle が都度 parts[] を更新している）
@@ -336,6 +469,23 @@ void GachaPanelView::setCandidates (std::vector<GachaSession::Candidate> list)
     resized(); // 案内文の出入りで一覧の上端が変わる
 }
 
+void GachaPanelView::setLoopPage (GachaSession::LoopRecommendation page)
+{
+    loopRecommendation = std::move (page);
+    auditioningRow = -1; // ページが変われば行の意味が変わる（試聴の停止は呼び出し側が行う）
+    listBox.deselectAllRows();
+    listBox.updateContent();
+    listBox.repaint();
+    updateControls();
+    resized();
+}
+
+void GachaPanelView::setAuditioningRow (int row)
+{
+    auditioningRow = row;
+    listBox.repaint();
+}
+
 void GachaPanelView::handleLockToggle (int laneIndex)
 {
     auto& state = parts[(size_t) currentPart];
@@ -393,29 +543,48 @@ void GachaPanelView::updateControls()
 {
     auto& state = parts[(size_t) currentPart];
     const bool isDrums = currentPart == Part::drums;
-    const bool partToolAvailable = isDrums ? toolsAvailable : bassToolAvailable;
+    const bool isLoops = currentPart == Part::loops;
+    const bool partToolAvailable = isDrums ? toolsAvailable
+                                 : isLoops ? loopToolAvailable
+                                           : bassToolAvailable;
     const bool hasCard = selectedCardFolder() != juce::File();
     const int lanes = numLanes();
-    bool allLocked = true;
+    bool allLocked = lanes > 0; // loops はレーンを持たない（決定的ランキング）
     for (int i = 0; i < lanes; ++i)
         allLocked = allLocked && state.locks[i].isNotEmpty();
 
     bassTab.setEnabled (bassToolAvailable);
     bassTab.setTooltip (bassToolAvailable ? juce::String() : ReferenceTools::unavailableReason());
+    // Loops タブは**常に開ける**（アンカーの解除 UI がこのタブにしか無い — ツールや index が
+    // 無い別マシンでも、保存済みアンカーによるベース追従を解除できる必要がある）。
+    // ツール可用性で無効になるのは「おすすめを出す」だけ
+    loopsTab.setEnabled (true);
+    loopsTab.setTooltip (loopToolAvailable ? juce::String()
+                                           : ReferenceTools::loopGachaUnavailableReason());
 
-    // 全レーンロック時は振れない（CLI は重複排除して1件しか生成しない — 8件前提の一覧と矛盾する）
-    rollButton.setEnabled (partToolAvailable && hasCard && ! allLocked);
-    rollButton.setTooltip (allLocked ? jp (u8"全レーンをロックすると振り直せません（同じ候補しか出ないため）")
-                                     : juce::String());
-    // ロック中はボタン自身が対象を名乗る（「🎲 snare・hatを振り直す」— 押す前に効果が読める）
-    juce::StringArray freeLanes;
-    for (int i = 0; i < lanes; ++i)
-        if (state.locks[i].isEmpty())
-            freeLanes.add (laneName (i));
-    rollButton.setButtonText (freeLanes.size() == lanes || freeLanes.isEmpty()
-                                  ? jp (u8"🎲 振り直す")
-                                  : jp (u8"🎲 ") + freeLanes.joinIntoString (jp (u8"・"))
-                                        + jp (u8"を振り直す"));
+    if (isLoops)
+    {
+        // おすすめは決定的なので「振り直す」でなく「出す」（同じ入力→同じ5本。探索はページング）
+        rollButton.setButtonText (jp (u8"✨ おすすめを出す"));
+        rollButton.setEnabled (partToolAvailable && hasCard);
+        rollButton.setTooltip ({});
+    }
+    else
+    {
+        // 全レーンロック時は振れない（CLI は重複排除して1件しか生成しない — 8件前提の一覧と矛盾する）
+        rollButton.setEnabled (partToolAvailable && hasCard && ! allLocked);
+        rollButton.setTooltip (allLocked ? jp (u8"全レーンをロックすると振り直せません（同じ候補しか出ないため）")
+                                         : juce::String());
+        // ロック中はボタン自身が対象を名乗る（「🎲 snare・hatを振り直す」— 押す前に効果が読める）
+        juce::StringArray freeLanes;
+        for (int i = 0; i < lanes; ++i)
+            if (state.locks[i].isEmpty())
+                freeLanes.add (laneName (i));
+        rollButton.setButtonText (freeLanes.size() == lanes || freeLanes.isEmpty()
+                                      ? jp (u8"🎲 振り直す")
+                                      : jp (u8"🎲 ") + freeLanes.joinIntoString (jp (u8"・"))
+                                            + jp (u8"を振り直す"));
+    }
     // カード選択はカードが在れば常に有効（ガチャツール drums.py の有無に相乗りしない —
     // レポートの閲覧/生成は独立判定なので、ガチャだけ欠けた環境でもカードは選べる必要がある）
     cardBox.setEnabled (true);
@@ -494,7 +663,19 @@ void GachaPanelView::updateControls()
 
     // 下部の1行ガイド（いまの状態で次にやることを言う）
     const int sel = selectedCandidate();
-    if (! state.items.empty())
+    const bool rowsEmpty = isLoops ? loopRecommendation.candidates.empty() : state.items.empty();
+    if (isLoops)
+    {
+        if (! rowsEmpty)
+            statusLabel.setText (state.previewActive
+                                     ? jp (u8"ループを仮配置中 — 「仮配置中」をクリックでビート全体を残す（確定）・"
+                                            u8"別の ✓ で差し替え")
+                                     : jp (u8"行クリックで試聴 → 気に入ったら右端の ✓ でタイムラインに敷く"),
+                                 juce::dontSendNotification);
+        else
+            statusLabel.setText ({}, juce::dontSendNotification);
+    }
+    else if (! state.items.empty())
     {
         if (allLocked)
             statusLabel.setText (jp (u8"全レーンをロック中 — 振り直しても同じ候補しか出ません"),
@@ -514,20 +695,57 @@ void GachaPanelView::updateControls()
     }
 
     if (! partToolAvailable)
-        infoLabel.setText (ReferenceTools::unavailableReason(), juce::dontSendNotification);
+        infoLabel.setText (isLoops ? ReferenceTools::loopGachaUnavailableReason()
+                                   : ReferenceTools::unavailableReason(),
+                           juce::dontSendNotification);
     else if (! hasCard)
         infoLabel.setText (jp (u8"カードがありません。タイムラインのオーディオリージョンを"
                                u8"右クリック →「リファレンスとして分析…」で作成できます。"),
                            juce::dontSendNotification);
-    else if (state.items.empty())
-        infoLabel.setText (isDrums
+    else if (rowsEmpty)
+        infoLabel.setText (isLoops
+                               ? jp (u8"「おすすめを出す」で、リファレンスに雰囲気が近い上モノループを"
+                                     u8"ライブラリから5本選びます。行クリックで試聴、✓ で敷きます。")
+                           : isDrums
                                ? jp (u8"「振り直す」で候補を8件生成します。候補をクリックすると"
                                      u8"再生ヘッドの小節頭に仮配置され、曲と一緒に鳴らせます。")
                                : jp (u8"「振り直す」でベース候補を8件生成します。ドラムの仮配置が"
                                      u8"あれば同じ位置に重なり、キックに噛み合った候補になります。"),
                            juce::dontSendNotification);
-    infoLabel.setVisible (! partToolAvailable || ! hasCard || state.items.empty());
-    listBox.setVisible (! infoLabel.isVisible() || ! state.items.empty());
+    infoLabel.setVisible (! partToolAvailable || ! hasCard || rowsEmpty);
+    listBox.setVisible (! infoLabel.isVisible() || ! rowsEmpty);
+
+    // ---- Loops 専用: アンカー行とページング ----
+    const bool showAnchor = isLoops && project != nullptr && project->loopAnchor.has_value();
+    anchorLabel.setVisible (showAnchor);
+    anchorReleaseButton.setVisible (showAnchor);
+    if (showAnchor)
+    {
+        const auto& anchor = *project->loopAnchor;
+        const auto name = juce::File::createFileWithoutCheckingPath (anchor.libraryPath)
+                              .getFileNameWithoutExtension();
+        anchorLabel.setText (jp (u8"⚓ ") + name + " — "
+                                 + ProjectKeys::displayName (anchor.key) + " / "
+                                 + juce::String (anchor.bpm,
+                                                 anchor.bpm == std::floor (anchor.bpm) ? 0 : 1)
+                                 + jp (u8"bpm・ベースは自動でループ追従"),
+                             juce::dontSendNotification);
+    }
+    const bool showPaging = isLoops && ! loopRecommendation.candidates.empty();
+    prevPageButton.setVisible (showPaging);
+    nextPageButton.setVisible (showPaging);
+    pageInfoLabel.setVisible (showPaging);
+    if (showPaging)
+    {
+        const int start = (loopRecommendation.page - 1) * 5 + 1;
+        const int end = start + (int) loopRecommendation.candidates.size() - 1;
+        pageInfoLabel.setText (jp (u8"候補 ") + juce::String (loopRecommendation.total)
+                                   + jp (u8"本中 ") + juce::String (start) + jp (u8"〜")
+                                   + juce::String (end) + jp (u8"位"),
+                               juce::dontSendNotification);
+        prevPageButton.setEnabled (loopRecommendation.page > 1);
+        nextPageButton.setEnabled (end < loopRecommendation.total);
+    }
 }
 
 void GachaPanelView::showStatus (const juce::String& text)
@@ -562,6 +780,47 @@ void GachaPanelView::clearAllPreviewBadges()
 void GachaPanelView::paintListBoxItem (int row, juce::Graphics& g, int width, int height,
                                        bool selected)
 {
+    // ---- Loops 行: 名前＋メタ（キー/BPM・移調・理由）の2行。試聴中は左端にアクセント帯 ----
+    if (currentPart == Part::loops)
+    {
+        if (row < 0 || row >= (int) loopRecommendation.candidates.size())
+            return;
+        const auto& c = loopRecommendation.candidates[(size_t) row];
+        if (selected)
+        {
+            g.setColour (Theme::accent.withAlpha (0.25f));
+            g.fillRect (0, 0, width, height);
+        }
+        if (row == auditioningRow)
+        {
+            g.setColour (Theme::accent);
+            g.fillRect (0, 0, 3, height);
+        }
+        const int rank = (loopRecommendation.page - 1) * 5 + row + 1;
+        const auto name = juce::File::createFileWithoutCheckingPath (c.path)
+                              .getFileNameWithoutExtension();
+        g.setColour (juce::Colours::white.withAlpha (selected ? 0.94f : 0.78f));
+        g.setFont (Fonts::body());
+        g.drawText ((row == auditioningRow ? jp (u8"▮▮ ") : jp (u8"▶ "))
+                        + juce::String (rank) + ". " + name,
+                    10, 2, width - 48, height / 2, juce::Justification::centredLeft);
+
+        const auto keyText = ProjectKeys::displayName (ProjectKey { c.keyRoot, c.keyMode });
+        const auto semis = c.transposeSemitones;
+        const auto keyPart = semis == 0 ? jp (u8"キーそのまま")
+                                        : jp (u8"移調 ") + juce::String (semis > 0 ? "+" : "")
+                                              + juce::String (semis) + jp (u8" 半音");
+        const int pct = (int) std::lround ((c.bpmRatio - 1.0) * 100.0);
+        g.setColour (juce::Colours::white.withAlpha (0.55f));
+        g.setFont (Fonts::small());
+        g.drawText (keyText + " " + juce::String (c.bpm, c.bpm == std::floor (c.bpm) ? 0 : 1)
+                        + jp (u8"bpm（") + keyPart + jp (u8"・BPM ")
+                        + juce::String (pct >= 0 ? "+" : "") + juce::String (pct) + jp (u8"%） — ")
+                        + c.reason,
+                    10, height / 2, width - 48, height / 2 - 2, juce::Justification::centredLeft);
+        return;
+    }
+
     const auto& state = parts[(size_t) currentPart];
     if (row < 0 || row >= (int) state.items.size())
         return;
@@ -646,6 +905,28 @@ juce::Component* GachaPanelView::refreshComponentForRow (int row, bool selected,
     if (! juce::isPositiveAndBelow (row, getNumRows()))
         return nullptr;
 
+    if (currentPart == Part::loops)
+    {
+        // Loops 行は全行に ✓（敷く）ボタン。仮配置中の選択行には keep チップも並ぶ
+        auto* loopRow = dynamic_cast<LoopAdoptRow*> (owned.get());
+        if (loopRow == nullptr)
+        {
+            loopRow = new LoopAdoptRow();
+            owned.reset (loopRow);
+        }
+        loopRow->update (selected && parts[(size_t) Part::loops].previewActive,
+                         [this, row]
+                         {
+                             // ✓ は子コンポーネントで ListBox の行選択を通らない — 選択を採用行へ
+                             // 揃えてから採用する（「仮配置中」チップが別の行に出るのを防ぐ）
+                             listBox.selectRow (row);
+                             if (onLoopAdopt)
+                                 onLoopAdopt (row);
+                         },
+                         [this] { if (onKeep) onKeep(); });
+        return owned.release();
+    }
+
     auto* chipRow = dynamic_cast<KeepChipRow*> (owned.get());
     if (chipRow == nullptr)
     {
@@ -660,6 +941,13 @@ juce::Component* GachaPanelView::refreshComponentForRow (int row, bool selected,
 
 void GachaPanelView::listBoxItemClicked (int row, const juce::MouseEvent&)
 {
+    if (currentPart == Part::loops)
+    {
+        // 行クリック＝試聴のトグル（採用は右端の ✓ だけ — モック確定仕様）
+        if (row >= 0 && row < (int) loopRecommendation.candidates.size() && onLoopAudition)
+            onLoopAudition (row);
+        return;
+    }
     if (row >= 0 && row < (int) parts[(size_t) currentPart].items.size() && onPick)
         onPick (row);
 }
@@ -673,12 +961,14 @@ void GachaPanelView::resized()
 {
     auto area = getLocalBounds().reduced (14, 10);
 
-    // パーツタブ（Drums / Bass）
+    // パーツタブ（Drums / Bass / Loops）
     auto tabRow = area.removeFromTop (24);
-    const int tabWidth = (tabRow.getWidth() - 6) / 2;
+    const int tabWidth = (tabRow.getWidth() - 12) / 3;
     drumsTab.setBounds (tabRow.removeFromLeft (tabWidth));
     tabRow.removeFromLeft (6);
-    bassTab.setBounds (tabRow);
+    bassTab.setBounds (tabRow.removeFromLeft (tabWidth));
+    tabRow.removeFromLeft (6);
+    loopsTab.setBounds (tabRow);
     area.removeFromTop (8);
 
     auto cardRow = area.removeFromTop (26);
@@ -695,22 +985,36 @@ void GachaPanelView::resized()
     reportProgressLabel.setBounds (reportRow);
     area.removeFromTop (8);
 
-    auto lockRow = area.removeFromTop (24);
-    lockCaption.setBounds (lockRow.removeFromLeft (40));
     const int lanes = numLanes();
-    const int lockWidth = (lockRow.getWidth() - (lanes - 1) * 6) / lanes;
-    for (int i = 0; i < lanes; ++i)
+    lockCaption.setVisible (lanes > 0);
+    if (lanes > 0) // loops はロック行を持たない
     {
-        if (i > 0)
-            lockRow.removeFromLeft (6);
-        lockButtons[i].setBounds (i == lanes - 1 ? lockRow : lockRow.removeFromLeft (lockWidth));
+        auto lockRow = area.removeFromTop (24);
+        lockCaption.setBounds (lockRow.removeFromLeft (40));
+        const int lockWidth = (lockRow.getWidth() - (lanes - 1) * 6) / lanes;
+        for (int i = 0; i < lanes; ++i)
+        {
+            if (i > 0)
+                lockRow.removeFromLeft (6);
+            lockButtons[i].setBounds (i == lanes - 1 ? lockRow : lockRow.removeFromLeft (lockWidth));
+        }
+        area.removeFromTop (8);
     }
-    area.removeFromTop (8);
+    else if (anchorLabel.isVisible()) // アンカー行（採用中のみ。ロック行と同じ段に住む）
+    {
+        auto anchorRow = area.removeFromTop (24);
+        anchorReleaseButton.setBounds (anchorRow.removeFromRight (52));
+        anchorRow.removeFromRight (6);
+        anchorLabel.setBounds (anchorRow);
+        area.removeFromTop (8);
+    }
 
     rollButton.setBounds (area.removeFromTop (28));
     area.removeFromTop (10);
 
-    if (infoLabel.isVisible() && parts[(size_t) currentPart].items.empty())
+    const bool rowsEmpty = currentPart == Part::loops ? loopRecommendation.candidates.empty()
+                                                      : parts[(size_t) currentPart].items.empty();
+    if (infoLabel.isVisible() && rowsEmpty)
     {
         infoLabel.setBounds (area.removeFromTop (72));
         area.removeFromTop (4);
@@ -718,5 +1022,13 @@ void GachaPanelView::resized()
     // 下部の1行ガイド（2行ぶんの高さ。候補がないときは空文字で場所だけ確保）
     statusLabel.setBounds (area.removeFromBottom (32));
     area.removeFromBottom (4);
+    if (prevPageButton.isVisible()) // Loops のページング行（一覧とガイドの間）
+    {
+        auto pageRow = area.removeFromBottom (24);
+        prevPageButton.setBounds (pageRow.removeFromLeft (84));
+        nextPageButton.setBounds (pageRow.removeFromRight (84));
+        pageInfoLabel.setBounds (pageRow);
+        area.removeFromBottom (4);
+    }
     listBox.setBounds (area);
 }
