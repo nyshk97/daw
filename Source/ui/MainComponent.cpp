@@ -410,6 +410,15 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         cancelGachaPreview();
         return true;
     };
+    // ループ採用の仮クリップ（音声）への操作も「撤去して中止」（クリップは ID を持たないため
+    // fileName で判定する）
+    timeline.onPreviewClipGesture = [this] (juce::uint64 trackId, const juce::String& fileName)
+    {
+        if (! gachaSession.isPreviewClip (trackId, fileName))
+            return false;
+        cancelGachaPreview();
+        return true;
+    };
     // 自動作成トラックのリネーム・楽器変更も「撤去して中止」（ヘッダのコールバック内からの
     // 呼び出しになるため、cancelGachaPreview のヘッダ rebuild は非同期で行われる）
     headers.onTrackEditBlocked = [this] (int index)
@@ -1047,8 +1056,28 @@ void MainComponent::requestDeleteClipAt (int trackIndex, int clipIndex)
             // 非同期ダイアログの間にモデルが変わっている可能性があるので再検証
             if (trackIndex >= (int) project->tracks.size())
                 return;
+            if (clipIndex >= (int) project->tracks[(size_t) trackIndex].clips.size())
+                return;
+            // ループ採用の仮クリップは「撤去して中止」（削除でなくキャンセル扱い）
+            const auto& target = project->tracks[(size_t) trackIndex].clips[(size_t) clipIndex];
+            if (gachaSession.isPreviewClip (project->tracks[(size_t) trackIndex].id, target.fileName))
+            {
+                cancelGachaPreview();
+                return;
+            }
+            const auto expectedFile = target.fileName;
+            const auto expectedStart = target.startSample;
+
+            // begin の willBegin と同じ撤去を**先に**行い、index ずれをここで吸収する
+            // （begin 後の再検証だと、中止したとき空の undo 履歴が1件残る）。
+            // 撤去後は**同一性まで**再検証する — 別のクリップを消さないため
+            cancelGachaPreview();
+            if (trackIndex >= (int) project->tracks.size())
+                return;
             auto& clips = project->tracks[(size_t) trackIndex].clips;
-            if (clipIndex >= (int) clips.size())
+            if (clipIndex >= (int) clips.size()
+                || clips[(size_t) clipIndex].fileName != expectedFile
+                || clips[(size_t) clipIndex].startSample != expectedStart)
                 return;
 
             Log::info ("clip.delete", "track=" + juce::String (trackIndex)
@@ -3401,10 +3430,26 @@ void MainComponent::keepGachaCandidate()
 {
     if (! gachaSession.hasPreview())
         return;
+    // keep が失敗＝セッション全体キャンセルになるケース（ループのWAV書き出し失敗等）に備えて、
+    // 撤去されるトラックの有無を**先に**記録する（cancelGachaPreview と同じ手順）
+    bool trackRemoved = false;
+    for (int i = 0; i < GachaSession::numParts; ++i)
+        trackRemoved = trackRemoved
+                       || gachaSession.trackIsPreviewOwned (
+                              gachaSession.previewTrackId ((GachaSession::Part) i));
+    const bool hadLoops = gachaSession.hasPreview (GachaSession::Part::loops);
+
     if (! gachaSession.keep (*project, undoStack)) // 全パーツ一括で pushCommitted 1件（redo履歴破棄）
     {
-        // keep 不成立＝キャンセル相当の復元が走っている（BPM・キー・アンカーが baseline へ）
-        syncTransportAfterGachaRestore();
+        // keep 不成立＝キャンセル相当（仮オブジェクトの撤去・値の復元が走っている）。
+        // transport 同期だけでなく、通常キャンセルと同じ後処理（選択解除・ヘッダの
+        // unbind/rebuild・pushSnapshot）まで通す — 省くと削除済みプレビューが鳴り続ける
+        afterGachaCancel (trackRemoved);
+        if (hadLoops)
+            rightPanel.gachaPanel().showStatus (
+                jp (u8"ループの WAV 書き出しに失敗したため、仮配置をキャンセルしました"));
+        Log::error ("gacha.keep_failed", hadLoops ? "reason=loop_materialize_or_missing"
+                                                  : "reason=missing_objects");
         return;
     }
     setDirty (true); // 「残す」で初めてプロジェクトの変更として扱う（保存は⌘S）
@@ -3430,8 +3475,9 @@ void MainComponent::syncTransportAfterGachaRestore()
 
     // バッジもセッションの真実へ同期する — 失敗でセッションが畳まれた場合に「仮配置中」の
     // 表示だけ残ると、Keep もキャンセルも効かない見た目になる（GachaSession 側は破棄済みのため）
-    for (const auto part : { GachaSession::Part::drums, GachaSession::Part::bass })
-        rightPanel.gachaPanel().setPreviewActive (part, gachaSession.hasPreview (part));
+    for (int i = 0; i < GachaSession::numParts; ++i)
+        rightPanel.gachaPanel().setPreviewActive ((GachaSession::Part) i,
+                                                  gachaSession.hasPreview ((GachaSession::Part) i));
 }
 
 void MainComponent::afterGachaCancel (bool trackRemoved)
@@ -3462,9 +3508,10 @@ void MainComponent::cancelGachaPreview()
     if (! gachaSession.hasPreview())
         return;
     bool trackRemoved = false;
-    for (const auto part : { GachaSession::Part::drums, GachaSession::Part::bass })
+    for (int i = 0; i < GachaSession::numParts; ++i)
         trackRemoved = trackRemoved
-                       || gachaSession.trackIsPreviewOwned (gachaSession.previewTrackId (part));
+                       || gachaSession.trackIsPreviewOwned (
+                              gachaSession.previewTrackId ((GachaSession::Part) i));
     gachaSession.cancelPreview (*project);
 
     Log::info ("gacha.cancel_preview");
@@ -3476,11 +3523,20 @@ void MainComponent::cancelGachaPart (GachaSession::Part part)
 {
     if (! gachaSession.hasPreview (part))
         return;
-    const bool trackRemoved = gachaSession.trackIsPreviewOwned (gachaSession.previewTrackId (part));
+    bool trackRemoved = gachaSession.trackIsPreviewOwned (gachaSession.previewTrackId (part));
+    // ループの取り消しは追従ベースも連動撤去される（GachaSession::cancelPart）。
+    // ベースの自動作成トラックも撤去対象に含めないと、ヘッダの unbind/rebuild が省略され
+    // 30Hz 更新が削除済みモデルを参照する
+    if (part == GachaSession::Part::loops)
+        trackRemoved = trackRemoved
+                       || gachaSession.trackIsPreviewOwned (
+                              gachaSession.previewTrackId (GachaSession::Part::bass));
     gachaSession.cancelPart (part, *project);
 
-    Log::info ("gacha.cancel_part",
-               juce::String ("part=") + (part == GachaSession::Part::drums ? "drums" : "bass"));
+    const char* partName = part == GachaSession::Part::drums ? "drums"
+                         : part == GachaSession::Part::bass  ? "bass"
+                                                             : "loops";
+    Log::info ("gacha.cancel_part", juce::String ("part=") + partName);
     rightPanel.gachaPanel().setPreviewActive (part, false);
     afterGachaCancel (trackRemoved);
 }

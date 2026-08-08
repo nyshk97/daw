@@ -27,9 +27,10 @@
 class GachaSession
 {
 public:
-    // パーツ。candidates / previews の添字にも使う
-    enum class Part { drums = 0, bass = 1 };
-    static constexpr int numParts = 2;
+    // パーツ。candidates / previews の添字にも使う。
+    // loops は音声（ループ素材の採用）で、候補は MIDI でなくクリップとして敷く
+    enum class Part { drums = 0, bass = 1, loops = 2 };
+    static constexpr int numParts = 3;
 
     // パターン・ミニチュア（ドラム候補一覧の1行に描く1小節ぶんのドット譜）。
     // レーンは [kick, snare, hat]、スロットは16分×16。値: 0=なし / 1=装飾（ゴースト）/ 2=骨格
@@ -89,6 +90,32 @@ public:
     static BassRollPlan planBassRoll (const Project& project, int drumsTrackIndex,
                                       int drumsRegionIndex, int loopBars);
 
+    // ---- ループ（音声）仮配置 ----
+    // ループ候補は MIDI と違い**クリップ**として敷く。クリップは ID を持たないため、
+    // fileName（マーカー → keep 時に clip-NNN.wav へ実体化）で識別する。
+    // audio は**プロジェクトSRへ変換済み**のバッファを渡す契約（取り込みと同じ）。keep は
+    // このバッファを 24bit WAV として書き出す — ライブラリ原本のコピーにしないのは、
+    // 原本の SR がプロジェクトと違うと再読込で再生速度が狂うため
+    static constexpr const char* loopPreviewMarker = "gacha-loop-preview"; // 実体化前の仮 fileName
+
+    struct LoopPreviewInput
+    {
+        LoopAnchor anchor;                               // 採用ループのメタデータ（isValid 前提）
+        std::shared_ptr<juce::AudioBuffer<float>> audio; // プロジェクトSR変換済み
+        juce::String displayName;                        // クリップ表示名（ファイル名の basename）
+        // 配置位置。**差し替えでも毎回使う**（BPM が変わると同じ絶対サンプルは小節頭で
+        // なくなるため、呼び出し側が「逆コピー→新BPMで小節頭換算」の順で毎回計算して渡す）
+        juce::int64 startSample = 0;
+        int loopCount = 1;           // Clip::loopCount（0 = 1周のみ）
+        bool applyKeyBpm = true;     // 逆コピー（「設定して敷く」）。false = 敷くだけ
+    };
+
+    // ループ候補を仮配置する（2回目以降は差し替え・同じ場所）。アンカーは常に更新し、
+    // applyKeyBpm ならプロジェクトの BPM・キーもループの値になる（undo はセッション baseline が
+    // 受け持つ）。BPM/キーが実際に変わるときは**ベースの仮配置だけ撤去**する
+    // （進行がループ由来のため。ドラムは維持 — plan の決定）
+    bool previewLoopCandidate (Project& project, const LoopPreviewInput& input, int preferredTrackIndex);
+
     // ---- 候補一覧（今回の実行で申告されたファイルだけ。gacha/ の全列挙はしない）----
     void setCandidates (Part part, std::vector<Candidate> list)
     {
@@ -110,6 +137,9 @@ public:
     // 操作を「撤去して中止」するための判定。トラックだけの判定は trackIsPreviewOwned）
     bool isPreviewObject (juce::uint64 objectTrackId, juce::uint64 objectRegionId) const;
     bool trackIsPreviewOwned (juce::uint64 objectTrackId) const;
+    // (trackId, クリップの fileName) が Loops の仮クリップか（クリップは ID を持たないため
+    // fileName で判定する。isPreviewObject の音声クリップ版 — 編集入口のガードに使う）
+    bool isPreviewClip (juce::uint64 objectTrackId, const juce::String& fileName) const;
 
     // 仮配置元の情報（延長再生成に使う: どのカードのどの seed から来た候補か）。
     // MainComponent が previewCandidate 成功後に setPreviewSource で記録し、
@@ -152,9 +182,16 @@ private:
         bool active = false;
         bool autoCreatedTrack = false; // このセッションで作った（キャンセルでトラックごと撤去）
         juce::uint64 trackId = 0;      // 仮配置先トラック
-        juce::uint64 regionId = 0;     // 仮リージョン
+        juce::uint64 regionId = 0;     // 仮リージョン（MIDI パーツ）
         juce::int64 startPpq = 0;      // パーツ初回の配置位置（差し替えでも維持）
+        // loops パーツ用（クリップは ID を持たないため fileName で識別する）
+        juce::String clipFileName;     // マーカー → keep の実体化で clip-NNN.wav へ
+        juce::int64 startSample = 0;   // パーツ初回の配置位置（サンプル。差し替えでも維持）
     };
+
+    // ループ仮クリップの実体化（keep 内から呼ぶ）。バッファを 24bit WAV として
+    // clip-NNN.wav へ書き出し、fileName をマーカーから実名へ差し替える。失敗は false
+    bool materializeLoopClip (Project& project);
 
     int findTrack (const Project& project, juce::uint64 trackId) const; // id → index（無ければ -1）
     bool removePartObjects (Part part, Project& project); // 仮リージョン/自動作成トラックの撤去

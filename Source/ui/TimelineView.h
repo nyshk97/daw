@@ -96,6 +96,9 @@ public:
     // true が返ったら「撤去して中止」（選択もドラッグも始めない）。撤去後の古い index で
     // 操作を続けるとクラッシュ・別対象への誤操作になるため、全ジェスチャーの起点で塞ぐ
     std::function<bool (juce::uint64, juce::uint64)> onPreviewObjectGesture;
+    // 同・オーディオクリップ版（ループ採用の仮クリップ）。クリップは ID を持たないため
+    // (trackId, fileName) で問い合わせる
+    std::function<bool (juce::uint64, const juce::String&)> onPreviewClipGesture;
     // 「クリップのオーディオ値」（リージョンゲイン・フェード）専用の編集通知。通常の
     // onModelEdited（pushSnapshot）を使うとMIDIが消音＋再発音されてしまうため、経路を分けている
     // （MainComponent::pushAudioValueSnapshot へ繋ぐ）

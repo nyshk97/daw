@@ -170,10 +170,19 @@ juce::int64 GachaSession::previewStartPpq (Part part) const
 bool GachaSession::isPreviewObject (juce::uint64 objectTrackId, juce::uint64 objectRegionId) const
 {
     for (const auto& p : previews)
-        if (p.active && (objectRegionId == p.regionId
+        // regionId の一致は**非0のときだけ**見る — loops パーツの regionId は常に0で、
+        // 空MIDIトラックのダブルクリック等が (trackId, 0) を渡すと誤ってヒットしてしまう
+        if (p.active && ((p.regionId != 0 && objectRegionId == p.regionId)
                          || (p.autoCreatedTrack && objectTrackId == p.trackId)))
             return true;
     return false;
+}
+
+bool GachaSession::isPreviewClip (juce::uint64 objectTrackId, const juce::String& fileName) const
+{
+    const auto& p = previews[(size_t) Part::loops];
+    return p.active && objectTrackId == p.trackId
+        && fileName.isNotEmpty() && fileName == p.clipFileName;
 }
 
 bool GachaSession::trackIsPreviewOwned (juce::uint64 objectTrackId) const
@@ -290,6 +299,161 @@ bool GachaSession::previewCandidate (Part part, Project& project, const MidiImpo
     return true;
 }
 
+bool GachaSession::previewLoopCandidate (Project& project, const LoopPreviewInput& input,
+                                         int preferredTrackIndex)
+{
+    if (input.audio == nullptr || input.audio->getNumSamples() <= 0 || ! input.anchor.isValid())
+        return false;
+
+    auto& preview = previews[(size_t) Part::loops];
+    if (! preview.active)
+    {
+        if (! baselineValid)
+        {
+            beforeTracks = project.tracks;
+            beforeBpm = project.bpm;
+            beforeKey = project.key;
+            beforeAnchor = project.loopAnchor;
+            baselineValid = true;
+        }
+        preview.clipFileName = loopPreviewMarker;
+
+        // 対象トラック: preferred がオーディオトラックならそれ、無ければ「Loops」を自動作成
+        // （drums/bass の Drum Kit / GM ベース系の流用と同じ規則の音声版）
+        const bool preferredUsable = preferredTrackIndex >= 0
+                                  && preferredTrackIndex < (int) project.tracks.size()
+                                  && project.tracks[(size_t) preferredTrackIndex].type == TrackType::audio;
+        if (preferredUsable)
+        {
+            preview.trackId = project.tracks[(size_t) preferredTrackIndex].id;
+        }
+        else
+        {
+            Track track;
+            track.id = project.allocateId();
+            track.type = TrackType::audio;
+            track.name = "Loops";
+            preview.trackId = track.id;
+            project.tracks.push_back (std::move (track));
+            preview.autoCreatedTrack = true;
+        }
+        preview.active = true;
+    }
+
+    // ベース撤去の判定と実行は Loops トラックの index 取得より**前**に行う
+    // （自動作成 Bass トラックの削除で index がずれ、Bass→Loops の順で仮配置していると
+    // 範囲外アクセスになるため）。撤去条件は2系統:
+    // - 逆コピーで BPM/キーが実際に変わる
+    // - **進行（roots）そのものが変わる** — ベースが従う本体はルート列なので、
+    //   キー/BPM が同じでも進行の違うループに差し替えたら古いベースは嘘になる
+    //   （applyKeyBpm=false の「敷くだけ」でも同様）。ドラムは音程が無いので維持
+    if (previews[(size_t) Part::bass].active)
+    {
+        const bool valuesChange = input.applyKeyBpm
+            && (! juce::approximatelyEqual (project.bpm, input.anchor.bpm)
+                || project.key != std::optional<ProjectKey> (input.anchor.key));
+        const bool progressionChange = ! project.loopAnchor.has_value()
+            || project.loopAnchor->roots != input.anchor.roots
+            || project.loopAnchor->slotsPerBar != input.anchor.slotsPerBar
+            || project.loopAnchor->loopBars != input.anchor.loopBars;
+        if (valuesChange || progressionChange)
+            cancelPart (Part::bass, project);
+    }
+
+    const int trackIndex = findTrack (project, preview.trackId);
+    if (trackIndex < 0)
+    {
+        // 対象トラックが消えている＝入口の撤去漏れ（MIDI パーツの失敗経路と同じ規則）
+        resetPart (Part::loops);
+        if (! hasPreview())
+        {
+            restoreProjectValues (project);
+            resetSession();
+        }
+        return false;
+    }
+
+    // 配置位置は**毎回** input の値を使う（MIDI パーツの「初回位置を維持」と違い、
+    // BPM が変わると同じ絶対サンプルは小節頭でなくなる — 呼び出し側が新 BPM で
+    // 小節頭を換算し直して渡す契約）
+    preview.startSample = juce::jmax ((juce::int64) 0, input.startSample);
+
+    // 差し替え: 前候補の仮クリップを取り除いてから置き直す
+    auto& clips = project.tracks[(size_t) trackIndex].clips;
+    clips.erase (std::remove_if (clips.begin(), clips.end(),
+                                 [&preview] (const Clip& c)
+                                 { return c.fileName == preview.clipFileName; }),
+                 clips.end());
+
+    Clip clip;
+    clip.fileName = preview.clipFileName; // マーカー（保存は仮配置を先に撤去するので書かれない）
+    clip.name = input.displayName;
+    clip.loopSource = input.anchor.libraryPath;
+    clip.startSample = preview.startSample;
+    clip.audio = input.audio;
+    clip.lengthSamples = input.audio->getNumSamples();
+    clip.loopCount = juce::jlimit (0, maxLoopCount, input.loopCount);
+    clip.buildPeakCache();
+    clips.push_back (std::move (clip));
+
+    // アンカーは採用のたびに更新。逆コピー（BPM・キー）はダイアログの選択次第
+    project.loopAnchor = input.anchor;
+    if (input.applyKeyBpm)
+    {
+        project.bpm = input.anchor.bpm;
+        project.key = input.anchor.key;
+    }
+    return true;
+}
+
+// ループ仮クリップの実体化: プロジェクトSR変換済みのバッファを 24bit WAV（clip-NNN.wav）として
+// 書き出し、fileName をマーカーから実名へ差し替える（出力形式は取り込み・録音と同じ）
+bool GachaSession::materializeLoopClip (Project& project)
+{
+    auto& preview = previews[(size_t) Part::loops];
+    const int trackIndex = findTrack (project, preview.trackId);
+    if (trackIndex < 0)
+        return false;
+    auto& clips = project.tracks[(size_t) trackIndex].clips;
+    const auto it = std::find_if (clips.begin(), clips.end(),
+                                  [&preview] (const Clip& c)
+                                  { return c.fileName == preview.clipFileName; });
+    if (it == clips.end() || it->audio == nullptr)
+        return false;
+    if (project.sampleRate <= 0.0)
+        return false; // SR 未確定のプロジェクトに音声は書けない（呼び出し側が先に確定させる契約）
+
+    project.directory.createDirectory();
+    const auto dest = project.nextClipFile();
+    std::unique_ptr<juce::OutputStream> stream { dest.createOutputStream() };
+    if (stream == nullptr)
+        return false;
+    juce::WavAudioFormat wav;
+    using Opts = juce::AudioFormatWriterOptions;
+    auto writer = wav.createWriterFor (stream,
+                                       Opts {}.withSampleRate (project.sampleRate)
+                                              .withNumChannels (it->audio->getNumChannels())
+                                              .withBitsPerSample (24));
+    if (writer == nullptr)
+    {
+        // writer 生成失敗時は stream の所有権が移っていない。閉じてから空ファイルを消す
+        // （残すと次回の clip-NNN 採番が使用済み扱いで飛ぶ）
+        stream.reset();
+        dest.deleteFile();
+        return false;
+    }
+    if (! writer->writeFromAudioSampleBuffer (*it->audio, 0, it->audio->getNumSamples()))
+    {
+        writer.reset();
+        dest.deleteFile();
+        return false;
+    }
+    writer.reset(); // flush してから fileName を差し替える
+    it->fileName = dest.getFileName();
+    preview.clipFileName = it->fileName;
+    return true;
+}
+
 bool GachaSession::removePartObjects (Part part, Project& project)
 {
     auto& preview = previews[(size_t) part];
@@ -305,6 +469,16 @@ bool GachaSession::removePartObjects (Part part, Project& project)
             // このセッションで作ったトラックはトラックごと撤去
             project.tracks.erase (project.tracks.begin() + trackIndex);
             removed = true;
+        }
+        else if (part == Part::loops)
+        {
+            auto& clips = project.tracks[(size_t) trackIndex].clips;
+            const auto before = clips.size();
+            clips.erase (std::remove_if (clips.begin(), clips.end(),
+                                         [&preview] (const Clip& c)
+                                         { return c.fileName == preview.clipFileName; }),
+                         clips.end());
+            removed = clips.size() != before;
         }
         else
         {
@@ -354,8 +528,20 @@ bool GachaSession::cancelPart (Part part, Project& project)
 {
     if (! previews[(size_t) part].active)
         return false;
-    const bool removed = removePartObjects (part, project);
+    bool removed = removePartObjects (part, project);
     resetPart (part);
+    if (part == Part::loops)
+    {
+        // ループ採用の取り消しは、他パーツが残っていても**値（BPM・キー・アンカー）を戻す**
+        // — 残したままだと Drums の Keep が「アンカー無しなのに候補ループの BPM」を確定させる。
+        // 進行を追従していたベースも根拠を失うので連動撤去する（ドラムは音程が無いので維持）
+        if (previews[(size_t) Part::bass].active)
+        {
+            removed = removePartObjects (Part::bass, project) || removed;
+            resetPart (Part::bass);
+        }
+        removed = restoreProjectValues (project) || removed;
+    }
     if (! hasPreview())
     {
         restoreProjectValues (project); // BPM・キー・アンカーを仮配置前へ（ループ採用の巻き戻し）
@@ -386,18 +572,34 @@ bool GachaSession::keep (Project& project, UndoStack& undoStack)
     if (! hasPreview())
         return false;
 
-    // 仮リージョンが1つも実在しない（入口の撤去漏れ等）なら確定するものが無い。
+    // ループ仮クリップを先に実体化する（マーカー → clip-NNN.wav の 24bit WAV 書き出し）。
+    // 失敗したら**セッション全体をキャンセル**する — keep は全パーツ一括のトランザクション
+    // なので、ループだけ欠けた部分確定（ループ由来のベースが根拠を失ったまま確定される等）を
+    // 作らない。呼び出し側は false を受けて transport / バッジを同期する
+    if (previews[(size_t) Part::loops].active && ! materializeLoopClip (project))
+    {
+        cancelPreview (project);
+        return false;
+    }
+
+    // 仮オブジェクトが1つも実在しない（入口の撤去漏れ等）なら確定するものが無い。
     // 一部だけ実在するケースは実在分を確定する（消えた側は単に無い）
     bool anyExists = false;
-    for (const auto& preview : previews)
+    for (int i = 0; i < numParts; ++i)
     {
+        const auto& preview = previews[(size_t) i];
         if (! preview.active)
             continue;
         const int trackIndex = findTrack (project, preview.trackId);
         if (trackIndex < 0)
             continue;
-        for (const auto& region : project.tracks[(size_t) trackIndex].midiRegions)
-            anyExists = anyExists || region.id == preview.regionId;
+        const auto& track = project.tracks[(size_t) trackIndex];
+        if ((Part) i == Part::loops)
+            for (const auto& clip : track.clips)
+                anyExists = anyExists || clip.fileName == preview.clipFileName;
+        else
+            for (const auto& region : track.midiRegions)
+                anyExists = anyExists || region.id == preview.regionId;
     }
     if (! anyExists)
     {

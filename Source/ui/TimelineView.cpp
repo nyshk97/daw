@@ -1449,6 +1449,12 @@ void TimelineView::handleLaneMouseDown (const juce::MouseEvent& e)
                     lanes->repaint();
                     return;
                 }
+                if (track.type != TrackType::midi && onPreviewClipGesture != nullptr
+                    && onPreviewClipGesture (track.id, track.clips[(size_t) item].fileName))
+                {
+                    lanes->repaint();
+                    return;
+                }
                 if (track.type == TrackType::midi)
                 {
                     selection.clear();
@@ -1533,6 +1539,14 @@ void TimelineView::handleLaneMouseDown (const juce::MouseEvent& e)
             const int ci = hitTestClip (row, e.x);
             if (ci >= 0)
             {
+                // 仮クリップ（ループ採用のプレビュー）を掴んだら撤去して中止
+                // （MIDI の仮リージョンと同じ規則。選択もドラッグも始めない）
+                if (onPreviewClipGesture != nullptr
+                    && onPreviewClipGesture (track.id, track.clips[(size_t) ci].fileName))
+                {
+                    lanes->repaint();
+                    return;
+                }
                 const bool wasSelected = selection.track == row && selection.clip == ci;
                 selection = { row, ci };
                 regionSelection.clear();

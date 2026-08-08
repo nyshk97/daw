@@ -8204,6 +8204,213 @@ void testGachaSessionParts()
 }
 
 // ベース振り直しの実行計画（試聴長・キック抽出。UIから切り出した判断ロジック）
+// ---- ループ（音声）仮配置: 敷く・差し替え・逆コピー・ベース撤去・キャンセル・実体化 ----
+void testGachaSessionLoops()
+{
+    beginTest ("GachaSession loop preview / adopt / replace / keep materialization");
+
+    using Part = GachaSession::Part;
+    const auto dir = makeTempDir();
+    juce::String error;
+    auto project = Project::createNew (dir.getChildFile ("proj"), error);
+    expect (project != nullptr, "プロジェクト作成");
+    if (project == nullptr)
+        { dir.deleteRecursively(); return; }
+    project->tracks.clear();
+    project->sampleRate = 44100.0;
+    project->bpm = 93.0;
+    project->key = ProjectKey { 9, KeyMode::minor };
+
+    const auto makeAnchor = [] (double bpm, int keyRoot)
+    {
+        LoopAnchor a;
+        a.libraryPath = "loops/P/loop_" + juce::String (keyRoot) + ".wav";
+        a.bpm = bpm;
+        a.key = ProjectKey { keyRoot, KeyMode::minor };
+        a.loopBars = 2;
+        a.slotsPerBar = 2;
+        a.roots = { keyRoot, keyRoot, (keyRoot + 5) % 12, (keyRoot + 7) % 12 };
+        a.confidence = { 0.9f, 0.9f, 0.9f, 0.9f };
+        return a;
+    };
+    const auto makeInput = [&] (double bpm, int keyRoot, bool applyKeyBpm = true,
+                                juce::int64 startSample = 22050)
+    {
+        GachaSession::LoopPreviewInput input;
+        input.anchor = makeAnchor (bpm, keyRoot);
+        input.audio = std::make_shared<juce::AudioBuffer<float>> (1, 44100);
+        for (int i = 0; i < 44100; ++i)
+            input.audio->setSample (0, i, 0.1f);
+        input.displayName = "loop";
+        input.startSample = startSample;
+        input.loopCount = 1;
+        input.applyKeyBpm = applyKeyBpm;
+        return input;
+    };
+
+    // --- 敷く（設定して敷く）: Loops トラック自動作成・アンカー・逆コピー ---
+    {
+        GachaSession session;
+        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11), -1), "ループを敷ける");
+        expect ((int) project->tracks.size() == 1 && project->tracks[0].type == TrackType::audio
+                    && project->tracks[0].name == "Loops",
+                "Loops オーディオトラックが自動作成される");
+        expect ((int) project->tracks[0].clips.size() == 1, "仮クリップが1つ");
+        const auto& clip = project->tracks[0].clips[0];
+        expect (clip.fileName == GachaSession::loopPreviewMarker
+                    && clip.loopSource == "loops/P/loop_11.wav"
+                    && clip.startSample == 22050 && clip.loopCount == 1,
+                "仮クリップの中身（マーカー・出自・位置・リピート）");
+        expect (project->loopAnchor.has_value() && project->loopAnchor->key.root == 11,
+                "アンカーが設定される");
+        expect (project->bpm == 85.0 && project->key == ProjectKey { 11, KeyMode::minor },
+                "逆コピー（BPM・キー）が効く");
+
+        // --- 差し替えで BPM が変わる → ベースの仮配置だけ撤去・ドラムは維持。
+        //     配置位置は毎回 input の値（BPM が変われば呼び出し側が小節頭を換算し直す契約） ---
+        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), -1, 0), "ドラム仮配置");
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), -1, 0), "ベース仮配置");
+        expect ((int) project->tracks.size() == 3, "Loops + Drums + Bass");
+        expect (session.previewLoopCandidate (*project, makeInput (90.0, 7, true, 40000), -1),
+                "別ループへ差し替え");
+        expect (! session.hasPreview (Part::bass), "BPM変更の差し替えでベースだけ撤去される");
+        expect (session.hasPreview (Part::drums), "ドラムは維持される");
+        expect ((int) project->tracks[0].clips.size() == 1, "差し替えでクリップは増えない");
+        expect (project->tracks[0].clips[0].startSample == 40000,
+                "差し替えは新しい配置位置を使う（新BPMの小節頭換算を呼び出し側がやり直すため）");
+        expect (project->bpm == 90.0 && project->loopAnchor->libraryPath == "loops/P/loop_7.wav",
+                "アンカーと逆コピーが新ループの値になる");
+
+        // --- 同じキー/BPMでも進行（roots）が違えばベースは撤去される ---
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), -1, 0), "ベース再仮配置");
+        auto sameValuesNewRoots = makeInput (90.0, 7);
+        sameValuesNewRoots.anchor.roots = { 7, 7, 7, 2 }; // キー/BPM同一・進行だけ変更
+        expect (session.previewLoopCandidate (*project, sameValuesNewRoots, -1), "進行違いへ差し替え");
+        expect (! session.hasPreview (Part::bass),
+                "キー/BPMが同じでも roots が変わればベースは撤去される（ベースが従う本体は進行）");
+
+        // --- 完全に同一のループを敷き直したときだけベースは残る ---
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), -1, 0), "ベース再々仮配置");
+        expect (session.previewLoopCandidate (*project, sameValuesNewRoots, -1), "同一ループの敷き直し");
+        expect (session.hasPreview (Part::bass), "進行もキー/BPMも同じならベースは維持される");
+
+        // --- キャンセルで全部 baseline へ ---
+        expect (session.cancelPreview (*project), "キャンセル");
+        expect (project->tracks.empty(), "自動作成トラックが全部消える");
+        expect (project->bpm == 93.0 && project->key == ProjectKey { 9, KeyMode::minor }
+                    && ! project->loopAnchor.has_value(),
+                "BPM・キー・アンカーが baseline へ戻る");
+    }
+
+    // --- 敷くだけ（applyKeyBpm=false）: アンカーは付くが BPM・キーは動かない ---
+    {
+        GachaSession session;
+        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11, false), -1), "敷くだけ");
+        expect (project->bpm == 93.0 && project->key == ProjectKey { 9, KeyMode::minor },
+                "敷くだけでは BPM・キーが動かない");
+        expect (project->loopAnchor.has_value() && project->loopAnchor->bpm == 85.0,
+                "アンカーは付く（採用の意味論）");
+        session.cancelPreview (*project);
+    }
+
+    // --- keep: マーカーが clip-NNN.wav に実体化され、⌘Z 1回で全復元 ---
+    {
+        GachaSession session;
+        UndoStack undo;
+        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11), -1), "敷く");
+        expect (session.keep (*project, undo), "keep");
+        expect ((int) project->tracks.size() == 1 && (int) project->tracks[0].clips.size() == 1, "確定後もクリップがある");
+        const auto& kept = project->tracks[0].clips[0];
+        expect (kept.fileName.startsWith ("clip-") && kept.fileName.endsWith (".wav"),
+                "マーカーが clip-NNN.wav へ実体化される");
+        const auto wavFile = project->directory.getChildFile (kept.fileName);
+        expect (wavFile.existsAsFile(), "実体 WAV が書かれている");
+        double sourceRate = 0.0;
+        auto written = Project::loadWav (wavFile, &sourceRate);
+        expect (written != nullptr && written->getNumSamples() == 44100 && sourceRate == 44100.0,
+                "書かれた WAV がプロジェクトSR・全長で読み戻せる");
+        expect (kept.loopSource == "loops/P/loop_11.wav", "実体化後も出自は残る");
+        expect (project->loopAnchor.has_value() && project->bpm == 85.0, "採用状態が確定する");
+
+        auto kind = UndoStack::EditKind::structure;
+        expect (undo.undo (*project, kind), "keep後にundoできる");
+        expect (project->tracks.empty() && project->bpm == 93.0 && ! project->loopAnchor.has_value(),
+                "⌘Z 1回でトラック・BPM・キー・アンカーが仮配置前へ戻る");
+        expect (undo.redo (*project, kind), "redoできる");
+        expect ((int) project->tracks.size() == 1 && project->bpm == 85.0
+                    && project->loopAnchor.has_value(),
+                "redoで採用状態へ戻る");
+        project->tracks.clear();
+        project->bpm = 93.0;
+        project->key = ProjectKey { 9, KeyMode::minor };
+        project->loopAnchor.reset();
+    }
+
+    // --- ループだけの部分キャンセル: 他パーツが残っていても値は戻り、追従ベースは連動撤去 ---
+    {
+        GachaSession session;
+        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), -1, 0), "ドラム");
+        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11), -1), "ループ採用");
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), -1, 0), "追従ベース");
+        expect (session.cancelPart (Part::loops, *project), "ループだけキャンセル");
+        expect (session.hasPreview (Part::drums), "ドラムは残る");
+        expect (! session.hasPreview (Part::bass), "追従していたベースは連動撤去される");
+        expect (project->bpm == 93.0 && project->key == ProjectKey { 9, KeyMode::minor }
+                    && ! project->loopAnchor.has_value(),
+                "他パーツが残っていても BPM・キー・アンカーは baseline へ戻る"
+                "（残すと Drums の Keep が候補ループの値を確定させてしまう）");
+        session.cancelPreview (*project);
+    }
+
+    // --- Bass → Loops の順で仮配置しても壊れない（Bass自動トラック削除で index がずれる回帰） ---
+    {
+        GachaSession session;
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), -1, 0), "ベースが先");
+        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11), -1), "後からループ採用");
+        expect (! session.hasPreview (Part::bass), "ベースは撤去される");
+        expect (session.hasPreview (Part::loops), "ループの仮配置は生きている");
+        bool clipFound = false;
+        for (const auto& track : project->tracks)
+            for (const auto& clip : track.clips)
+                clipFound = clipFound || clip.fileName == GachaSession::loopPreviewMarker;
+        expect (clipFound, "仮クリップが正しいトラックに載っている（indexずれで消えない）");
+        session.cancelPreview (*project);
+    }
+
+    // --- keep 失敗（SR未確定で実体化できない）: 実体の無い採用を作らず**セッション全体**を畳む ---
+    {
+        project->sampleRate = 0.0;
+        GachaSession session;
+        UndoStack undo;
+        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), -1, 0), "ドラムも仮配置");
+        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11), -1), "敷く");
+        expect (! session.keep (*project, undo), "実体化できない keep は false");
+        expect (project->tracks.empty() && project->bpm == 93.0 && ! project->loopAnchor.has_value(),
+                "部分確定を作らずセッション全体がキャンセルされる（ドラムも確定しない）");
+        expect (! session.hasPreview(), "セッションは畳まれている");
+        project->sampleRate = 44100.0;
+    }
+
+    // --- 既存オーディオトラックへの配置（preferred）: キャンセルでトラックは残る ---
+    {
+        Track audioTrack;
+        audioTrack.id = project->allocateId();
+        audioTrack.type = TrackType::audio;
+        audioTrack.name = "My Audio";
+        project->tracks.push_back (std::move (audioTrack));
+
+        GachaSession session;
+        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11), 0), "既存トラックへ敷ける");
+        expect ((int) project->tracks.size() == 1, "トラックは増えない");
+        expect (session.cancelPreview (*project), "キャンセル");
+        expect ((int) project->tracks.size() == 1 && project->tracks[0].clips.empty(),
+                "クリップだけ消えトラックは残る");
+        project->tracks.clear();
+    }
+
+    dir.deleteRecursively();
+}
+
 void testGachaBassRollPlan()
 {
     beginTest ("GachaSession::planBassRoll bars rounding / kick extraction");
@@ -8759,6 +8966,7 @@ int main()
     testGachaPatternMiniature();
     testGachaSessionPreview();
     testGachaSessionParts();
+    testGachaSessionLoops();
     testGachaBassRollPlan();
     testSaveGcProtectsUndoWavs();
     testSaveGcProtectsClipboardWav();
