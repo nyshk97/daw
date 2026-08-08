@@ -190,6 +190,16 @@ macOS では **`~/Library/Caches/<実行ファイル名>/`**（`juce_Files_mac.m
 - **B に空文字を渡すと括弧ごと消える**
 - daw は `CFBundleShortVersionString` と `CFBundleVersion` の両方に `PROJECT_VERSION` を入れているため、素のパネルだと `Version 0.7.0 (0.7.0)` と同じ数字が二重に出る。上の2点で1つに畳んでいる（`Source/mac/AboutPanel.mm`）
 
+### `juce::var` の直接キャストは型違反を正常値に化けさせる
+
+`(int) v` は `1.5` を 1 に切り捨て、int範囲外の int64（`4294967296`）を環境依存で 0 に切り詰め、
+`toString()` は数値からも文字列を作る。契約のあるJSON（project.json・外部ツールの出力）を読むときは、
+`v.isInt() || v.isInt64()`＋int範囲確認・`isBool()`・`isString()`・`isDouble()` で**型を確認してから**
+変換する（変換後の値域チェックだけでは元の型違反を検出できない — ループアンカーの実装でレビューに
+3周連続で刺された）。欠損は `getProperty` の第2引数のデフォルトでなく `isVoid()` で区別すると、
+「無い」と「壊れている」を分けて警告できる。実装例は `Project.cpp` の `strictIntVar` /
+`anchorFromContractJson` と `GachaSession::parseRecommendJson`。
+
 ## オーディオコールバック内の禁止事項
 
 ### 前提: なぜ厳しいのか
