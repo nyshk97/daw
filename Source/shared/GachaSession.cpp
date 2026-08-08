@@ -5,6 +5,24 @@
 
 namespace
 {
+// ガチャの自動作成トラック名。同名（ユーザー命名含む）があれば "Drums 2" のように連番を足す —
+// 採用のたびに新規トラックを作る設計なので、素の名前だと採用2回目から区別できなくなる
+juce::String uniqueTrackName (const Project& project, const juce::String& base)
+{
+    const auto taken = [&] (const juce::String& name)
+    {
+        for (const auto& t : project.tracks)
+            if (t.name == name)
+                return true;
+        return false;
+    };
+    if (! taken (base))
+        return base;
+    for (int n = 2;; ++n)
+        if (const auto name = base + " " + juce::String (n); ! taken (name))
+            return name;
+}
+
 // porcelain 行の共通部（base / status / lane_seeds オブジェクト）を読む
 bool parsePorcelainCommon (const juce::String& line, juce::var& seedsOut,
                            GachaSession::Candidate& out)
@@ -201,7 +219,7 @@ void GachaSession::setPreviewSource (Part part, PreviewSource source)
 }
 
 bool GachaSession::previewCandidate (Part part, Project& project, const MidiImport::Result& parsed,
-                                     int preferredTrackIndex, juce::int64 startPpq)
+                                     juce::int64 startPpq)
 {
     const bool isDrums = part == Part::drums;
     const auto& notes = isDrums ? parsed.drumNotes : parsed.otherNotes;
@@ -225,40 +243,18 @@ bool GachaSession::previewCandidate (Part part, Project& project, const MidiImpo
         }
         preview.startPpq = juce::jmax ((juce::int64) 0, startPpq);
 
-        const auto preferredUsable = [&]() -> bool
-        {
-            if (preferredTrackIndex < 0 || preferredTrackIndex >= (int) project.tracks.size())
-                return false;
-            const auto& track = project.tracks[(size_t) preferredTrackIndex];
-            if (track.type != TrackType::midi)
-                return false;
-            if (isDrums)
-                return track.drums;
-            // bass: GM ベース系（program 32..39 = GM のベースファミリー）だけを流用する。
-            // それ以外の GM トラック（Keys 等）へ黙って上書き配置しない
-            return ! track.drums && track.instrument == InstrumentKind::gm
-                   && track.gmProgram >= 32 && track.gmProgram <= 39;
-        }();
-
-        if (preferredUsable)
-        {
-            preview.trackId = project.tracks[(size_t) preferredTrackIndex].id;
-            preview.autoCreatedTrack = false;
-        }
-        else
-        {
-            Track track;
-            track.id = project.allocateId();
-            track.type = TrackType::midi;
-            track.instrument = InstrumentKind::gm;
-            track.drums = isDrums;
-            track.drumPitch = -1;
-            track.gmProgram = isDrums ? 0 : 33; // bass は Finger Bass (33) 既定
-            track.name = isDrums ? "Drums" : "Bass";
-            preview.trackId = track.id;
-            project.tracks.push_back (std::move (track));
-            preview.autoCreatedTrack = true;
-        }
+        // 敷き先は常に専用の新規トラック（ヘッダの宣言コメント参照。既存トラックは流用しない）
+        Track track;
+        track.id = project.allocateId();
+        track.type = TrackType::midi;
+        track.instrument = InstrumentKind::gm;
+        track.drums = isDrums;
+        track.drumPitch = -1;
+        track.gmProgram = isDrums ? 0 : 33; // bass は Finger Bass (33) 既定
+        track.name = uniqueTrackName (project, isDrums ? "Drums" : "Bass");
+        preview.trackId = track.id;
+        project.tracks.push_back (std::move (track));
+        preview.autoCreatedTrack = true;
         preview.active = true;
     }
 
@@ -334,6 +330,10 @@ bool GachaSession::parseRecommendJson (const juce::String& json, LoopRecommendat
         || ! strictInt (parsed.getProperty ("total", {}), out.total)
         || out.total < 0 || out.page < 1)
         return false;
+    // page_size は後付けフィールド（nullable）。欠損・不正は既定の5に落とし、ページは受理する
+    int pageSize = 0;
+    out.pageSize = (strictInt (parsed.getProperty ("page_size", {}), pageSize) && pageSize >= 1)
+                       ? pageSize : 5;
     auto* array = parsed.getProperty ("candidates", {}).getArray();
     if (array == nullptr)
         return false;
@@ -370,8 +370,7 @@ bool GachaSession::parseRecommendJson (const juce::String& json, LoopRecommendat
     return true;
 }
 
-bool GachaSession::previewLoopCandidate (Project& project, const LoopPreviewInput& input,
-                                         int preferredTrackIndex)
+bool GachaSession::previewLoopCandidate (Project& project, const LoopPreviewInput& input)
 {
     if (input.audio == nullptr || input.audio->getNumSamples() <= 0 || ! input.anchor.isValid())
         return false;
@@ -389,25 +388,15 @@ bool GachaSession::previewLoopCandidate (Project& project, const LoopPreviewInpu
         }
         preview.clipFileName = loopPreviewMarker;
 
-        // 対象トラック: preferred がオーディオトラックならそれ、無ければ「Loops」を自動作成
-        // （drums/bass の Drum Kit / GM ベース系の流用と同じ規則の音声版）
-        const bool preferredUsable = preferredTrackIndex >= 0
-                                  && preferredTrackIndex < (int) project.tracks.size()
-                                  && project.tracks[(size_t) preferredTrackIndex].type == TrackType::audio;
-        if (preferredUsable)
-        {
-            preview.trackId = project.tracks[(size_t) preferredTrackIndex].id;
-        }
-        else
-        {
-            Track track;
-            track.id = project.allocateId();
-            track.type = TrackType::audio;
-            track.name = "Loops";
-            preview.trackId = track.id;
-            project.tracks.push_back (std::move (track));
-            preview.autoCreatedTrack = true;
-        }
+        // 敷き先は常に専用の新規トラック（ヘッダの宣言コメント参照）。名前は下の
+        // 「毎回の差し替え」でループ名に張り替えるので、ここでは仮でよい
+        Track track;
+        track.id = project.allocateId();
+        track.type = TrackType::audio;
+        track.name = uniqueTrackName (project, input.displayName);
+        preview.trackId = track.id;
+        project.tracks.push_back (std::move (track));
+        preview.autoCreatedTrack = true;
         preview.active = true;
     }
 
@@ -447,6 +436,15 @@ bool GachaSession::previewLoopCandidate (Project& project, const LoopPreviewInpu
         if (! hasPreview())
             resetSession();
         return false;
+    }
+
+    // 差し替えのたびにトラック名も現候補へ張り替える（トラック＝このループの家。
+    // 初回作成時の名前のままだと、候補を替えたときにトラック名とクリップ名がずれる）。
+    // 連番判定は自分のトラックを除いてから（除かないと自分と衝突して差し替えのたび番号が育つ）
+    {
+        auto& ownTrack = project.tracks[(size_t) trackIndex];
+        ownTrack.name.clear(); // 自分を連番判定から外す
+        ownTrack.name = uniqueTrackName (project, input.displayName);
     }
 
     // 配置位置は**毎回** input の値を使う（MIDI パーツの「初回位置を維持」と違い、

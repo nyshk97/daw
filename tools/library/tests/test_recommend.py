@@ -172,6 +172,37 @@ def test_rank_end_to_end_with_wavs() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_cli_page_size() -> None:
+    """--page-size がスライスと JSON 出力に効く（LaLa は画面に合わせて 10 を渡す）。"""
+    import subprocess
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from index import build_index  # noqa: E402
+
+    sr = 22050
+    tmp = Path(tempfile.mkdtemp(prefix="recps-"))
+    try:
+        t = np.arange(int(6.0 * sr)) / sr
+        for name, f in (("dark", 220.0), ("mid", 660.0), ("bright", 1760.0)):
+            p = tmp / f"loops/P/{name}_Am_80bpm.wav"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            sf.write(p, (0.4 * np.sin(2 * np.pi * f * t)).astype(np.float32), sr)
+        index, _ = build_index(tmp)
+        (tmp / "index.json").write_text(json.dumps(index))
+        refdir = make_refdir(tmp)
+
+        script = Path(__file__).resolve().parent.parent / "recommend.py"
+        out = subprocess.run(
+            [sys.executable, str(script), str(refdir), "--library", str(tmp),
+             "--json", "--page-size", "2", "--page", "2"],
+            capture_output=True, text=True, check=True).stdout
+        result = json.loads(out)
+        assert result["page_size"] == 2 and result["total"] == 3, result
+        assert len(result["candidates"]) == 1  # 3本を2件/頁で割った2頁目は1本
+        print("OK cli page size")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def make_refdir(root: Path, with_key: bool = True) -> Path:
     refdir = root / "ref"
     (refdir / "analysis").mkdir(parents=True)
@@ -237,5 +268,6 @@ if __name__ == "__main__":
     test_rank_deterministic_tiebreak()
     test_reason_text_plain_words()
     test_rank_end_to_end_with_wavs()
+    test_cli_page_size()
     test_load_ref_meta_and_upper_features_cache()
     print("all tests passed")

@@ -7890,7 +7890,7 @@ void testGachaSessionPreview()
     // --- 自動作成: Drum Kit トラックが無ければ「Drums」を作って配置 ---
     {
         GachaSession session;
-        expect (session.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), -1, Ppq::ticksPerBar * 2),
+        expect (session.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), Ppq::ticksPerBar * 2),
                 "仮配置できる");
         expect ((int) project->tracks.size() == 1, "Drumsトラックが自動作成される");
         const auto& track = project->tracks[0];
@@ -7907,7 +7907,7 @@ void testGachaSessionPreview()
         // --- 差し替え: 2候補目でもリージョンは1つ・同じ場所 ---
         auto second = makeDrumResult();
         second.drumNotes[0].pitch = 38;
-        expect (session.previewCandidate (GachaSession::Part::drums, *project, second, -1, Ppq::ticksPerBar * 9),
+        expect (session.previewCandidate (GachaSession::Part::drums, *project, second, Ppq::ticksPerBar * 9),
                 "差し替えできる");
         expect ((int) project->tracks.size() == 1 && (int) project->tracks[0].midiRegions.size() == 1,
                 "差し替えでリージョンは増えない");
@@ -7922,24 +7922,28 @@ void testGachaSessionPreview()
         expect (! session.cancelPreview (*project), "二重キャンセルはno-op");
     }
 
-    // --- 既存の Drum Kit トラックへ配置 → キャンセルでトラックは残る ---
+    // --- 既存の Drum Kit トラックがあっても常に専用の新規トラックへ（2026-08-08 統一 —
+    //     選択駆動の流用は「回す前に正しいトラックを選んでおく」暗黙知を要求するため廃止）---
     {
         Track drumKit;
         drumKit.id = project->allocateId();
         drumKit.type = TrackType::midi;
         drumKit.drums = true;
-        drumKit.name = "My Drums";
+        drumKit.name = "Drums"; // 同名衝突 → 自動作成側が連番になることも同時に検証
         project->tracks.push_back (std::move (drumKit));
 
         GachaSession session;
-        expect (session.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), 0, 0), "既存トラックへ配置");
-        expect ((int) project->tracks.size() == 1, "トラックは増えない");
-        expect ((int) project->tracks[0].midiRegions.size() == 1, "リージョンが載る");
-        expect (! session.trackIsPreviewOwned (project->tracks[0].id),
-                "既存トラックは自動作成扱いにならない");
+        expect (session.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), 0), "仮配置");
+        expect ((int) project->tracks.size() == 2, "既存 Drum Kit があっても専用トラックが増える");
+        expect (project->tracks[1].name == "Drums 2" && project->tracks[1].drums,
+                "自動作成トラックは同名衝突で連番になる");
+        expect (project->tracks[0].midiRegions.empty()
+                    && (int) project->tracks[1].midiRegions.size() == 1,
+                "リージョンは専用トラック側に載る");
+        expect (session.trackIsPreviewOwned (project->tracks[1].id), "専用トラックは自動作成扱い");
         expect (session.cancelPreview (*project), "キャンセル");
         expect ((int) project->tracks.size() == 1 && project->tracks[0].midiRegions.empty(),
-                "リージョンだけ消えトラックは残る");
+                "キャンセルで専用トラックごと消え、既存トラックは無傷");
         project->tracks.clear();
     }
 
@@ -7957,7 +7961,7 @@ void testGachaSessionPreview()
         expect (undo.canRedo(), "前提: redo履歴がある");
 
         GachaSession session;
-        expect (session.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), -1, 0), "仮配置");
+        expect (session.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), 0), "仮配置");
         expect (session.keep (*project, undo), "keepは「確定変更あり」を返す");
         expect (! undo.canRedo(), "pushCommittedはredo履歴を破棄する");
         expect ((int) project->tracks.size() == 1
@@ -8012,7 +8016,7 @@ void testGachaSessionPreview()
         // cancelPreview（全撤去）で値が戻る
         setBaselineValues();
         GachaSession session;
-        expect (session.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), -1, 0), "仮配置");
+        expect (session.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), 0), "仮配置");
         adoptLoopValues();
         expect (session.cancelPreview (*project), "キャンセル");
         expect (atBaseline(), "cancelPreview で BPM/キー/アンカーが baseline へ戻る");
@@ -8020,7 +8024,7 @@ void testGachaSessionPreview()
         // cancelPart で最後の仮配置が消えたときも戻る
         setBaselineValues();
         GachaSession session2;
-        expect (session2.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), -1, 0), "仮配置2");
+        expect (session2.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), 0), "仮配置2");
         adoptLoopValues();
         expect (session2.cancelPart (GachaSession::Part::drums, *project), "パーツ撤去");
         expect (atBaseline(), "最後の cancelPart でも baseline へ戻る");
@@ -8029,7 +8033,7 @@ void testGachaSessionPreview()
         setBaselineValues();
         GachaSession session3;
         UndoStack undo3;
-        expect (session3.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), -1, 0), "仮配置3");
+        expect (session3.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), 0), "仮配置3");
         adoptLoopValues();
         expect (session3.keep (*project, undo3), "keep");
         expect (project->bpm == 85.0 && project->loopAnchor.has_value(), "keep 直後は採用状態のまま");
@@ -8045,10 +8049,10 @@ void testGachaSessionPreview()
         // (a) 対象トラック消失（入口の撤去漏れ）で差し替えに失敗してセッションが畳まれるとき
         setBaselineValues();
         GachaSession session4;
-        expect (session4.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), -1, 0), "仮配置4");
+        expect (session4.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), 0), "仮配置4");
         adoptLoopValues();
         project->tracks.clear(); // 外部でトラックが消えた想定
-        expect (! session4.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), -1, 0),
+        expect (! session4.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), 0),
                 "トラック消失時の差し替えは失敗する");
         expect (atBaseline(), "失敗でセッションが畳まれたら BPM/キー/アンカーは baseline へ戻る");
 
@@ -8056,7 +8060,7 @@ void testGachaSessionPreview()
         setBaselineValues();
         GachaSession session5;
         UndoStack undo5;
-        expect (session5.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), -1, 0), "仮配置5");
+        expect (session5.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), 0), "仮配置5");
         adoptLoopValues();
         project->tracks.clear();
         expect (! session5.keep (*project, undo5), "実在しない keep は false");
@@ -8074,7 +8078,7 @@ void testGachaSessionPreview()
         GachaSession session;
         undo.willBegin = [&] { session.cancelPreview (*project); };
 
-        expect (session.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), -1, 0), "仮配置");
+        expect (session.previewCandidate (GachaSession::Part::drums, *project, makeDrumResult(), 0), "仮配置");
         expect ((int) project->tracks.size() == 1, "仮トラックがある");
 
         // 別の編集（トラック追加）: begin のフックが先に仮配置を撤去する
@@ -8134,9 +8138,9 @@ void testGachaSessionParts()
     {
         UndoStack undo;
         GachaSession session;
-        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), -1, 0),
+        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), 0),
                 "Drums 仮配置");
-        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), -1, 0),
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), 0),
                 "Bass 仮配置（Drums 仮配置のまま）");
         expect (session.hasPreview (Part::drums) && session.hasPreview (Part::bass),
                 "両パーツが同時に仮配置中");
@@ -8161,14 +8165,14 @@ void testGachaSessionParts()
     // --- パーツ単位のキャンセル: Bass のカード変更相当（cancelPart）でも Drums は残る ---
     {
         GachaSession session;
-        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), -1, 0),
+        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), 0),
                 "Drums 仮配置");
         expect (! session.cancelPart (Part::bass, *project),
                 "Bass 未配置のパーツキャンセルは no-op");
         expect (session.hasPreview (Part::drums) && (int) project->tracks.size() == 1,
                 "Drums 仮配置は維持される");
 
-        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), -1, 0),
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), 0),
                 "Bass も仮配置");
         expect (session.cancelPart (Part::bass, *project), "Bass だけキャンセル");
         expect (session.hasPreview (Part::drums) && ! session.hasPreview (Part::bass),
@@ -8177,7 +8181,7 @@ void testGachaSessionParts()
                 "Bass トラックだけ撤去される");
 
         // 逆向き: Bass 仮配置後の Drums カード変更では Bass が残る
-        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), -1, 0),
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), 0),
                 "Bass を配置し直す");
         expect (session.cancelPart (Part::drums, *project), "Drums だけキャンセル");
         expect (! session.hasPreview (Part::drums) && session.hasPreview (Part::bass),
@@ -8197,9 +8201,9 @@ void testGachaSessionParts()
     {
         UndoStack undo;
         GachaSession session;
-        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), -1, 0),
+        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), 0),
                 "Drums 仮配置（ここが baseline）");
-        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), -1, 0),
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), 0),
                 "Bass 仮配置");
         // Drums をキャンセルしても baseline は維持され、keep の undo は「両方なし」へ戻る
         expect (session.cancelPart (Part::drums, *project), "Drums キャンセル");
@@ -8212,38 +8216,26 @@ void testGachaSessionParts()
         project->tracks.clear();
     }
 
-    // --- GM ベース系（program 32..39）の選択トラックは流用し、Keys（program 0）は流用しない ---
+    // --- GM ベース系トラックがあっても流用しない — 常に Bass を自動作成（2026-08-08 統一）---
     {
-        Track keys;
-        keys.id = project->allocateId();
-        keys.type = TrackType::midi;
-        keys.gmProgram = 0; // Acoustic Grand Piano
-        keys.name = "Keys";
-        project->tracks.push_back (std::move (keys));
-
         GachaSession session;
-        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), 0, 0),
-                "Keys を選択中でも仮配置できる");
-        expect ((int) project->tracks.size() == 2 && project->tracks[1].name == "Bass",
-                "Keys へは配置せず Bass を自動作成する");
-        session.cancelPreview (*project);
-        project->tracks.clear();
-
         Track synthBass;
         synthBass.id = project->allocateId();
         synthBass.type = TrackType::midi;
-        synthBass.gmProgram = 38; // Synth Bass 1（GM ベースファミリー 32..39）
+        synthBass.gmProgram = 38; // Synth Bass 1（GM ベースファミリー 32..39 でも流用しない）
         synthBass.name = "808";
         project->tracks.push_back (std::move (synthBass));
 
-        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), 0, 0),
-                "GM ベース系トラックへ配置できる");
-        expect ((int) project->tracks.size() == 1
-                    && (int) project->tracks[0].midiRegions.size() == 1,
-                "ベース系トラックを流用する（自動作成しない）");
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), 0), "仮配置");
+        expect ((int) project->tracks.size() == 2 && project->tracks[1].name == "Bass"
+                    && project->tracks[1].gmProgram == 33,
+                "GM ベース系トラックがあっても Bass（Finger Bass）を自動作成する");
+        expect (project->tracks[0].midiRegions.empty()
+                    && (int) project->tracks[1].midiRegions.size() == 1,
+                "リージョンは専用トラック側に載る");
         session.cancelPreview (*project);
         expect ((int) project->tracks.size() == 1 && project->tracks[0].midiRegions.empty(),
-                "流用トラックはリージョンだけ消え残る");
+                "キャンセルで専用トラックごと消え、既存トラックは無傷");
         project->tracks.clear();
     }
 
@@ -8273,6 +8265,15 @@ void testParseRecommendJson()
     expect (rec.refBpm == 93.0 && rec.refKeyText == "A minor" && rec.keyTrusted
                 && rec.total == 32 && rec.page == 1 && (int) rec.candidates.size() == 2,
             "参照情報とページ情報");
+    expect (rec.pageSize == 5, "page_size 欠損（旧形式）は既定の5");
+
+    GachaSession::LoopRecommendation sized;
+    expect (GachaSession::parseRecommendJson (
+                R"({"ref_bpm": 93.0, "ref_key": "A minor", "key_trusted": true,
+                    "total": 32, "page": 2, "page_size": 10, "candidates": []})",
+                sized)
+                && sized.pageSize == 10,
+            "page_size ありはその値");
     expect (rec.candidates[0].path == "loops/P/a.wav" && rec.candidates[0].bpm == 85.0
                 && rec.candidates[0].keyRoot == 11 && rec.candidates[0].keyMode == KeyMode::minor
                 && rec.candidates[0].transposeSemitones == -2
@@ -8407,13 +8408,13 @@ void testGachaSessionLoops()
         return input;
     };
 
-    // --- 敷く（設定して敷く）: Loops トラック自動作成・アンカー・逆コピー ---
+    // --- 敷く（設定して敷く）: 専用トラック自動作成（名前=ループ名）・アンカー・逆コピー ---
     {
         GachaSession session;
-        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11), -1), "ループを敷ける");
+        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11)), "ループを敷ける");
         expect ((int) project->tracks.size() == 1 && project->tracks[0].type == TrackType::audio
-                    && project->tracks[0].name == "Loops",
-                "Loops オーディオトラックが自動作成される");
+                    && project->tracks[0].name == "loop",
+                "専用オーディオトラックが自動作成され、名前はループ名になる");
         expect ((int) project->tracks[0].clips.size() == 1, "仮クリップが1つ");
         const auto& clip = project->tracks[0].clips[0];
         expect (clip.fileName == GachaSession::loopPreviewMarker
@@ -8427,10 +8428,10 @@ void testGachaSessionLoops()
 
         // --- 差し替えで BPM が変わる → ベースの仮配置だけ撤去・ドラムは維持。
         //     配置位置は毎回 input の値（BPM が変われば呼び出し側が小節頭を換算し直す契約） ---
-        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), -1, 0), "ドラム仮配置");
-        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), -1, 0), "ベース仮配置");
+        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), 0), "ドラム仮配置");
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), 0), "ベース仮配置");
         expect ((int) project->tracks.size() == 3, "Loops + Drums + Bass");
-        expect (session.previewLoopCandidate (*project, makeInput (90.0, 7, true, 40000), -1),
+        expect (session.previewLoopCandidate (*project, makeInput (90.0, 7, true, 40000)),
                 "別ループへ差し替え");
         expect (! session.hasPreview (Part::bass), "BPM変更の差し替えでベースだけ撤去される");
         expect (session.hasPreview (Part::drums), "ドラムは維持される");
@@ -8441,16 +8442,16 @@ void testGachaSessionLoops()
                 "アンカーと逆コピーが新ループの値になる");
 
         // --- 同じキー/BPMでも進行（roots）が違えばベースは撤去される ---
-        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), -1, 0), "ベース再仮配置");
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), 0), "ベース再仮配置");
         auto sameValuesNewRoots = makeInput (90.0, 7);
         sameValuesNewRoots.anchor.roots = { 7, 7, 7, 2 }; // キー/BPM同一・進行だけ変更
-        expect (session.previewLoopCandidate (*project, sameValuesNewRoots, -1), "進行違いへ差し替え");
+        expect (session.previewLoopCandidate (*project, sameValuesNewRoots), "進行違いへ差し替え");
         expect (! session.hasPreview (Part::bass),
                 "キー/BPMが同じでも roots が変わればベースは撤去される（ベースが従う本体は進行）");
 
         // --- 完全に同一のループを敷き直したときだけベースは残る ---
-        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), -1, 0), "ベース再々仮配置");
-        expect (session.previewLoopCandidate (*project, sameValuesNewRoots, -1), "同一ループの敷き直し");
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), 0), "ベース再々仮配置");
+        expect (session.previewLoopCandidate (*project, sameValuesNewRoots), "同一ループの敷き直し");
         expect (session.hasPreview (Part::bass), "進行もキー/BPMも同じならベースは維持される");
 
         // --- キャンセルで全部 baseline へ ---
@@ -8464,7 +8465,7 @@ void testGachaSessionLoops()
     // --- 敷くだけ（applyKeyBpm=false）: アンカーは付くが BPM・キーは動かない ---
     {
         GachaSession session;
-        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11, false), -1), "敷くだけ");
+        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11, false)), "敷くだけ");
         expect (project->bpm == 93.0 && project->key == ProjectKey { 9, KeyMode::minor },
                 "敷くだけでは BPM・キーが動かない");
         expect (project->loopAnchor.has_value() && project->loopAnchor->bpm == 85.0,
@@ -8476,7 +8477,7 @@ void testGachaSessionLoops()
     {
         GachaSession session;
         UndoStack undo;
-        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11), -1), "敷く");
+        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11)), "敷く");
         expect (session.keep (*project, undo), "keep");
         expect ((int) project->tracks.size() == 1 && (int) project->tracks[0].clips.size() == 1, "確定後もクリップがある");
         const auto& kept = project->tracks[0].clips[0];
@@ -8508,9 +8509,9 @@ void testGachaSessionLoops()
     // --- ループだけの部分キャンセル: 他パーツが残っていても値は戻り、追従ベースは連動撤去 ---
     {
         GachaSession session;
-        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), -1, 0), "ドラム");
-        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11), -1), "ループ採用");
-        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), -1, 0), "追従ベース");
+        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), 0), "ドラム");
+        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11)), "ループ採用");
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), 0), "追従ベース");
         expect (session.cancelPart (Part::loops, *project), "ループだけキャンセル");
         expect (session.hasPreview (Part::drums), "ドラムは残る");
         expect (! session.hasPreview (Part::bass), "追従していたベースは連動撤去される");
@@ -8524,8 +8525,8 @@ void testGachaSessionLoops()
     // --- Bass → Loops の順で仮配置しても壊れない（Bass自動トラック削除で index がずれる回帰） ---
     {
         GachaSession session;
-        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), -1, 0), "ベースが先");
-        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11), -1), "後からループ採用");
+        expect (session.previewCandidate (Part::bass, *project, makeBassResult(), 0), "ベースが先");
+        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11)), "後からループ採用");
         expect (! session.hasPreview (Part::bass), "ベースは撤去される");
         expect (session.hasPreview (Part::loops), "ループの仮配置は生きている");
         bool clipFound = false;
@@ -8539,15 +8540,15 @@ void testGachaSessionLoops()
     // --- 差し替え失敗（Loopsトラック消失）: 他パーツが残っていても値は戻り、アンカーを取り残さない ---
     {
         GachaSession session;
-        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), -1, 0), "ドラム");
-        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11), -1), "ループ採用");
+        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), 0), "ドラム");
+        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11)), "ループ採用");
         // Loops トラックだけ外部で消す（入口の撤去漏れの想定）
         const auto loopsTrackId = session.previewTrackId (Part::loops);
         project->tracks.erase (std::remove_if (project->tracks.begin(), project->tracks.end(),
                                                [loopsTrackId] (const Track& t)
                                                { return t.id == loopsTrackId; }),
                                project->tracks.end());
-        expect (! session.previewLoopCandidate (*project, makeInput (90.0, 7), -1), "差し替えは失敗する");
+        expect (! session.previewLoopCandidate (*project, makeInput (90.0, 7)), "差し替えは失敗する");
         expect (session.hasPreview (Part::drums), "ドラムの仮配置は残る");
         expect (! session.hasPreview (Part::loops), "ループの仮配置は畳まれる");
         expect (project->bpm == 93.0 && ! project->loopAnchor.has_value(),
@@ -8561,8 +8562,8 @@ void testGachaSessionLoops()
         project->sampleRate = 0.0;
         GachaSession session;
         UndoStack undo;
-        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), -1, 0), "ドラムも仮配置");
-        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11), -1), "敷く");
+        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), 0), "ドラムも仮配置");
+        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11)), "敷く");
         expect (! session.keep (*project, undo), "実体化できない keep は false");
         expect (project->tracks.empty() && project->bpm == 93.0 && ! project->loopAnchor.has_value(),
                 "部分確定を作らずセッション全体がキャンセルされる（ドラムも確定しない）");
@@ -8570,7 +8571,8 @@ void testGachaSessionLoops()
         project->sampleRate = 44100.0;
     }
 
-    // --- 既存オーディオトラックへの配置（preferred）: キャンセルでトラックは残る ---
+    // --- 既存オーディオトラックがあっても常に専用の新規トラックへ敷く（2026-08-08 変更 —
+    //     既存トラックに敷くと前に採用した旧ループと同位置に重なり、見えない二重再生になる）---
     {
         Track audioTrack;
         audioTrack.id = project->allocateId();
@@ -8579,11 +8581,14 @@ void testGachaSessionLoops()
         project->tracks.push_back (std::move (audioTrack));
 
         GachaSession session;
-        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11), 0), "既存トラックへ敷ける");
-        expect ((int) project->tracks.size() == 1, "トラックは増えない");
+        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11)), "敷ける");
+        expect ((int) project->tracks.size() == 2, "既存トラックがあっても専用トラックが増える");
+        expect (project->tracks[0].clips.empty() && (int) project->tracks[1].clips.size() == 1,
+                "クリップは専用トラック側に置かれる");
         expect (session.cancelPreview (*project), "キャンセル");
-        expect ((int) project->tracks.size() == 1 && project->tracks[0].clips.empty(),
-                "クリップだけ消えトラックは残る");
+        expect ((int) project->tracks.size() == 1 && project->tracks[0].name == "My Audio"
+                    && project->tracks[0].clips.empty(),
+                "キャンセルで専用トラックごと消え、既存トラックは無傷");
         project->tracks.clear();
     }
 

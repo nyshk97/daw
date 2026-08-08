@@ -705,7 +705,7 @@ void GachaPanelView::updateControls()
     else if (rowsEmpty)
         infoLabel.setText (isLoops
                                ? jp (u8"「おすすめを出す」で、リファレンスに雰囲気が近い上モノループを"
-                                     u8"ライブラリから5本選びます。行クリックで試聴、✓ で敷きます。")
+                                     u8"ライブラリから選びます。行クリックで試聴、✓ で敷きます。")
                            : isDrums
                                ? jp (u8"「振り直す」で候補を8件生成します。候補をクリックすると"
                                      u8"再生ヘッドの小節頭に仮配置され、曲と一緒に鳴らせます。")
@@ -737,12 +737,14 @@ void GachaPanelView::updateControls()
     pageInfoLabel.setVisible (showPaging);
     if (showPaging)
     {
-        const int start = (loopRecommendation.page - 1) * 5 + 1;
+        const int start = (loopRecommendation.page - 1) * loopRecommendation.pageSize + 1;
         const int end = start + (int) loopRecommendation.candidates.size() - 1;
         pageInfoLabel.setText (jp (u8"候補 ") + juce::String (loopRecommendation.total)
                                    + jp (u8"本中 ") + juce::String (start) + jp (u8"〜")
                                    + juce::String (end) + jp (u8"位"),
                                juce::dontSendNotification);
+        prevPageButton.setButtonText (jp (u8"← 前の") + juce::String (loopRecommendation.pageSize) + jp (u8"本"));
+        nextPageButton.setButtonText (jp (u8"次の") + juce::String (loopRecommendation.pageSize) + jp (u8"本 →"));
         prevPageButton.setEnabled (loopRecommendation.page > 1);
         nextPageButton.setEnabled (end < loopRecommendation.total);
     }
@@ -796,7 +798,7 @@ void GachaPanelView::paintListBoxItem (int row, juce::Graphics& g, int width, in
             g.setColour (Theme::accent);
             g.fillRect (0, 0, 3, height);
         }
-        const int rank = (loopRecommendation.page - 1) * 5 + row + 1;
+        const int rank = (loopRecommendation.page - 1) * loopRecommendation.pageSize + row + 1;
         const auto name = juce::File::createFileWithoutCheckingPath (c.path)
                               .getFileNameWithoutExtension();
         g.setColour (juce::Colours::white.withAlpha (selected ? 0.94f : 0.78f));
@@ -1025,8 +1027,8 @@ void GachaPanelView::resized()
     if (prevPageButton.isVisible()) // Loops のページング行（一覧とガイドの間）
     {
         auto pageRow = area.removeFromBottom (24);
-        prevPageButton.setBounds (pageRow.removeFromLeft (84));
-        nextPageButton.setBounds (pageRow.removeFromRight (84));
+        prevPageButton.setBounds (pageRow.removeFromLeft (96));
+        nextPageButton.setBounds (pageRow.removeFromRight (96));
         pageInfoLabel.setBounds (pageRow);
         area.removeFromBottom (4);
     }

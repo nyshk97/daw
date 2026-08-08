@@ -272,6 +272,8 @@ def main() -> None:
     ap.add_argument("refdir", type=Path, help="分析済みリファレンスフォルダ（card.json 必須）")
     ap.add_argument("--library", type=Path, default=DEFAULT_LIBRARY)
     ap.add_argument("--page", type=int, default=1)
+    ap.add_argument("--page-size", type=int, default=PAGE_SIZE,
+                    help="1ページの候補数（LaLa は画面に合わせて 10 を渡す）")
     ap.add_argument("--json", action="store_true", dest="as_json")
     ap.add_argument("--include-contrast", action="store_true")
     args = ap.parse_args()
@@ -289,7 +291,8 @@ def main() -> None:
     ref_features = upper_features(refdir)
 
     ranked = rank(index["entries"], ref_meta, ref_features, include_contrast=args.include_contrast)
-    page = ranked[PAGE_SIZE * (args.page - 1): PAGE_SIZE * args.page]
+    page_size = max(1, args.page_size)
+    page = ranked[page_size * (args.page - 1): page_size * args.page]
 
     if args.as_json:
         print(json.dumps({
@@ -299,6 +302,7 @@ def main() -> None:
             "key_trusted": ref_meta["key_trusted"],
             "total": len(ranked),
             "page": args.page,
+            "page_size": page_size,
             "candidates": page,
         }, ensure_ascii=False, indent=1))
         return
@@ -309,8 +313,8 @@ def main() -> None:
     if not ranked:
         print("キーと BPM の条件に合うループがありません（ライブラリを増やすか、別リファレンスで）")
         return
-    print(f"候補 {len(ranked)}本中 {PAGE_SIZE * (args.page - 1) + 1}〜{PAGE_SIZE * (args.page - 1) + len(page)}位:")
-    for i, c in enumerate(page, start=PAGE_SIZE * (args.page - 1) + 1):
+    print(f"候補 {len(ranked)}本中 {page_size * (args.page - 1) + 1}〜{page_size * (args.page - 1) + len(page)}位:")
+    for i, c in enumerate(page, start=page_size * (args.page - 1) + 1):
         semis = c["transpose_semitones"]
         key_part = "キーそのまま" if semis == 0 else f"移調 {semis:+d} 半音"
         pct = round((c["bpm_ratio"] - 1) * 100)
@@ -318,8 +322,8 @@ def main() -> None:
         print(f"{i}. {c['path']}{group_note}")
         print(f"   {key_name(c['key_root'], c['key_mode'])} {c['bpm']}bpm"
               f"（{key_part}・BPM {pct:+d}%） — {c['reason']}")
-    if len(ranked) > PAGE_SIZE * args.page:
-        print(f"→ 次の5本: --page {args.page + 1}")
+    if len(ranked) > page_size * args.page:
+        print(f"→ 次の{page_size}本: --page {args.page + 1}")
 
 
 if __name__ == "__main__":

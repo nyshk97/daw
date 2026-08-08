@@ -117,8 +117,11 @@ public:
     // ループ候補を仮配置する（2回目以降は差し替え・同じ場所）。アンカーは常に更新し、
     // applyKeyBpm ならプロジェクトの BPM・キーもループの値になる（undo はセッション baseline が
     // 受け持つ）。BPM/キーが実際に変わるときは**ベースの仮配置だけ撤去**する
-    // （進行がループ由来のため。ドラムは維持 — plan の決定）
-    bool previewLoopCandidate (Project& project, const LoopPreviewInput& input, int preferredTrackIndex);
+    // （進行がループ由来のため。ドラムは維持 — plan の決定）。
+    // 敷き先は**常に専用の新規トラック**（名前=ループ名・キャンセルでトラックごと撤去）。
+    // 既存トラックへ敷くと前に採用した旧ループと同位置に重なり見えない二重再生になるため、
+    // 旧ループは自分のトラックに残して M/S で比べる設計にした（2026-08-08 実地の混乱から変更）
+    bool previewLoopCandidate (Project& project, const LoopPreviewInput& input);
 
     // ループ仮配置の audio が変換されたレート（未配置は 0）。SR 未確定プロジェクトの keep 前に
     // 呼び出し側がこの値で project.sampleRate を確定する（実体化はプロジェクト SR で書くため）
@@ -144,6 +147,7 @@ public:
         juce::String refKeyText;   // 表示用（例 "A minor"）
         bool keyTrusted = true;    // false = カードのキーがゲート落ちで推定値
         int page = 1;
+        int pageSize = 5;          // recommend.py --page-size の値（出力に無い旧形式は5）
         int total = 0;             // フィルタ通過の総数
         std::vector<LoopCandidate> candidates;
     };
@@ -190,13 +194,14 @@ public:
 
     // 候補を仮配置する（2回目以降は差し替え）。
     // - セッション初回: 仮配置前の tracks を baseline として保存
-    // - パーツ初回: 対象トラックを決める。drums は preferredTrackIndex が Drum Kit（midi かつ
-    //   drums=true）ならそれ、bass は GM ベース系（midi・gm・drums=false・program 32..39）
-    //   ならそれ。該当しなければ「Drums」/「Bass」（Finger Bass 33）トラックを自動作成
+    // - パーツ初回: **常に専用の新規トラックを自動作成**（「Drums」/「Bass」Finger Bass 33。
+    //   同名があれば連番）。既存トラックの流用はしない — 選択駆動の流用は「回す前に正しい
+    //   トラックを選んでおく」暗黙知を要求し、外すと予測できない場所に置かれるため廃止
+    //   （2026-08-08 ループの新規トラック化と同時に統一。ガチャが既存トラックへ書くことはない）
     // - 開始位置はパーツ初回の startPpq で固定（差し替えは同じ場所）
     // 失敗（対象ノートが無い等）は false（状態は変えない）
     bool previewCandidate (Part part, Project& project, const MidiImport::Result& parsed,
-                           int preferredTrackIndex, juce::int64 startPpq);
+                           juce::int64 startPpq);
 
     // そのパーツの仮リージョン（＋自動作成トラック）だけを取り除く。何か取り除いたら true。
     // 最後の仮配置が消えたときだけセッション baseline を破棄する（他パーツは維持）

@@ -35,7 +35,7 @@ venv は `tools/reference/.venv` を共用する（gacha と同じ方式）。
 |---|---|---|
 | `setup.sh` | 置き場と symlink の冪等セットアップ | `lib:setup` |
 | `index.py` | loops/ をスキャンして index.json を生成（差分更新・原子的書き込み） | `lib:index` |
-| `recommend.py` | おすすめ5 — キー±2半音/BPM±10%で足切り→特徴量距離で並べる（決定的・ページング型） | `lib:recommend` |
+| `recommend.py` | おすすめ5 — キー±2半音/BPM±10%で足切り→特徴量距離で並べる（決定的・ページング型。`--page-size` で1頁の本数、CLI既定5・LaLa は10） | `lib:recommend` |
 | `evaluate.py` | 効きの検証レポート（対照群が沈むか・リファレンス間で上位が入れ替わるか）。CI対象外 | `lib:evaluate` |
 | `looproots.py` | 採用ループからルート列の契約 JSON を抽出（`bass.py --roots` の入力。**契約は docstring が真実の源**） | `lib:roots` |
 

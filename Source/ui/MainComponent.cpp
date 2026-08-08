@@ -2757,6 +2757,9 @@ void MainComponent::pollReferenceAnalysis()
                            + (result.keyText.isNotEmpty() ? " key=" + result.keyText : juce::String()));
             if (result.hasCard)
             {
+                // パネルを開いたまま分析したケースを拾う（一覧はモードを開くたびにしか
+                // 列挙し直さないため、ここで足さないと「カードがありません」のまま残る）
+                rightPanel.gachaPanel().refreshCards();
                 // 「BPM 112.9 / D major」。キーは card.json でゲート落ち省略されることがある
                 auto message = jp (u8"BPM ") + juce::String (result.bpm, 1)
                                + (result.keyText.isNotEmpty() ? " / " + result.keyText : juce::String());
@@ -3229,8 +3232,7 @@ bool MainComponent::extendDrumsPreview (int bars)
         return false;
     }
     // 差し替え（仮配置は active のまま同じ場所に置き直される）
-    if (! gachaSession.previewCandidate (GachaSession::Part::drums, *project, parsed,
-                                         selectedTrack, 0))
+    if (! gachaSession.previewCandidate (GachaSession::Part::drums, *project, parsed, 0))
     {
         // 対象トラック消失等でセッションが畳まれた可能性がある（他の失敗経路と同じ共通同期）
         syncTransportAfterGachaRestore();
@@ -3442,7 +3444,7 @@ void MainComponent::pickGachaCandidate (int index)
 
     // 仮配置（2回目以降は差し替え）。対象トラックの決定は GachaSession（Drum Kit / GM ベース系の
     // 流用 or 自動作成）。undo には積まない（「残す」で全パーツまとめて1件積む）
-    if (! gachaSession.previewCandidate (part, *project, parsed, selectedTrack, startPpq))
+    if (! gachaSession.previewCandidate (part, *project, parsed, startPpq))
     {
         // 失敗でセッションが畳まれた場合、BPM・キー・アンカーが baseline へ戻っている
         syncTransportAfterGachaRestore();
@@ -3513,7 +3515,7 @@ void MainComponent::keepGachaCandidate()
                 input.startSample = 0;
                 input.loopCount = 1;
                 input.applyKeyBpm = false; // 値は適用済み。クリップだけ現在レートに入れ替える
-                replaced = gachaSession.previewLoopCandidate (*project, input, selectedTrack);
+                replaced = gachaSession.previewLoopCandidate (*project, input);
             }
             if (! replaced)
             {
@@ -3616,10 +3618,14 @@ void MainComponent::performLoopRecommend (int page)
     filePreview.stop(); // ページが変わると行の意味が変わる
     panel.setAuditioningRow (-1);
 
+    // 10本/頁: パネルの縦空間はこの画面比率で15行以上入るが、スクロールなしで全行が
+    // 見える本数に留める（試聴の行き来はページングが担う）
+    constexpr int pageSize = 10;
     juce::StringArray argv { ReferenceTools::venvPython().getFullPathName(),
                              ReferenceTools::recommendScript().getFullPathName(),
                              refdir.getFullPathName(),
                              "--page", juce::String (juce::jmax (1, page)),
+                             "--page-size", juce::String (pageSize),
                              "--json" };
     juce::StringArray stdoutLines;
     juce::String detail;
@@ -3830,7 +3836,7 @@ void MainComponent::placeLoopPreview (const LoopAnchor& anchor, const juce::File
     input.loopCount = 1;   // 2周ぶん（ドラム・ベースを重ねたとき展開が分かる最小）
     input.applyKeyBpm = applyKeyBpm;
 
-    if (! gachaSession.previewLoopCandidate (*project, input, selectedTrack))
+    if (! gachaSession.previewLoopCandidate (*project, input))
     {
         syncTransportAfterGachaRestore(); // 失敗でセッションが畳まれた可能性
         return;
