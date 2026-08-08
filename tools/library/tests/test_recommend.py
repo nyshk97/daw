@@ -83,6 +83,37 @@ def test_rank_ordering_and_filters() -> None:
     print("OK rank ordering/filters")
 
 
+def test_variant_grouping() -> None:
+    # 同曲のテイク番号・_LOFI 質感違いは距離最小の1本に集約される（1曲1枠）
+    entries = [
+        entry("loops/APS/LHG_80_Am_Song_Electric_Guitar_1.wav", centroid=850.0),
+        entry("loops/APS/LHG_80_Am_Song_Electric_Guitar_2.wav", centroid=900.0),
+        entry("loops/APS/LHG_80_Am_Song_Electric_Guitar_1_LOFI.wav", centroid=950.0),
+        entry("loops/APS/LHG_80_Am_Other_Electric_Guitar_1.wav", centroid=1200.0),
+    ]
+    ranked = rank(entries, REF, feats(centroid=800.0))
+    paths = [c["path"] for c in ranked]
+    assert paths == ["loops/APS/LHG_80_Am_Song_Electric_Guitar_1.wav",
+                     "loops/APS/LHG_80_Am_Other_Electric_Guitar_1.wav"], paths
+    assert ranked[0]["group_size"] == 3   # _2 と _1_LOFI が集約された
+    assert ranked[1]["group_size"] == 1
+
+    # 末尾が Min/Maj で終わる命名（Cymatics）はサフィックスが剥がれない = 全件独立のまま
+    cyma = [
+        entry("loops/C/Cymatics - Oracle Melody Loop 2 - 80 BPM A Min.wav", centroid=850.0),
+        entry("loops/C/Cymatics - Oracle Melody Loop 4 - 80 BPM A Min.wav", centroid=900.0),
+    ]
+    assert len(rank(cyma, REF, feats(centroid=800.0))) == 2
+
+    # 名前が同じでもキーや BPM が違えば別グループ（同曲とみなす根拠が崩れるため）
+    keyed = [
+        entry("loops/APS/LHG_80_Am_Song_Electric_Guitar_1.wav", root=9, centroid=850.0),
+        entry("loops/APS/LHG_80_Bm_Song_Electric_Guitar_1.wav", root=11, centroid=900.0),
+    ]
+    assert len(rank(keyed, REF, feats(centroid=800.0))) == 2
+    print("OK variant grouping")
+
+
 def test_rank_deterministic_tiebreak() -> None:
     ref_f = feats()
     entries = [entry("loops/P/b.wav"), entry("loops/P/a.wav")]  # 特徴量が完全に同じ
@@ -202,6 +233,7 @@ if __name__ == "__main__":
     test_transpose_semitones()
     test_tempo_relation()
     test_rank_ordering_and_filters()
+    test_variant_grouping()
     test_rank_deterministic_tiebreak()
     test_reason_text_plain_words()
     test_rank_end_to_end_with_wavs()

@@ -43,6 +43,9 @@ venv は `tools/reference/.venv` を共用する（gacha と同じ方式）。
   （`*_source` フィールドで出所が分かる。推定は filename より信頼度が落ちる）
 - パック追加・削除のたびに `mise run lib:index` を回す。size+mtime が同じファイルは
   再分析しないので2回目以降は速い
+- `recommend.py` は**同曲のバリエーションを1枠に集約**する（テイク番号 `_1`〜・`_LOFI` を
+  剥がした名前＋パック＋BPM＋キーが一致したら距離最小の1本だけ出す。`group_size` に隠れた
+  本数。APS ギターパックが1曲最大10ファイルで枠を占領した実害への対処）
 - `recommend.py` の距離は index と同じ `compute_features` を通した
   リファレンスの上モノ合算（6分割 piano/guitar/other。`analysis/upper-features.json` にキャッシュ）
   と比べる。BPM フィルタは**±10%のみ**（倍/半分テンポ表記の許容は逆コピーの意味論が

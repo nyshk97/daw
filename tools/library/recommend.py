@@ -9,6 +9,8 @@
 
 出力は決定的（同じ入力 → 同じ並び）。「振り直し」は無く、--page で6位以降を見る。
 理由の文言は内部用語を使わない（明るさ・帯域の配分・音数・アタック感）。
+同曲のバリエーション（テイク番号・_LOFI 質感違い）は距離最小の1本に集約する（1曲1枠。
+group_size に隠れた本数が入る。詳細は VARIANT_SUFFIX_RE のコメント）。
 
 使い方: recommend.py <リファレンスフォルダ> [--library DIR] [--page 1] [--json]
                      [--include-contrast]（evaluate.py 用。通常は対照群を候補に出さない）
@@ -16,6 +18,7 @@
 import argparse
 import json
 import math
+import re
 import sys
 import warnings
 from pathlib import Path
@@ -144,6 +147,20 @@ def tempo_relation(loop_bpm: float, ref_bpm: float) -> tuple[str, float] | None:
 
 # --- ランキング ---------------------------------------------------------------
 
+# 同曲バリエーションの集約: パックによっては1曲がテイク番号（_1〜_5）と質感違い（_LOFI）で
+# 最大10ファイルになり（APS_LoFi_Hip_Hop_Guitar で実測）、おすすめ5の枠を同曲が占領する。
+# ファイル名はリネームしない方針なので、末尾サフィックスを剥がした名前＋パック＋BPM＋キーの
+# 一致をグループとみなし、距離最小の1本だけ候補列に出す。
+# 末尾が「Min/Maj」で終わる命名（Cymatics 等）はサフィックスが剥がれない = 従来どおり全件独立。
+# 番号だけが曲の識別子の命名（Loop_01/02 が別曲）を BPM・キーまで同じときに誤集約する
+# リスクは許容する（隠れるのは1ページ先の候補で、実害が出たら特徴量距離の条件を足す）。
+VARIANT_SUFFIX_RE = re.compile(r"(?i)(?:[_\- ](?:lofi|\d{1,3}))+$")
+
+
+def variant_group_key(path: str, pack: str | None, bpm: float, key_root: int, key_mode: str) -> tuple:
+    base = VARIANT_SUFFIX_RE.sub("", Path(path).stem.lower())
+    return (pack, base, bpm, key_root, key_mode)
+
 # 重み: 帯域の配分と明るさが「雰囲気」の主成分（レポートの音色と帯域節が効いた経験則）。
 # 音数とアタック感は補助。効かなければ動作確認1で作り直す（plan の中断点）。
 WEIGHTS = {"brightness": 1.0, "band": 1.2, "density": 0.6, "attack": 0.4}
@@ -216,6 +233,7 @@ def rank(entries: list[dict], ref_meta: dict, ref_features: dict,
             continue
         score, parts = distance(e["features"], e["bpm"], ref_features, ref_meta["bpm"])
         out.append({
+            "_group": variant_group_key(e["path"], e.get("pack"), e["bpm"], e["key_root"], e["key_mode"]),
             "path": e["path"],
             "bpm": e["bpm"],
             "loop_bars": e.get("loop_bars_estimate"),  # null あり（採用時の looproots へ渡す）
@@ -229,7 +247,18 @@ def rank(entries: list[dict], ref_meta: dict, ref_features: dict,
             "is_contrast": bool(e.get("is_contrast")),
         })
     out.sort(key=lambda c: (c["score"], c["path"]))  # 同点はパスで決定的に
-    return out
+    # 同曲バリエーションは距離最小の1本に集約（1曲1枠）。group_size は隠れた同曲の総数
+    picked: dict[tuple, dict] = {}
+    deduped = []
+    for c in out:
+        group = c.pop("_group")
+        if group in picked:
+            picked[group]["group_size"] += 1
+            continue
+        c["group_size"] = 1
+        picked[group] = c
+        deduped.append(c)
+    return deduped
 
 
 # --- CLI ----------------------------------------------------------------------
@@ -285,7 +314,8 @@ def main() -> None:
         semis = c["transpose_semitones"]
         key_part = "キーそのまま" if semis == 0 else f"移調 {semis:+d} 半音"
         pct = round((c["bpm_ratio"] - 1) * 100)
-        print(f"{i}. {c['path']}")
+        group_note = f"（同曲の別テイク・質感違い 計{c['group_size']}本）" if c["group_size"] > 1 else ""
+        print(f"{i}. {c['path']}{group_note}")
         print(f"   {key_name(c['key_root'], c['key_mode'])} {c['bpm']}bpm"
               f"（{key_part}・BPM {pct:+d}%） — {c['reason']}")
     if len(ranked) > PAGE_SIZE * args.page:
