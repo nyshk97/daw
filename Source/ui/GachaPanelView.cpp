@@ -441,9 +441,13 @@ void GachaPanelView::refreshCards()
             && std::find (cardFolders.begin(), cardFolders.end(), state.cardFolder)
                    == cardFolders.end())
             state.cardFolder = juce::File();
-    // カードが1枚だけなら表示中パーツで選んでおく（選択操作を省く）
-    if (cardFolders.size() == 1 && parts[(size_t) currentPart].cardFolder == juce::File())
-        parts[(size_t) currentPart].cardFolder = cardFolders.front();
+    // カードが1枚だけなら未選択の**全パーツ**で選んでおく（選択操作を省く。表示中パーツ
+    // だけに絞ると、他タブへ切り替えたとき「カードを選択…」に戻って見える。パーツ別参照が
+    // 意味を持つのはカードが複数あるときだけなので、1枚なら迷わず埋めてよい）
+    if (cardFolders.size() == 1)
+        for (auto& state : parts)
+            if (state.cardFolder == juce::File())
+                state.cardFolder = cardFolders.front();
     applyCardSelection (parts[(size_t) currentPart].cardFolder);
     updateControls();
     resized(); // 案内文の出入りで一覧の上端が変わる
