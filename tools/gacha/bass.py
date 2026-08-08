@@ -20,6 +20,7 @@ mix wav も出す（候補の同一性・skip 判定には関与しない）。
 
 使い方: bass.py <リファレンスフォルダ|card.json> --key ROOT:MODE [--bpm N] [--seed N]
                 [--count N] [--bars N] [--lock prog=HEX8,rhythm=HEX8]
+                [--roots <looproots契約.json>]（ループ追従: 進行を固定しリズムだけガチャ）
                 [--kick-ticks 0,480,960 | --drums <drums-sidecar.json>] [--out DIR]
 
 設計は docs/plans/2026-08-06-1809-bass-gacha.md と docs/design/reference-beat.md。
@@ -40,6 +41,11 @@ from common import (  # noqa: E402
     GachaError, candidate_hash, candidate_status, cfg_hash, derive_lane_seed, is_num,
     parse_locks, publish_candidate, resolve_card_path, resolve_lane_seeds, write_mix_wav,
 )
+
+# ループ追従モード（--roots）の契約は looproots.py の docstring が真実の源。
+# looproots のモジュール import は stdlib のみ（librosa 系は関数内）なので起動は重くならない
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "library"))
+from looproots import load_contract as load_roots_contract, validate_roots_core  # noqa: E402
 
 # v2: 装飾音をスケール構成音でフィルタ / 最低1音の保証を小節単位→パターン単位に
 # v3: 最低1音フォールバックも同時打ちスナップを通す（疎な候補だけキックとフラムになっていた）
@@ -325,20 +331,30 @@ def next_root(prev_pc: int, exclude: set[int], degrees: tuple[int, ...], tonic: 
 # ---------------------------------------------------------------- リズム＋音高（rhythm レーン）
 
 def generate_notes(effective: dict, key: dict, kick_ticks: list[int],
-                   lane_seeds: dict[str, int], bars: int, bpm: float) -> list[tuple[int, int, int]]:
+                   lane_seeds: dict[str, int], bars: int, bpm: float,
+                   roots_cfg: dict | None = None) -> list[tuple[int, int, int]]:
     """(tick, midi_note, velocity) のリスト（tick 昇順・モノフォニック前提の発音列）。
 
     パターン（loop_bars）を生成して bars まで繰り返す。装飾もパターン内で
     確定するので、繰り返しは完全なコピー（同一 seed で --bars だけ変えても同じパターン）。
+
+    roots_cfg（ループ追従モード）があれば進行はその固定ルート列 — prog レーンの
+    ガチャは走らず、振り直しで変わるのはリズムだけになる。
     """
     chords = effective["chords"]
     bass = effective["bass"]
-    loop_bars = loop_bars_of(effective)
-    pattern_ticks = loop_bars * TICKS_BAR
-    slots_per_bar = chords["slots_per_bar"] if chords else 1
-    harmony_ticks = TICKS_BAR // slots_per_bar if chords else pattern_ticks
+    if roots_cfg is not None:
+        loop_bars = roots_cfg["loop_bars"]
+        pattern_ticks = loop_bars * TICKS_BAR
+        harmony_ticks = TICKS_BAR // roots_cfg["slots_per_bar"]
+        roots = list(roots_cfg["roots"])
+    else:
+        loop_bars = loop_bars_of(effective)
+        pattern_ticks = loop_bars * TICKS_BAR
+        slots_per_bar = chords["slots_per_bar"] if chords else 1
+        harmony_ticks = TICKS_BAR // slots_per_bar if chords else pattern_ticks
 
-    roots = generate_root_sequence(chords, key, np.random.default_rng(lane_seeds["prog"]))
+        roots = generate_root_sequence(chords, key, np.random.default_rng(lane_seeds["prog"]))
     rng = np.random.default_rng(lane_seeds["rhythm"])
 
     kicks = kick_slot_map(kick_ticks, pattern_ticks)
@@ -489,10 +505,15 @@ def synth_wav(notes: list[tuple[int, int, int]], effective: dict, bpm: float, ba
 
 # ---------------------------------------------------------------- 候補の同一性
 
-def cfg_payload(effective: dict, key: dict, kick_ticks: list[int], bpm: float, bars: int) -> dict:
+def cfg_payload(effective: dict, key: dict, kick_ticks: list[int], bpm: float, bars: int,
+                roots_cfg: dict | None = None) -> dict:
     """「有効な生成入力」だけ。正規化した key・実効 BPM・折り畳んだ kick ticks を含める —
-    同じ seed でもキー・BPM・ドラムが違えば別候補名になる（同名なら同内容の契約）。"""
-    return {
+    同じ seed でもキー・BPM・ドラムが違えば別候補名になる（同名なら同内容の契約）。
+
+    roots_cfg（ループ追従）は生成に効く最小セット {slots_per_bar, loop_bars, roots} だけを
+    含める（confidence 等は音を変えないので同一性にも入れない）。無いときはキー自体を
+    出さない — 従来のサイドカーとの payload 一致を壊さないため。"""
+    payload = {
         "generator": "bass",
         "generator_version": GENERATOR_VERSION,
         "bpm": bpm,
@@ -503,13 +524,18 @@ def cfg_payload(effective: dict, key: dict, kick_ticks: list[int], bpm: float, b
         "bass": effective["bass"],
         "chords": effective["chords"],
     }
+    if roots_cfg is not None:
+        payload["roots"] = {"slots_per_bar": roots_cfg["slots_per_bar"],
+                            "loop_bars": roots_cfg["loop_bars"],
+                            "roots": list(roots_cfg["roots"])}
+    return payload
 
 
 def candidate_basename(lane_seeds: dict[str, int], cfg_sha: str) -> str:
     return f"bass-p{lane_seeds['prog']:08x}-r{lane_seeds['rhythm']:08x}-{cfg_sha[:6]}"
 
 
-def load_sidecar(path: Path) -> tuple[dict, dict, list[int], float, int, list[str], dict[str, int], int, str | None]:
+def load_sidecar(path: Path) -> tuple[dict, dict, list[int], float, int, list[str], dict[str, int], int, str | None, dict | None]:
     """サイドカーから1候補を完全再現するための入力一式を読む（--from）。
 
     config の bass / chords / key / kick_ticks をカードと同じ検証に通し、現在の生成器で
@@ -550,10 +576,18 @@ def load_sidecar(path: Path) -> tuple[dict, dict, list[int], float, int, list[st
         raise GachaError(f"{path}: config.bars が不正: {bars!r}")
     if not isinstance(kick_ticks, list):
         raise GachaError(f"{path}: config.kick_ticks がリストでない: {kick_ticks!r}")
-    kick_ticks = fold_kick_ticks(kick_ticks, loop_bars_of(effective) * TICKS_BAR)
+    roots_cfg = config.get("roots")
+    if roots_cfg is not None:
+        try:
+            validate_roots_core(roots_cfg.get("slots_per_bar"), roots_cfg.get("loop_bars"),
+                                roots_cfg.get("roots"))
+        except (ValueError, AttributeError) as e:
+            raise GachaError(f"{path}: config.roots が不正: {e}") from e
+    pattern_bars = roots_cfg["loop_bars"] if roots_cfg else loop_bars_of(effective)
+    kick_ticks = fold_kick_ticks(kick_ticks, pattern_bars * TICKS_BAR)
     if any(not (0 <= s <= 0xFFFFFFFF) for s in lane_seeds.values()):
         raise GachaError(f"{path}: lane_seeds が32bitの範囲外: {sc['lane_seeds']}")
-    rebuilt = cfg_payload(effective, key, kick_ticks, bpm, bars)
+    rebuilt = cfg_payload(effective, key, kick_ticks, bpm, bars, roots_cfg)
     if config != rebuilt:
         raise GachaError(
             f"{path}: config が現在の生成器の正規化済み設定と一致しない"
@@ -567,7 +601,7 @@ def load_sidecar(path: Path) -> tuple[dict, dict, list[int], float, int, list[st
     defaulted = sc.get("defaulted_fields", [])
     reference = sc.get("reference")
     return (effective, key, kick_ticks, bpm, bars, defaulted, lane_seeds, global_seed,
-            reference if isinstance(reference, str) else None)
+            reference if isinstance(reference, str) else None, roots_cfg)
 
 
 # ---------------------------------------------------------------- mix（--drums・使い捨て）
@@ -619,6 +653,9 @@ def run(argv: list[str]) -> int:
     ap.add_argument("--bars", type=int, default=None,
                     help="書き出す小節数（パターンの繰り返し。既定 loop_bars。loop_bars の倍数のみ）")
     ap.add_argument("--lock", type=str, default="", help="レーン seed の固定: prog=HEX8,rhythm=HEX8")
+    ap.add_argument("--roots", type=str, default=None,
+                    help="ループ追従モード: looproots.py の契約 JSON。進行をルート列で固定し、"
+                         "リズムだけガチャする（契約の形式は looproots.py の docstring）")
     ap.add_argument("--kick-ticks", type=str, default=None,
                     help="キック位置（ドラムリージョン先頭基準の相対 PPQ tick のカンマ区切り。LaLa 連携用）")
     ap.add_argument("--drums", type=str, default=None,
@@ -640,12 +677,12 @@ def run(argv: list[str]) -> int:
     if args.from_sidecar:
         if (args.card or args.key is not None or args.bpm is not None or args.seed is not None
                 or args.lock or args.count is not None or args.bars is not None
-                or args.kick_ticks is not None or args.drums is not None):
+                or args.kick_ticks is not None or args.drums is not None or args.roots is not None):
             raise GachaError("--from は card / --key / --bpm / --seed / --count / --bars / --lock / "
-                             "--kick-ticks / --drums と併用できない（生成条件はサイドカーの値を使う）")
+                             "--kick-ticks / --drums / --roots と併用できない（生成条件はサイドカーの値を使う）")
         sc_path = Path(args.from_sidecar).expanduser()
         (effective, key, kick_ticks, bpm, bars, defaulted,
-         lane_seeds, global_seed, reference) = load_sidecar(sc_path)
+         lane_seeds, global_seed, reference, roots_cfg) = load_sidecar(sc_path)
         outdir = Path(args.out).expanduser() if args.out else sc_path.parent
         candidates = [(global_seed, lane_seeds)]
         drums_notes = None
@@ -665,7 +702,16 @@ def run(argv: list[str]) -> int:
         if not math.isfinite(bpm) or not (30 <= bpm <= 300):
             raise GachaError(f"実効 BPM が 30〜300 の外: {bpm}")
 
-        loop_bars = loop_bars_of(effective)
+        roots_cfg = None
+        if args.roots is not None:
+            try:
+                roots_cfg = load_roots_contract(Path(args.roots).expanduser())
+            except ValueError as e:
+                raise GachaError(f"--roots: {e}") from e
+
+        # 追従時のパターン長はループの実長（カードの loop_bars より契約が勝つ —
+        # ドラムは曲A・進行は採用ループ、のパーツ別参照で食い違うのが普通のため）
+        loop_bars = roots_cfg["loop_bars"] if roots_cfg else loop_bars_of(effective)
         bars = args.bars if args.bars is not None else loop_bars
         if bars < loop_bars or bars % loop_bars != 0:
             raise GachaError(
@@ -684,12 +730,23 @@ def run(argv: list[str]) -> int:
         kick_ticks = fold_kick_ticks(raw_kick_ticks, loop_bars * TICKS_BAR)
 
         locks = parse_locks(args.lock, LANES) if args.lock else {}
+        if roots_cfg is not None and "prog" in locks:
+            raise GachaError("--roots では進行がループ由来で固定されるため prog ロックは併用できない")
         outdir = Path(args.out).expanduser() if args.out else card_path.parent / "gacha"
         note(f"カード: {card_path}（実効 BPM {bpm:g} / キー {args.key} / パターン {loop_bars}小節 / 書き出し {bars}小節）")
         for field in defaulted:
             note(f"  [補完] {field} が無いため既定値を使う")
-        if effective["chords"] is None:
+        if effective["chords"] is None and roots_cfg is None:
             note("  [退化] chords スライスが無いためルート固定・1小節パターン")
+        if roots_cfg is not None:
+            src = roots_cfg.get("source") or ""
+            note(f"  [追従] ループのルート列で進行を固定"
+                 f"（{roots_cfg['loop_bars']}小節×{roots_cfg['slots_per_bar']}スロット"
+                 f"{'・' + src if src else ''}。振り直しで変わるのはリズムだけ）")
+            if roots_cfg.get("degraded"):
+                note("  [追従/退化] ループから進行が取れなかった契約（トニック連打）")
+            if (roots_cfg.get("key_root"), roots_cfg.get("key_mode")) != (key["root"], key["mode"]):
+                note("  [注意] ループのキーとプロジェクトのキーが違う（採用時の逆コピー漏れの可能性）")
         if kick_ticks:
             note(f"  [キック] {len(kick_ticks)} 打を同時打ちブーストに使う")
         if locks:
@@ -699,9 +756,14 @@ def run(argv: list[str]) -> int:
             note(f"全体 seed: {global_seed}（--seed {global_seed} で再現できる）")
         candidates = [(global_seed + i, resolve_lane_seeds("bass", LANES, global_seed + i, locks))
                       for i in range(count)]
+        if roots_cfg is not None:
+            # 追従時は prog レーンを生成に使わない。seed を 0 に正規化して候補名・同一性から
+            # 実質的に外す — さもないと「同じ音の候補が別名で複数生成される」
+            # （rhythm ロック時は既存の seen チェックで 1 件に畳まれる）
+            candidates = [(g, {**ls, "prog": 0}) for g, ls in candidates]
 
     outdir.mkdir(parents=True, exist_ok=True)
-    payload = cfg_payload(effective, key, kick_ticks, bpm, bars)
+    payload = cfg_payload(effective, key, kick_ticks, bpm, bars, roots_cfg)
     cfg_sha = cfg_hash(payload)
     generated = skipped = 0
     seen: set[str] = set()
@@ -721,7 +783,7 @@ def run(argv: list[str]) -> int:
         lane_seeds_hex = {lane: f"{s:08x}" for lane, s in lane_seeds.items()}
         cand_sha = candidate_hash(payload, lane_seeds_hex)
         status = candidate_status(outdir, base, payload, lane_seeds_hex)
-        notes_list = generate_notes(effective, key, kick_ticks, lane_seeds, bars, bpm)
+        notes_list = generate_notes(effective, key, kick_ticks, lane_seeds, bars, bpm, roots_cfg)
         wav_data = synth_wav(notes_list, effective, bpm, bars)
         if status == "skip":
             note(f"  [スキップ] {base}: 完成済み（同じ seed・同じ設定＝同じ内容）")

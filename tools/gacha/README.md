@@ -4,15 +4,26 @@
 分析パイプライン（`tools/reference/`）が作る制約カード `card.json` を読み、パーツの候補を
 ルールベースで振る。card.json を挟んで分析とは疎結合 — 生成器はカードしか読まない。
 
-現状はドラムのみ（生成順「ドラム→ベース→コード」の土台。最小版）。
+現状はドラムとベース（`drums.py` / `bass.py`）。
 venv は分析側の `tools/reference/.venv` を再利用する（依存が分析側の部分集合のため）。
 
 ## 使い方
 
 ```sh
 mise run gacha:drums ~/Music/daw/references/<名前>        # 8候補を <名前>/gacha/ に生成
-mise run gacha:test                                       # 回帰テスト（fixture のみ・数秒）
+mise run gacha:bass  ~/Music/daw/references/<名前> -- --key A:minor   # ベース（キー必須）
+mise run gacha:test                                       # 回帰テスト（fixture のみ・数十秒）
 ```
+
+ベースの**ループ追従モード**（採用ループの実進行に従い、リズムだけ振る）:
+
+```sh
+mise run lib:roots -- <loop.wav> --out roots.json         # ループからルート列の契約を抽出
+mise run gacha:bass -- <フォルダ> --key A:minor --roots roots.json
+```
+
+契約 JSON の形式は `tools/library/looproots.py` の docstring が真実の源。
+不正な契約は黙って退化せず即エラーで止まる。
 
 ```
 drums.py <リファレンスフォルダ|card.json>

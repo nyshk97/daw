@@ -53,7 +53,7 @@ exec tools/reference/.venv/bin/python tools/gacha/drums.py "$@"
 
 [tasks."gacha:bass"]
 description = 'カードとキーからベース候補をガチャ生成する（.mid＋耳チェック用.wav。--drums でmixも）'
-usage = 'arg "<args>" var=#true help="<リファレンスフォルダ|card.json> --key ROOT:MODE [--bpm N] [--seed N] [--count N] [--bars N] [--lock prog=HEX8,rhythm=HEX8] [--drums SIDECAR.json] [--out DIR]"'
+usage = 'arg "<args>" var=#true help="<リファレンスフォルダ|card.json> --key ROOT:MODE [--bpm N] [--seed N] [--count N] [--bars N] [--lock prog=HEX8,rhythm=HEX8] [--roots ROOTS.json] [--drums SIDECAR.json] [--out DIR]"'
 run = '''
 #!/usr/bin/env bash
 eval "set -- $usage_args"
@@ -65,6 +65,59 @@ description = 'ガチャ（drums.py / bass.py）の回帰テスト（fixture の
 run = '''
 tools/reference/.venv/bin/python tools/gacha/tests/test_drums.py
 tools/reference/.venv/bin/python tools/gacha/tests/test_bass.py
+tools/reference/.venv/bin/python tools/gacha/tests/test_bass_roots.py
+'''
+
+# --- サンプルライブラリ（tools/library/README.md） ---
+
+[tasks."lib:setup"]
+description = 'サンプルライブラリの置き場（iCloud実体＋~/Music/daw/library symlink）を冪等セットアップする'
+run = 'tools/library/setup.sh'
+
+[tasks."lib:index"]
+description = 'ライブラリのループをスキャンして index.json を更新する（差分更新。パック追加後に回す）'
+usage = 'arg "<args>" var=#true default="" help="[--library DIR] [--force]"'
+# default="" は引数なし実行で「空文字列1個」が argv に入る → 空要素を落としてから渡す
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+args=(); for a in "$@"; do [ -n "$a" ] && args+=("$a"); done
+exec tools/reference/.venv/bin/python tools/library/index.py "${args[@]}"
+'''
+
+[tasks."lib:recommend"]
+description = 'リファレンスに雰囲気が近いループのおすすめ5を出す（--page 2 で6位以降）'
+usage = 'arg "<args>" var=#true help="<リファレンスフォルダ> [--page N] [--json] [--library DIR]"'
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+exec tools/reference/.venv/bin/python tools/library/recommend.py "$@"
+'''
+
+[tasks."lib:evaluate"]
+description = 'おすすめの効きを検証するレポート（対照群が沈むか・リファレンス間で上位が入れ替わるか）'
+usage = 'arg "<args>" var=#true help="<リファレンスフォルダ...> [--library DIR]"'
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+exec tools/reference/.venv/bin/python tools/library/evaluate.py "$@"
+'''
+
+[tasks."lib:roots"]
+description = '採用ループからベースが従うルート列（契約JSON）を抽出する（bass.py --roots の入力）'
+usage = 'arg "<args>" var=#true help="<loop.wav> [--bpm N] [--bars N] [--key ROOT:MODE] [--out FILE]"'
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+exec tools/reference/.venv/bin/python tools/library/looproots.py "$@"
+'''
+
+[tasks."lib:test"]
+description = 'ライブラリツール（index.py / recommend.py / looproots.py）の回帰テスト（合成wavのみで数十秒）'
+run = '''
+tools/reference/.venv/bin/python tools/library/tests/test_index.py
+tools/reference/.venv/bin/python tools/library/tests/test_recommend.py
+tools/reference/.venv/bin/python tools/library/tests/test_looproots.py
 '''
 
 [tasks.start]
