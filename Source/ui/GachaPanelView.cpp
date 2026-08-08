@@ -112,7 +112,7 @@ private:
         AdoptButton()
         {
             setMouseCursor (juce::MouseCursor::PointingHandCursor);
-            setTooltip (juce::String::fromUTF8 (u8"タイムラインに敷く（キー/BPM の設定を確認します）"));
+            setTooltip (juce::String::fromUTF8 (u8"採用してタイムラインへ（キー/BPM の設定を確認します）"));
         }
         void mouseEnter (const juce::MouseEvent&) override { hovered = true; repaint(); }
         void mouseExit (const juce::MouseEvent&) override { hovered = false; repaint(); }
@@ -671,7 +671,7 @@ void GachaPanelView::updateControls()
             statusLabel.setText (state.previewActive
                                      ? jp (u8"ループを仮配置中 — 「仮配置中」をクリックでビート全体を残す（確定）・"
                                             u8"別の ✓ で差し替え")
-                                     : jp (u8"行クリックで試聴 → 気に入ったら右端の ✓ でタイムラインに敷く"),
+                                     : jp (u8"行クリックで試聴 → 気に入ったら右端の ✓ で採用"),
                                  juce::dontSendNotification);
         else
             statusLabel.setText ({}, juce::dontSendNotification);
@@ -706,7 +706,7 @@ void GachaPanelView::updateControls()
     else if (rowsEmpty)
         infoLabel.setText (isLoops
                                ? jp (u8"「おすすめを出す」で、リファレンスに雰囲気が近い上モノループを"
-                                     u8"ライブラリから選びます。行クリックで試聴、✓ で敷きます。")
+                                     u8"ライブラリから選びます。行クリックで試聴、✓ で採用します。")
                            : isDrums
                                ? jp (u8"「振り直す」で候補を8件生成します。候補をクリックすると"
                                      u8"再生ヘッドの小節頭に仮配置され、曲と一緒に鳴らせます。")

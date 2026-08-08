@@ -219,7 +219,27 @@ private:
     // Loops タブ（ループ検索ガチャ）。候補は recommend.py の決定的ランキング（ページング型）
     void performLoopRecommend (int page); // recommend.py --json を同期実行 → ページ表示
     void toggleLoopAudition (int index);  // 行クリック＝試聴のトグル（AudioFilePreview）
-    void adoptLoopCandidate (int index);  // ✓ → looproots で進行検出 → ダイアログ → 仮配置
+    // ✓ → **即ダイアログ**を出し、進行検出（looproots）はワーカーで並走させる（案3・2026-08-09）。
+    // 検出を同期実行するとメッセージスレッドが2〜5秒固まり、ローディングすら出せなかった。
+    // ダイアログに必要なキー/BPM は候補メタデータで足りるので、待ち時間を「読む時間」に隠す
+    void adoptLoopCandidate (int index);
+    // 進行検出の並走状態。ワーカー→callAsync でメッセージスレッドへ戻ってから書くので、
+    // フィールドは全てメッセージスレッドでだけ触る（排他不要）
+    struct LoopAdoptDetection
+    {
+        bool finished = false;
+        bool ok = false;
+        juce::String contractText, detail;   // 成功時は契約 JSON / 失敗時は stderr 最終行
+        juce::String libraryPath;            // アンカー完成用（候補のメタデータ）
+        double bpm = 0.0;
+        bool dialogCancelled = false;        // キャンセル済み → 完了結果は黙って捨てる
+        std::function<void()> pendingAction; // 確定が検出より先（早押し）のときの続き
+    };
+    std::shared_ptr<LoopAdoptDetection> loopAdoptDetection; // 進行中の採用（null = なし）
+    // ダイアログ確定後の続き: 検出未完なら「進行を検出中…」を出して完了を待ち、
+    // 完了済みなら契約検証 →「敷いています…」を描いてから placeLoopPreview へ
+    void finishLoopAdoption (std::shared_ptr<LoopAdoptDetection> detection,
+                             const juce::File& wavFile, bool applyKeyBpm);
     // ダイアログの選択後に実際に敷く（この時点のレートで wav を変換 → アンカー更新＋
     // 任意で逆コピー＋仮配置＋UI同期。SR 未確定プロジェクトは keep 時に変換レートで確定）
     void placeLoopPreview (const LoopAnchor& anchor, const juce::File& wavFile, bool applyKeyBpm);

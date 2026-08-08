@@ -3684,6 +3684,8 @@ void MainComponent::adoptLoopCandidate (int index)
 {
     if (engine.isRecording())
         return;
+    if (loopAdoptDetection != nullptr)
+        return; // 採用フローが進行中（ダイアログ表示中 or 検出待ち）— 多重起動しない
     auto& panel = rightPanel.gachaPanel();
     const auto& page = panel.loopPage();
     if (index < 0 || index >= (int) page.candidates.size())
@@ -3696,7 +3698,7 @@ void MainComponent::adoptLoopCandidate (int index)
     const auto wavFile = ReferenceTools::libraryRoot().getChildFile (candidate.path);
     if (! wavFile.existsAsFile())
     {
-        showAlert (jp (u8"敷けません"), jp (u8"ライブラリにファイルがありません: ") + candidate.path);
+        showAlert (jp (u8"採用できません"), jp (u8"ライブラリにファイルがありません: ") + candidate.path);
         return;
     }
 
@@ -3705,7 +3707,7 @@ void MainComponent::adoptLoopCandidate (int index)
     // キャンセル時に変換を捨てる無駄も無い）
     if (project->sampleRate <= 0.0 && transport.sampleRate.load() <= 0.0)
     {
-        showAlert (jp (u8"敷けません"), jp (u8"オーディオデバイスが準備できていません。"));
+        showAlert (jp (u8"採用できません"), jp (u8"オーディオデバイスが準備できていません。"));
         return;
     }
 
@@ -3746,70 +3748,148 @@ void MainComponent::adoptLoopCandidate (int index)
             }
         }
     }
-    juce::StringArray stdoutLines;
-    juce::String detail;
-    const bool toolOk = runGachaTool (argv, stdoutLines, detail);
-    const auto contractText = toolOk ? rootsFile.loadFileAsString() : juce::String();
-    rootsFile.deleteFile();
-    if (! toolOk)
+    // 検出はワーカーで並走させ、完了は callAsync でメッセージスレッドへ戻す。
+    // 結果の consume（契約検証〜敷く）はダイアログ確定後の finishLoopAdoption
+    auto detection = std::make_shared<LoopAdoptDetection>();
+    detection->libraryPath = candidate.path; // 契約の source は表示用ファイル名 — 相対パスで上書きする
+    detection->bpm = candidate.bpm;
+    loopAdoptDetection = detection;
+    juce::Component::SafePointer<MainComponent> safe (this);
+    const bool launched = juce::Thread::launch ([argv, rootsFile, detection, safe]
     {
-        Log::error ("gacha.loop_adopt_failed", "stage=looproots detail=" + detail);
-        showAlert (jp (u8"敷けません"), jp (u8"ループの進行検出に失敗しました。") + detail);
+        juce::StringArray stdoutLines;
+        juce::String detail;
+        const bool ok = runGachaTool (argv, stdoutLines, detail);
+        const auto contract = ok ? rootsFile.loadFileAsString() : juce::String();
+        rootsFile.deleteFile();
+        juce::MessageManager::callAsync ([detection, ok, contract, detail]
+        {
+            detection->finished = true;
+            detection->ok = ok;
+            detection->contractText = contract;
+            detection->detail = detail;
+            if (detection->dialogCancelled)
+                return; // キャンセル済み — 結果は黙って捨てる
+            if (detection->pendingAction)
+            {
+                auto action = std::move (detection->pendingAction);
+                detection->pendingAction = nullptr;
+                action(); // 早押しの続き（MainComponent の生存は action 側の SafePointer が見る）
+            }
+        });
+    });
+    if (! launched)
+    {
+        // 起動失敗を無視すると finished が永遠に立たず、検出待ちで固まった上に
+        // loopAdoptDetection が残って以後の採用が全部弾かれる（レビュー指摘）
+        loopAdoptDetection = nullptr;
+        rootsFile.deleteFile();
+        Log::error ("gacha.loop_adopt_failed", "stage=thread_launch");
+        showAlert (jp (u8"採用できません"), jp (u8"進行検出のワーカースレッドを起動できませんでした。"));
         return;
     }
 
-    // 契約は**生JSONの型まで** strict に検証する（project.json のアンカー読込と同じ方針・
-    // 同じヘルパー。変換後の isValid だけだと roots: [9.5] が 9 に化けて通る）
-    LoopAnchor anchor;
-    if (! LoopAnchors::anchorFromContractJson (contractText, anchor))
-    {
-        Log::error ("gacha.loop_adopt_failed", "stage=contract_types file=" + candidate.path);
-        showAlert (jp (u8"敷けません"), jp (u8"進行検出の出力が契約に合いません（looproots.py の形式退行の疑い）。"));
-        return;
-    }
-    anchor.libraryPath = candidate.path; // 契約の source は表示用ファイル名 — ライブラリ相対パスで上書き
-    anchor.bpm = candidate.bpm;
-    if (! anchor.isValid())
-    {
-        Log::error ("gacha.loop_adopt_failed", "stage=contract file=" + candidate.path);
-        showAlert (jp (u8"敷けません"), jp (u8"進行検出の結果が契約に合いません（looproots.py の出力）。"));
-        return;
-    }
-
-    // 逆コピーの確認（モック確定仕様: 設定して敷く / 敷くだけ / キャンセル）
+    // 逆コピーの確認（モック確定仕様: 設定して敷く / 敷くだけ / キャンセル）。
+    // **検出を待たずに即出す** — 読んでいる時間で検出が終わるのが普通で、待ちが見えない
     const auto keyText = ProjectKeys::displayName (loopKey);
     const auto bpmText = juce::String (candidate.bpm,
                                        candidate.bpm == std::floor (candidate.bpm) ? 0 : 1);
-    juce::Component::SafePointer<MainComponent> safe (this);
     juce::NativeMessageBox::showAsync (
         juce::MessageBoxOptions()
             .withIconType (juce::MessageBoxIconType::QuestionIcon)
-            .withTitle (jp (u8"ループを敷く"))
+            .withTitle (jp (u8"ループを採用"))
             .withMessage (jp (u8"このループのキーと BPM をプロジェクトに設定しますか？\n\n")
                           + jp (u8"ループ: ") + keyText + " / " + bpmText + "bpm\n"
                           + jp (u8"プロジェクト: ")
                           + (project->key.has_value() ? ProjectKeys::displayName (*project->key)
                                                       : jp (u8"キー未設定"))
                           + " / " + juce::String (project->bpm) + "bpm\n\n"
-                          + jp (u8"敷いた時点でトラックが作られ確定します（⌘Z で採用ごと戻せます）。"
+                          + jp (u8"採用した時点でトラックが作られ確定します（⌘Z で採用ごと戻せます）。"
                                 u8"設定するとベースガチャはこのループの進行に自動で追従します。"
                                 u8"未確定のドラム・ベースの仮配置は撤去されます。"))
-            .withButton (jp (u8"設定して敷く"))
-            .withButton (jp (u8"敷くだけ"))
+            .withButton (jp (u8"設定して採用"))
+            .withButton (jp (u8"採用のみ"))
             .withButton (jp (u8"キャンセル")),
-        [safe, anchor, wavFile] (int result)
+        [safe, detection, wavFile] (int result)
         {
-            if (safe == nullptr || result >= 2)
-                return; // キャンセル
-            safe->placeLoopPreview (anchor, wavFile, /*applyKeyBpm=*/ result == 0);
+            if (safe == nullptr)
+                return;
+            if (result >= 2) // キャンセル — 検出は走り切らせて結果だけ捨てる（プロセス kill の複雑さを買わない）
+            {
+                detection->dialogCancelled = true;
+                safe->loopAdoptDetection = nullptr;
+                return;
+            }
+            safe->finishLoopAdoption (detection, wavFile, /*applyKeyBpm=*/ result == 0);
         });
+}
+
+void MainComponent::finishLoopAdoption (std::shared_ptr<LoopAdoptDetection> detection,
+                                        const juce::File& wavFile, bool applyKeyBpm)
+{
+    if (! detection->finished)
+    {
+        // 早押し（読む時間より検出が長かった）: ダイアログはもう閉じている — パネルに
+        // 理由を出して、検出完了時にこの関数へ再入する
+        rightPanel.gachaPanel().showStatus (jp (u8"進行を検出中…"));
+        juce::Component::SafePointer<MainComponent> safe (this);
+        detection->pendingAction = [safe, detection, wavFile, applyKeyBpm]
+        {
+            if (safe != nullptr)
+                safe->finishLoopAdoption (detection, wavFile, applyKeyBpm);
+        };
+        return;
+    }
+    loopAdoptDetection = nullptr;
+    // 以降の失敗経路は「進行を検出中…」（早押し時）を必ず消す — アラートは出るが、
+    // ステータスが残ると処理が続いているように見える（レビュー指摘）
+    if (! detection->ok)
+    {
+        rightPanel.gachaPanel().showStatus ({});
+        Log::error ("gacha.loop_adopt_failed", "stage=looproots detail=" + detection->detail);
+        showAlert (jp (u8"採用できません"), jp (u8"ループの進行検出に失敗しました。") + detection->detail);
+        return;
+    }
+    // 契約は**生JSONの型まで** strict に検証する（project.json のアンカー読込と同じ方針・
+    // 同じヘルパー。変換後の isValid だけだと roots: [9.5] が 9 に化けて通る）
+    LoopAnchor anchor;
+    if (! LoopAnchors::anchorFromContractJson (detection->contractText, anchor))
+    {
+        rightPanel.gachaPanel().showStatus ({});
+        Log::error ("gacha.loop_adopt_failed", "stage=contract_types file=" + detection->libraryPath);
+        showAlert (jp (u8"採用できません"), jp (u8"進行検出の出力が契約に合いません（looproots.py の形式退行の疑い）。"));
+        return;
+    }
+    anchor.libraryPath = detection->libraryPath;
+    anchor.bpm = detection->bpm;
+    if (! anchor.isValid())
+    {
+        rightPanel.gachaPanel().showStatus ({});
+        Log::error ("gacha.loop_adopt_failed", "stage=contract file=" + detection->libraryPath);
+        showAlert (jp (u8"採用できません"), jp (u8"進行検出の結果が契約に合いません（looproots.py の出力）。"));
+        return;
+    }
+
+    // 「敷いています…」を先に描画してから、重い処理（wav 変換・実体化・undo）を次の
+    // フレームへ逃す — 同期のまま続けるとラベルが描画されず「押したのに無反応」に見える
+    rightPanel.gachaPanel().showStatus (jp (u8"配置しています…"));
+    juce::Component::SafePointer<MainComponent> safe (this);
+    juce::Timer::callAfterDelay (50, [safe, anchor, wavFile, applyKeyBpm]
+    {
+        if (safe != nullptr)
+            safe->placeLoopPreview (anchor, wavFile, applyKeyBpm);
+    });
 }
 
 void MainComponent::placeLoopPreview (const LoopAnchor& anchor, const juce::File& wavFile,
                                       bool applyKeyBpm)
 {
     if (engine.isRecording())
+    {
+        // 検出待ちの間に録音が始まったケース。黙って戻ると「配置しています…」が残る（レビュー指摘）
+        rightPanel.gachaPanel().showStatus (jp (u8"録音中のため採用を中止しました"));
         return;
+    }
     // wav の変換は**この時点のレート**で行う（ダイアログ中にデバイス SR が変わっても、
     // 決定時の実レートに合わせるので再生速度・音程が狂わない）。
     // SR はここでも**確定しない**（確定は dirty 化を伴い、キャンセルで元に戻せないため）。
@@ -3818,13 +3898,15 @@ void MainComponent::placeLoopPreview (const LoopAnchor& anchor, const juce::File
                                                         : transport.sampleRate.load();
     if (targetRate <= 0.0)
     {
-        showAlert (jp (u8"敷けません"), jp (u8"オーディオデバイスが準備できていません。"));
+        rightPanel.gachaPanel().showStatus ({}); // 「配置しています…」を残さない（アラートが理由を言う）
+        showAlert (jp (u8"採用できません"), jp (u8"オーディオデバイスが準備できていません。"));
         return;
     }
     auto audio = Project::loadWavResampled (wavFile, targetRate);
     if (audio == nullptr)
     {
-        showAlert (jp (u8"敷けません"), jp (u8"wav を読み込めませんでした: ") + wavFile.getFileName());
+        rightPanel.gachaPanel().showStatus ({});
+        showAlert (jp (u8"採用できません"), jp (u8"wav を読み込めませんでした: ") + wavFile.getFileName());
         return;
     }
 
@@ -3844,6 +3926,7 @@ void MainComponent::placeLoopPreview (const LoopAnchor& anchor, const juce::File
 
     if (! gachaSession.previewLoopCandidate (*project, input))
     {
+        rightPanel.gachaPanel().showStatus ({});
         syncTransportAfterGachaRestore(); // 失敗でセッションが畳まれた可能性
         return;
     }
