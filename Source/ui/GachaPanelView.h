@@ -153,8 +153,18 @@ private:
     std::vector<juce::File> cardFolders; // コンボの並びと対応
 
     juce::TextButton drumsTab { "Drums" }, bassTab { "Bass" }, loopsTab { "Loops" }; // パーツ切り替え（ラジオ動作）
-    // Loops タブ専用（他パーツでは非表示）
-    juce::Label anchorLabel;                 // 採用中アンカーの表示（project->loopAnchor から導出）
+    // 採用中アンカーの常設カード（**全タブ共通**・タブ直下）。⚓＋ループ名＋チップの2行で、
+    // ホバーのツールチップに進行のルート列・信頼度まで全情報を出す。アンカーはプロジェクト
+    // 状態（タブの持ち物ではない）なので、表示スコープもパネル共通に合わせている
+    struct AnchorCard : public juce::Component,
+                        public juce::SettableTooltipClient
+    {
+        juce::String name;
+        juce::StringArray chips;
+        int emphasizeChip = -1; // Bass タブで追従チップを強調（生成が実際に読むタブ）
+        void paint (juce::Graphics& g) override;
+    };
+    AnchorCard anchorCard;
     juce::TextButton anchorReleaseButton { juce::String::fromUTF8 (u8"解除") };
     juce::TextButton prevPageButton, nextPageButton;
     juce::Label pageInfoLabel;               // 「候補 N本中 x〜y位」

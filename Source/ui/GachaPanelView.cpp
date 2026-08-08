@@ -186,12 +186,9 @@ GachaPanelView::GachaPanelView()
     loopsTab.onClick = [this] { switchPart (Part::loops); };
     drumsTab.setToggleState (true, juce::dontSendNotification);
 
-    // ---- Loops タブ専用（他パーツでは非表示。可視切り替えは updateControls / resized）----
-    addChildComponent (anchorLabel);
-    anchorLabel.setFont (Fonts::small());
-    anchorLabel.setColour (juce::Label::textColourId, Theme::accent);
-    anchorLabel.setMinimumHorizontalScale (0.8f);
-    addChildComponent (anchorReleaseButton);
+    // ---- アンカーカード（全タブ共通・タブ直下。可視切り替えは updateControls / resized）----
+    addChildComponent (anchorCard);
+    addChildComponent (anchorReleaseButton); // カードの上に重ねるので card より後に add（Z順）
     anchorReleaseButton.setTooltip (jp (u8"アンカーを解除する（クリップは残る。ベースガチャは"
                                         u8"カード駆動に戻る・⌘Zで戻せる）"));
     anchorReleaseButton.onClick = [this]
@@ -719,21 +716,61 @@ void GachaPanelView::updateControls()
     infoLabel.setVisible (! partToolAvailable || ! hasCard || rowsEmpty);
     listBox.setVisible (! infoLabel.isVisible() || ! rowsEmpty);
 
-    // ---- Loops 専用: アンカー行とページング ----
-    const bool showAnchor = isLoops && project != nullptr && project->loopAnchor.has_value();
-    anchorLabel.setVisible (showAnchor);
+    // ---- アンカーカード（全タブ共通）----
+    const bool showAnchor = project != nullptr && project->loopAnchor.has_value();
+    anchorCard.setVisible (showAnchor);
     anchorReleaseButton.setVisible (showAnchor);
     if (showAnchor)
     {
         const auto& anchor = *project->loopAnchor;
-        const auto name = juce::File::createFileWithoutCheckingPath (anchor.libraryPath)
+        const auto bpmText = juce::String (anchor.bpm,
+                                           anchor.bpm == std::floor (anchor.bpm) ? 0 : 1);
+        anchorCard.name = juce::File::createFileWithoutCheckingPath (anchor.libraryPath)
                               .getFileNameWithoutExtension();
-        anchorLabel.setText (jp (u8"⚓ ") + name + " — "
-                                 + ProjectKeys::displayName (anchor.key) + " / "
-                                 + juce::String (anchor.bpm,
-                                                 anchor.bpm == std::floor (anchor.bpm) ? 0 : 1)
-                                 + jp (u8"bpm・ベースは自動でループ追従"),
-                             juce::dontSendNotification);
+        anchorCard.chips.clearQuick();
+        anchorCard.chips.add (ProjectKeys::displayName (anchor.key));
+        anchorCard.chips.add (bpmText + "bpm");
+        anchorCard.chips.add (juce::String (anchor.loopBars) + jp (u8"小節"));
+        // 警告チップは追従チップより前（幅に入り切らないとき後ろから落ちるため）。
+        // 追従チップの文言はタブ共通の短縮形 — Bass タブでは色の強調で「生成が実際に
+        // 読んでいる」ことを示し、詳細な説明はツールチップに任せる
+        if (anchor.degraded)
+            anchorCard.chips.add (jp (u8"検出低信頼"));
+        anchorCard.chips.add (jp (u8"ベース追従"));
+        anchorCard.emphasizeChip = currentPart == Part::bass ? anchorCard.chips.size() - 1 : -1;
+
+        // ツールチップ = 全情報（進行のルート列・信頼度）。進行は小節ごとに | で区切る
+        juce::String tip = juce::File::createFileWithoutCheckingPath (anchor.libraryPath).getFileName()
+                           + "\n" + ProjectKeys::displayName (anchor.key) + " / " + bpmText + "bpm / "
+                           + juce::String (anchor.loopBars) + jp (u8"小節（1小節 ")
+                           + juce::String (anchor.slotsPerBar) + jp (u8"スロット）");
+        if (! anchor.roots.empty() && anchor.slotsPerBar > 0)
+        {
+            juce::StringArray bars;
+            for (int bar = 0; bar * anchor.slotsPerBar < (int) anchor.roots.size(); ++bar)
+            {
+                juce::StringArray slots;
+                for (int s = 0; s < anchor.slotsPerBar
+                                && bar * anchor.slotsPerBar + s < (int) anchor.roots.size(); ++s)
+                    slots.add (ProjectKeys::rootName (anchor.roots[(size_t) (bar * anchor.slotsPerBar + s)]));
+                bars.add (slots.joinIntoString (" "));
+            }
+            tip += jp (u8"\n進行: ") + bars.joinIntoString (" | ");
+        }
+        if (! anchor.confidence.empty())
+        {
+            float sum = 0.0f, low = 1.0f;
+            for (const auto c : anchor.confidence)
+            {
+                sum += c;
+                low = juce::jmin (low, c);
+            }
+            tip += jp (u8"\n検出信頼度: 平均 ")
+                   + juce::String (sum / (float) anchor.confidence.size(), 2)
+                   + jp (u8" / 最低 ") + juce::String (low, 2);
+        }
+        anchorCard.setTooltip (tip);
+        anchorCard.repaint();
     }
     const bool showPaging = isLoops && ! loopRecommendation.candidates.empty();
     prevPageButton.setVisible (showPaging);
@@ -963,6 +1000,45 @@ void GachaPanelView::paint (juce::Graphics& g)
     g.fillAll (Theme::chooserPanelBg);
 }
 
+void GachaPanelView::AnchorCard::paint (juce::Graphics& g)
+{
+    const auto r = getLocalBounds().toFloat();
+    g.setColour (juce::Colour (0xff1f2530));
+    g.fillRoundedRectangle (r, 8.0f);
+    g.setColour (juce::Colour (0xff3a455a));
+    g.drawRoundedRectangle (r.reduced (0.5f), 8.0f, 1.0f);
+
+    auto inner = getLocalBounds().reduced (10, 7);
+    inner.removeFromRight (60); // 解除ボタンの席（ボタン本体は親が同じ矩形に重ねて置く）
+
+    g.setColour (juce::Colour (0xff7fa3e8));
+    g.setFont (Fonts::body());
+    g.drawText (juce::String::fromUTF8 (u8"⚓"), inner.removeFromLeft (16),
+                juce::Justification::centredLeft);
+    inner.removeFromLeft (5);
+
+    const auto font = Fonts::small();
+    g.setFont (font);
+    g.setColour (juce::Colour (0xffdfe6f2));
+    g.drawText (name, inner.removeFromTop (15), juce::Justification::centredLeft, true);
+    inner.removeFromTop (4);
+
+    auto chipRow = inner.removeFromTop (15);
+    int x = chipRow.getX();
+    for (int i = 0; i < chips.size(); ++i)
+    {
+        const int w = juce::GlyphArrangement::getStringWidthInt (font, chips[i]) + 14;
+        if (x + w > chipRow.getRight())
+            break; // 入り切らないチップは落とす（全情報はツールチップ側にある）
+        const juce::Rectangle<int> chip (x, chipRow.getY(), w, chipRow.getHeight());
+        g.setColour (juce::Colour (i == emphasizeChip ? 0xff3d5a8c : 0xff32405c));
+        g.fillRoundedRectangle (chip.toFloat(), 4.0f);
+        g.setColour (juce::Colour (0xffaecbff));
+        g.drawText (chips[i], chip, juce::Justification::centred);
+        x += w + 5;
+    }
+}
+
 void GachaPanelView::resized()
 {
     auto area = getLocalBounds().reduced (14, 10);
@@ -976,6 +1052,17 @@ void GachaPanelView::resized()
     tabRow.removeFromLeft (6);
     loopsTab.setBounds (tabRow);
     area.removeFromTop (8);
+
+    // アンカーカード（全タブ共通・タブ直下。採用中のみ）
+    if (anchorCard.isVisible())
+    {
+        const auto cardArea = area.removeFromTop (46);
+        anchorCard.setBounds (cardArea);
+        anchorReleaseButton.setBounds (cardArea.reduced (8, 0)
+                                           .removeFromRight (52)
+                                           .withSizeKeepingCentre (52, 24));
+        area.removeFromTop (8);
+    }
 
     auto cardRow = area.removeFromTop (26);
     alignButton.setBounds (cardRow.removeFromRight (96));
@@ -1004,14 +1091,6 @@ void GachaPanelView::resized()
                 lockRow.removeFromLeft (6);
             lockButtons[i].setBounds (i == lanes - 1 ? lockRow : lockRow.removeFromLeft (lockWidth));
         }
-        area.removeFromTop (8);
-    }
-    else if (anchorLabel.isVisible()) // アンカー行（採用中のみ。ロック行と同じ段に住む）
-    {
-        auto anchorRow = area.removeFromTop (24);
-        anchorReleaseButton.setBounds (anchorRow.removeFromRight (52));
-        anchorRow.removeFromRight (6);
-        anchorLabel.setBounds (anchorRow);
         area.removeFromTop (8);
     }
 
