@@ -3791,8 +3791,9 @@ void MainComponent::adoptLoopCandidate (int index)
                           + (project->key.has_value() ? ProjectKeys::displayName (*project->key)
                                                       : jp (u8"キー未設定"))
                           + " / " + juce::String (project->bpm) + "bpm\n\n"
-                          + jp (u8"設定するとベースガチャはこのループの進行に自動で追従します"
-                                u8"（⌘Z で採用ごと戻せます）。既存のベースの仮配置は撤去されます。"))
+                          + jp (u8"敷いた時点でトラックが作られ確定します（⌘Z で採用ごと戻せます）。"
+                                u8"設定するとベースガチャはこのループの進行に自動で追従します。"
+                                u8"未確定のドラム・ベースの仮配置は撤去されます。"))
             .withButton (jp (u8"設定して敷く"))
             .withButton (jp (u8"敷くだけ"))
             .withButton (jp (u8"キャンセル")),
@@ -3836,23 +3837,33 @@ void MainComponent::placeLoopPreview (const LoopAnchor& anchor, const juce::File
     input.loopCount = 1;   // 2周ぶん（ドラム・ベースを重ねたとき展開が分かる最小）
     input.applyKeyBpm = applyKeyBpm;
 
+    // 採用＝即確定の通常編集（2026-08-08 変更 — 「残す」を別途押させない）。
+    // 未確定のドラム・ベースの仮配置は先に畳む — willBegin（通常編集は仮配置を畳む）と同じ
+    // 不変条件で、直後の keep に未選択の候補を巻き込まないため
+    cancelGachaPreview();
+
     if (! gachaSession.previewLoopCandidate (*project, input))
     {
         syncTransportAfterGachaRestore(); // 失敗でセッションが畳まれた可能性
         return;
     }
+    const auto loopTrackId = gachaSession.previewTrackId (GachaSession::Part::loops);
+    Log::info ("gacha.loop_pick", "loop=" + anchor.libraryPath
+                                      + " applyKeyBpm=" + (applyKeyBpm ? juce::String ("1") : juce::String ("0"))
+                                      + " degraded=" + (anchor.degraded ? juce::String ("1") : juce::String ("0")));
 
-    headers.rebuild(); // 自動作成トラックが増えたかもしれない
+    // その場で keep（WAV 実体化・SR 確定・undo 1件・dirty 化は keepGachaCandidate が全部やる。
+    // 失敗時も同関数がキャンセル相当の巻き戻しまで通す）
+    keepGachaCandidate();
+
+    headers.rebuild(); // トラックが増えた（keep 失敗時は撤去済みなので実質 no-op）
     for (int i = 0; i < (int) project->tracks.size(); ++i)
-        if (project->tracks[(size_t) i].id == gachaSession.previewTrackId (GachaSession::Part::loops))
+        if (project->tracks[(size_t) i].id == loopTrackId)
             selectTrackFromUser (i);
     syncTransportAfterGachaRestore(); // 逆コピー後の transport / LCD / バッジを project の真実へ
     pushSnapshot();
     timeline.refresh();
     rightPanel.gachaPanel().refreshAnchorRow();
-    Log::info ("gacha.loop_pick", "loop=" + anchor.libraryPath
-                                      + " applyKeyBpm=" + (applyKeyBpm ? juce::String ("1") : juce::String ("0"))
-                                      + " degraded=" + (anchor.degraded ? juce::String ("1") : juce::String ("0")));
 }
 
 void MainComponent::releaseLoopAnchor()
