@@ -52,7 +52,9 @@ from looproots import load_contract as load_roots_contract, validate_roots_core 
 # v4: ジッター廃止（タイミングはグリッド正位置＋同時打ちスナップのみ。カードの
 #     bass.quantize_dev_ms は読まない — 実聴で無相関ランダムの揺れが「ヨレ」にしか
 #     聞こえず、低域のオンセット検出誤差で値自体も膨らんでいる疑いが強いため）
-GENERATOR_VERSION = 4
+# v5: リズムをモチーフ反復に（偶数ループ=2小節・奇数=1小節を1回サンプリングして繰り返す。
+#     本数の丸めもモチーフ全体で1回）／スケール外ルートの装飾はオクターブへフォールバック
+GENERATOR_VERSION = 5
 PPQ = 480
 TICKS_16TH = PPQ // 4
 TICKS_BAR = PPQ * 4
@@ -360,26 +362,34 @@ def generate_notes(effective: dict, key: dict, kick_ticks: list[int],
     kicks = kick_slot_map(kick_ticks, pattern_ticks)
 
     profile = bass["onset_rate_by_16th"]
-    # スロット選択 → (グローバルスロット, 実tick, プロファイル重み) をパターン全体で集める。
-    # 小節ごとの本数は確率的丸め（0本の小節も正当 — notes_per_bar < 1 の疎なカードを
-    # 小節単位の最低1音で増量しない）。無音パターンだけは避け、パターン全体で最低1音を保証する
+    # リズムは**モチーフ（偶数ループ=2小節・奇数=1小節）を1回だけサンプリングして繰り返す**
+    # （2026-08-08 v5）。以前は loop_bars ぶん全小節を独立サンプリングしており、16小節ループの
+    # アンカーで「毎小節リズムが違う＝型の反復が無い」ベースになりヨレて聞こえた（実聴）。
+    # ベースのグルーヴは1〜2小節のリズムの型の反復が作る — ハーモニー周期（loop_bars）と
+    # リズム周期は別物で、進行（音高）だけが全周期を追従する。
+    # 本数の確率的丸めは**モチーフ全体で1回**（notes_per_bar × rhythm_bars。小節ごとに丸めると
+    # 疎なカードで両小節が独立に当たり、反復で密度が倍増する）。0本は正当（疎カードを最低1音で
+    # 増量しない）だが、無音パターンだけは避けパターン全体で最低1音を保証する。
+    # キックの重み付けはモチーフ小節（先頭1〜2小節）のキックだけを見る簡略化 — ドラムパターンが
+    # モチーフより長く後半だけキックが違う場合、そこの同時打ち選択は落ちる（スナップは全小節で効く）
+    rhythm_bars = min(2 if loop_bars % 2 == 0 else 1, loop_bars)
+    n_motif_slots = 16 * rhythm_bars
+    frac, base_count = math.modf(bass["notes_per_bar"] * rhythm_bars)
+    count = min(n_motif_slots, int(base_count) + (1 if rng.random() < frac else 0))
+    weights = np.array([profile[s % 16] + WEIGHT_EPS for s in range(n_motif_slots)])
+    for s in range(n_motif_slots):
+        if s in kicks:
+            weights[s] *= KICK_BOOST
+    motif_slots = sorted(int(s) for s in rng.choice(n_motif_slots, size=count, replace=False,
+                                                    p=weights / weights.sum())) if count > 0 else []
     picked: list[tuple[int, int, float]] = []
-    for bar in range(loop_bars):
-        frac, base_count = math.modf(bass["notes_per_bar"])
-        count = int(base_count) + (1 if rng.random() < frac else 0)
-        count = min(16, count)
-        weights = np.array([profile[s] + WEIGHT_EPS for s in range(16)])
-        for s in range(16):
-            if bar * 16 + s in kicks:
-                weights[s] *= KICK_BOOST
-        chosen = sorted(int(s) for s in rng.choice(16, size=count, replace=False,
-                                                   p=weights / weights.sum())) if count > 0 else []
-        for slot in chosen:
-            gslot = bar * 16 + slot
+    for rep in range(loop_bars // rhythm_bars):  # rhythm_bars は loop_bars を割り切る
+        for mslot in motif_slots:
+            gslot = rep * n_motif_slots + mslot
             # タイミングはグリッド正位置か、キックのあるスロットなら実 tick へのスナップの2択
             # （ジッターは掛けない — v4。ノリはキック同時打ちとスロット選択で出す）
             tick = kicks[gslot] if gslot in kicks else gslot * TICKS_16TH
-            picked.append((gslot, tick, profile[slot]))
+            picked.append((gslot, tick, profile[mslot % 16]))
     if not picked:
         # 全小節が0本 → 1小節目のプロファイル最大スロットに1音だけ置く（決定的。乱数は使わない）。
         # tick の解決は通常経路と同じ規則を通す — キックのあるスロットなら実 tick へスナップ
@@ -403,7 +413,9 @@ def generate_notes(effective: dict, key: dict, kick_ticks: list[int],
     # 不協和に鳴りやすいので 5度系に倒す（プラン確定）。
     # 候補は**曲のスケール構成音でフィルタする** — ダイアトニックなルートに対する
     # 完全5度・短7度が常にスケール内とは限らない（例: C major のルート B +7 = F♯）。
-    # +12 は同じピッチクラスなので常に残り、フィルタ結果が空になることはない
+    # ルート自体がスケール外のこともある（--roots のループ実進行は音声検出なので任意の
+    # ピッチクラスが来る）— そのときはフィルタが空になるので、鳴っているルート自身の
+    # 複製で常に成立するオクターブ(+12)へフォールバックする
     ornament_pool = [7, 12]
     if key["mode"] == "minor" and chords and chords["has_7th_or_more"]:
         ornament_pool.append(10)
@@ -418,7 +430,7 @@ def generate_notes(effective: dict, key: dict, kick_ticks: list[int],
         seen_harmony.add(hslot)
         roll = rng.random()  # 乱数消費を装飾の有無に依らせない（毎ノート1回）
         if not is_first and roll < ORNAMENT_PROB:
-            valid = [iv for iv in ornament_pool if (root_pc + iv) % 12 in scale]
+            valid = [iv for iv in ornament_pool if (root_pc + iv) % 12 in scale] or [12]
             midi += valid[int(rng.integers(0, len(valid)))]
         midi = min(max(midi, HARD_RANGE[0]), HARD_RANGE[1])
         vel = int(np.clip(round(72 + 36 * w + rng.normal(0, 6)), 1, 127))

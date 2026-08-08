@@ -122,6 +122,28 @@ for gseed in (0, 7, 42):
                                                      bars=8, bpm=bpm_chill) if t % 120 != 0]
     ok(ticks_ng == [], f"seed {gseed}: キック無しなら全ノートが16分正位置: {ticks_ng[:5]}")
 
+# --- リズムモチーフの反復（v5）: ハーモニー周期が長くても（16小節ループのアンカー等）
+# リズムは偶数=2小節・奇数=1小節のモチーフの繰り返しになる。全小節を独立サンプリング
+# していた旧実装は「毎小節リズムが違う＝型の反復が無い」ベースになりヨレて聞こえた（実聴）。
+# 音高は進行を追従して変わってよいので、検査は小節内スロットパターンのみ
+T16, TB = bass.TICKS_16TH, bass.TICKS_BAR
+roots16 = {"loop_bars": 16, "slots_per_bar": 2, "roots": (list(range(12)) * 3)[:32]}
+for gseed in (0, 5, 42):
+    seeds = bass.resolve_lane_seeds("bass", bass.LANES, gseed, {})
+    notes16 = bass.generate_notes(eff_chill, key_fs_major, [], seeds, bars=16,
+                                  bpm=bpm_chill, roots_cfg=roots16)
+    per_bar = [sorted((t % TB) // T16 for t, _, _ in notes16 if b * TB <= t < (b + 1) * TB)
+               for b in range(16)]
+    ok(all(per_bar[b] == per_bar[b % 2] for b in range(16)),
+       f"seed {gseed}: リズムは2小節モチーフの反復: {per_bar[:4]}")
+roots3 = {"loop_bars": 3, "slots_per_bar": 1, "roots": [0, 5, 7]}
+seeds = bass.resolve_lane_seeds("bass", bass.LANES, 5, {})
+notes3 = bass.generate_notes(eff_chill, key_fs_major, [], seeds, bars=3,
+                             bpm=bpm_chill, roots_cfg=roots3)
+per_bar3 = [sorted((t % TB) // T16 for t, _, _ in notes3 if b * TB <= t < (b + 1) * TB)
+            for b in range(3)]
+ok(per_bar3[0] == per_bar3[1] == per_bar3[2], f"奇数ループは1小節モチーフ: {per_bar3}")
+
 # 装飾のスケール検査は seed 1つでは装飾自体を引かないことがある — 全12キー×両モード×
 # 複数 seed の全ノートをまとめて検査する（v1 では C major seed 4 が F♯ を出した実バグ）
 for mode, degrees in (("major", bass.MAJOR_DEGREES), ("minor", bass.MINOR_DEGREES)):
