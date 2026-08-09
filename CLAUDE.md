@@ -89,12 +89,13 @@
 ## ビルド・実行コマンド
 
 ```sh
-cmake -B build -DCMAKE_BUILD_TYPE=Debug   # 初回はFetchContentでJUCE 8.0.9を取得（数分かかる）
-cmake --build build
-open build/daw_artefacts/Debug/LaLa-dev.app
+mise run build   # dev版ビルド（初回はconfigure＝JUCE 8.0.9取得も自動。数分かかる）
+mise run start   # LaLa-dev.app を起動
+mise run test    # daw_tests（C++回帰テスト）
+# 素のコマンド: cmake -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build
 ```
 
-- **Debug = dev版**（`LaLa-dev.app`・bundle id `local.d0ne1s.daw.dev`・DEVリボン付きアイコン）、**Release = 常用版**（`LaLa.app`・`cmake -B build-release -DCMAKE_BUILD_TYPE=Release`）。名前・bundle id・アイコンはCMakeLists.txtで切り替え。開発中の動作確認はdev版で行う
+- **Debug = dev版**（`LaLa-dev.app`・bundle id `local.d0ne1s.daw.dev`・DEVリボン付きアイコン）、**Release = 常用版**（`LaLa.app`・`mise run build:release`）。名前・bundle id・アイコンはCMakeLists.txtで切り替え。開発中の動作確認はdev版で行う
 - アプリアイコンは `Assets/make_icon.swift` で生成（`swiftc` でビルドして実行。dev版は `--dev` フラグ。生成済みPNGは `Assets/` にコミット済み）
 - アイコンPNG（`Assets/icon*.png`）を差し替えたら `cmake -B build ...` の**configureを再実行**する。`Icon.icns` はビルド時でなくconfigure時にjuceaideが生成するため、`cmake --build` だけでは古いアイコンのまま（生成済みicnsを手で消すと `No rule to make target` で落ちる）。反映確認は `sips -s format png <app>/Contents/Resources/Icon.icns --out /tmp/x.png` で展開して目視
 

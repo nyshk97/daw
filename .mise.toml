@@ -120,6 +120,29 @@ tools/reference/.venv/bin/python tools/library/tests/test_recommend.py
 tools/reference/.venv/bin/python tools/library/tests/test_looproots.py
 '''
 
+[tasks.build]
+description = 'dev版（Debug）をビルドする。初回はconfigure（JUCE取得・数分）も自動実行'
+run = '''
+#!/usr/bin/env bash
+set -e
+[ -f build/CMakeCache.txt ] || cmake -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+'''
+
+[tasks."build:release"]
+description = '常用版（Release・LaLa.app）をビルドする。初回はconfigureも自動実行'
+run = '''
+#!/usr/bin/env bash
+set -e
+[ -f build-release/CMakeCache.txt ] || cmake -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release
+'''
+
+[tasks.test]
+description = 'daw_tests（C++回帰テスト）をビルドして実行する'
+depends = ['build']
+run = 'build/daw_tests_artefacts/Debug/daw_tests'
+
 [tasks.start]
 description = 'dev版アプリ（LaLa-dev.app）を起動する'
 run = 'open build/daw_artefacts/Debug/LaLa-dev.app'
