@@ -16,7 +16,7 @@
     大きな JSON を stdout に出す）。text=True の universal newlines で
     tqdm の \r 進捗も行として流れる
   - LaLa の進捗ダイアログは stdout の最新行を1行表示するだけなので、
-    こちらからは「==> 実行中: A・B・C」の集約行と card.py の申告行だけを stdout に流す。
+    こちらからは「==> N/M 完了 ／ 実行中: A・B・C」の集約行と card.py の申告行だけを stdout に流す。
     失敗の詳細は stderr（ReferenceAnalyzer は失敗理由を stderr からしか抽出しない）
   - fail-fast / キャンセルの停止手順: 各ステップを自分のプロセスグループのリーダーとして
     起動し（process_group=0）、停止は killpg で行う。ppid をたどる方式は「親が先に死んで
@@ -198,14 +198,18 @@ def run_dag(steps: list, budget: int = CPU_BUDGET, echo=None) -> None:
     pending = list(steps)
     running: dict = {}
     last_status = ""
+    total = len(steps)
 
     def used() -> int:
         return sum(r.step.weight for r in running.values())
 
     def announce() -> None:
+        # スキップ・非致命失敗も done に入るので、カウントは「片付いたステップ数」。
+        # 所要時間はステップ間で極端に不均一（demucs 48秒 vs 数秒多数）なので、
+        # この数字を割合バーに使ってはいけない（テキスト表示専用）
         nonlocal last_status
         labels = "・".join(r.step.label for r in running.values())
-        status = f"==> 実行中: {labels}" if labels else ""
+        status = f"==> {len(done)}/{total} 完了 ／ 実行中: {labels}" if labels else ""
         if status and status != last_status:
             last_status = status
             echo(status)
