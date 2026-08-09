@@ -6,8 +6,8 @@
 #include "Theme.h"
 
 // 「リファレンスとして分析」の進捗オーバーレイ。BounceOverlay と同じ「親全面を覆い
-// パネルを自前描画」方式。分析はステップが並列に走り工程の進み方が読めない（約2分）ので
-// 進捗バーは不定型（流れるハイライト）にし、analyze.sh の stdout 最新行を添える。
+// パネルを自前描画」方式。analyze.py の加重進捗（==> P% | …）が届いたら確定バー、
+// 届くまで（起動直後）は不定型（流れるハイライト）。stdout 最新行を添える。
 class ReferenceAnalysisOverlay : public juce::Component,
                                  private juce::Timer
 {
@@ -24,6 +24,7 @@ public:
     {
         name = referenceName;
         statusLine.clear();
+        progress = -1.0f;
         phase = 0.0f;
         startMs = juce::Time::currentTimeMillis();
         lastElapsedSeconds = -1;
@@ -46,6 +47,15 @@ public:
             return;
         statusLine = line;
         repaint (panelBounds());
+    }
+
+    // 0.0〜1.0 で確定バー、負なら不定型のまま（ReferenceAnalyzer::progress() をそのまま渡す）
+    void setProgress (float fraction)
+    {
+        if (juce::approximatelyEqual (fraction, progress))
+            return;
+        progress = fraction;
+        repaint (progressBarBounds().expanded (0, 2));
     }
 
     void paint (juce::Graphics& g) override
@@ -71,16 +81,26 @@ public:
                     panel.withTrimmedTop (padY + titleHeight).withHeight (16),
                     juce::Justification::centred);
 
-        // 不定型バー: 幅30%のハイライトが左右に往復する
         const auto bar = progressBarBounds().toFloat();
         g.setColour (juce::Colours::white.withAlpha (0.12f));
         g.fillRoundedRectangle (bar, bar.getHeight() / 2.0f);
-        const float span = bar.getWidth() * 0.3f;
-        const float travel = bar.getWidth() - span;
-        const float t = phase < 0.5f ? phase * 2.0f : (1.0f - phase) * 2.0f; // 0→1→0 の往復
         g.setColour (Theme::accent);
-        g.fillRoundedRectangle (bar.withWidth (span).withX (bar.getX() + travel * t),
-                                bar.getHeight() / 2.0f);
+        if (progress >= 0.0f)
+        {
+            // 確定バー: analyze.py の加重進捗（ステップの目安秒数ベース・左から伸びる）
+            const float w = bar.getWidth() * juce::jlimit (0.0f, 1.0f, progress);
+            if (w >= bar.getHeight()) // 高さ未満の幅は角丸が破綻するので描かない
+                g.fillRoundedRectangle (bar.withWidth (w), bar.getHeight() / 2.0f);
+        }
+        else
+        {
+            // 不定型バー: 幅30%のハイライトが左右に往復する（進捗が届くまでのつなぎ）
+            const float span = bar.getWidth() * 0.3f;
+            const float travel = bar.getWidth() - span;
+            const float t = phase < 0.5f ? phase * 2.0f : (1.0f - phase) * 2.0f; // 0→1→0 の往復
+            g.fillRoundedRectangle (bar.withWidth (span).withX (bar.getX() + travel * t),
+                                    bar.getHeight() / 2.0f);
+        }
 
         // analyze.sh の最新行（「==> ステム分離」等）
         g.setColour (juce::Colours::white.withAlpha (0.55f));
@@ -125,10 +145,13 @@ private:
 
     void timerCallback() override
     {
-        phase += 1.0f / 90.0f; // 往復3秒
-        if (phase >= 1.0f)
-            phase -= 1.0f;
-        repaint (progressBarBounds().expanded (0, 2));
+        if (progress < 0.0f) // 確定バーは setProgress 契機でだけ再描画する
+        {
+            phase += 1.0f / 90.0f; // 往復3秒
+            if (phase >= 1.0f)
+                phase -= 1.0f;
+            repaint (progressBarBounds().expanded (0, 2));
+        }
 
         const auto seconds = (int) ((juce::Time::currentTimeMillis() - startMs) / 1000);
         if (seconds != lastElapsedSeconds)
@@ -173,6 +196,7 @@ private:
 
     juce::String name;
     juce::String statusLine;
+    float progress = -1.0f; // 負 = 未取得（不定型バー）
     float phase = 0.0f;
     juce::int64 startMs = 0;
     int lastElapsedSeconds = -1;

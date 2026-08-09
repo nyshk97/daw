@@ -577,6 +577,7 @@ mise run gacha:test   # tools/gacha/ の drums.py
 
 - 判定: 末尾に `OK: <N> 件のチェックが通った` が出て exit 0。assert で落ちたらメッセージに期待値と実測値が出る（gacha:test は drums / bass の2ファイルで OK 行が2行）
 - `gacha:test`（drums 側）は固定 fixture・固定 seed の出力を**既知 SHA-256 で焼き込んでいる**ため、seed 導出式・生成ロジック・wav 合成のどれを変えても落ちるのが正しい（落ちたら「同じファイル名で以前と違う音が出る」変更をした、ということ。意図的なら GENERATOR_VERSION を上げてテスト内の既知ハッシュを採り直す）
+- 分析パイプラインの通し確認（進捗行の実出力を見たいとき）: 既存リファレンスの `track.wav` と `stems/` だけを scratchpad の新フォルダにコピーして `tools/reference/.venv/bin/python tools/reference/analyze.py <コピー先>` を実行（demucs はキャッシュ skip され1周 約1.5分・元データ無変更）。判定: exit 0・stdout の `==> P% | N/M 完了 ／ 実行中: …` 行の P が単調非減少で 99 以下（書式は shared/AnalyzeProgress.h の parse と対）
 - 実カードでの通し確認: `mise run gacha:drums <リファレンスフォルダ> -- --seed <固定値>` → 3ファイル×候補数が `gacha/` にでき、stdout の密度・swing がカードの性格と大きく乖離しないこと（少サンプルの密度は二項ノイズで ±1発/小節 程度ぶれる。乖離を疑うときは 1000 seed のシミュレーションで発火率 vs profile を見る — plan 2026-08-04 のログ参照）
 
 ### ベースガチャ（CLI）

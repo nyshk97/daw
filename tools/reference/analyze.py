@@ -16,7 +16,8 @@
     大きな JSON を stdout に出す）。text=True の universal newlines で
     tqdm の \r 進捗も行として流れる
   - LaLa の進捗ダイアログは stdout の最新行を1行表示するだけなので、
-    こちらからは「==> N/M 完了 ／ 実行中: A・B・C」の集約行と card.py の申告行だけを stdout に流す。
+    こちらからは「==> P% | N/M 完了 ／ 実行中: A・B・C」の集約行と card.py の申告行だけを stdout に流す
+    （P% は expect ベースの加重進捗。書式は LaLa 側 shared/AnalyzeProgress.h の parse と対）。
     失敗の詳細は stderr（ReferenceAnalyzer は失敗理由を stderr からしか抽出しない）
   - fail-fast / キャンセルの停止手順: 各ステップを自分のプロセスグループのリーダーとして
     起動し（process_group=0）、停止は killpg で行う。ppid をたどる方式は「親が先に死んで
@@ -68,6 +69,9 @@ class Step:
     deps: tuple = ()
     weight: int = 1  # CPU 予算の消費量。demucs（GPU 主体）は 0
     priority: int = 50  # 小さいほど先に起動（予算が足りないとき長いステップを優先する）
+    expect: float = 5.0  # 目安秒数（加重進捗用）。重みであると同時に「実行中の部分進捗」が
+                         # 経過秒と比べる物差しでもあるため絶対値にも意味がある
+                         # → build_steps が曲長でスケールして実時間に合わせる
     skip: object = None  # callable() -> str | None。文字列を返したらスキップ（理由として表示）
     env: dict = None  # 追加の環境変数（os.environ にマージ。ワーカープロセスにも継承される）
     fatal: bool = True  # False なら失敗しても DAG は続行（キャッシュ温め等の任意ステップ用。
@@ -199,18 +203,27 @@ def run_dag(steps: list, budget: int = CPU_BUDGET, echo=None) -> None:
     running: dict = {}
     last_status = ""
     total = len(steps)
+    # 加重進捗: ステップ数でなく expect（目安秒数）で数える。所要時間はステップ間で
+    # 極端に不均一（demucs 24秒 vs 1秒未満多数）なので、個数ベースだと序盤に飛んで
+    # 終盤止まるバーになる。スキップは「やらない仕事」なので分母から除外する
+    expect_total = sum(s.expect for s in steps)
+    expect_done = 0.0
 
     def used() -> int:
         return sum(r.step.weight for r in running.values())
 
     def announce() -> None:
-        # スキップ・非致命失敗も done に入るので、カウントは「片付いたステップ数」。
-        # 所要時間はステップ間で極端に不均一（demucs 48秒 vs 数秒多数）なので、
-        # この数字を割合バーに使ってはいけない（テキスト表示専用）
         nonlocal last_status
         labels = "・".join(r.step.label for r in running.values())
-        status = f"==> {len(done)}/{total} 完了 ／ 実行中: {labels}" if labels else ""
-        if status and status != last_status:
+        if not labels:
+            return
+        # 実行中ステップは経過時間ぶんの部分進捗を積む（目安の95%で頭打ち＝実際より
+        # 長引いても完了前に満額にしない）。完了時に min(...) ≤ expect の満額へ置き換わる
+        # だけなので、進捗率は単調非減少
+        partial = sum(min(time.monotonic() - r.t0, r.step.expect * 0.95) for r in running.values())
+        pct = min(99, int(100.0 * (expect_done + partial) / max(expect_total, 0.001)))
+        status = f"==> {pct}% | {len(done)}/{total} 完了 ／ 実行中: {labels}"
+        if status != last_status:
             last_status = status
             echo(status)
 
@@ -255,6 +268,7 @@ def run_dag(steps: list, budget: int = CPU_BUDGET, echo=None) -> None:
                         echo(f"==> {s.label}: {reason}")
                         pending.remove(s)
                         done.add(s.name)
+                        expect_total -= s.expect  # やらない仕事は進捗の分母から外す
                         launched = True
                         continue
                 if s.weight > 0 and used() + s.weight > budget and used() > 0:
@@ -299,21 +313,37 @@ def run_dag(steps: list, budget: int = CPU_BUDGET, echo=None) -> None:
                     stop_all([r])
                     del running[r.step.name]
                     done.add(r.step.name)
+                    expect_done += r.step.expect
                     echo(f"==> 失敗（続行）: {r.step.label}（exit={r.proc.returncode}・任意ステップ）")
                     continue
                 for t in r.threads:
                     t.join(timeout=5)
                 del running[r.step.name]
                 done.add(r.step.name)
+                expect_done += r.step.expect
                 echo(f"==> 完了: {r.step.label}（{time.monotonic() - r.t0:.0f}秒）")
-            if finished:
-                announce()
+            # 状態変化がなくても毎周呼ぶ: 部分進捗で pct が動いたときだけ再送出される
+            # （announce 内の last_status 比較が実質のスロットル）
+            announce()
     except BaseException:
         stop_all(list(running.values()))
         raise
     finally:
         signal.signal(signal.SIGTERM, prev_term)
         signal.signal(signal.SIGHUP, prev_hup)
+
+
+EXPECT_BASELINE_SECONDS = 275.0  # expect の実測基準曲の長さ（4:35。docs/plans/2026-08-05 参照）
+
+
+def _track_seconds(track: Path):
+    """track.wav の長さ（秒）。読めなければ None（進捗の目安が粗くなるだけなので失敗させない）。"""
+    try:
+        import soundfile as sf
+        info = sf.info(str(track))
+        return info.frames / info.samplerate
+    except Exception:
+        return None
 
 
 def build_steps(ref: Path) -> list:
@@ -333,11 +363,16 @@ def build_steps(ref: Path) -> list:
             [py, "topline.py", stem_wav, bass4, str(a / "basics.json"), str(a), "--label", label, "--mix", track],
             deps=("demucs-6s", "demucs-4s", "basics") if label.startswith("6s") else ("demucs-4s", "basics"),
             priority=40,
+            expect=13,
         )
 
+    # expect の根拠: docs/plans/2026-08-05-1749-reference-analyze-parallel.md の直列実測
+    # （4:35の曲＝EXPECT_BASELINE_SECONDS）を、ステップ内並列化後の壁時計に補正
+    # （stems ÷3ワーカー・groove ÷2）。「実行中の部分進捗」が経過秒と比べる物差しなので
+    # 絶対値にも意味がある。ここには基準曲での秒数を書き、関数末尾で実曲長にスケールする
     steps = [
         Step("overview", "全体像", [py, "overview.py", track, str(a / "overview.png"), "--title", ref.name],
-             priority=60),
+             priority=60, expect=4),
         # 2モデル走らせるのは実験の名残ではない。片方に絞ると分析が静かに劣化する。
         # htdemucs(4分割) と htdemucs_6s(6分割) は別々に訓練された別モデルで、
         # 共通のはずの drums/bass/vocals も出てくる音が違う。用途で使い分けている:
@@ -349,23 +384,23 @@ def build_steps(ref: Path) -> list:
         #            6分割の3ステムは揃って4小節）
         # 詳細は README「なぜ4分割と6分割を両方使うのか」
         Step("demucs-4s", "ステム分離(4s)", [py, "-m", "demucs", "-d", "mps", "-n", "htdemucs", "-o", str(stems), track],
-             weight=0, priority=10, skip=demucs_skip("htdemucs")),
+             weight=0, priority=10, skip=demucs_skip("htdemucs"), expect=24),
         Step("demucs-6s", "ステム分離(6s)", [py, "-m", "demucs", "-d", "mps", "-n", "htdemucs_6s", "-o", str(stems), track],
-             deps=("demucs-4s",), weight=0, priority=10, skip=demucs_skip("htdemucs_6s")),
-        Step("basics", "BPM/キー/構成", [py, "basics.py", track, str(a)], priority=20),
+             deps=("demucs-4s",), weight=0, priority=10, skip=demucs_skip("htdemucs_6s"), expect=24),
+        Step("basics", "BPM/キー/構成", [py, "basics.py", track, str(a)], priority=20, expect=35),
         Step("stems-4s", "ステム表(4s)",
              [py, "stems.py", str(stems / "htdemucs" / "track"), track, str(a / "basics.json"), str(a),
               "--label", "4s", "--workers", "3"],
-             deps=("demucs-4s", "basics"), weight=3, priority=30),
+             deps=("demucs-4s", "basics"), weight=3, priority=30, expect=10),
         Step("stems-6s", "ステム表(6s)",
              [py, "stems.py", str(stems / "htdemucs_6s" / "track"), track, str(a / "basics.json"), str(a),
               "--label", "6s", "--workers", "3"],
-             deps=("demucs-6s", "basics"), weight=3, priority=25),
+             deps=("demucs-6s", "basics"), weight=3, priority=25, expect=15),
         Step("arrange", "構成マップ", [py, "arrange.py", str(a / "stems-6s.json"), str(a)],
-             deps=("stems-6s",), priority=50),
+             deps=("stems-6s",), priority=50, expect=1),
         # グルーヴとコードのルート判定は4分割のベースを使う（上の理由）
         Step("groove", "グルーヴ", [py, "groove.py", str(stems / "htdemucs" / "track"), str(a / "basics.json"), str(a)],
-             deps=("demucs-4s", "basics"), weight=2, priority=15),  # 内部でドラム帯域とベース(pyin)が並走
+             deps=("demucs-4s", "basics"), weight=2, priority=15, expect=35),  # 内部でドラム帯域とベース(pyin)が並走
         topline("other", str(stems / "htdemucs" / "track" / "other.wav")),
         topline("6s-piano", str(stems / "htdemucs_6s" / "track" / "piano.wav")),
         topline("6s-guitar", str(stems / "htdemucs_6s" / "track" / "guitar.wav")),
@@ -375,13 +410,13 @@ def build_steps(ref: Path) -> list:
         # fatal=False: キャッシュ温めの失敗で本来の分析（カード生成）を道連れにしない
         Step("upper-features", "おすすめ用の特徴量",
              [py, str(HERE.parent / "library" / "recommend.py"), str(ref), "--warm-cache"],
-             deps=("demucs-6s",), priority=60, fatal=False),
+             deps=("demucs-6s",), priority=60, fatal=False, expect=15),
         Step("gates", "信頼性の判定", [py, "gates.py", str(a)],
              deps=("basics", "stems-4s", "stems-6s", "arrange", "groove",
                    "topline-other", "topline-6s-piano", "topline-6s-guitar", "topline-6s-other"),
-             priority=70),
-        Step("excerpts", "耳で確認するクリップ", [py, "excerpts.py", str(ref)], deps=("gates",), priority=70),
-        Step("card", "制約カード", [py, "card.py", str(ref)], deps=("excerpts",), priority=70),
+             priority=70, expect=1),
+        Step("excerpts", "耳で確認するクリップ", [py, "excerpts.py", str(ref)], deps=("gates",), priority=70, expect=1),
+        Step("card", "制約カード", [py, "card.py", str(ref)], deps=("excerpts",), priority=70, expect=2),
     ]
     for s in steps:
         # demucs（torch/MPS）は CPU をほぼ使わない（単独実測 0.3コア）が、torch の
@@ -390,6 +425,12 @@ def build_steps(ref: Path) -> list:
         # なお taskpolicy -c utility で非クリティカルステップを E コアに寄せる案は
         # 実測で効果なし（むしろ悪化）だったので採用していない
         s.env = {**THREAD_CAP_ENV, "OMP_NUM_THREADS": "2"} if s.name.startswith("demucs") else THREAD_CAP_ENV
+    # expect は基準曲（4:35）での実測値で、分析時間は曲長にほぼ線形。実際の曲長で
+    # スケールしないと、長い曲では「実行中の部分進捗」（経過秒 vs expect）が早期に
+    # 95% 上限へ張り付き、確定バーがステップ完了まで止まって見える
+    scale = (_track_seconds(ref / "track.wav") or EXPECT_BASELINE_SECONDS) / EXPECT_BASELINE_SECONDS
+    for s in steps:
+        s.expect *= scale
     return steps
 
 

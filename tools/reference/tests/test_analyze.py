@@ -67,6 +67,57 @@ def test_cache_skip(tmp: Path) -> None:
     ok(any("スキップ" in l for l in lines), "skip の理由が進捗に出る")
 
 
+def test_progress_lines(tmp: Path) -> None:
+    # 加重進捗（==> P% | N/M 完了 ／ 実行中: …）の固定:
+    # 書式・単調非減少・実行中は100%にしない・スキップの expect は分母から外れる
+    import re
+
+    lines = []
+    run_dag(
+        [
+            Step("a", "A", stamp_cmd(tmp / "pg-a", sleep=0.3), expect=1.0),
+            Step("s", "S", stamp_cmd(tmp / "pg-s"), skip=lambda: "スキップ", expect=100.0),
+            Step("b", "B", stamp_cmd(tmp / "pg-b", sleep=0.3), deps=("a",), expect=1.0),
+        ],
+        echo=lines.append,
+    )
+    pcts = []
+    for l in lines:
+        m = re.match(r"==> (\d+)% \| \d+/3 完了 ／ 実行中: ", l)
+        if m:
+            pcts.append(int(m.group(1)))
+    ok(len(pcts) >= 2, f"進捗率の行が書式どおり複数回出る: {lines}")
+    ok(all(x <= y for x, y in zip(pcts, pcts[1:])), f"進捗率が単調非減少: {pcts}")
+    ok(all(p < 100 for p in pcts), f"実行中は100%にしない: {pcts}")
+    # skip の expect=100 が分母に残ると a 完了後でも 1/102 ≈ 1% 止まり。
+    # 分母から外れていれば a 完了時点（1/2）で50%以上に達する
+    ok(max(pcts) >= 50, f"スキップの expect は分母から外れる: {pcts}")
+
+
+def test_expect_scales_with_track_length(tmp: Path) -> None:
+    # expect は「加重進捗の重み」と「実行中の部分進捗が経過秒と比べる物差し」の兼用。
+    # 基準曲（4:35）の実測値のままだと長い曲で早期に95%上限へ張り付きバーが止まるので、
+    # build_steps が track.wav の実長でスケールすることを固定する
+    import wave
+
+    from analyze import build_steps
+
+    def make_ref(name: str, seconds: int) -> Path:
+        d = tmp / name
+        d.mkdir()
+        with wave.open(str(d / "track.wav"), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(8000)
+            w.writeframes(b"\x00\x00" * (8000 * seconds))
+        return d
+
+    short = {s.name: s.expect for s in build_steps(make_ref("scale-short", 60))}
+    tripled = {s.name: s.expect for s in build_steps(make_ref("scale-long", 180))}
+    ok(all(abs(tripled[n] / short[n] - 3.0) < 0.01 for n in short),
+       f"expect が曲長に比例する: {short} vs {tripled}")
+
+
 def test_heavy_output(tmp: Path) -> None:
     # drain がないと PIPE バッファ満杯（64KB）でデッドロックする量を stdout/stderr 両方に書く。
     # drain が退行すると永久停止するので、直接 run_dag() せずサブプロセス＋timeout で囲む
@@ -267,6 +318,8 @@ def main() -> None:
         tmp = Path(d)
         test_dependency_order(tmp)
         test_cache_skip(tmp)
+        test_progress_lines(tmp)
+        test_expect_scales_with_track_length(tmp)
         test_heavy_output(tmp)
         test_budget(tmp)
         test_fail_fast(tmp)

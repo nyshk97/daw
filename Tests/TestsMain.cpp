@@ -31,6 +31,7 @@
 #include "shared/SongFade.h"
 #include "shared/SpawnedProcess.h"
 #include "shared/TempDirSweep.h"
+#include "shared/AnalyzeProgress.h"
 #include "shared/YtDlpOutput.h"
 #include "ui/AppLookAndFeel.h"
 #include "ui/BottomPanelHistory.h"
@@ -6993,6 +6994,43 @@ void testMonoRenderRegressionHash()
     }
 }
 
+// analyze.py の進捗集約行のパース。書式は analyze.py の announce() と対
+void testAnalyzeProgress()
+{
+    beginTest ("AnalyzeProgress");
+
+    {
+        const auto p = AnalyzeProgress::parse (
+            juce::String::fromUTF8 (u8"==> 42% | 7/16 完了 ／ 実行中: ステム分離(4s)・BPM/キー/構成"));
+        expect (p.progress.has_value(), "進捗率トークンが読める");
+        expect (p.progress.has_value() && std::abs (*p.progress - 0.42f) < 1.0e-6f, "比率が正しい");
+        expect (p.display == juce::String::fromUTF8 (u8"==> 7/16 完了 ／ 実行中: ステム分離(4s)・BPM/キー/構成"),
+                "表示行から進捗率トークンが剥がれる（バーと二重表示にしない）");
+    }
+    {
+        // 進捗率のない従来形式の行はそのまま表示に回す
+        const auto p = AnalyzeProgress::parse (juce::String::fromUTF8 (u8"==> 完了: グルーヴ（35秒）"));
+        expect (! p.progress.has_value(), "完了行は進捗率なし");
+        expect (p.display == juce::String::fromUTF8 (u8"==> 完了: グルーヴ（35秒）"), "完了行はそのまま");
+    }
+    {
+        const auto p = AnalyzeProgress::parse (juce::String::fromUTF8 (u8"カードを生成しない（キーのゲート落ち）"));
+        expect (! p.progress.has_value() && p.display.isNotEmpty(), "card.py の申告行はそのまま");
+    }
+    expect (! AnalyzeProgress::parse ("==> 4x% | rest").progress.has_value(), "数字でないトークンは進捗にしない");
+    expect (! AnalyzeProgress::parse ("==> 42 | rest").progress.has_value(), "% がなければ進捗にしない");
+    expect (AnalyzeProgress::parse ("").display.isEmpty(), "空行は表示も空（呼び出し側が捨てる）");
+    {
+        const auto p = AnalyzeProgress::parse ("==> 250% | rest");
+        expect (p.progress.has_value() && *p.progress <= 1.0f, "100 超は 1.0 に丸める（バーが飛び出さない）");
+    }
+    {
+        const auto p = AnalyzeProgress::parse ("  ==> 0% | rest  ");
+        expect (p.progress.has_value() && *p.progress == 0.0f && p.display == "==> rest",
+                "前後の空白と 0% を扱える");
+    }
+}
+
 // yt-dlp の出力パース。ケースは yt-dlp 2026.07.04 の実出力から採っている
 void testYtDlpOutput()
 {
@@ -9317,6 +9355,7 @@ int main()
     testGainSliderIgnoresScrollWheel();
     testGainSliderCenterFill();
     testYtDlpOutput();
+    testAnalyzeProgress();
     testSpawnedProcess();
     testTempDirSweep();
     testUrlDownloaderLive(); // LALA_VERIFY_URL が無ければ何もしない

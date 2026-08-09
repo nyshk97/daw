@@ -2737,6 +2737,7 @@ void MainComponent::pollReferenceAnalysis()
         return;
 
     referenceOverlay.setStatusLine (referenceAnalyzer.currentLine());
+    referenceOverlay.setProgress (referenceAnalyzer.progress());
     if (referenceAnalyzer.status() == ReferenceAnalyzer::Status::running)
         return;
 

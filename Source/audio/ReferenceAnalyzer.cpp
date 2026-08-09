@@ -1,5 +1,6 @@
 #include "ReferenceAnalyzer.h"
 
+#include "shared/AnalyzeProgress.h"
 #include "shared/Log.h"
 #include "shared/SpawnedProcess.h"
 
@@ -55,16 +56,18 @@ ReferenceAnalyzer::Status ReferenceAnalyzer::analyze()
         [this] { return threadShouldExit(); },
         [this] (const juce::String& line)
         {
-            const auto trimmed = line.trim();
-            if (trimmed.isEmpty())
+            const auto parsed = AnalyzeProgress::parse (line);
+            if (parsed.display.isEmpty())
                 return;
             {
                 const juce::ScopedLock sl (lineLock);
-                lastLine = trimmed;
+                lastLine = parsed.display;
             }
+            if (parsed.progress.has_value())
+                progressFraction.store (*parsed.progress);
             // card.py の「カードを生成しない（〜）」申告を完了ダイアログ用に拾う
-            if (trimmed.contains (jp (u8"カードを生成しない")))
-                result.noCardReason = trimmed;
+            if (parsed.display.contains (jp (u8"カードを生成しない")))
+                result.noCardReason = parsed.display;
         },
         [&stderrTail] (const juce::String& line)
         {
