@@ -27,6 +27,30 @@ def load(a: Path, name: str):
 HARMONY_STEMS = ("6s-piano", "6s-guitar", "6s-other")
 
 
+def tempo_stable_ok(gc: list, local_bpm_std) -> bool:
+    """剛体グリッドが曲全体で成立しているか。
+
+    主判定は min(gc) > 1.0（全区間で表拍がオフビート位置に勝つ）。実戦根拠は
+    docs/labs/reference-beat.md 2026-08-04: ライブ演奏の実テンポ揺れ（Jinmenusagi - GOAT
+    ライブ映像。ドラムは全区間均一に鳴っているのにグリッドが合わない、と切り分け済み）は
+    **後半減衰も local_bpm_std の増大（0.64 と小さい）も出さず**、中盤の対比 <1.0 だけが
+    捕まえた。「揺れ＝後半だけ落ちる/std大」という直感で min を緩めると、この既知の
+    揺れ曲を通してしまう（一度やりかけたレビュー指摘済みの誤り）。
+    後半減衰チェックと local_bpm_std は補助（min が拾えない片肺の壊れ方への保険）。
+    """
+    if not gc or local_bpm_std is None:
+        return False
+    if min(gc) <= 1.0:  # どこかの区間で表がオフビート位置に負ける＝その区間のグリッドが信用できない
+        return False
+    if len(gc) >= 2:
+        first, last = gc[: len(gc) // 2], gc[len(gc) // 2 :]
+        if sum(last) / len(last) <= sum(first) / len(first) * 0.6:  # 後半減衰＝ドリフト
+            return False
+    # 暫定線。クオンタイズ済みの実測 0.3〜0.6 より十分上（なおライブ揺れの実測 0.64 は
+    # ここでは捕まらず min(gc) が捕まえる。std は大きく揺れる曲への保険）
+    return local_bpm_std < 2.0
+
+
 def pick_harmony_source(tops: list[dict]) -> str | None:
     """usable かつ進行が抽出できた6分割ステムのうち一番大きいものを返す。無ければ None。
 
@@ -64,12 +88,11 @@ def main() -> None:
 
     # --- テンポが一定か ---
     gc = basics["tempo"].get("grid_contrast_by_eighth") or []
-    first, last = (gc[: len(gc) // 2], gc[len(gc) // 2 :]) if gc else ([], [])
     gates["tempo_stable"] = {
-        "ok": bool(gc and min(gc) > 1.0 and (sum(last) / len(last)) > (sum(first) / len(first)) * 0.6),
+        "ok": tempo_stable_ok(gc, basics["tempo"].get("local_bpm_std")),
         "grid_contrast_by_eighth": gc,
         "local_bpm_std": basics["tempo"].get("local_bpm_std"),
-        "note": "false ならテンポが揺れており、後半ほど小節番号が信用できない",
+        "note": "false ならどこかの区間で剛体グリッドが成立していない（後半とは限らない）。その区間以降の小節番号は信用できない",
     }
 
     # --- 小節頭（2拍・4拍にバックビートが立っているか） ---

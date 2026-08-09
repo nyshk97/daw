@@ -91,6 +91,7 @@ cd ~/daw/tools/reference
 | `excerpts.py` | **耳で確認するための短いクリップ**を確認する順に番号を振って切り出す | `listen/*.wav` `listen/README.md` |
 | `card.py` | **制約カード** — ゲートを通った値だけをガチャの生成器向けに1枚へ厳選 | `<ref>/card.json` |
 | `tests/test_card.py` | card.py / gates.py の回帰テスト（実曲でなく最小 fixture で固定） | — |
+| `tests/test_gates.py` | gates.py の tempo_stable 判定の回帰テスト（実測済みのライブ実揺れを落とし続ける・安定曲は通す） | — |
 | `report.py` | **レポートの【機】充填と完成検査**。`fill` = テンプレの二重波括弧を analysis/*.json から充填したドラフト＋【判】用ダイジェストを出力（判定語の線引きはここが単一の真実の源）。`check` = AI が【判】を書き終えたかの機械検査 | `report.md.next` `logs/report-digest.json` |
 | `report-template.md` | レポートの雛形（節構成・機械充填プレースホルダ・【判】マーカー）。`report.py fill` の入力 | — |
 | `report.sh` / `report-prompt.md` | 分析済みフォルダから `report.md` を書く（`report.py fill` → Claude Code ヘッドレス = **Opus 5 固定・【判】のみ執筆**・見本とダイジェストはプロンプト同梱 → `report.py check` → atomic rename）。生の stream-json を `logs/` に保存 | `report.md` |
@@ -184,7 +185,7 @@ stems/htdemucs_6s/track/  drums.wav  bass.wav  vocals.wav  piano.wav  guitar.wav
 | 曲の性質 | 何が壊れるか | 気づき方 |
 |---|---|---|
 | **途中でコード進行が変わる** | `topline.py` は全長を1つのループとして畳むので、複数の進行が平均されて実在しない和音が出る | `loop.similarity_by_lag` がどのラグでも低い / `loop_progression.progression[].stability` が下がる |
-| **生ドラム・テンポが揺れる** | `basics.py` の剛体グリッドが破綻し、後半の小節番号が全部ずれる。以降の全分析が道連れ | `tempo.grid_contrast_by_eighth` の後半だけ落ちる / `tempo.local_bpm_std` が大きい |
+| **生ドラム・テンポが揺れる** | `basics.py` の剛体グリッドが破綻し、後半の小節番号が全部ずれる。以降の全分析が道連れ | `tempo.grid_contrast_by_eighth` のどこかの区間が 1.0 を割る（**後半とは限らない**。実測のライブ揺れは中盤だけ割れ、`local_bpm_std` は 0.64 と小さかった — labs 2026-08-04） |
 | **3拍子・6/8系** | 4/4 決め打ちなので小節・16分プロファイル・ループ長が全部無意味になる | **気づけない**（サイレントに壊れる）。拍子は人が確認するしかない |
 | **イントロ/アウトロが長い曲** | ループ畳み込みが「本編以外」も混ぜる | `repetitions_folded` の割に `stability` が低い |
 | **上モノがほぼ無い曲**（ドラム＋ベース＋声だけ） | demucs の piano/guitar/other にはかぶりノイズしか残らないが、コード検出は何かしらの和音を返す。しかも**3ステムとも同じノイズを見るので揃って同じ誤答を出し、合議が効かない** | `topline-*.json` の `chord_estimate_usable`（ミックス比 -25dB 未満で false）。実測: 上モノのある曲は -16〜-18dB、無い曲は -33〜-69dB |

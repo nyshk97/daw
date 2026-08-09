@@ -34,7 +34,7 @@ run = 'tools/reference/.venv/bin/python tools/reference/card.py "$usage_dir"'
 
 [tasks."ref:test"]
 description = '分析パイプラインの回帰テスト（card.py / gates.py / analyze.py / render_report.py / report.py。fixture のみで数秒）'
-run = 'cd tools/reference && .venv/bin/python tests/test_card.py && .venv/bin/python tests/test_analyze.py && .venv/bin/python tests/test_render_report.py && .venv/bin/python tests/test_report.py && bash tests/test_report_sh.sh'
+run = 'cd tools/reference && .venv/bin/python tests/test_gates.py && .venv/bin/python tests/test_card.py && .venv/bin/python tests/test_analyze.py && .venv/bin/python tests/test_render_report.py && .venv/bin/python tests/test_report.py && bash tests/test_report_sh.sh'
 
 [tasks."ref:setup"]
 description = '分析パイプラインの venv を作り直す（初回・依存を変えたとき）'
