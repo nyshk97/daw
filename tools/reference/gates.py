@@ -27,7 +27,22 @@ def load(a: Path, name: str):
 HARMONY_STEMS = ("6s-piano", "6s-guitar", "6s-other")
 
 
-def tempo_stable_ok(gc: list, local_bpm_std) -> bool:
+def bpm_octave_ok(octave_check: dict, value) -> bool:
+    """採用BPMが、事前分布込みで最大の重みを持つオクターブ候補と同じオクターブか。
+
+    数値の厳密一致では判定できない: octave_check の梯子は乗り換え前の基準BPMから
+    作られ、乗り換え時は候補の近傍±0.3BPMで精密化し直すため、採用値は梯子の値から
+    最大0.3ずれる（実測: うそさ で梯子 double=137.98 vs 採用 138.0。旧判定 <0.01 が
+    差0.02 を「取り違え」と誤判定した。GOAT は差0.002 で偶然通っていた）。
+    オクターブ違いは ×1.5/×2 離れているので、比率5%以内なら同一オクターブと言い切れる。
+    """
+    if not octave_check or not value:
+        return False
+    best = max(octave_check.values(), key=lambda d: d["weighted"])
+    return abs(best["bpm"] - value) / value < 0.05
+
+
+def tempo_stable_ok(gc: list) -> bool:
     """剛体グリッドが曲全体で成立しているか。
 
     主判定は min(gc) > 1.0（全区間で表拍がオフビート位置に勝つ）。実戦根拠は
@@ -35,10 +50,14 @@ def tempo_stable_ok(gc: list, local_bpm_std) -> bool:
     ライブ映像。ドラムは全区間均一に鳴っているのにグリッドが合わない、と切り分け済み）は
     **後半減衰も local_bpm_std の増大（0.64 と小さい）も出さず**、中盤の対比 <1.0 だけが
     捕まえた。「揺れ＝後半だけ落ちる/std大」という直感で min を緩めると、この既知の
-    揺れ曲を通してしまう（一度やりかけたレビュー指摘済みの誤り）。
-    後半減衰チェックと local_bpm_std は補助（min が拾えない片肺の壊れ方への保険）。
+    揺れ曲を通してしまう（一度やりかけたレビュー指摘済みの誤り）。後半減衰チェックは補助。
+
+    local_bpm_std は判定に使わない（一度 std<2.0 ガードを足して撤回した）:
+    std はビートトラッカー由来で、トラッカーがグリッドの×1.5（付点/三連の読み）に
+    ロックすると健全な打ち込み曲でも膨らむ（実測: うそさ で grid_contrast 全区間>1.0 なのに
+    トラッカーが 92.3BPM に迷い std=2.13）。グリッド妥当性の直接証拠は grid_contrast だけ。
     """
-    if not gc or local_bpm_std is None:
+    if not gc:
         return False
     if min(gc) <= 1.0:  # どこかの区間で表がオフビート位置に負ける＝その区間のグリッドが信用できない
         return False
@@ -46,9 +65,7 @@ def tempo_stable_ok(gc: list, local_bpm_std) -> bool:
         first, last = gc[: len(gc) // 2], gc[len(gc) // 2 :]
         if sum(last) / len(last) <= sum(first) / len(first) * 0.6:  # 後半減衰＝ドリフト
             return False
-    # 暫定線。クオンタイズ済みの実測 0.3〜0.6 より十分上（なおライブ揺れの実測 0.64 は
-    # ここでは捕まらず min(gc) が捕まえる。std は大きく揺れる曲への保険）
-    return local_bpm_std < 2.0
+    return True
 
 
 def pick_harmony_source(tops: list[dict]) -> str | None:
@@ -76,12 +93,11 @@ def main() -> None:
     gates: dict = {}
 
     # --- BPM のオクターブ ---
-    # 素点は常に遅い方を好むので、事前分布で重み付けした weighted が採用値(x1)で最大かを見る。
+    # 素点は常に遅い方を好むので、事前分布で重み付けした weighted が採用値と同オクターブかを見る。
     oc = basics["tempo"].get("octave_check", {})
-    best = max(oc.values(), key=lambda d: d["weighted"]) if oc else None
     gates["bpm"] = {
         "value": basics["tempo"]["bpm"],
-        "octave_ok": bool(best and abs(best["bpm"] - basics["tempo"]["bpm"]) < 0.01),
+        "octave_ok": bpm_octave_ok(oc, basics["tempo"]["bpm"]),
         "octave_check": {k: v["weighted"] for k, v in oc.items()},
         "note": "false なら倍/半分を取り違えている。グリッドが違うと以降の全分析が無意味",
     }
@@ -89,7 +105,7 @@ def main() -> None:
     # --- テンポが一定か ---
     gc = basics["tempo"].get("grid_contrast_by_eighth") or []
     gates["tempo_stable"] = {
-        "ok": tempo_stable_ok(gc, basics["tempo"].get("local_bpm_std")),
+        "ok": tempo_stable_ok(gc),
         "grid_contrast_by_eighth": gc,
         "local_bpm_std": basics["tempo"].get("local_bpm_std"),
         "note": "false ならどこかの区間で剛体グリッドが成立していない（後半とは限らない）。その区間以降の小節番号は信用できない",
