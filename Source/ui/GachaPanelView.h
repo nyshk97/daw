@@ -21,6 +21,11 @@ public:
     void setProject (Project* projectToUse);
     void refreshCards();       // <project>/references/*/card.json を列挙し直す（モードを開くたび）
     void refreshAvailability(); // ツール（~/daw）の存在チェック
+    // 分析完了→BPMセット後の導線: Loops タブへ切り替え、このカードを**全パーツ**に選択する。
+    // 分析した直後＝この曲でビートを作り始める意図なので既存選択は上書きする。変更のあった
+    // パーツは通常のカード変更（cardBox.onChange）と同じく候補・ロックを畳み onCardChanged を
+    // 発火する。refreshCards 済み（列挙にカードが載っている）前提で呼ぶ
+    void showAnalyzedCard (const juce::File& folder);
 
     Part selectedPart() const { return currentPart; }
 

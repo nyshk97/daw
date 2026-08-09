@@ -145,6 +145,7 @@ private:
     BottomPanelHistory::Entry currentFxDetailEntry (int slot) const;        // 表示中のFX詳細→エントリ
     int trackIndexForId (juce::uint64 trackId) const;                       // 見つからなければ -1
     void toggleRightPanel (RightPanel::Mode mode);
+    void openRightPanel (RightPanel::Mode mode); // トグルせず必ず開く（ボタン点灯も同期）
     void closeRightPanel();
     void toggleDeviceSettings (const char* source); // 歯車ボタン／⌘,（開いていれば閉じる。sourceはログ用）
     void closeDeviceSettings();
@@ -166,7 +167,11 @@ private:
     void showAnalysisKeyDialog (const juce::String& title, const juce::String& message,
                                 double cardBpm, bool canAlign,
                                 const ReferenceAlign::ClipDescriptor& descriptor,
-                                double fdSec, const ProjectKey& cardKey);
+                                double fdSec, const ProjectKey& cardKey,
+                                const juce::File& folder);
+    // 分析完了ダイアログの「BPMを設定」系ボタン後の導線: ガチャパネルを Loops タブで開き、
+    // 分析した曲を全パーツに選択する（次の一手＝この曲を参照にビートを作る、へ直結させる）
+    void showGachaAfterAnalysis (const juce::File& folder);
     void performGachaAlign(); // ガチャパネルの「原曲を頭出し」（クリック時に記述子から再解決）
     void toggleReportWindow(); // ガチャパネルのレポートボタン（表示中の同カードなら閉じる）
     void handleReportAction();                    // レポートボタン（report有無で開く/書くに分岐）

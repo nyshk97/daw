@@ -450,6 +450,43 @@ void GachaPanelView::refreshCards()
     resized(); // 案内文の出入りで一覧の上端が変わる
 }
 
+void GachaPanelView::showAnalyzedCard (const juce::File& folder)
+{
+    if (std::find (cardFolders.begin(), cardFolders.end(), folder) == cardFolders.end())
+        return; // 列挙に無い（card.json が消えた等）カードは選べない
+
+    for (int p = 0; p < GachaSession::numParts; ++p)
+    {
+        auto& state = parts[(size_t) p];
+        if (state.cardFolder == folder)
+            continue;
+        // cardBox.onChange と同じ後始末: 前カードの候補・ロックはこのカードでは意味を持たない
+        state.cardFolder = folder;
+        state.items.clear();
+        for (auto& lock : state.locks)
+            lock.clear();
+        if ((Part) p == Part::loops)
+            loopRecommendation = {}; // Loops の候補は loopRecommendation 側（旧カードのおすすめを残さない）
+        if (onCardChanged)
+            onCardChanged ((Part) p);
+    }
+
+    if (currentPart != Part::loops)
+    {
+        switchPart (Part::loops); // 選択・ロック・一覧のウィジェット反映はここで行われる
+    }
+    else
+    {
+        // 既に Loops 表示中は switchPart が no-op なので、ここで反映し直す
+        applyCardSelection (folder);
+        listBox.deselectAllRows();
+        listBox.updateContent();
+        listBox.repaint();
+        updateControls();
+        resized();
+    }
+}
+
 juce::File GachaPanelView::selectedCardFolder() const
 {
     return selectedCardFolder (currentPart);

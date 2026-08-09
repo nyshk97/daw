@@ -1418,7 +1418,11 @@ void MainComponent::toggleRightPanel (RightPanel::Mode mode)
         closeRightPanel();
         return;
     }
+    openRightPanel (mode);
+}
 
+void MainComponent::openRightPanel (RightPanel::Mode mode)
+{
     if (rightPanel.isOpen() && rightPanel.mode() == RightPanel::Mode::files
         && mode != RightPanel::Mode::files)
         rightPanel.fileBrowser().cancelPreview(); // 予約中のオートプレビューも取り消す
@@ -2778,7 +2782,8 @@ void MainComponent::pollReferenceAnalysis()
                 // （ルート変更=声域合わせ・モード変更=平行調取り違えの保険）。無ければ現行のBPMのみ
                 if (const auto cardKey = ProjectKeys::fromCardText (result.keyText); cardKey.has_value())
                 {
-                    showAnalysisKeyDialog (title, message, cardBpm, canAlign, descriptor, fdSec, *cardKey);
+                    showAnalysisKeyDialog (title, message, cardBpm, canAlign, descriptor, fdSec,
+                                           *cardKey, folder);
                 }
                 else
                 {
@@ -2791,14 +2796,19 @@ void MainComponent::pollReferenceAnalysis()
                             .withButton (canAlign ? jp (u8"BPM を設定して原曲を頭出し")
                                                   : jp (u8"BPM をプロジェクトに設定"))
                             .withButton (jp (u8"閉じる")),
-                        [safe, cardBpm, canAlign, descriptor, fdSec] (int button)
+                        [safe, cardBpm, canAlign, descriptor, fdSec, folder] (int button)
                         {
                             if (button != 0 || safe == nullptr)
                                 return;
+                            // 適用より先に仮配置を撤去する。仮配置がBPMを一時変更していると、
+                            // 分析結果が同値のとき適用が no-op（begin されず仮配置も残る）になり、
+                            // 直後のカード変更のキャンセルで baseline へ巻き戻ってしまう
+                            safe->cancelGachaPreview();
                             if (canAlign)
                                 safe->performReferenceAlign (descriptor, cardBpm, fdSec);
                             else
                                 safe->setProjectBpm (cardBpm); // undo対応済みの経路（⌘Zで戻せる）
+                            safe->showGachaAfterAnalysis (folder);
                         });
                 }
             }
@@ -2837,7 +2847,8 @@ void MainComponent::pollReferenceAnalysis()
 void MainComponent::showAnalysisKeyDialog (const juce::String& title, const juce::String& message,
                                            double cardBpm, bool canAlign,
                                            const ReferenceAlign::ClipDescriptor& descriptor,
-                                           double fdSec, const ProjectKey& cardKey)
+                                           double fdSec, const ProjectKey& cardKey,
+                                           const juce::File& folder)
 {
     auto* window = new juce::AlertWindow (title, message, juce::MessageBoxIconType::InfoIcon, this);
     juce::StringArray rootItems;
@@ -2856,7 +2867,7 @@ void MainComponent::showAnalysisKeyDialog (const juce::String& title, const juce
     juce::Component::SafePointer<MainComponent> safe (this);
     window->enterModalState (true,
         juce::ModalCallbackFunction::create (
-            [safe, window, cardBpm, canAlign, descriptor, fdSec] (int button)
+            [safe, window, cardBpm, canAlign, descriptor, fdSec, folder] (int button)
             {
                 // window はコールバック後に deleteWhenDismissed=true で破棄される。
                 // コンボの読み出しは破棄前のここで行う
@@ -2867,13 +2878,24 @@ void MainComponent::showAnalysisKeyDialog (const juce::String& title, const juce
                     window->getComboBoxComponent ("mode")->getSelectedItemIndex() == 1 ? KeyMode::minor
                                                                                        : KeyMode::major
                 };
+                // 適用より先に仮配置を撤去する（キーなし経路と同じ理由: 仮配置が一時変更した
+                // BPM/キーと同値だと適用が no-op になり、後のキャンセルで baseline へ巻き戻る）
+                safe->cancelGachaPreview();
                 // undo は経路別に1件: 頭出し可 → BPM＋キー＋クリップ移動 / 不可 → BPM＋キー
                 if (canAlign)
                     safe->performReferenceAlign (descriptor, cardBpm, fdSec, key);
                 else
                     safe->performBpmAndKey (cardBpm, key);
+                safe->showGachaAfterAnalysis (folder);
             }),
         true);
+}
+
+void MainComponent::showGachaAfterAnalysis (const juce::File& folder)
+{
+    Log::info ("reference.analyze.open_gacha", "name=" + folder.getFileName());
+    openRightPanel (RightPanel::Mode::gacha); // 開く過程の refreshCards で新カードが列挙に載る
+    rightPanel.gachaPanel().showAnalyzedCard (folder);
 }
 
 // ---- ドラムガチャ（右パネル第3モード）----
