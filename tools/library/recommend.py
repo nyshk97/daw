@@ -276,7 +276,16 @@ def main() -> None:
                     help="1ページの候補数（LaLa は画面に合わせて 10 を渡す）")
     ap.add_argument("--json", action="store_true", dest="as_json")
     ap.add_argument("--include-contrast", action="store_true")
+    ap.add_argument("--warm-cache", action="store_true",
+                    help="upper-features キャッシュだけ作って終了（analyze.py が分析中に呼ぶ。"
+                         "初回計算は十数秒かかり、LaLa の同期呼び出しのデッドラインに収まらないため）")
     args = ap.parse_args()
+
+    if args.warm_cache:
+        # card.json もライブラリも要らない（ゲート落ちでカードが無くても温めておく価値はある）
+        upper_features(args.refdir.expanduser())
+        print("upper-features キャッシュを更新した")
+        return
 
     library = args.library.expanduser()
     index_path = library / "index.json"

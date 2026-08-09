@@ -3047,14 +3047,14 @@ void MainComponent::performGachaAlign()
 namespace
 {
 // ガチャCLI（drums.py / bass.py）の同期実行。実測0.5秒程度なので同期で読み切る。
-// venv破損等で固まらないよう10秒で見切る。失敗時は detail に stderr の最終行
+// venv破損等で固まらないよう既定10秒で見切る。失敗時は detail に stderr の最終行
 bool runGachaTool (const juce::StringArray& argv, juce::StringArray& stdoutLines,
-                   juce::String& detail)
+                   juce::String& detail, int timeoutMs = 10000)
 {
     SpawnedProcess proc;
     if (! proc.start (argv))
         return false;
-    const auto deadline = juce::Time::getMillisecondCounter() + 10000;
+    const auto deadline = juce::Time::getMillisecondCounter() + (juce::uint32) timeoutMs;
     juce::StringArray stderrLines;
     const bool finished = proc.readUntilFinished (
         [deadline] { return juce::Time::getMillisecondCounter() > deadline; },
@@ -3629,7 +3629,10 @@ void MainComponent::performLoopRecommend (int page)
                              "--json" };
     juce::StringArray stdoutLines;
     juce::String detail;
-    if (! runGachaTool (argv, stdoutLines, detail))
+    // 30秒: upper-features キャッシュは analyze.py が分析中に温めるので通常0.5秒だが、
+    // 本修正前に分析したリファレンスはキャッシュが無く初回に十数秒かかる（実測13秒）。
+    // 10秒で見切ると kill→キャッシュ未生成→リトライも毎回失敗、の詰みになる
+    if (! runGachaTool (argv, stdoutLines, detail, 30000))
     {
         Log::error ("gacha.loop_recommend_failed", "detail=" + detail);
         showAlert (jp (u8"おすすめの取得に失敗しました"),

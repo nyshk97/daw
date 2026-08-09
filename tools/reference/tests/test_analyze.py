@@ -170,6 +170,37 @@ def test_fail_fast(tmp: Path) -> None:
     ok(True, "reparent + SIGTERM 無視の孫も停止する（KILL エスカレーション）")
 
 
+def test_nonfatal_step(tmp: Path) -> None:
+    # fatal=False のステップ（キャッシュ温め等の任意ステップ）が失敗しても DAG は完走する。
+    # 失敗ステップが子（sleeper）を残すパターンで、続行前にグループが掃除されることも固定する
+    tree = tmp / "nf-tree.py"
+    tree.write_text(TREE_PY)
+    b = tmp / "nf-b"
+    child_pid = tmp / "nf-child.pid"
+    lines = []
+    run_dag(
+        [
+            Step("warm", "温め", [PY, str(tree), "failstep", str(child_pid)], fatal=False),
+            Step("b", "B", stamp_cmd(b)),
+        ],
+        echo=lines.append,
+    )
+    ok(Path(f"{b}.end").exists(), "非致命ステップが失敗しても他ステップは完走する")
+    ok(any("失敗（続行）" in l for l in lines), "非致命の失敗が進捗に申告される")
+    wait_dead(read_pid(child_pid), "非致命の失敗ステップが残した子")
+    ok(True, "非致命の失敗ステップの子孫も続行前に停止する")
+
+    # 非致命ステップへの依存は起動時に弾く（失敗時に出力が無いため設計として許さない）
+    try:
+        run_dag([
+            Step("warm", "温め", [PY, "-c", "pass"], fatal=False),
+            Step("b", "B", [PY, "-c", "pass"], deps=("warm",)),
+        ])
+        ok(False, "非致命ステップへの依存は ValueError")
+    except ValueError:
+        ok(True, "非致命ステップへの依存は ValueError")
+
+
 def test_sigterm_during_launch(tmp: Path) -> None:
     # Popen（子グループ作成）から running 登録までの窓に SIGTERM が入っても、
     # ①その子が孤児化しない（ハンドラは launch 中フラグだけ立て、登録後に raise する）
@@ -239,6 +270,7 @@ def main() -> None:
         test_heavy_output(tmp)
         test_budget(tmp)
         test_fail_fast(tmp)
+        test_nonfatal_step(tmp)
         test_sigterm_during_launch(tmp)
         test_dep_validation_restores_handlers(tmp)
         test_cli_nonzero_exit(tmp)

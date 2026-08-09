@@ -70,6 +70,8 @@ class Step:
     priority: int = 50  # 小さいほど先に起動（予算が足りないとき長いステップを優先する）
     skip: object = None  # callable() -> str | None。文字列を返したらスキップ（理由として表示）
     env: dict = None  # 追加の環境変数（os.environ にマージ。ワーカープロセスにも継承される）
+    fatal: bool = True  # False なら失敗しても DAG は続行（キャッシュ温め等の任意ステップ用。
+                        # 失敗時に出力が無いため、非致命ステップへの依存は起動時に弾く）
 
 
 @dataclass
@@ -177,6 +179,8 @@ def run_dag(steps: list, budget: int = CPU_BUDGET, echo=None) -> None:
         for d in s.deps:
             if d not in by_name:
                 raise ValueError(f"step {s.name} depends on unknown step {d}")
+            if not by_name[d].fatal:
+                raise ValueError(f"step {s.name} は非致命ステップ {d} に依存できない（失敗時に出力が無い）")
 
     cancelled = False
     in_launch = False
@@ -279,11 +283,20 @@ def run_dag(steps: list, budget: int = CPU_BUDGET, echo=None) -> None:
             finished = [r for r in running.values() if r.proc.poll() is not None]
             for r in finished:
                 if r.proc.returncode != 0:
-                    # running から消さずに投げる → except の stop_all が失敗ステップ自身の
-                    # グループ（親の死後も残るワーカー）まで掃除する。
-                    # ここで drain スレッドを join しない — 生き残りの子孫がパイプの
-                    # write 端を握っていると EOF が来ず、kill 前の join は無駄に待つだけ
-                    raise StepFailed(r)
+                    if r.step.fatal:
+                        # running から消さずに投げる → except の stop_all が失敗ステップ自身の
+                        # グループ（親の死後も残るワーカー）まで掃除する。
+                        # ここで drain スレッドを join しない — 生き残りの子孫がパイプの
+                        # write 端を握っていると EOF が来ず、kill 前の join は無駄に待つだけ
+                        raise StepFailed(r)
+                    # 非致命ステップの失敗: 申告して続行（依存者は居ない前提を起動時に検証済み）。
+                    # 本体は死んでいても残した子孫が居ることがある（failstep パターン）ので、
+                    # 続行前にグループごと掃除する（drain スレッドの join も stop_all がやる）
+                    stop_all([r])
+                    del running[r.step.name]
+                    done.add(r.step.name)
+                    echo(f"==> 失敗（続行）: {r.step.label}（exit={r.proc.returncode}・任意ステップ）")
+                    continue
                 for t in r.threads:
                     t.join(timeout=5)
                 del running[r.step.name]
@@ -353,6 +366,12 @@ def build_steps(ref: Path) -> list:
         topline("6s-piano", str(stems / "htdemucs_6s" / "track" / "piano.wav")),
         topline("6s-guitar", str(stems / "htdemucs_6s" / "track" / "guitar.wav")),
         topline("6s-other", str(stems / "htdemucs_6s" / "track" / "other.wav")),
+        # おすすめ（recommend.py）が使う上モノ特徴量の事前計算。初回は十数秒かかり、
+        # LaLa の同期呼び出し（デッドライン付き）に収まらないため、分析のついでに温めておく。
+        # fatal=False: キャッシュ温めの失敗で本来の分析（カード生成）を道連れにしない
+        Step("upper-features", "おすすめ用の特徴量",
+             [py, str(HERE.parent / "library" / "recommend.py"), str(ref), "--warm-cache"],
+             deps=("demucs-6s",), priority=60, fatal=False),
         Step("gates", "信頼性の判定", [py, "gates.py", str(a)],
              deps=("basics", "stems-4s", "stems-6s", "arrange", "groove",
                    "topline-other", "topline-6s-piano", "topline-6s-guitar", "topline-6s-other"),

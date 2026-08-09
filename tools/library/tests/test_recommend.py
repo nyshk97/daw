@@ -260,6 +260,25 @@ def test_load_ref_meta_and_upper_features_cache() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_cli_warm_cache() -> None:
+    """--warm-cache はカード・ライブラリ無しでキャッシュだけ作る（analyze.py が分析中に呼ぶ）。"""
+    import subprocess
+
+    tmp = Path(tempfile.mkdtemp(prefix="recwarm-"))
+    try:
+        refdir = make_refdir(tmp)
+        (refdir / "card.json").unlink()  # ゲート落ちでカードが無くても温められること
+        script = Path(__file__).resolve().parent.parent / "recommend.py"
+        subprocess.run([sys.executable, str(script), str(refdir), "--warm-cache"],
+                       capture_output=True, text=True, check=True)
+        cache = refdir / "analysis" / "upper-features.json"
+        assert cache.exists(), "upper-features.json が作られていない"
+        assert json.loads(cache.read_text())["features"]["spectral_centroid_hz_median"] > 0
+        print("OK cli warm cache")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     test_transpose_semitones()
     test_tempo_relation()
@@ -269,5 +288,6 @@ if __name__ == "__main__":
     test_reason_text_plain_words()
     test_rank_end_to_end_with_wavs()
     test_cli_page_size()
+    test_cli_warm_cache()
     test_load_ref_meta_and_upper_features_cache()
     print("all tests passed")
