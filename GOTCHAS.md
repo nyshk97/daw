@@ -469,6 +469,12 @@ if (activeWriter.load() != nullptr)
 - **macOS の `killpg(pgid, 0)` は生死判定に使えない**: グループ内に終了処理中のメンバーが1つでもいると EPERM（man kill）。存在確認は `pgrep -g <pgid>` を使い、シグナル送信側は EPERM も握りつぶす（killable なメンバーへの配送自体は行われる）
 - 失敗したステップの drain スレッドは **kill 前に join しない**: 生き残った子孫が stdout/stderr パイプの write 端を握っていると EOF が来ず、join のタイムアウトぶん fail-fast が遅れる（join は kill 後）
 
+### 見切りタイムアウト付きの同期CLI呼び出しに「初回だけ重い処理」を持たせない
+
+- LaLa はガチャ系 CLI を同期実行＋デッドラインで見切る（`runGachaTool`）。この呼び出しの中に初回キャッシュ生成のような重い処理があると、**タイムアウト kill → キャッシュ未生成 → リトライも毎回同じ経路で失敗**の恒久ループになる（実例: recommend.py の upper-features 初回計算 13秒 vs 10秒見切り。exit=-15 が延々続いた）
+- 初回コストは重い工程のついでに前倒しする（analyze.py の `upper-features` ステップが分析中にキャッシュを温める）。前倒しステップは `fatal=False` にして本来の成果物（カード）を道連れにしない
+- 新しいガチャ系ツールにキャッシュや遅延初期化を足すときは「kill されても次回が速くなるか」を確認する
+
 ### `File::replaceWithText` の既定改行は CRLF（bash スクリプトを書くと壊れる）
 
 - `juce::File::replaceWithText (text)` は既定引数 `lineEndings = "\r\n"` で `\n` を CRLF に変換して書く。テストから bash スクリプトや `.next` 系の検証ファイルを生成すると `exit 65\r` のような行になり、bash が `numeric argument required` で exit 255 を返す（daw_tests の fake script で実際に踏んだ）
