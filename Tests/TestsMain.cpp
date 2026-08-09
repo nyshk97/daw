@@ -8398,13 +8398,17 @@ void testGachaSessionLoops()
     {
         GachaSession::LoopPreviewInput input;
         input.anchor = makeAnchor (bpm, keyRoot);
-        input.audio = std::make_shared<juce::AudioBuffer<float>> (1, 44100);
-        for (int i = 0; i < 44100; ++i)
+        // バッファは小節グリッドちょうど（loopBars × 240/bpm × rate）で作る — 刻みヘルパーの
+        // 契約（一致しない長さは切り詰め/無音埋めされ、30ms超の不足は失敗）が入ったため
+        const int target = (int) std::llround (input.anchor.loopBars * 240.0 / bpm * 44100.0);
+        input.audio = std::make_shared<juce::AudioBuffer<float>> (1, target);
+        for (int i = 0; i < target; ++i)
             input.audio->setSample (0, i, 0.1f);
         input.displayName = "loop";
         input.startSample = startSample;
         input.loopCount = 1;
         input.applyKeyBpm = applyKeyBpm;
+        input.audioSampleRate = 44100.0; // 契約: バッファの変換レートを必ず申告（刻みが使う）
         return input;
     };
 
@@ -8487,8 +8491,9 @@ void testGachaSessionLoops()
         expect (wavFile.existsAsFile(), "実体 WAV が書かれている");
         double sourceRate = 0.0;
         auto written = Project::loadWav (wavFile, &sourceRate);
-        expect (written != nullptr && written->getNumSamples() == 44100 && sourceRate == 44100.0,
-                "書かれた WAV がプロジェクトSR・全長で読み戻せる");
+        const int keptTarget = (int) std::llround (2 * 240.0 / 85.0 * 44100.0); // loopBars=2 @85bpm
+        expect (written != nullptr && written->getNumSamples() == keptTarget && sourceRate == 44100.0,
+                "書かれた WAV がプロジェクトSR・小節グリッド長で読み戻せる");
         expect (kept.loopSource == "loops/P/loop_11.wav", "実体化後も出自は残る");
         expect (project->loopAnchor.has_value() && project->bpm == 85.0, "採用状態が確定する");
 
@@ -8592,7 +8597,106 @@ void testGachaSessionLoops()
         project->tracks.clear();
     }
 
+    // --- 刻みの統合: 30ms超の不足は false・Project も Session も完全に不変 ---
+    {
+        GachaSession session;
+        expect (session.previewCandidate (Part::drums, *project, makeDrumResult(), 0), "ドラム仮配置");
+        const auto tracksBefore = (int) project->tracks.size();
+        auto shortInput = makeInput (85.0, 11);
+        const int shortTarget = shortInput.audio->getNumSamples() - (int) (0.040 * 44100.0);
+        shortInput.audio = std::make_shared<juce::AudioBuffer<float>> (1, shortTarget);
+        expect (! session.previewLoopCandidate (*project, shortInput), "30ms超の不足は失敗");
+        expect ((int) project->tracks.size() == tracksBefore && ! session.hasPreview (Part::loops)
+                    && session.hasPreview (Part::drums)
+                    && project->bpm == 93.0 && ! project->loopAnchor.has_value(),
+                "失敗時はトラック未作成・ループ未配置・ドラム仮配置も値も無傷");
+        session.cancelPreview (*project);
+    }
+
+    // --- SR再変換相当: 異なるレートのバッファで2回呼んでも、2回目も刻まれる ---
+    {
+        GachaSession session;
+        expect (session.previewLoopCandidate (*project, makeInput (85.0, 11)), "初回 44.1k");
+        auto input48 = makeInput (85.0, 11);
+        const int target48 = (int) std::llround (2 * 240.0 / 85.0 * 48000.0);
+        input48.audio = std::make_shared<juce::AudioBuffer<float>> (1, target48 + 4800); // 100msのテール
+        for (int i = 0; i < input48.audio->getNumSamples(); ++i)
+            input48.audio->setSample (0, i, 0.1f);
+        input48.audioSampleRate = 48000.0;
+        expect (session.previewLoopCandidate (*project, input48), "48k のバッファへ差し替え");
+        bool found = false;
+        for (const auto& track : project->tracks)
+            for (const auto& clip : track.clips)
+                if (clip.fileName == GachaSession::loopPreviewMarker)
+                {
+                    found = true;
+                    expect ((int) clip.lengthSamples == target48,
+                            "差し替え（SR再変換相当）でも小節グリッド長に刻まれる");
+                }
+        expect (found, "差し替え後の仮クリップが存在する");
+        session.cancelPreview (*project);
+        project->tracks.clear();
+    }
+
     dir.deleteRecursively();
+}
+
+// ---- trimLoopBufferToBars: ループバッファの小節グリッド刻み（docs/plans/2026-08-09-0024）----
+void testTrimLoopBufferToBars()
+{
+    beginTest ("GachaSession::trimLoopBufferToBars grid trimming");
+    const double rate = 44100.0, bpm = 120.0;
+    const int bar = (int) std::llround (240.0 / bpm * rate);
+    const int target = 2 * bar;
+
+    const auto filled = [] (int n, float v)
+    {
+        juce::AudioBuffer<float> b (1, n);
+        for (int i = 0; i < n; ++i)
+            b.setSample (0, i, v);
+        return b;
+    };
+
+    // 目標長と一致 → サンプル単位で完全無変更（フェードを焼き込まない）
+    {
+        auto b = filled (target, 0.5f);
+        expect (GachaSession::trimLoopBufferToBars (b, rate, bpm, 2), "一致は成功");
+        bool identical = b.getNumSamples() == target;
+        for (int i = 0; identical && i < target; ++i)
+            identical = b.getSample (0, i) == 0.5f;
+        expect (identical, "正常素材は完全無変更（毎周の継ぎ目を作らない）");
+    }
+    // 長い素材（テール付き） → 切り詰め＋両端フェード。フルスケール入力で両端が**厳密に0**
+    // （applyGainRamp の endGain は排他端の値なので 1→0 指定では最終サンプルに残差が出る —
+    // GOTCHAS 参照。振幅0.5＋許容誤差のテストでは残差を見逃していた）
+    {
+        auto b = filled (target + bar, 1.0f);
+        expect (GachaSession::trimLoopBufferToBars (b, rate, bpm, 2), "切り詰め成功");
+        expect (b.getNumSamples() == target, "出力長 = loopBars × 小節サンプル数と厳密一致");
+        expect (b.getSample (0, 0) == 0.0f && b.getSample (0, target - 1) == 0.0f,
+                "フルスケールでも両端が厳密に0（繋ぎ目が 0 → 0 で連続）");
+        expect (b.getSample (0, target / 2) == 1.0f, "中間は無変更");
+        const int fadeIn = (int) std::llround (0.003 * rate);
+        expect (b.getSample (0, fadeIn - 1) == 1.0f && b.getSample (0, fadeIn) == 1.0f,
+                "フェードイン終端に段差が無い（排他端=1 が原音へちょうど接続する）");
+    }
+    // 30ms 以内の不足 → 無音埋め。フェードアウトは原音末尾に掛かる（境界が連続）
+    {
+        const int shortfall = (int) (0.020 * rate);
+        auto b = filled (target - shortfall, 1.0f);
+        expect (GachaSession::trimLoopBufferToBars (b, rate, bpm, 2), "無音埋め成功");
+        expect (b.getNumSamples() == target, "埋め後も出力長はグリッド一致");
+        const int audioEnd = target - shortfall;
+        expect (b.getSample (0, audioEnd - 1) == 0.0f,
+                "原音末尾がフェードで厳密に0へ落ちる（末尾非0の入力でも境界が連続）");
+        expect (b.getSample (0, audioEnd) == 0.0f && b.getSample (0, target - 1) == 0.0f,
+                "パディング部は無音");
+    }
+    // 30ms を超える不足 → 失敗（上流の推定規則の契約違反）
+    {
+        auto b = filled (target - (int) (0.040 * rate), 0.5f);
+        expect (! GachaSession::trimLoopBufferToBars (b, rate, bpm, 2), "30ms超の不足は失敗");
+    }
 }
 
 void testGachaBassRollPlan()
@@ -9151,6 +9255,7 @@ int main()
     testGachaSessionPreview();
     testGachaSessionParts();
     testGachaSessionLoops();
+    testTrimLoopBufferToBars();
     testLoadWavResampled();
     testParseRecommendJson();
     testGachaBassRollPlan();

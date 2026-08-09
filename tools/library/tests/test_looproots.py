@@ -148,6 +148,27 @@ def test_load_contract_roundtrip() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_cli_bars_omitted() -> None:
+    """--bars 省略時は音声から小節数を推定する（estimate_bars のシグネチャ変更で
+    TypeError になっていた回帰。アプリは常に --bars を渡すので CLI 経由でしか踏めない）。"""
+    import json
+    import subprocess
+    import soundfile as sf
+    tmp = Path(tempfile.mkdtemp(prefix="lrcli-"))
+    try:
+        wav = tmp / "loop_Am_120bpm.wav"
+        sf.write(wav, chord_loop([9, 5, 0, 7], bpm=120.0), SR)  # 4スロット=4小節ちょうど
+        out = tmp / "roots.json"
+        script = Path(__file__).resolve().parent.parent / "looproots.py"
+        subprocess.run([sys.executable, str(script), str(wav), "--out", str(out)],
+                       capture_output=True, text=True, check=True)
+        contract = json.loads(out.read_text())
+        assert contract["loop_bars"] == 4, contract
+        print("OK cli --bars omitted")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     test_extract_progression()
     test_extract_slots_per_bar_2()
@@ -155,4 +176,5 @@ if __name__ == "__main__":
     test_silence_degrades_to_tonic()
     test_validate()
     test_load_contract_roundtrip()
+    test_cli_bars_omitted()
     print("all tests passed")

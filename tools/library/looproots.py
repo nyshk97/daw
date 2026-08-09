@@ -203,7 +203,7 @@ def main() -> None:
         raise SystemExit("ERROR: BPM が引数にもファイル名にも無い（--bpm で指定する）")
 
     y, sr = librosa.load(args.loop, sr=22050, mono=True)
-    bars = args.bars if args.bars is not None else estimate_bars(len(y) / sr, bpm)
+    bars = args.bars if args.bars is not None else estimate_bars(y, sr, bpm)
     if bars is None:
         raise SystemExit("ERROR: ループ小節数を尺から確定できない（余韻付き書き出し?）。--bars で指定する")
 

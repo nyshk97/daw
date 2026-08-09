@@ -114,6 +114,16 @@ public:
         bool applyKeyBpm = true;     // 逆コピー（「設定して敷く」）。false = 敷くだけ
     };
 
+    // ループバッファをアンカーの小節グリッドちょうどに刻む（docs/plans/2026-08-09-0024）。
+    // 成功時 buffer は必ず loopBars×小節サンプル数の長さになる: 長ければ切り詰め・
+    // 30ms 以内の不足は末尾を無音埋め。**刻みが起きたときだけ**両端フェード
+    // （イン3ms・アウト15ms。アウトは原音末尾=min(入力長,目標長) の直前に掛ける — 無音埋め
+    // 部分に掛けると原音→パディング境界の不連続が残る）。目標長と一致する正常素材は
+    // サンプル単位で無変更（常時焼き込むと元々なかった継ぎ目を作る）。
+    // 30ms を超える不足は false — index の30ms丸め規則が上流で防ぐ契約で、届いたら推定バグ
+    static bool trimLoopBufferToBars (juce::AudioBuffer<float>& buffer, double sampleRate,
+                                      double bpm, int loopBars);
+
     // ループ候補を仮配置する（2回目以降は差し替え・同じ場所）。アンカーは常に更新し、
     // applyKeyBpm ならプロジェクトの BPM・キーもループの値になる（undo はセッション baseline が
     // 受け持つ）。BPM/キーが実際に変わるときは**ベースの仮配置だけ撤去**する

@@ -3722,32 +3722,19 @@ void MainComponent::adoptLoopCandidate (int index)
                              "--bpm", juce::String (candidate.bpm),
                              "--key", ProjectKeys::cliText (loopKey),
                              "--out", rootsFile.getFullPathName() };
-    if (candidate.loopBars > 0) // index の尺推定
+    if (candidate.loopBars <= 0)
     {
-        argv.add ("--bars");
-        argv.add (juce::String (candidate.loopBars));
+        // 推定不明はそのまま採用不可（旧実装の「wav 実尺を無条件 floor」フォールバックは
+        // 最大ほぼ1小節の実音を切るため削除 — 30ms 規則の判定は index 側が唯一の実装者。
+        // docs/plans/2026-08-09-0024）
+        Log::info ("gacha.loop_adopt_blocked", "reason=no_loop_bars file=" + candidate.path);
+        showAlert (jp (u8"採用できません"),
+                   jp (u8"ループ長を判定できない素材です（実尺が整数小節に合いません）。"
+                       u8"ライブラリを再インデックスすると直ることがあります。"));
+        return;
     }
-    else
-    {
-        // 尺推定が立たなかった素材（余韻付き書き出し等）は wav の実尺から**切り下げ**で
-        // 小節数を決めて渡す — looproots は 8% 以内の丸めしか許さず、余韻付きはそこで
-        // 確定できない（実地で✓が行き止まりになった）。尻尾の余韻は進行検出のグリッド外に
-        // なるだけで害はない
-        juce::AudioFormatManager formatManager;
-        formatManager.registerBasicFormats();
-        if (auto reader = std::unique_ptr<juce::AudioFormatReader> (
-                formatManager.createReaderFor (wavFile));
-            reader != nullptr && reader->sampleRate > 0.0)
-        {
-            const double duration = (double) reader->lengthInSamples / reader->sampleRate;
-            const int flooredBars = (int) std::floor (duration * candidate.bpm / 240.0);
-            if (flooredBars >= 1)
-            {
-                argv.add ("--bars");
-                argv.add (juce::String (flooredBars));
-            }
-        }
-    }
+    argv.add ("--bars");
+    argv.add (juce::String (candidate.loopBars));
     // 検出はワーカーで並走させ、完了は callAsync でメッセージスレッドへ戻す。
     // 結果の consume（契約検証〜敷く）はダイアログ確定後の finishLoopAdoption
     auto detection = std::make_shared<LoopAdoptDetection>();
@@ -3907,6 +3894,20 @@ void MainComponent::placeLoopPreview (const LoopAnchor& anchor, const juce::File
     {
         rightPanel.gachaPanel().showStatus ({});
         showAlert (jp (u8"採用できません"), jp (u8"wav を読み込めませんでした: ") + wavFile.getFileName());
+        return;
+    }
+    // 刻みの**プリフライト** — この後の cancelGachaPreview より前に検証する。後段の
+    // previewLoopCandidate 内でも刻むが、そこで初めて失敗すると「採用は失敗したのに
+    // 既存のドラム・ベース仮配置だけ撤去済み」になる（レビュー指摘）。ここで刻んでおけば
+    // 内部の再刻みは「目標長と一致 → 無変更」で素通りするだけ
+    if (! GachaSession::trimLoopBufferToBars (*audio, targetRate, anchor.bpm, anchor.loopBars))
+    {
+        rightPanel.gachaPanel().showStatus ({});
+        Log::error ("gacha.loop_adopt_failed", "stage=trim file=" + anchor.libraryPath
+                                                   + " bars=" + juce::String (anchor.loopBars));
+        showAlert (jp (u8"採用できません"),
+                   jp (u8"ループの実尺が小節長と合いません（インデックスの推定と実ファイルの"
+                       u8"不一致。ライブラリの再インデックスで直ることがあります）。"));
         return;
     }
 

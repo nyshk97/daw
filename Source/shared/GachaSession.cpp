@@ -370,9 +370,60 @@ bool GachaSession::parseRecommendJson (const juce::String& json, LoopRecommendat
     return true;
 }
 
+bool GachaSession::trimLoopBufferToBars (juce::AudioBuffer<float>& buffer, double sampleRate,
+                                         double bpm, int loopBars)
+{
+    if (sampleRate <= 0.0 || bpm <= 0.0 || loopBars < 1 || buffer.getNumSamples() <= 0)
+        return false;
+    const auto target = (int) std::llround (loopBars * 240.0 / bpm * sampleRate);
+    const int n = buffer.getNumSamples();
+    if (n == target)
+        return true; // 正常素材はサンプル単位で無変更（ヘッダの宣言コメント参照）
+    const auto maxPad = (int) std::ceil (0.030 * sampleRate);
+    if (target - n > maxPad)
+        return false; // 30ms を超える不足 — 上流（index の丸め規則）の契約違反
+
+    const int audioEnd = std::min (n, target); // 原音の末尾（フェードアウトの終端）
+    const int fadeIn = std::min ((int) std::llround (0.003 * sampleRate), audioEnd / 2);
+    const int fadeOut = std::min ((int) std::llround (0.015 * sampleRate), audioEnd / 2);
+    juce::AudioBuffer<float> out (buffer.getNumChannels(), target);
+    out.clear();
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        out.copyFrom (ch, 0, buffer, ch, 0, audioEnd);
+    // フェードインは先頭 fadeIn-1 サンプルだけをランプする — applyGainRamp の endGain は
+    // 排他端の値（GOTCHAS 参照）なので、(0, fadeIn, 0→1) だと最終サンプルのゲインが
+    // 1 - 1/fadeIn になり、直後の未加工サンプルとの間に段差が残る（レビュー指摘）。
+    // 範囲を1サンプル短くすれば排他端の 1.0 が「未加工＝原音」へちょうど接続する
+    if (fadeIn > 1)
+        out.applyGainRamp (0, fadeIn - 1, 0.0f, 1.0f); // 先頭サンプルは startGain=0 が厳密に掛かる
+    else if (fadeIn == 1)
+        for (int ch = 0; ch < out.getNumChannels(); ++ch)
+            out.setSample (ch, 0, 0.0f);
+    if (fadeOut > 0)
+    {
+        // endGain は排他端の値（GOTCHAS「addFromWithRamp の endGain」参照）— 1→0 を渡すと
+        // 最終サンプルに 1/fadeOut が残る。閉区間で0に届く排他端値を渡した上で、逐次加算の
+        // 浮動小数残差も消すため最終サンプルを明示的に0にする（繋ぎ目を厳密に 0 → 0 にする）
+        out.applyGainRamp (audioEnd - fadeOut, fadeOut, 1.0f,
+                           fadeOut > 1 ? -1.0f / (float) (fadeOut - 1) : 0.0f);
+        for (int ch = 0; ch < out.getNumChannels(); ++ch)
+            out.setSample (ch, audioEnd - 1, 0.0f);
+    }
+    buffer = std::move (out);
+    return true;
+}
+
 bool GachaSession::previewLoopCandidate (Project& project, const LoopPreviewInput& input)
 {
     if (input.audio == nullptr || input.audio->getNumSamples() <= 0 || ! input.anchor.isValid())
+        return false;
+
+    // 小節グリッドへの刻みを**いかなる状態変更よりも前**に行う — 失敗時は Project も
+    // セッション（baseline・トラック・他パーツの仮配置）も完全に不変で false を返す。
+    // 入力バッファは呼び出し側と共有し得るのでコピーに対して刻む
+    auto trimmedAudio = std::make_shared<juce::AudioBuffer<float>> (*input.audio);
+    if (! trimLoopBufferToBars (*trimmedAudio, input.audioSampleRate,
+                                input.anchor.bpm, input.anchor.loopBars))
         return false;
 
     auto& preview = previews[(size_t) Part::loops];
@@ -465,8 +516,8 @@ bool GachaSession::previewLoopCandidate (Project& project, const LoopPreviewInpu
     clip.name = input.displayName;
     clip.loopSource = input.anchor.libraryPath;
     clip.startSample = preview.startSample;
-    clip.audio = input.audio;
-    clip.lengthSamples = input.audio->getNumSamples();
+    clip.audio = trimmedAudio; // 小節グリッドちょうどに刻み済み（反復間隔＝グリッド）
+    clip.lengthSamples = trimmedAudio->getNumSamples();
     clip.loopCount = juce::jlimit (0, maxLoopCount, input.loopCount);
     clip.buildPeakCache();
     clips.push_back (std::move (clip));

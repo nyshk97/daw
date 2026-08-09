@@ -64,11 +64,38 @@ def test_parse_filename_meta() -> None:
 
 
 def test_estimate_bars() -> None:
-    assert estimate_bars(6.0, 80) == 2       # ちょうど2小節
-    assert estimate_bars(6.2, 80) == 2       # 8%以内の誤差は丸める
-    assert estimate_bars(7.0, 80) is None    # 2.33小節 — 余韻付き書き出し等は信用しない
-    assert estimate_bars(12.0, 80) == 4
-    assert estimate_bars(1.0, 80) is None    # 0.33小節
+    bpm = 120.0
+    bar = int(240.0 / bpm * SR)  # 2.0s
+
+    def sine(n, amp=1.0, freq=220.0):
+        t = np.arange(n) / SR
+        return amp * np.sin(2 * np.pi * freq * t)
+
+    # ① 4小節音楽＋2小節テール（余韻→無音） → 4
+    tail = np.concatenate([sine(bar, 0.01), np.zeros(bar)])  # 余韻(-40dB) + 完全無音
+    assert estimate_bars(np.concatenate([sine(4 * bar), tail]), SR, bpm) == 4
+    # ② 全小節に音がある6小節 → 6（ちょうどの尺は従来どおり）
+    assert estimate_bars(sine(6 * bar), SR, bpm) == 6
+    # ③ 最終小節がフェードアウト（ピーク -20dB より上） → 落とさない
+    fade = sine(bar) * np.linspace(0.3, 0.0, bar)
+    assert estimate_bars(np.concatenate([sine(5 * bar), fade]), SR, bpm) == 6
+    # ④ 全体が静かな素材（一様に小さい / 完全無音） → 1小節未満にしない
+    assert estimate_bars(sine(4 * bar, amp=0.001), SR, bpm) == 4
+    assert estimate_bars(np.zeros(4 * bar), SR, bpm) == 4
+    # ⑤ 最終小節が短い単発音1つ（高ピーク・低RMS） → 落とさない
+    blip_bar = np.zeros(bar)
+    blip_bar[: SR // 20] = sine(SR // 20, 0.8)  # 50msの単発音（小節RMSは低い）
+    assert estimate_bars(np.concatenate([sine(3 * bar), blip_bar]), SR, bpm) == 4
+    # ⑥ 30ms 境界: 29ms 不足 → 推定小節数 / 31ms 不足 → 不明
+    assert estimate_bars(sine(4 * bar - int(0.029 * SR)), SR, bpm) == 4
+    assert estimate_bars(sine(4 * bar - int(0.031 * SR)), SR, bpm) is None
+    # 30ms 以内の**はみ出し**も端数に数えない（リサンプル丸めで数サンプル超過した実例 —
+    # 1サンプルの「部分小節」が判定を壊して None になっていた）
+    assert estimate_bars(sine(4 * bar + 10), SR, bpm) == 4
+    # 従来ケース: 音の詰まった 2.33小節（テールとして説明できない） → 不明
+    assert estimate_bars(sine(int(2.33 * bar)), SR, bpm) is None
+    # 1小節に満たない素材 → 不明
+    assert estimate_bars(sine(bar // 3), SR, bpm) is None
     print("OK estimate_bars")
 
 
@@ -135,6 +162,14 @@ def test_build_index() -> None:
         # --- 2回目: 全件再利用（再分析しない） ---
         index2, summary2 = build_index(tmp)
         assert summary2 == {"new": 0, "reused": 3, "skipped": 1, "removed": 0}, summary2
+
+        # --- 旧スキーマの index は size+mtime が同じでも全再分析（推定ロジック変更を効かせる） ---
+        old = json.loads((tmp / "index.json").read_text())
+        old["schema_version"] = SCHEMA_VERSION - 1
+        write_atomic(tmp / "index.json", old)
+        _, summary_old = build_index(tmp)
+        assert summary_old == {"new": 3, "reused": 0, "skipped": 1, "removed": 0}, summary_old
+        write_atomic(tmp / "index.json", index)  # 後続の検査のため現行版へ戻す
 
         # --- 変更されたファイルだけ再分析 ---
         tonal_loop(tmp / "loops/PackA/lofi_Am_80bpm.wav", bpm=80, bars=4)  # 尺が変わる=サイズ変化

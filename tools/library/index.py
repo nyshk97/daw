@@ -33,7 +33,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "reference"))
 from basics import PITCHES, estimate_key  # noqa: E402
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2: loop_bars_estimate がテール検知＋30ms丸めに（旧版エントリは全再分析）
 SR = 22050
 AUDIO_EXTS = {".wav", ".aif", ".aiff", ".flac", ".mp3"}
 BPM_MIN, BPM_MAX = 40, 220
@@ -78,13 +78,54 @@ def parse_filename_meta(stem: str) -> dict:
     return out
 
 
-def estimate_bars(duration_s: float, bpm: float) -> int | None:
-    """尺と BPM からループ小節数（4/4）を推定する。割り切れないもの（尻尾に余韻がある
-    書き出し等）は無理に丸めず None — 後段（looproots）がグリッドを信用できなくなるため。"""
-    raw = duration_s * bpm / 240.0  # 240 = 60秒 × 4拍
-    nearest = round(raw)
-    if nearest >= 1 and abs(raw - nearest) <= 0.08 * nearest:
-        return int(nearest)
+# テール検知の閾値（いずれもファイル全体ピーク比dB）。実測の根拠: Cymatics Piano Wet 6 で
+# 実音小節 -10〜-14dB / 余韻小節 -36dB / 無音小節 -91dB（docs/plans/2026-08-09-0024）。
+# RMS 単独だと「最後に短い音が1つだけの疎な小節」（無音時間が平均を下げる）をテール扱いする
+# ので、ピーク条件が「意図した音が1つでもあるか」を守る — 両方満たすときだけ切る
+BAR_TAIL_RMS_DB = -30.0
+BAR_TAIL_PEAK_DB = -12.0  # 余韻小節の頭は減衰の始まりでピーク -15dB 前後になる（実測）。
+                          # 意図した音（鳴らすために置かれた音）はほぼ確実にこれより大きい
+# 切り上げ丸めの絶対上限。±8%は比率だと 40bpm・4小節で約1.9秒にもなり、採用時の無音埋めで
+# 毎周その長さの穴が開く。30ms は Phase 2（クリップ刻み）の無音埋め上限と同値
+ROUND_UP_MAX_SHORTFALL_S = 0.030
+
+
+def estimate_bars(y: np.ndarray, sr: int, bpm: float) -> int | None:
+    """ループ小節数（4/4）の推定。末尾の「テール（余韻・無音）として説明できる小節」を
+    落としてから整数化する。整数化に使ってよい不足はテールと 30ms 以内の書き出し誤差だけで、
+    それ以外は None — 曖昧なら切らない（間違った小節グリッドでアンカーにする方が、進行検出・
+    ベース追従・クリップ刻みの全部に効いて害が大きい）。"""
+    if bpm <= 0 or sr <= 0 or len(y) == 0:
+        return None
+    bar_s = 240.0 / bpm  # 240 = 60秒 × 4拍
+    duration = len(y) / sr
+    # 30ms 以内のはみ出しは端数に数えない（切り上げ許容と対称）。リサンプルの丸めで
+    # 「1サンプルだけの部分小節」ができ、無意味な小節メトリクスで判定が壊れる実例があった
+    slop = ROUND_UP_MAX_SHORTFALL_S
+    total = int(np.ceil((duration - slop) / bar_s))
+    if total < 1:
+        return None
+    keep = total
+    peak = float(np.abs(y).max())
+    if peak > 0.0:
+        for b in range(total - 1, 0, -1):  # 先頭小節は必ず残す（1小節未満にしない）
+            seg = y[int(b * bar_s * sr): int((b + 1) * bar_s * sr)]
+            if len(seg) == 0:
+                keep = b
+                continue
+            rms_db = 20 * np.log10(max(float(np.sqrt((seg ** 2).mean())), 1e-12) / peak)
+            peak_db = 20 * np.log10(max(float(np.abs(seg).max()), 1e-12) / peak)
+            if rms_db <= BAR_TAIL_RMS_DB and peak_db <= BAR_TAIL_PEAK_DB:
+                keep = b
+            else:
+                break
+    if keep < total:
+        return keep  # テールを落とした残りはグリッドの整数小節（説明できる不足だけで整数化できた）
+    # テール無し: 最終小節が部分小節なら切り上げになる。許すのは不足が 30ms 以内
+    # （かつ従来の±8%比率）のときだけ — それ以外は「説明できない不足」なので不明
+    shortfall = keep * bar_s - duration
+    if shortfall <= min(ROUND_UP_MAX_SHORTFALL_S, 0.08 * keep * bar_s) + 1e-9:
+        return keep
     return None
 
 
@@ -121,7 +162,7 @@ def compute_features(y: np.ndarray, sr: int) -> dict:
         "harmonic_percussive_ratio": round(hp, 2),
         "onset_rate_per_s": round(onset_rate, 3),
     }
-    return {"features": features, "_y_harm": y_harm, "_onset_env": onset_env, "_sr": sr}
+    return {"features": features, "_y": y, "_y_harm": y_harm, "_onset_env": onset_env, "_sr": sr}
 
 
 def analyze_audio(path: Path) -> dict:
@@ -184,7 +225,7 @@ def build_entry(library: Path, rel: Path, force_meta: dict | None = None) -> dic
         "key_mode": key_mode,
         "key_source": key_source,
         "key_confidence": key_conf,
-        "loop_bars_estimate": estimate_bars(features["duration_s"], bpm) if bpm else None,
+        "loop_bars_estimate": estimate_bars(analyzed["_y"], analyzed["_sr"], bpm) if bpm else None,
         "features": features,
     }
 
