@@ -48,8 +48,14 @@ if [ -f "$REF/source.wav" ]; then
   echo "==> source.wav は取得済み。ダウンロードを飛ばす"
 else
   echo "==> 音源を取得"
-  yt-dlp -f bestaudio --extract-audio --audio-format wav --audio-quality 0 --no-playlist \
-         -o "$REF/source.%(ext)s" --write-info-json "$URL"
+  # 一部のYouTube動画はbestaudioが選ぶWebM/251だけCDNで403になる一方、AAC/140は
+  # 同じ動画から正常取得できる。動画削除と誤認せず、1回だけformatを限定してfallbackする。
+  if ! yt-dlp -f bestaudio --extract-audio --audio-format wav --audio-quality 0 --no-playlist \
+              -o "$REF/source.%(ext)s" --write-info-json "$URL"; then
+    echo "==> bestaudio取得失敗。AAC format 140で1回だけ再試行" >&2
+    yt-dlp -f 140 --extract-audio --audio-format wav --audio-quality 0 --no-playlist \
+           -o "$REF/source.%(ext)s" --write-info-json "$URL"
+  fi
 fi
 
 # --- 全体像（無音区間の検出も兼ねる） ---
