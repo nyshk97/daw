@@ -327,3 +327,28 @@ design/ には「決めたこと」だけを置き、ここには「試したこ
   `std<2.0` ガード（README の「std が大きい」というサインを根拠にした保険）は、初の実戦で
   健全な曲を落としたので撤去。**グリッド妥当性の直接証拠は採用グリッド上で測った
   grid_contrast だけ**（トラッカーは別の推定器で、オクターブ/拍節の解釈から食い違える）
+
+---
+
+## 2026-08-10 好きな23曲の耳確認 — bassだけに不足軸を追加
+
+- **耳で再現した型**: シグナル／Hugは「動く支え」、LOVE／夏の魔法'18／ゆれる／salt water taffy／
+  Summer Situationは「反復する土台」。初回3曲だけでなく追加4曲でも同じ判断になった
+- **ズレの切り分け**: bassには低音のpitch motion／repetitionという測っていない独立軸があった。
+  上モノ・ドラム配置・overallは離散群より連続体、構成は複数軸、drum audioは現行の帯域proxyから
+  耳のMade型を安定再現できず、これらは閾値を耳ラベルへ合わせなかった
+- **変更**: bass schema v2へmotion群（pitch motion／repetition）を追加。既存の代表区間は選び直さず、
+  22曲66区間だけ差分計算した。weightはplacement 0.25、pitch relation 0.30、density 0.15、motion 0.30
+- **結果**: 人間確認7曲の最近傍同型率は6/7→7/7。ただし全組平均距離は同型0.164738、異型0.147801で
+  まだ逆転している。低音の動きは拾えるようになったが、bass view全体には音域・コード相対・密度も含まれる。
+  したがって7曲のラベルを正解として強制クラスタ化せず、20対2・stability不足のk=2案は棄却したままにした
+- **検証**: schema v2のmotion 66/66区間がfinite、全5距離表がfinite・対称・対角0、テスト22件pass。
+  人間回答は再生成対象外の`review/phase5-human-review.md`に保持した
+
+### 追記（2026-08-10）: 横断分析の確定
+
+- 最終レポート: [reference-beat-taste-analysis.md](reference-beat-taste-analysis.md)
+- 23曲すべての音楽的共通核は無し。総合22曲は群を切らず、メロディアスなchill hiphop周辺の連続体とした
+- 上モノloop方針は維持。現行8 loopsはcorpus 22曲より反復が強いので、素材の音色を捨てず、切替・休符・
+  短い追加要素で曲内変化を作る
+- 実装候補はbassのpitch motion／repetition制約だけ。ドラム音響の再分析や他viewのタイプUIは必要になるまで保留
