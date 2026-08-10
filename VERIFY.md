@@ -580,6 +580,25 @@ mise run gacha:test   # tools/gacha/ の drums.py
 - 分析パイプラインの通し確認（進捗行の実出力を見たいとき）: 既存リファレンスの `track.wav` と `stems/` だけを scratchpad の新フォルダにコピーして `tools/reference/.venv/bin/python tools/reference/analyze.py <コピー先>` を実行（demucs はキャッシュ skip され1周 約1.5分・元データ無変更）。判定: exit 0・stdout の `==> P% | N/M 完了 ／ 実行中: …` 行の P が単調非減少で 99 以下（書式は shared/AnalyzeProgress.h の parse と対）
 - 実カードでの通し確認: `mise run gacha:drums <リファレンスフォルダ> -- --seed <固定値>` → 3ファイル×候補数が `gacha/` にでき、stdout の密度・swing がカードの性格と大きく乖離しないこと（少サンプルの密度は二項ノイズで ±1発/小節 程度ぶれる。乖離を疑うときは 1000 seed のシミュレーションで発火率 vs profile を見る — plan 2026-08-04 のログ参照）
 
+### 好きなビートcorpus（taste）
+
+```sh
+mise run taste:test
+mise run taste:sync --dry-run
+mise run taste:analyze --dry-run
+mise run taste:grid-followup
+mise run taste:review-followup
+```
+
+- 判定: `taste:test` がexit 0、syncが`analyzed=23 failed=0`、analyzeが全23曲`unchanged`。cleanup済み曲でdownloadが再発したらmaterialization/provenanceの回帰
+- 横断成果物: `docs/labs/reference-beat-taste-data.json` に絶対path/NaNが無く、`~/Music/daw/reference-beat-corpus/analysis/machine-draft.json` の各viewで距離表が参加曲数の正方行列・対称・対角0・finite
+- grid契約: manifestの`auto_verified_4_4`曲は`source.wav`不在＋`disposed_after_verified`、`needs_review`曲はsource保持。後者だけ`review/grid/<video-id>/`に先頭／中盤／終盤の3 WAVがある
+- grid再確認: 記入済み`review/grid/README.md`の`NG`にはA〜D各3本、`?`にはlouder 3本が`review/grid-followup/`へ生成される。全WAVが2秒以上・RMS非無音・peak 0dBFS以下で、NGのA〜Dが同一波形でないこと
+- Phase 5素材: `review/phase5/manifest.json` の全WAVが1秒以上・RMS非無音・peak 0dBFS以下。群なしviewも距離地図の中心／両端素材がある
+- Phase 5追加素材: 初回耳確認後だけ`taste:review-followup`を実行し、`review/phase5-followup/`に14 WAV
+  （FALL IN LOVE固定timeline 1、上モノ1、drum audio 4、bass/top-bass 8）が生成される。全件1秒以上・
+  RMS非無音・peak 0dBFS以下で、元の`review_materials` provenance hashが不変
+
 ### ベースガチャ（CLI）
 
 ```sh

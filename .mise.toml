@@ -40,6 +40,102 @@ run = 'cd tools/reference && .venv/bin/python tests/test_gates.py && .venv/bin/p
 description = '分析パイプラインの venv を作り直す（初回・依存を変えたとき）'
 run = 'tools/reference/setup.sh'
 
+# --- 好きなビート23曲の横断分析（tools/taste/README.md） ---
+
+[tasks."taste:sync"]
+description = '好きなビート一覧をローカルcorpus manifestへ差分同期する（削除は孤児申告のみ）'
+usage = 'arg "<args>" var=#true default="" help="[--dry-run] [--corpus DIR] [--picks FILE]"'
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+args=(); for a in "$@"; do [ -n "$a" ] && args+=("$a"); done
+exec tools/reference/.venv/bin/python tools/taste/corpus.py sync "${args[@]}"
+'''
+
+[tasks."taste:analyze"]
+description = 'corpusを曲単位で差分取得・分析する（失敗継続・中断再開可）'
+usage = 'arg "<args>" var=#true default="" help="[--only VIDEO_ID] [--retry-failed] [--dry-run] [--corpus DIR]"'
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+args=(); for a in "$@"; do [ -n "$a" ] && args+=("$a"); done
+exec tools/reference/.venv/bin/python tools/taste/corpus.py analyze "${args[@]}"
+'''
+
+[tasks."taste:grid"]
+description = '全曲のtrim・拍子・小節gridを監査し、曖昧曲のclick素材を作る'
+usage = 'arg "<args>" var=#true default="" help="[--only VIDEO_ID] [--apply-answers FILE] [--no-cleanup]"'
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+args=(); for a in "$@"; do [ -n "$a" ] && args+=("$a"); done
+exec tools/reference/.venv/bin/python tools/taste/grid-audit.py "${args[@]}"
+'''
+
+[tasks."taste:grid-followup"]
+description = 'Grid監査のNG・不明曲に聞きやすい再確認素材を作る'
+usage = 'arg "<args>" var=#true default="" help="[--corpus DIR] [--annotations FILE] [--output DIR]"'
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+args=(); for a in "$@"; do [ -n "$a" ] && args+=("$a"); done
+exec tools/reference/.venv/bin/python tools/taste/grid-followup.py "${args[@]}"
+'''
+
+[tasks."taste:features"]
+description = 'view別の代表区間を選び横断用の正規化前featureを生成する'
+usage = 'arg "<args>" var=#true default="" help="[--only VIDEO_ID] [--upgrade-bass-motion] [--corpus DIR] [--out FILE]"'
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+args=(); for a in "$@"; do [ -n "$a" ] && args+=("$a"); done
+exec tools/reference/.venv/bin/python tools/taste/features.py "${args[@]}"
+'''
+
+[tasks."taste:cluster"]
+description = '5 base viewと総合viewの完全距離表・機械グループ案を生成する'
+usage = 'arg "<args>" var=#true default="" help="[--corpus DIR] [--data FILE] [--markdown FILE]"'
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+args=(); for a in "$@"; do [ -n "$a" ] && args+=("$a"); done
+exec tools/reference/.venv/bin/python tools/taste/cluster.py "${args[@]}"
+'''
+
+[tasks."taste:sensitivity"]
+description = 'Cymatics系loopのDemucs混入感度を測り比較可能な上モノfeatureを固定する'
+usage = 'arg "<args>" var=#true default="" help="[--corpus DIR] [--library DIR] [--reuse]"'
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+args=(); for a in "$@"; do [ -n "$a" ] && args+=("$a"); done
+exec tools/reference/.venv/bin/python tools/taste/comparison-sensitivity.py "${args[@]}"
+'''
+
+[tasks."taste:review"]
+description = 'Phase 5用のview別代表・境界WAVとチェックシートを生成する'
+usage = 'arg "<args>" var=#true default="" help="[--corpus DIR] [--data FILE] [--view VIEW]"'
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+args=(); for a in "$@"; do [ -n "$a" ] && args+=("$a"); done
+exec tools/reference/.venv/bin/python tools/taste/review.py "${args[@]}"
+'''
+
+[tasks."taste:review-followup"]
+description = 'Phase 5の耳確認で残った不明点だけ追加素材を生成する'
+usage = 'arg "<args>" var=#true default="" help="[--corpus DIR] [--data FILE]"'
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+args=(); for a in "$@"; do [ -n "$a" ] && args+=("$a"); done
+exec tools/reference/.venv/bin/python tools/taste/review-followup.py "${args[@]}"
+'''
+
+[tasks."taste:test"]
+description = 'taste corpusの入力・provenance・grid・距離・cluster・review契約をfixtureで回帰確認する'
+run = 'cd tools/taste && ../reference/.venv/bin/python -m unittest discover -s tests -p "test_*.py"'
+
 # --- MIDI生成ガチャ（tools/gacha/README.md） ---
 
 [tasks."gacha:drums"]
