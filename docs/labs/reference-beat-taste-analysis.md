@@ -194,3 +194,8 @@ Hug=RhymeTube、LOVE=jjj、Summer Situation=STUTSの制作。bass音源が自演
 
 機械ドラフトは[こちら](reference-beat-taste-machine-draft.md)、共有feature比較の生ドラフトは
 [こちら](reference-beat-taste-comparison-draft.md)。
+
+> 注記（2026-08-11）: 機械ドラフトは[対照分析](reference-beat-contrast-analysis.md)で否定例10曲を
+> 追加した際に再生成され、現在は33曲版になっている。このレポートが根拠にしている23曲版は
+> git履歴（`git show <このレポートを確定したcommit>:docs/labs/reference-beat-taste-machine-draft.md`）
+> にある。本文の数値は23曲版のもので、書き換えていない。

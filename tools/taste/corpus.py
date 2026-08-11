@@ -24,14 +24,23 @@ from common import (
     video_id_from_url,
     write_json_atomic,
 )
+from inputs import CONTRAST_PICKS_PATH, ROLES
 from provenance import artifact_manifest, build_stage, load_song_provenance, save_song_provenance, stage_valid, validate_recorded_outputs
 from schemas import MATERIALIZATION_STATES, PER_SONG_STAGES
 
 REF_DIR = REPO_ROOT / "tools/reference"
-MANIFEST_REVISION = 1
+MANIFEST_REVISION = 2
 
 
-def parse_picks(path: Path) -> tuple[list[dict[str, str]], list[str]]:
+def _picks_source(path: Path) -> str:
+    """repo内ならrepo相対、外ならabsolute。manifestのrepo相対性を壊さずfixtureも通す。"""
+    try:
+        return path.resolve().relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return str(path.resolve())
+
+
+def parse_picks(path: Path, role: str = "positive") -> tuple[list[dict[str, str]], list[str]]:
     entries, errors = [], []
     seen: dict[str, str] = {}
     for lineno, raw in enumerate(path.read_text().splitlines(), 1):
@@ -57,8 +66,39 @@ def parse_picks(path: Path) -> tuple[list[dict[str, str]], list[str]]:
             errors.append(f"line {lineno}: {kind}: {video_id} ({seen[video_id]} / {name})")
             continue
         seen[video_id] = name
-        entries.append({"video_id": video_id, "display_name": name, "url": canonical_youtube_url(video_id), "source_line": lineno})
+        entries.append({
+            "video_id": video_id,
+            "display_name": name,
+            "url": canonical_youtube_url(video_id),
+            "source_line": lineno,
+            "role": role,
+            "picks_source": _picks_source(path),
+        })
     return entries, errors
+
+
+def parse_all_picks(picks: Path, contrast_picks: Path | None) -> tuple[list[dict[str, str]], list[str], bool]:
+    """正例・否定例の2ファイルを読み、role衝突をblocking診断として返す。
+
+    roleは解釈にだけ使う分類なので、同じvideo IDが両方に現れたら黙って片方を採らない。
+    """
+    entries, diagnostics = parse_picks(picks, "positive")
+    blocking = False
+    if contrast_picks is not None and contrast_picks.is_file():
+        contrast, contrast_diag = parse_picks(contrast_picks, "contrast")
+        diagnostics += contrast_diag
+        positive_ids = {e["video_id"]: e for e in entries}
+        for item in contrast:
+            other = positive_ids.get(item["video_id"])
+            if other:
+                blocking = True
+                diagnostics.append(
+                    f"role_conflict: {item['video_id']} が両方のpicksにある "
+                    f"(positive: {other['display_name']} / contrast: {item['display_name']})"
+                )
+                continue
+            entries.append(item)
+    return entries, diagnostics, blocking
 
 
 def discover_external(search_root: Path) -> dict[str, list[dict[str, Any]]]:
@@ -95,8 +135,14 @@ def _reuse_decision(candidates: list[dict[str, Any]]) -> tuple[str | None, str |
     return None, None
 
 
-def sync_manifest(picks: Path, corpus_root: Path, search_root: Path, dry_run: bool = False) -> tuple[dict[str, Any], list[str]]:
-    parsed, diagnostics = parse_picks(picks)
+def sync_manifest(
+    picks: Path,
+    corpus_root: Path,
+    search_root: Path,
+    dry_run: bool = False,
+    contrast_picks: Path | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    parsed, diagnostics, blocking = parse_all_picks(picks, contrast_picks)
     old = load_json(corpus_root / "manifest.json", {"songs": {}, "orphans": {}})
     external = discover_external(search_root)
     songs: dict[str, Any] = {}
@@ -130,13 +176,20 @@ def sync_manifest(picks: Path, corpus_root: Path, search_root: Path, dry_run: bo
         orphans.pop(vid, None)
     manifest = {
         "schema_revision": MANIFEST_REVISION,
-        "input": str(picks.resolve()),
+        "inputs": {
+            "positive": str(picks.resolve()),
+            "contrast": str(contrast_picks.resolve()) if contrast_picks is not None and contrast_picks.is_file() else None,
+        },
         "corpus_root": str(corpus_root.resolve()),
         "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "role_counts": {role: sum(e["role"] == role for e in songs.values()) for role in ROLES},
         "songs": songs,
         "orphans": orphans,
         "diagnostics": diagnostics,
     }
+    if blocking:
+        # role衝突はどちらのroleが正しいか機械が決められない。manifestを書かずに人へ返す。
+        return manifest, diagnostics
     if not dry_run:
         write_json_atomic(corpus_root / "manifest.json", manifest)
     return manifest, diagnostics
@@ -310,9 +363,10 @@ def command_validate(args: argparse.Namespace) -> int:
 
 
 def command_sync(args: argparse.Namespace) -> int:
-    manifest, diagnostics = sync_manifest(args.picks, args.corpus, args.search_root, args.dry_run)
+    manifest, diagnostics = sync_manifest(args.picks, args.corpus, args.search_root, args.dry_run, args.contrast_picks)
     for d in diagnostics:
         print(f"DIAG: {d}")
+    print("roles " + " ".join(f"{k}={v}" for k, v in manifest["role_counts"].items()))
     counts = {"pending": 0, "analyzed": 0, "failed": 0, "external": 0, "conflict": 0}
     for e in manifest["songs"].values():
         counts[e.get("status", "pending")] = counts.get(e.get("status", "pending"), 0) + 1
@@ -323,7 +377,7 @@ def command_sync(args: argparse.Namespace) -> int:
 
 
 def command_analyze(args: argparse.Namespace) -> int:
-    manifest, diagnostics = sync_manifest(args.picks, args.corpus, args.search_root, False)
+    manifest, diagnostics = sync_manifest(args.picks, args.corpus, args.search_root, False, args.contrast_picks)
     if diagnostics:
         for d in diagnostics:
             print(f"DIAG: {d}", file=sys.stderr)
@@ -353,11 +407,12 @@ def command_analyze(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="23曲taste corpusの差分同期・分析")
+    ap = argparse.ArgumentParser(description="taste corpus（正例＋近接した否定例）の差分同期・分析")
     sub = ap.add_subparsers(dest="command", required=True)
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS_ROOT)
     common.add_argument("--picks", type=Path, default=PICKS_PATH)
+    common.add_argument("--contrast-picks", type=Path, default=CONTRAST_PICKS_PATH)
     common.add_argument("--search-root", type=Path, default=Path.home() / "Music/daw")
     p = sub.add_parser("sync", parents=[common])
     p.add_argument("--dry-run", action="store_true")

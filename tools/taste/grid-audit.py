@@ -152,6 +152,14 @@ def make_review_clips(entry: dict, ref: Path, corpus_root: Path, grid: dict) -> 
     return written
 
 
+HUMAN_DECIDED_STATUSES = {"human_verified_4_4", "human_verified_non_4_4"}
+
+
+def human_decided(grid: dict) -> bool:
+    """この曲のgridを人が判断済みか。再監査で消してはいけない印。"""
+    return bool(grid.get("human_review")) or grid.get("grid_status") in HUMAN_DECIDED_STATUSES
+
+
 def _apply_answers(manifest: dict, answers_path: Path) -> None:
     answers = load_json(answers_path, {})
     for vid, answer in answers.items():
@@ -223,6 +231,7 @@ def main() -> int:
     ap.add_argument("--only")
     ap.add_argument("--apply-answers", type=Path)
     ap.add_argument("--no-cleanup", action="store_true")
+    ap.add_argument("--force-reaudit", action="store_true", help="人間確認済みの曲も機械判定でやり直す（回答を捨てる）")
     args = ap.parse_args()
     root = args.corpus.expanduser().resolve()
     manifest_path = root / "manifest.json"
@@ -232,6 +241,7 @@ def main() -> int:
         return 2
     if args.apply_answers:
         _apply_answers(manifest, args.apply_answers)
+    answered = set(load_json(args.apply_answers, {})) if args.apply_answers else set()
     failures = 0
     for vid, entry in manifest["songs"].items():
         if args.only and vid != args.only:
@@ -241,7 +251,14 @@ def main() -> int:
             continue
         ref = Path(entry["active_artifact_path"])
         try:
-            if not (args.apply_answers and vid in load_json(args.apply_answers, {})):
+            # 曲を足して再監査したときに、前回の人間回答を機械判定で上書きしない。
+            protected = human_decided(entry.get("grid", {})) and not args.force_reaudit
+            note = ""
+            if vid in answered:
+                note = " (回答適用)"
+            elif protected:
+                note = " (人間確認済みのため再監査しない)"
+            else:
                 grid = audit_audio(ref / "track.wav", ref / "stems/htdemucs/track/drums.wav", load_json(ref / "analysis/basics.json"), load_json(ref / "analysis/gates.json"))
                 song_prov = load_song_provenance(ref)
                 trim_config = song_prov.get("stages", {}).get("trim", {}).get("config", {})
@@ -252,7 +269,7 @@ def main() -> int:
                 entry["grid"] = grid
             if not args.no_cleanup:
                 cleanup_verified_source(entry, ref)
-            print(f"{vid}: {entry['grid']['grid_status']} ({entry['grid'].get('evidence', {}).get('best_hypothesis')})")
+            print(f"{vid}: {entry['grid']['grid_status']} ({entry['grid'].get('evidence', {}).get('best_hypothesis')}){note}")
         except Exception as e:
             failures += 1
             entry["grid"] = {"grid_status": "unknown", "error": str(e), "schema_revision": 1}

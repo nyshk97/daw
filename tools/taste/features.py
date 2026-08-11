@@ -24,7 +24,18 @@ SR = 22050
 HOP = 512
 WINDOW_BARS = 8
 MIN_ACTIVE_RMS_DB = -48.0
-FEATURE_SCHEMA_REVISION = 2
+FEATURE_SCHEMA_REVISION = 4
+
+# ラップが載る帯域。男声の基音下端からおおむね第2フォルマントの上端までを覆う。
+VOCAL_BAND_HZ = (200.0, 4000.0)
+# 帯域内エネルギーが中央値からこれだけ落ちたフレームを「空き」とみなす。
+# 6dB＝振幅が半分で、声の居場所として体感できる落ち込みの目安。
+GAP_DROP_DB = 6.0
+
+# 低音の在否をmix側で見るときの帯域上端と、必要なエネルギー比。
+# ベースとキックの基音がここに収まる。上モノだけの窓は10%に届かない。
+LOW_BAND_HZ = 250.0
+MIN_LOW_BAND_SHARE = 0.10
 
 
 def _slice(path: Path, start: float, end: float, sr: int = SR) -> np.ndarray:
@@ -165,6 +176,108 @@ def hit_character(y: np.ndarray) -> dict[str, Any] | None:
     return result
 
 
+def _band_power(y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """ボーカル帯域のフレーム別パワーと、帯域内の平均スペクトルを返す。"""
+    S = np.abs(librosa.stft(y, n_fft=2048, hop_length=HOP)) ** 2
+    freqs = librosa.fft_frequencies(sr=SR, n_fft=2048)
+    band = (freqs >= VOCAL_BAND_HZ[0]) & (freqs < VOCAL_BAND_HZ[1])
+    return S[band].sum(axis=0), S
+
+
+def _longest_run(mask: np.ndarray) -> int:
+    best = run = 0
+    for v in mask:
+        run = run + 1 if v else 0
+        best = max(best, run)
+    return best
+
+
+def vocal_space_group(mix: np.ndarray, drums: np.ndarray, bass: np.ndarray, top: np.ndarray) -> dict[str, Any] | None:
+    """ラップが載る場所（帯域と時間）がどれだけ空いているかを測る。
+
+    ボーカル抜きのbeat mixだけを見るので、正例（ボーカル入り完成曲のstem和）と
+    否定例（元からインスト）を同じ条件で比較できる。
+    """
+    frames, spec = _band_power(mix)
+    total = float(spec.sum())
+    if total <= 0 or len(frames) < 8 or float(frames.sum()) <= 0:
+        return None
+    freqs = librosa.fft_frequencies(sr=SR, n_fft=2048)
+    band = (freqs >= VOCAL_BAND_HZ[0]) & (freqs < VOCAL_BAND_HZ[1])
+    mean_spec = spec[band].mean(axis=1)
+    # flatnessが低い＝帯域内が特定の音に偏り、声の入る隙間が残る。高い＝帯域全面が埋まる。
+    flatness = float(np.exp(np.mean(np.log(mean_spec + 1e-12))) / max(float(np.mean(mean_spec)), 1e-12))
+
+    db = 10 * np.log10(frames + 1e-12)
+    quiet = db < float(np.median(db)) - GAP_DROP_DB
+    seconds_per_frame = HOP / SR
+    duration = max(len(frames) * seconds_per_frame, 1e-9)
+
+    parts = {}
+    for label, y in (("drums", drums), ("bass", bass), ("top", top)):
+        f, _ = _band_power(y)
+        parts[label] = float(f.sum())
+    shares = _distribution(np.array([parts["drums"], parts["bass"], parts["top"]]))
+
+    return {
+        "band_occupancy": {
+            "vocal_band_ratio": round(float(frames.sum()) / total, 6),
+            "band_flatness": round(flatness, 6),
+        },
+        "time_space": {
+            "gap_ratio": round(float(quiet.mean()), 6),
+            "max_fill_ratio": round(_longest_run(~quiet) * seconds_per_frame / duration, 6),
+        },
+        "masking_source": {"masking_shares": shares},
+    }
+
+
+def drum_shape(profiles: dict[str, list[float]], bar_duration_s: float | None = None) -> dict[str, float]:
+    """16分profileから、刻みの細かさと規則性を解釈できる形へ落とす。
+
+    profileはlow=キック/808、mid=スネア/クラップ、high=ハットの16分位置分布。
+    JS距離で分布同士を比べるだけでは「ハットが細かい」「キックが規則的」を取り出せないので、
+    位置の意味に沿った要約値を作る。
+
+    - on_quarter: 4分の位置（0,4,8,12）に乗る割合。規則的でゆったりしているほど高い
+    - backbeat: 2拍4拍（位置4,12）に乗る割合。スネアの定型
+    - sixteenth: 8分から外れた奇数16分に乗る割合。刻みが細かいほど高い
+    - spread: 位置の散らばり（perplexity/16）。少ない場所に集中するほど小さい
+    """
+    def stats(profile: list[float]) -> dict[str, float]:
+        v = np.asarray(profile, dtype=float)
+        total = float(v.sum())
+        if total <= 0:
+            return {"on_quarter": 0.0, "backbeat": 0.0, "sixteenth": 0.0, "spread": 0.0}
+        p = v / total
+        eighth = float(p[::2].sum())
+        nonzero = p[p > 0]
+        perplexity = float(np.exp(-np.sum(nonzero * np.log(nonzero))))
+        return {
+            "on_quarter": round(float(p[[0, 4, 8, 12]].sum()), 6),
+            "backbeat": round(float(p[[4, 12]].sum()), 6),
+            "sixteenth": round(1.0 - eighth, 6),
+            "spread": round(perplexity / len(p), 6),
+        }
+
+    low, mid, high = stats(profiles["low"]), stats(profiles["mid"]), stats(profiles["high"])
+    result = {
+        "kick_on_quarter": low["on_quarter"],
+        "kick_spread": low["spread"],
+        "snare_backbeat": mid["backbeat"],
+        "snare_spread": mid["spread"],
+        "hat_sixteenth": high["sixteenth"],
+        "hat_spread": high["spread"],
+    }
+    if bar_duration_s and bar_duration_s > 0:
+        # ここまでは全部「小節の中のどこか」＝相対時間の量で、テンポを割り算で消している。
+        # 「細かく刻まれすぎ」「ゆったり出てくる」は実時間の速さの話なので、
+        # 実効的な打点数（perplexity）を小節長で割って毎秒の打点数にする。
+        for name, band in (("kick", low), ("snare", mid), ("hat", high)):
+            result[f"{name}_per_second"] = round(band["spread"] * 16.0 / bar_duration_s, 6)
+    return result
+
+
 def bass_motion_group(y: np.ndarray, bpm: float) -> dict[str, float]:
     """ベースが反復する土台か、音高を動かす支えかを表す。"""
     from shared_features import extract_shared
@@ -184,8 +297,36 @@ def _candidate_audio_descriptors(paths: list[Path], candidates: list[Candidate])
     return scores, descriptors
 
 
-def _segments_for_view(view: str, paths: list[Path], candidates: list[Candidate], topline: dict | None = None) -> list[dict[str, Any]]:
+def _low_band_share(y: np.ndarray) -> float:
+    """mix中の低域（〜250Hz）のエネルギー比。どのstemに入ったかに依存しない低音の在否。"""
+    S = np.abs(librosa.stft(y, n_fft=2048)) ** 2
+    freqs = librosa.fft_frequencies(sr=SR, n_fft=2048)
+    total = float(S.sum())
+    return float(S[freqs < LOW_BAND_HZ].sum() / total) if total > 0 else 0.0
+
+
+def _segments_for_view(
+    view: str,
+    paths: list[Path],
+    candidates: list[Candidate],
+    topline: dict | None = None,
+    require_active: list[list[Path]] | None = None,
+    require_low_band: bool = False,
+) -> list[dict[str, Any]]:
     scores, desc = _candidate_audio_descriptors(paths, candidates)
+    if require_active:
+        # 全パートが鳴っている窓だけを候補にする。1パートしか鳴らないイントロを
+        # 「ビートの余白」として測らないため。harmony欠損と同じ落とし方に揃える。
+        for i, c in enumerate(candidates):
+            if any(_rms_db(_sum_slices(group, c.start_s, c.end_s)) < MIN_ACTIVE_RMS_DB for group in require_active):
+                scores[i] = -120
+    if require_low_band:
+        # 低音の在否はbass stemのRMSでは判定できない。Demucsが低域をdrums/otherへ
+        # 振り分けると、実際は低音がある曲でもbass stemが無音になる（実例あり）。
+        # mix側の低域エネルギー比で見れば、分離の当たり外れに依存しない。
+        for i, c in enumerate(candidates):
+            if scores[i] > -120 and _low_band_share(_sum_slices(paths, c.start_s, c.end_s)) < MIN_LOW_BAND_SHARE:
+                scores[i] = -120
     if view in {"topline_harmony", "bass_harmony"} and topline:
         for i, c in enumerate(candidates):
             h = harmony_group(topline, c.start_s, c.end_s)
@@ -221,7 +362,12 @@ def _extract_song(entry: dict[str, Any]) -> dict[str, Any]:
         "top": [ref / f"stems/htdemucs_6s/track/{x}.wav" for x in ("piano", "guitar", "other")],
         "drums": [ref / "stems/htdemucs/track/drums.wav"],
         "bass": [ref / "stems/htdemucs/track/bass.wav"],
+        # vocal_space用のbeat mix。6分割からvocalsだけ落として和を取り、
+        # 正例（ボーカル入り）と否定例（インスト）を同じ条件に揃える。
+        "drums6s": [ref / "stems/htdemucs_6s/track/drums.wav"],
+        "bass6s": [ref / "stems/htdemucs_6s/track/bass.wav"],
     }
+    paths["beat"] = paths["drums6s"] + paths["bass6s"] + paths["top"]
     top_line = _best_topline(ref / "analysis")
     duration = float(basics["duration_sec"])
     meter_ok = status in METER_DEPENDENT_ELIGIBLE
@@ -236,6 +382,11 @@ def _extract_song(entry: dict[str, Any]) -> dict[str, Any]:
         "drum_placement": _segments_for_view("drum_placement", paths["drums"], candidates) if meter_ok else [],
         "drum_audio": _segments_for_view("drum_audio", paths["drums"], drum_time_candidates),
         "bass_harmony": _segments_for_view("bass_harmony", paths["bass"], candidates, top_line) if meter_ok else [],
+        "vocal_space": _segments_for_view(
+            "vocal_space", paths["beat"], candidates,
+            require_active=[paths["drums6s"], paths["top"]],
+            require_low_band=True,
+        ) if meter_ok else [],
     }
     views: dict[str, Any] = {}
     beat_s = 60.0 / float(grid.get("tempo_bpm") or basics["tempo"]["bpm"])
@@ -304,6 +455,20 @@ def _extract_song(entry: dict[str, Any]) -> dict[str, Any]:
         bass_segments.append(segment_result("bass_harmony", seg, groups))
     bass_segments = [s for s in bass_segments if s["eligible"]]
     views["bass_harmony"] = {"eligible": bool(bass_segments) and meter_ok, "reason": None if bass_segments and meter_ok else ("unsupported_meter" if status == "human_verified_non_4_4" else "unverified_grid" if not meter_ok else "required_features_missing"), "segments": bass_segments}
+
+    space_segments = []
+    for seg in selected["vocal_space"]:
+        start, end = seg["start_s"], seg["end_s"]
+        groups = vocal_space_group(
+            _sum_slices(paths["beat"], start, end),
+            _sum_slices(paths["drums6s"], start, end),
+            _sum_slices(paths["bass6s"], start, end),
+            _sum_slices(paths["top"], start, end),
+        )
+        item = segment_result("vocal_space", seg, groups)
+        if item.get("eligible"):
+            space_segments.append(item)
+    views["vocal_space"] = {"eligible": bool(space_segments) and meter_ok, "reason": None if space_segments and meter_ok else ("unsupported_meter" if status == "human_verified_non_4_4" else "unverified_grid" if not meter_ok else "required_features_missing"), "segments": space_segments}
 
     arrangement = load_json(ref / "analysis/arrangement.json", {})
     sections = arrangement.get("sections", [])
@@ -377,8 +542,9 @@ def main() -> int:
     for vid, entry in manifest["songs"].items():
         if args.only and vid != args.only:
             continue
+        role = entry.get("role", "positive")
         if entry.get("status") != "analyzed":
-            songs[vid] = {"video_id": vid, "display_name": entry["display_name"], "excluded": True, "reason": f"status:{entry.get('status')}"}
+            songs[vid] = {"video_id": vid, "display_name": entry["display_name"], "role": role, "excluded": True, "reason": f"status:{entry.get('status')}"}
             continue
         try:
             if args.upgrade_bass_motion:
@@ -390,6 +556,8 @@ def main() -> int:
             errors = validate_view_contract(song)
             if errors:
                 raise ValueError("; ".join(errors))
+            # roleは解釈用ラベル。距離計算には渡さない（cluster.pyはviews以下しか読まない）。
+            song["role"] = role
             songs[vid] = song
             print(f"{vid}: " + ", ".join(f"{v}={int(d['eligible'])}" for v, d in song["views"].items()))
         except Exception as e:
@@ -402,7 +570,9 @@ def main() -> int:
     grid_fp = taste_prov.get("stages", {}).get("grid_audit", {}).get("fingerprint")
     if grid_fp:
         feature_contract = {v: {"meter_dependent": s["meter_dependent"], "required_groups": s["required_groups"]} for v, s in VIEW_SCHEMAS.items()}
-        record_root_stage(root, "taste_features", list(STAGE_SOURCE_PATHS["taste_features"]), {"grid_audit": grid_fp}, {"window_bars": WINDOW_BARS, "view_contract": feature_contract}, [args.out])
+        # 曲集合が変わったこと自体を下流のinvalidation条件にする（曲追加でclusterが古いまま残らないように）。
+        song_set = sorted((vid, s.get("role", "positive")) for vid, s in output["songs"].items())
+        record_root_stage(root, "taste_features", list(STAGE_SOURCE_PATHS["taste_features"]), {"grid_audit": grid_fp}, {"window_bars": WINDOW_BARS, "view_contract": feature_contract, "song_set": song_set}, [args.out])
     return 1 if failures else 0
 
 

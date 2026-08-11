@@ -155,7 +155,10 @@ def _overall(view_results: dict[str, Any]) -> dict[str, Any]:
     return {"mandatory_views": OVERALL_MANDATORY_VIEWS, "participants": eligible, "distance_matrix": matrix.round(8).tolist(), "neighbors": _neighbors(eligible, matrix), "candidates": cands, "outliers": _outliers(eligible, matrix)}
 
 
-def _common_core(songs: dict[str, Any]) -> dict[str, Any]:
+def _common_core(all_songs: dict[str, Any]) -> dict[str, Any]:
+    # 共通核は「好きな曲に共通するもの」なので正例だけで数える。
+    # 否定例を混ぜると母数の意味が変わり、共通核でないものが共通核になる。
+    songs = {vid: s for vid, s in all_songs.items() if s.get("role", "positive") == "positive"}
     total = len(songs)
     # 数値の全曲測定だけを共通核と呼ばない。全曲supportを定義できるbinary事実だけ調べる。
     facts = []
@@ -170,12 +173,17 @@ def _common_core(songs: dict[str, Any]) -> dict[str, Any]:
         item = {"feature": name, "measured": f"{measured}/{total}", "support": f"{support}/{total}"}
         if measured == total and support == total:
             facts.append(item)
-    return {"definition": "measured=23/23 and support=23/23", "facts": facts, "distributions_are_not_common_core": True}
+    return {"definition": f"positiveのみ measured={total}/{total} and support={total}/{total}", "positive_total": total, "facts": facts, "distributions_are_not_common_core": True}
 
 
 def render_markdown(result: dict[str, Any], songs: dict[str, Any]) -> str:
     names = {vid: s.get("display_name", vid) for vid, s in songs.items()}
-    lines = ["# 好きなビート23曲 — 機械ドラフト", "", "これは耳確認前の機械案です。群名はまだ付けず、Phase 5で代表・境界を聴いて確定します。", ""]
+    n_pos = sum(s.get("role", "positive") == "positive" for s in songs.values())
+    n_con = len(songs) - n_pos
+    title = f"# 好きなビート{n_pos}曲" + (f"＋近接した否定例{n_con}曲" if n_con else "") + " — 機械ドラフト"
+    lines = [title, "", "これは耳確認前の機械案です。群名はまだ付けず、代表・境界を聴いて確定します。", ""]
+    if n_con:
+        lines += ["距離表と群候補はroleを使わずに作っています。roleを見るのは対照分析（`contrast.py`）から。", ""]
     for view, vr in result["views"].items():
         lines += [f"## {view}", "", f"参加: {len(vr['participants'])}/{len(songs)} / 不参加: {len(vr['excluded'])}", ""]
         for i, cand in enumerate(vr["candidates"], 1):
@@ -192,7 +200,7 @@ def render_markdown(result: dict[str, Any], songs: dict[str, Any]) -> str:
     lines += ["## overall", "", f"5 base viewすべてに参加: {len(ov['participants'])}/{len(songs)}", ""]
     for i, cand in enumerate(ov["candidates"], 1):
         lines.append(f"- 案{i}: k={cand['k']}, silhouette={cand['silhouette']}, view-ablation stability={cand['view_ablation_stability']}, accepted={cand['accepted']}")
-    lines += ["", "## 全曲共通核", ""]
+    lines += ["", f"## 正例{result['common_core'].get('positive_total', n_pos)}曲の共通核", ""]
     if result["common_core"]["facts"]:
         lines += [f"- {x['feature']} (measured={x['measured']}, support={x['support']})" for x in result["common_core"]["facts"]]
     else:

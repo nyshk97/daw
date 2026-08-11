@@ -19,6 +19,28 @@ def pattern(values, fpb=20, bars=40):
     return np.convolve(env, np.array([1.0, .4, .1]), mode="same")
 
 
+class HumanAnswerProtectionTests(unittest.TestCase):
+    """曲を足して再監査したときに、前回の人間回答が機械判定で消えないこと。
+
+    実際に消した事故があるので回帰として固定する（正例23曲の human_verified_4_4 が
+    否定例10曲を足した再監査で needs_review へ戻った）。
+    """
+
+    def test_human_verified_is_protected(self):
+        self.assertTrue(grid.human_decided({"grid_status": "human_verified_4_4"}))
+        self.assertTrue(grid.human_decided({"grid_status": "human_verified_non_4_4"}))
+
+    def test_human_unknown_with_review_is_protected(self):
+        # driftと回答された曲はstatusがunknownでも人の判断。
+        self.assertTrue(grid.human_decided({"grid_status": "unknown", "human_review": {"answer": "drift"}}))
+
+    def test_machine_statuses_are_not_protected(self):
+        self.assertFalse(grid.human_decided({"grid_status": "auto_verified_4_4"}))
+        self.assertFalse(grid.human_decided({"grid_status": "needs_review"}))
+        self.assertFalse(grid.human_decided({"grid_status": "unknown"}))
+        self.assertFalse(grid.human_decided({}))
+
+
 class GridTests(unittest.TestCase):
     def test_synthetic_meter_hypotheses(self):
         four = grid.meter_scores(pattern([1, .25, .65, .25]), 20)

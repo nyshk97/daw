@@ -57,7 +57,7 @@ def section_distance(a: dict, b: dict) -> float:
     return 0.65 * jaccard(a.get("active", []), b.get("active", [])) + 0.35 * min(1, abs(float(a.get("length_ratio", 0)) - float(b.get("length_ratio", 0))) * 5)
 
 
-DISTRIBUTION_KEYS = {"band_balance", "profile", "profiles", "root_interval_hist", "relative_pitch_class", "median", "iqr"}
+DISTRIBUTION_KEYS = {"band_balance", "profile", "profiles", "root_interval_hist", "relative_pitch_class", "median", "iqr", "masking_shares"}
 SEQUENCE_KEYS = {"root_sequence"}
 
 
