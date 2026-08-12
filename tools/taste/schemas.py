@@ -102,9 +102,17 @@ VIEW_SCHEMAS = {
         "required_groups": ["occupancy", "shape", "section_sequence"],
         "weights": {"occupancy": 0.3, "shape": 0.3, "section_sequence": 0.4},
     },
+    # ラップが載る場所が空いているか。対照分析のために追加した軸で、総合viewには入れない。
+    "vocal_space": {
+        "meter_dependent": True,
+        "required_groups": ["band_occupancy", "time_space", "masking_source"],
+        "weights": {"band_occupancy": 0.4, "time_space": 0.35, "masking_source": 0.25},
+    },
 }
 
-OVERALL_MANDATORY_VIEWS = list(VIEW_SCHEMAS)
+# 総合view v1のmandatoryは5 base viewに固定する。前回の分析で分析前に固定した契約なので、
+# viewを足すたびに総合の意味が変わらないよう、VIEW_SCHEMASの全列挙にしない。
+OVERALL_MANDATORY_VIEWS = ["topline_harmony", "drum_placement", "drum_audio", "bass_harmony", "arrangement"]
 
 
 def undeclared_taste_sources(repo_root: Path) -> list[str]:

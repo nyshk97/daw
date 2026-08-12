@@ -40,11 +40,11 @@ run = 'cd tools/reference && .venv/bin/python tests/test_gates.py && .venv/bin/p
 description = '分析パイプラインの venv を作り直す（初回・依存を変えたとき）'
 run = 'tools/reference/setup.sh'
 
-# --- 好きなビート23曲の横断分析（tools/taste/README.md） ---
+# --- 好きなビート23曲＋近接した否定例の横断分析（tools/taste/README.md） ---
 
 [tasks."taste:sync"]
-description = '好きなビート一覧をローカルcorpus manifestへ差分同期する（削除は孤児申告のみ）'
-usage = 'arg "<args>" var=#true default="" help="[--dry-run] [--corpus DIR] [--picks FILE]"'
+description = '正例・否定例のビート一覧をローカルcorpus manifestへ差分同期する（削除は孤児申告のみ）'
+usage = 'arg "<args>" var=#true default="" help="[--dry-run] [--corpus DIR] [--picks FILE] [--contrast-picks FILE]"'
 run = '''
 #!/usr/bin/env bash
 eval "set -- $usage_args"
@@ -130,6 +130,36 @@ run = '''
 eval "set -- $usage_args"
 args=(); for a in "$@"; do [ -n "$a" ] && args+=("$a"); done
 exec tools/reference/.venv/bin/python tools/taste/review-followup.py "${args[@]}"
+'''
+
+[tasks."taste:confound"]
+description = '境界分析の前にloudness・ボーカルbleed・区間選定バイアスを監査する'
+usage = 'arg "<args>" var=#true default="" help="[--corpus DIR] [--data FILE] [--sample N] [--skip loudness|bleed|selection]"'
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+args=(); for a in "$@"; do [ -n "$a" ] && args+=("$a"); done
+exec tools/reference/.venv/bin/python tools/taste/contrast-confound.py "${args[@]}"
+'''
+
+[tasks."taste:contrast"]
+description = '正例と近接した否定例の境界を連続条件として出す（近接性・分離度・重なり・安定性）'
+usage = 'arg "<args>" var=#true default="" help="[--corpus DIR] [--data FILE] [--markdown FILE]"'
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+args=(); for a in "$@"; do [ -n "$a" ] && args+=("$a"); done
+exec tools/reference/.venv/bin/python tools/taste/contrast.py "${args[@]}"
+'''
+
+[tasks."taste:contrast-review"]
+description = '対照分析の耳確認素材（Round A/B/C）を生成する'
+usage = 'arg "<args>" var=#true default="" help="[--corpus DIR] [--data FILE] [--max-axes N]"'
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+args=(); for a in "$@"; do [ -n "$a" ] && args+=("$a"); done
+exec tools/reference/.venv/bin/python tools/taste/contrast-review.py "${args[@]}"
 '''
 
 [tasks."taste:test"]

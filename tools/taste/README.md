@@ -1,9 +1,18 @@
-# 好きなビート23曲の横断分析
+# 好きなビートの横断分析と、近接した否定例との対照分析
 
-`docs/labs/reference-beat-picks.md` の箇条書きを正例コーパスとして、上モノ、ドラム配置、
-ドラム音響、ベースとハーモニー、構成を別々のviewで比較する。絶対パスと音声はローカルの
-`~/Music/daw/reference-beat-corpus/` にだけ置き、小さい正規化前featureだけを
-`docs/labs/reference-beat-taste-data.json` に保存する。
+`docs/labs/reference-beat-picks.md` の箇条書きを正例コーパス、
+`docs/labs/reference-beat-contrast-picks.md` を**近接した否定例**（良いが自分の作りたい方向とは
+ズレる市販ビート）として、上モノ、ドラム配置、ドラム音響、ベースとハーモニー、構成を
+別々のviewで比較する。絶対パスと音声はローカルの `~/Music/daw/reference-beat-corpus/` にだけ置き、
+小さい正規化前featureだけを `docs/labs/reference-beat-taste-data.json` に保存する。
+
+## role（正例／否定例）の扱い
+
+- manifestの各曲は `role: positive | contrast` を持つ。roleは**featureにも距離計算にも渡さない**。
+  アーティスト名を距離へ入れないのと同じ循環防止で、結果の解釈時にだけ使う
+- 同一video IDが両方のpicksに現れたら `role_conflict` を診断してmanifestを書かない
+- picksのpath定数は `common.py` ではなく `inputs.py` に置く。`common.py` は `acquire` / `trim` の
+  `stage_source_hash` 対象なので、定数を1つ足すだけで既存曲の取得・トリム成果物が全部invalidになる
 
 ## 実行順
 
@@ -18,6 +27,18 @@ mise run taste:sensitivity
 mise run taste:review
 mise run taste:review-followup  # 初回耳確認で不明点が出たときだけ
 ```
+
+否定例を足した対照分析は、`taste:features` まで済んだあと次の順で走らせる。
+
+```sh
+mise run taste:cluster          # 33曲ぶんの完全距離表を作り直す
+mise run taste:confound         # 境界を見る前にloudness・bleed・区間選定バイアスを封じる
+mise run taste:contrast         # 近接性・view別分離度・feature別の重なり・LOO安定性
+mise run taste:contrast-review  # 耳確認素材（Round B/C/D/E）
+```
+
+`taste:confound` を先に走らせないと、`taste:contrast` はconfoundタグを読めないまま採用軸を出す。
+順番を入れ替えないこと。
 
 bass schema v1の特徴量ファイルをv2へ移す場合は、既存の代表区間を選び直さず低音の動き／反復だけを計算できる。
 
@@ -53,6 +74,9 @@ READMEへ`NG`／`?`を記入した後は`mise run taste:grid-followup`で、曲�
 - `analysis/machine-draft.json`: view別完全距離表、近傍、群候補、不参加理由
 - `analysis/comparison-sensitivity.json`: clean loopとDemucs後の共有feature感度
 - `review/phase5/`: 代表2曲＋境界1曲のview別WAVとチェックシート
+- `analysis/contrast-confound.json`: loudness依存・ボーカルbleed感度・区間選定バイアスとconfoundタグ
+- `analysis/contrast.json`: 近接性、view別分離度、feature群／個別featureの重なりと採用軸
+- `review/contrast/`: 耳確認のWAVとチェックシート（回答は `review/contrast-human-review.md` へ）
 - `docs/labs/reference-beat-taste-data.json`: 音声・絶対パスを含まない派生feature
 
 ## 既知の限界
@@ -61,3 +85,7 @@ READMEへ`NG`／`?`を記入した後は`mise run taste:grid-followup`で、曲�
 - コード名の細分類とbasic-pitch採譜を正解ラベルとして使わない。相対root運動、反復、密度などの粗い性格を使う。
 - ドラム音響は完全なキック／スネア／ハット分離ではない。正規化したhit characterと、配置にも影響されるproductionを分ける。
 - 正例だけなので「日本固有」とは言えない。Cymatics比較も同じ抽出器で安定した上モノfeatureだけに限る。
+- 否定例10曲は全部インストのtype beat。正例23曲はボーカル入り完成曲なので、ボーカル残留と
+  マスタリング音圧の非対称が乗る。confound監査を通っていないfeatureの差を境界と読まない。
+- grid監査の再実行は人間確認済みの曲を上書きしない（`--force-reaudit` を渡したときだけ上書きする）。
+  人間回答は `review/grid/answers.json` と `review/grid/contrast-answers.json` に残す。
