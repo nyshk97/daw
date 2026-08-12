@@ -79,6 +79,19 @@ READMEへ`NG`／`?`を記入した後は`mise run taste:grid-followup`で、曲�
 - `review/contrast/`: 耳確認のWAVとチェックシート（回答は `review/contrast-human-review.md` へ）
 - `docs/labs/reference-beat-taste-data.json`: 音声・絶対パスを含まない派生feature
 
+### どれをリポジトリへ入れるか
+
+判断軸はサイズではなく**音声なしで再生成できるか**。
+
+- **入れる**: 音声を入力に取る出力（`contrast-confound.json`・`comparison-sensitivity.json`）と
+  耳確認の回答。音声はローカルにしかなく、Demucsは同じ入力でもバイト一致しないので再現できない。
+  置き場は `docs/labs/reference-beat-analysis-outputs/` と `docs/labs/reference-beat-human-answers/`
+- **入れない**: `taste-data.json` から決定的に再生成できる出力（`machine-draft.json`・`contrast.json`）。
+  曲を1つ足すと全ペアの距離が変わって毎回ほぼ全書き換えになり、`generated_at` も毎回変わるため、
+  履歴が「再生成しただけ」のノイズで埋まる
+- feature schemaや `cluster.py` / `contrast.py` を改修すると過去の出力を復元できなくなる。
+  復元したい版があるときは、改修の前に `reference-beat-analysis-outputs/` へ退避する
+
 ## 既知の限界
 
 - 4/4以外はmeter-dependent viewへ入れない。自動監査が曖昧なら人間確認へ送る。
