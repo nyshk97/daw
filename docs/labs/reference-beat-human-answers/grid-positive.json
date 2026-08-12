@@ -1,0 +1,74 @@
+{
+  "3umJ9yXFwho": {
+    "grid_status": "human_verified_4_4",
+    "meter_numerator": 4,
+    "meter_denominator": 4,
+    "tempo_bpm": 91.0,
+    "first_downbeat_s": 0.102,
+    "bar_duration_s": 2.637363,
+    "human_review": {"answer": "A", "accent_offset_beats": 0}
+  },
+  "gLS_4iPoZ40": {
+    "grid_status": "unknown",
+    "meter_numerator": null,
+    "meter_denominator": null,
+    "tempo_bpm": 96.188,
+    "first_downbeat_s": 1.7556,
+    "bar_duration_s": null,
+    "human_review": {"answer": "drift", "reason": "constant-tempo click drifted in head/middle/tail review"}
+  },
+  "R5396gKwIPg": {
+    "grid_status": "human_verified_4_4",
+    "meter_numerator": 4,
+    "meter_denominator": 4,
+    "tempo_bpm": 102.0,
+    "first_downbeat_s": 2.378971,
+    "bar_duration_s": 2.352941,
+    "human_review": {"answer": "C", "accent_offset_beats": 2}
+  },
+  "rga7wNQoZ7w": {
+    "grid_status": "human_verified_4_4",
+    "meter_numerator": 4,
+    "meter_denominator": 4,
+    "tempo_bpm": 160.004,
+    "first_downbeat_s": 1.549981,
+    "bar_duration_s": 1.499963,
+    "human_review": {"answer": "C", "accent_offset_beats": 2}
+  },
+  "CywjEnmGeNI": {
+    "grid_status": "human_verified_4_4",
+    "meter_numerator": 4,
+    "meter_denominator": 4,
+    "tempo_bpm": 88.002,
+    "first_downbeat_s": 0.025,
+    "bar_duration_s": 2.727211,
+    "human_review": {"answer": "A", "accent_offset_beats": 0, "machine_best_was": "6/8"}
+  },
+  "AH7tY4nIcp0": {
+    "grid_status": "human_verified_4_4",
+    "meter_numerator": 4,
+    "meter_denominator": 4,
+    "tempo_bpm": 160.0,
+    "first_downbeat_s": 1.521,
+    "bar_duration_s": 1.5,
+    "human_review": {"answer": "D", "accent_offset_beats": 3}
+  },
+  "fc5VJYJaZUc": {
+    "grid_status": "human_verified_4_4",
+    "meter_numerator": 4,
+    "meter_denominator": 4,
+    "tempo_bpm": 84.0,
+    "first_downbeat_s": 1.2563,
+    "bar_duration_s": 2.857143,
+    "human_review": {"answer": "A", "accent_offset_beats": 0}
+  },
+  "0eCFLpkrqSw": {
+    "grid_status": "human_verified_4_4",
+    "meter_numerator": 4,
+    "meter_denominator": 4,
+    "tempo_bpm": 130.0,
+    "first_downbeat_s": 1.930138,
+    "bar_duration_s": 1.846154,
+    "human_review": {"answer": "B", "accent_offset_beats": 1}
+  }
+}
