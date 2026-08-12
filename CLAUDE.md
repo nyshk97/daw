@@ -74,12 +74,15 @@
 - [transport-playhead.md](docs/design/transport-playhead.md) — 再生ヘッド（今いる場所＝編集の基準）と再生開始位置（次に鳴る場所）の分離。停止・録音・シークで両者がどう動くか。**トランスポートや「止めた場所」に関わる機能を触る前に読む**
 - [mixer-fx.md](docs/design/mixer-fx.md) — Tier 2 ミキサー・FXの確定設計（画面構成・チャンネル構成・6スライス）
 - [region-settings.md](docs/design/region-settings.md) — リージョン設定UIの割り当て方針
-- [reference-beat.md](docs/design/reference-beat.md) — リファレンス駆動ビートメイク（長期・2本柱: ガチャで作る＋レポートでわかる）。何を借りて何を借りないか・Python外部パイプライン＋LaLa内ガチャUIの分業・分析レポートとライブラリ蓄積・フェーズ表。実験記録は `docs/labs/reference-beat.md`（追記専用）
+- [reference-beat.md](docs/design/reference-beat.md) — リファレンス駆動ビートメイク（長期・2本柱: ガチャで作る＋レポートでわかる）。何を借りて何を借りないか・Python外部パイプライン＋LaLa内ガチャUIの分業・分析レポートとライブラリ蓄積・フェーズ表。実験記録は `docs/labs/reference-beat.md`（追記専用）。**上モノ素材の好みの境界（明るさ・コードの動きの目標帯）を含むので、ループ選び・推薦・上モノガチャを触る前に読む**
 - [corpus-comparison.md](docs/design/corpus-comparison.md) — 2つの集団を比べる分析の作法（1次元化にラベルを使わない・相関した軸へのomnibus検定・交差ペアでhaloを潰す・非対称の事前監査・検出力の下限を書く）。**コーパス比較や対照分析を始める前に必ず読む**
 
 新しい設計判断が出たらここに追記する（planに書かない。planは1実装分の記録なので後から探せなくなる）。
 
 - ゲート・閾値の判定が「誤検知に見える」場合でも、緩める前に `docs/labs/` の実験記録を検索して同じ症状の切り分け結論が無いか確認する（実例: tempo_stable の `min(gc)>1.0` を「裏拍が強い hiphop の癖」と仮説して緩めかけたが、labs 2026-08-04 が同一曲を「ライブ演奏の実揺れ」と切り分け済みだった）。症状の見た目から立てた仮説だけで判定を動かさない
+
+耳確認など再取得できない人間判断は `docs/labs/reference-beat-human-answers/` にコピーを置く。
+音声・分析JSON・距離表は再計算できるが、人間の回答だけはやり直しが要るため。
 
 **このプロジェクトの知見はClaude Codeのmemory機能に保存しない**（複数マシン・複数クローンで開発しており共有されないため）。恒久ルールはこのファイル、設計判断は `docs/design/`、技術的な落とし穴は `GOTCHAS.md`、動作確認手順は `VERIFY.md` に書く。
 

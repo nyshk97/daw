@@ -1,0 +1,78 @@
+{
+  "T3QnKfrapnw": {
+    "grid_status": "human_verified_4_4",
+    "meter_numerator": 4,
+    "meter_denominator": 4,
+    "tempo_bpm": 138.996,
+    "first_downbeat_s": 0.122,
+    "bar_duration_s": 1.726668,
+    "human_review": {
+      "answer": "OK",
+      "accent_offset_beats": 0,
+      "machine_best_was": "6/8"
+    }
+  },
+  "4sp4wSw0FqI": {
+    "grid_status": "human_verified_4_4",
+    "meter_numerator": 4,
+    "meter_denominator": 4,
+    "tempo_bpm": 123.0,
+    "first_downbeat_s": 2.000215,
+    "bar_duration_s": 1.95122,
+    "human_review": {
+      "answer": "D",
+      "accent_offset_beats": 3,
+      "note": "tempo_stable gate落ちだがdriftではなかった"
+    }
+  },
+  "8U2nWfjoX8k": {
+    "grid_status": "human_verified_4_4",
+    "meter_numerator": 4,
+    "meter_denominator": 4,
+    "tempo_bpm": 89.0,
+    "first_downbeat_s": 2.813672,
+    "bar_duration_s": 2.696629,
+    "human_review": {
+      "answer": "D",
+      "accent_offset_beats": 3
+    }
+  },
+  "lu_5ElV2a88": {
+    "grid_status": "human_verified_4_4",
+    "meter_numerator": 4,
+    "meter_denominator": 4,
+    "tempo_bpm": 93.0,
+    "first_downbeat_s": 0.175,
+    "bar_duration_s": 2.580645,
+    "human_review": {
+      "answer": "OK",
+      "accent_offset_beats": 0,
+      "note": "downbeat gate落ちだが人の耳では小節頭が合っていた"
+    }
+  },
+  "NHstEi3ChTc": {
+    "grid_status": "human_verified_4_4",
+    "meter_numerator": 4,
+    "meter_denominator": 4,
+    "tempo_bpm": 110.002,
+    "first_downbeat_s": 2.233734,
+    "bar_duration_s": 2.181779,
+    "human_review": {
+      "answer": "D",
+      "accent_offset_beats": 3,
+      "note": "meter scoresが全体に低い曲だが4/4で確定"
+    }
+  },
+  "WAkVbfOloz8": {
+    "grid_status": "human_verified_4_4",
+    "meter_numerator": 4,
+    "meter_denominator": 4,
+    "tempo_bpm": 120.998,
+    "first_downbeat_s": 2.057528,
+    "bar_duration_s": 1.983504,
+    "human_review": {
+      "answer": "D",
+      "accent_offset_beats": 3
+    }
+  }
+}
