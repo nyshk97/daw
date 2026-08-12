@@ -1,0 +1,2474 @@
+{
+  "schema_revision": 1,
+  "generated_at": "2026-08-10T03:45:01.136283+00:00",
+  "thresholds": {
+    "scalar_rho": 0.8,
+    "scalar_mae_iqr": 0.25,
+    "distribution_median": 0.15,
+    "distribution_p90": 0.35,
+    "minimum_stable_groups": 3
+  },
+  "selected_loops": [
+    "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity E Piano 3 - 84 BPM B Min.wav",
+    "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity E Piano 1 - 80 BPM D Maj.wav",
+    "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle West Coast Melody Loop 7 - 103 BPM C# Min.wav",
+    "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+    "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity Piano Wet 4 - 86 BPM B Maj.wav",
+    "loops/Cymatics - Gems - Free Teaser Pack/Cymatics Gems Vol 7 - Jump Up - 141 BPM F# Min.wav",
+    "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+    "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Various Melody Loop 16 - 150 BPM A Min.wav"
+  ],
+  "rows": [
+    {
+      "loop": "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity E Piano 3 - 84 BPM B Min.wav",
+      "condition": "drums-minus6",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.25,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.5,
+            0.0,
+            0.0,
+            0.0,
+            0.25
+          ],
+          "root_change_ratio": 0.75,
+          "third_clarity": 0.103438
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.025526,
+          "repetition": 0.266201
+        },
+        "onset_rhythm": {
+          "onset_rate": 0.6125
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.116264,
+            0.637273,
+            0.246446,
+            1.2e-05,
+            5e-06
+          ],
+          "centroid_hz": 384.705,
+          "rolloff95_hz": 667.529,
+          "hpss_ratio": 11.786053
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.25,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.25,
+            0.25,
+            0.25,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.75,
+          "third_clarity": 0.051629
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.036489,
+          "repetition": 0.356279
+        },
+        "onset_rhythm": {
+          "onset_rate": 1.8375
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.097065,
+            0.600586,
+            0.302326,
+            2.3e-05,
+            0.0
+          ],
+          "centroid_hz": 365.466,
+          "rolloff95_hz": 678.296,
+          "hpss_ratio": 10.311567
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity E Piano 3 - 84 BPM B Min.wav",
+      "condition": "drums-bass-0",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.25,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.5,
+            0.0,
+            0.0,
+            0.0,
+            0.25
+          ],
+          "root_change_ratio": 0.75,
+          "third_clarity": 0.103438
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.025526,
+          "repetition": 0.266201
+        },
+        "onset_rhythm": {
+          "onset_rate": 0.6125
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.116264,
+            0.637273,
+            0.246446,
+            1.2e-05,
+            5e-06
+          ],
+          "centroid_hz": 384.705,
+          "rolloff95_hz": 667.529,
+          "hpss_ratio": 11.786053
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.25,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.5,
+            0.25,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.75,
+          "third_clarity": 0.081606
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.039027,
+          "repetition": 0.401352
+        },
+        "onset_rhythm": {
+          "onset_rate": 2.7125
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.075496,
+            0.647521,
+            0.276973,
+            9e-06,
+            0.0
+          ],
+          "centroid_hz": 308.608,
+          "rolloff95_hz": 656.763,
+          "hpss_ratio": 8.946965
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity E Piano 3 - 84 BPM B Min.wav",
+      "condition": "drums-bass-vocals-plus6",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.25,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.5,
+            0.0,
+            0.0,
+            0.0,
+            0.25
+          ],
+          "root_change_ratio": 0.75,
+          "third_clarity": 0.103438
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.025526,
+          "repetition": 0.266201
+        },
+        "onset_rhythm": {
+          "onset_rate": 0.6125
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.116264,
+            0.637273,
+            0.246446,
+            1.2e-05,
+            5e-06
+          ],
+          "centroid_hz": 384.705,
+          "rolloff95_hz": 667.529,
+          "hpss_ratio": 11.786053
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.25,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.5,
+            0.25,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.75,
+          "third_clarity": 0.058346
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.041487,
+          "repetition": 0.344159
+        },
+        "onset_rhythm": {
+          "onset_rate": 2.8
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.116338,
+            0.642528,
+            0.241112,
+            2.1e-05,
+            1e-06
+          ],
+          "centroid_hz": 308.498,
+          "rolloff95_hz": 667.529,
+          "hpss_ratio": 8.70804
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity E Piano 1 - 80 BPM D Maj.wav",
+      "condition": "drums-minus6",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.0,
+            0.0,
+            0.0,
+            0.5,
+            0.0,
+            0.25,
+            0.0,
+            0.0,
+            0.0,
+            0.25,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 1.0,
+          "third_clarity": 0.080595
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.031508,
+          "repetition": 0.909576
+        },
+        "onset_rhythm": {
+          "onset_rate": 2.166667
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.310874,
+            0.525306,
+            0.163817,
+            2e-06,
+            0.0
+          ],
+          "centroid_hz": 222.953,
+          "rolloff95_hz": 441.431,
+          "hpss_ratio": 10.392041
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.0,
+          "third_clarity": 0.108384
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.075588,
+          "repetition": 0.893747
+        },
+        "onset_rhythm": {
+          "onset_rate": 2.5
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.000103,
+            0.20688,
+            0.792998,
+            1.8e-05,
+            1e-06
+          ],
+          "centroid_hz": 406.914,
+          "rolloff95_hz": 785.962,
+          "hpss_ratio": 13.773004
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity E Piano 1 - 80 BPM D Maj.wav",
+      "condition": "drums-bass-0",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.0,
+            0.0,
+            0.0,
+            0.5,
+            0.0,
+            0.25,
+            0.0,
+            0.0,
+            0.0,
+            0.25,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 1.0,
+          "third_clarity": 0.080595
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.031508,
+          "repetition": 0.909576
+        },
+        "onset_rhythm": {
+          "onset_rate": 2.166667
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.310874,
+            0.525306,
+            0.163817,
+            2e-06,
+            0.0
+          ],
+          "centroid_hz": 222.953,
+          "rolloff95_hz": 441.431,
+          "hpss_ratio": 10.392041
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.25,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.25,
+            0.0,
+            0.25,
+            0.0,
+            0.0,
+            0.0,
+            0.25
+          ],
+          "root_change_ratio": 0.75,
+          "third_clarity": 0.100468
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.097256,
+          "repetition": 0.799854
+        },
+        "onset_rhythm": {
+          "onset_rate": 2.416667
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.000401,
+            0.024732,
+            0.974764,
+            9.9e-05,
+            3e-06
+          ],
+          "centroid_hz": 582.97,
+          "rolloff95_hz": 1873.389,
+          "hpss_ratio": 6.856435
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity E Piano 1 - 80 BPM D Maj.wav",
+      "condition": "drums-bass-vocals-plus6",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.0,
+            0.0,
+            0.0,
+            0.5,
+            0.0,
+            0.25,
+            0.0,
+            0.0,
+            0.0,
+            0.25,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 1.0,
+          "third_clarity": 0.080595
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.031508,
+          "repetition": 0.909576
+        },
+        "onset_rhythm": {
+          "onset_rate": 2.166667
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.310874,
+            0.525306,
+            0.163817,
+            2e-06,
+            0.0
+          ],
+          "centroid_hz": 222.953,
+          "rolloff95_hz": 441.431,
+          "hpss_ratio": 10.392041
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.5,
+            0.25,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.25
+          ],
+          "root_change_ratio": 0.5,
+          "third_clarity": 0.102692
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.114835,
+          "repetition": 0.773015
+        },
+        "onset_rhythm": {
+          "onset_rate": 3.75
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.002598,
+            0.106228,
+            0.890954,
+            0.000211,
+            9e-06
+          ],
+          "centroid_hz": 775.119,
+          "rolloff95_hz": 3832.91,
+          "hpss_ratio": 6.543103
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle West Coast Melody Loop 7 - 103 BPM C# Min.wav",
+      "condition": "drums-minus6",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.0,
+            0.0,
+            0.0,
+            0.5,
+            0.125,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.375,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 1.0,
+          "third_clarity": 0.090448
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.080997,
+          "repetition": 0.97341
+        },
+        "onset_rhythm": {
+          "onset_rate": 6.222903
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.271663,
+            0.233732,
+            0.493489,
+            0.001116,
+            0.0
+          ],
+          "centroid_hz": 421.24,
+          "rolloff95_hz": 1248.926,
+          "hpss_ratio": 1.897681
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.125,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.375,
+            0.0,
+            0.5,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.875,
+          "third_clarity": 0.066115
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.15047,
+          "repetition": 0.900013
+        },
+        "onset_rhythm": {
+          "onset_rate": 5.310926
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            4.9e-05,
+            0.012068,
+            0.985736,
+            0.002147,
+            0.0
+          ],
+          "centroid_hz": 598.467,
+          "rolloff95_hz": 1378.125,
+          "hpss_ratio": 3.419771
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle West Coast Melody Loop 7 - 103 BPM C# Min.wav",
+      "condition": "drums-bass-0",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.0,
+            0.0,
+            0.0,
+            0.5,
+            0.125,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.375,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 1.0,
+          "third_clarity": 0.090448
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.080997,
+          "repetition": 0.97341
+        },
+        "onset_rhythm": {
+          "onset_rate": 6.222903
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.271663,
+            0.233732,
+            0.493489,
+            0.001116,
+            0.0
+          ],
+          "centroid_hz": 421.24,
+          "rolloff95_hz": 1248.926,
+          "hpss_ratio": 1.897681
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.125,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.375,
+            0.0,
+            0.5,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.875,
+          "third_clarity": 0.076614
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.150559,
+          "repetition": 0.89352
+        },
+        "onset_rhythm": {
+          "onset_rate": 4.989052
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.000163,
+            0.008177,
+            0.99006,
+            0.001599,
+            0.0
+          ],
+          "centroid_hz": 584.155,
+          "rolloff95_hz": 1335.059,
+          "hpss_ratio": 3.610416
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle West Coast Melody Loop 7 - 103 BPM C# Min.wav",
+      "condition": "drums-bass-vocals-plus6",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.0,
+            0.0,
+            0.0,
+            0.5,
+            0.125,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.375,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 1.0,
+          "third_clarity": 0.090448
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.080997,
+          "repetition": 0.97341
+        },
+        "onset_rhythm": {
+          "onset_rate": 6.222903
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.271663,
+            0.233732,
+            0.493489,
+            0.001116,
+            0.0
+          ],
+          "centroid_hz": 421.24,
+          "rolloff95_hz": 1248.926,
+          "hpss_ratio": 1.897681
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.375,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.25,
+            0.0,
+            0.375,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.625,
+          "third_clarity": 0.07147
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.157719,
+          "repetition": 0.836682
+        },
+        "onset_rhythm": {
+          "onset_rate": 3.916138
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.010965,
+            0.019214,
+            0.969426,
+            0.000393,
+            2e-06
+          ],
+          "centroid_hz": 611.5,
+          "rolloff95_hz": 1539.624,
+          "hpss_ratio": 2.998769
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+      "condition": "drums-minus6",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.333333,
+            0.333333,
+            0.0,
+            0.0,
+            0.333333,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 1.0,
+          "third_clarity": 0.195731
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.119186,
+          "repetition": 0.964979
+        },
+        "onset_rhythm": {
+          "onset_rate": 6.234371
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.000231,
+            0.216936,
+            0.782423,
+            0.000407,
+            3e-06
+          ],
+          "centroid_hz": 513.781,
+          "rolloff95_hz": 861.328,
+          "hpss_ratio": 3.874684
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.0,
+            0.0,
+            0.666667,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.333333,
+            0.0
+          ],
+          "root_change_ratio": 1.0,
+          "third_clarity": 0.076564
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.109527,
+          "repetition": 0.96613
+        },
+        "onset_rhythm": {
+          "onset_rate": 5.818746
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.000425,
+            0.140817,
+            0.858485,
+            0.000271,
+            1e-06
+          ],
+          "centroid_hz": 475.129,
+          "rolloff95_hz": 602.93,
+          "hpss_ratio": 3.658832
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+      "condition": "drums-bass-0",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.333333,
+            0.333333,
+            0.0,
+            0.0,
+            0.333333,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 1.0,
+          "third_clarity": 0.195731
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.119186,
+          "repetition": 0.964979
+        },
+        "onset_rhythm": {
+          "onset_rate": 6.234371
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.000231,
+            0.216936,
+            0.782423,
+            0.000407,
+            3e-06
+          ],
+          "centroid_hz": 513.781,
+          "rolloff95_hz": 861.328,
+          "hpss_ratio": 3.874684
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.0,
+          "third_clarity": 0.128022
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.110391,
+          "repetition": 0.967552
+        },
+        "onset_rhythm": {
+          "onset_rate": 4.987497
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.000136,
+            0.15719,
+            0.842524,
+            0.000149,
+            1e-06
+          ],
+          "centroid_hz": 481.22,
+          "rolloff95_hz": 667.529,
+          "hpss_ratio": 3.569289
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+      "condition": "drums-bass-vocals-plus6",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.333333,
+            0.333333,
+            0.0,
+            0.0,
+            0.333333,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 1.0,
+          "third_clarity": 0.195731
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.119186,
+          "repetition": 0.964979
+        },
+        "onset_rhythm": {
+          "onset_rate": 6.234371
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.000231,
+            0.216936,
+            0.782423,
+            0.000407,
+            3e-06
+          ],
+          "centroid_hz": 513.781,
+          "rolloff95_hz": 861.328,
+          "hpss_ratio": 3.874684
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.0,
+            0.0,
+            0.333333,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.333333,
+            0.333333,
+            0.0
+          ],
+          "root_change_ratio": 1.0,
+          "third_clarity": 0.044003
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.13664,
+          "repetition": 0.901316
+        },
+        "onset_rhythm": {
+          "onset_rate": 4.987497
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.000135,
+            0.096494,
+            0.903338,
+            3.2e-05,
+            0.0
+          ],
+          "centroid_hz": 491.27,
+          "rolloff95_hz": 635.229,
+          "hpss_ratio": 4.106558
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity Piano Wet 4 - 86 BPM B Maj.wav",
+      "condition": "drums-minus6",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.333333,
+            0.166667,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.166667,
+            0.0,
+            0.166667,
+            0.166667,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.666667,
+          "third_clarity": 0.109522
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.124619,
+          "repetition": 0.594575
+        },
+        "onset_rhythm": {
+          "onset_rate": 1.074998
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.002422,
+            0.26188,
+            0.735539,
+            0.000145,
+            1.3e-05
+          ],
+          "centroid_hz": 1489.903,
+          "rolloff95_hz": 5442.517,
+          "hpss_ratio": 4.503758
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.333333,
+            0.166667,
+            0.0,
+            0.166667,
+            0.0,
+            0.0,
+            0.0,
+            0.166667,
+            0.0,
+            0.166667,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.666667,
+          "third_clarity": 0.10213
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.118742,
+          "repetition": 0.533028
+        },
+        "onset_rhythm": {
+          "onset_rate": 1.074998
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.003354,
+            0.338985,
+            0.65749,
+            0.000162,
+            9e-06
+          ],
+          "centroid_hz": 787.26,
+          "rolloff95_hz": 1663.44,
+          "hpss_ratio": 5.289465
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity Piano Wet 4 - 86 BPM B Maj.wav",
+      "condition": "drums-bass-0",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.333333,
+            0.166667,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.166667,
+            0.0,
+            0.166667,
+            0.166667,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.666667,
+          "third_clarity": 0.109522
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.124619,
+          "repetition": 0.594575
+        },
+        "onset_rhythm": {
+          "onset_rate": 1.074998
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.002422,
+            0.26188,
+            0.735539,
+            0.000145,
+            1.3e-05
+          ],
+          "centroid_hz": 1489.903,
+          "rolloff95_hz": 5442.517,
+          "hpss_ratio": 4.503758
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.5,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.166667,
+            0.333333,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.5,
+          "third_clarity": 0.094155
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.104229,
+          "repetition": 0.50572
+        },
+        "onset_rhythm": {
+          "onset_rate": 1.13472
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.002625,
+            0.276982,
+            0.72025,
+            0.000137,
+            6e-06
+          ],
+          "centroid_hz": 925.664,
+          "rolloff95_hz": 1873.389,
+          "hpss_ratio": 5.259818
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity Piano Wet 4 - 86 BPM B Maj.wav",
+      "condition": "drums-bass-vocals-plus6",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.333333,
+            0.166667,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.166667,
+            0.0,
+            0.166667,
+            0.166667,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.666667,
+          "third_clarity": 0.109522
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.124619,
+          "repetition": 0.594575
+        },
+        "onset_rhythm": {
+          "onset_rate": 1.074998
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.002422,
+            0.26188,
+            0.735539,
+            0.000145,
+            1.3e-05
+          ],
+          "centroid_hz": 1489.903,
+          "rolloff95_hz": 5442.517,
+          "hpss_ratio": 4.503758
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.166667,
+            0.0,
+            0.0,
+            0.0,
+            0.166667,
+            0.166667,
+            0.0,
+            0.166667,
+            0.166667,
+            0.166667,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.833333,
+          "third_clarity": 0.090737
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.116465,
+          "repetition": 0.582782
+        },
+        "onset_rhythm": {
+          "onset_rate": 1.493053
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.002958,
+            0.368354,
+            0.628367,
+            0.000312,
+            9e-06
+          ],
+          "centroid_hz": 1111.657,
+          "rolloff95_hz": 3515.295,
+          "hpss_ratio": 4.14567
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Gems - Free Teaser Pack/Cymatics Gems Vol 7 - Jump Up - 141 BPM F# Min.wav",
+      "condition": "drums-minus6",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.5,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.25,
+            0.0,
+            0.25,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.5,
+          "third_clarity": 0.029394
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.080277,
+          "repetition": 0.993377
+        },
+        "onset_rhythm": {
+          "onset_rate": 0.660936
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            4.9e-05,
+            0.019383,
+            0.977373,
+            0.003073,
+            0.000121
+          ],
+          "centroid_hz": 1174.017,
+          "rolloff95_hz": 4446.606,
+          "hpss_ratio": 4.722606
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.0,
+          "third_clarity": 0.038928
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.090169,
+          "repetition": 0.982829
+        },
+        "onset_rhythm": {
+          "onset_rate": 1.468747
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.00014,
+            0.03564,
+            0.962041,
+            0.002167,
+            1.2e-05
+          ],
+          "centroid_hz": 777.13,
+          "rolloff95_hz": 2045.654,
+          "hpss_ratio": 3.411808
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Gems - Free Teaser Pack/Cymatics Gems Vol 7 - Jump Up - 141 BPM F# Min.wav",
+      "condition": "drums-bass-0",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.5,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.25,
+            0.0,
+            0.25,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.5,
+          "third_clarity": 0.029394
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.080277,
+          "repetition": 0.993377
+        },
+        "onset_rhythm": {
+          "onset_rate": 0.660936
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            4.9e-05,
+            0.019383,
+            0.977373,
+            0.003073,
+            0.000121
+          ],
+          "centroid_hz": 1174.017,
+          "rolloff95_hz": 4446.606,
+          "hpss_ratio": 4.722606
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.875,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.125,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.125,
+          "third_clarity": 0.028761
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.08451,
+          "repetition": 0.986866
+        },
+        "onset_rhythm": {
+          "onset_rate": 1.321872
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            7.7e-05,
+            0.013117,
+            0.984695,
+            0.0021,
+            1.1e-05
+          ],
+          "centroid_hz": 870.697,
+          "rolloff95_hz": 2077.954,
+          "hpss_ratio": 4.608539
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Gems - Free Teaser Pack/Cymatics Gems Vol 7 - Jump Up - 141 BPM F# Min.wav",
+      "condition": "drums-bass-vocals-plus6",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.5,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.25,
+            0.0,
+            0.25,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.5,
+          "third_clarity": 0.029394
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.080277,
+          "repetition": 0.993377
+        },
+        "onset_rhythm": {
+          "onset_rate": 0.660936
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            4.9e-05,
+            0.019383,
+            0.977373,
+            0.003073,
+            0.000121
+          ],
+          "centroid_hz": 1174.017,
+          "rolloff95_hz": 4446.606,
+          "hpss_ratio": 4.722606
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.875,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.125,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.125,
+          "third_clarity": 0.029083
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.099043,
+          "repetition": 0.970909
+        },
+        "onset_rhythm": {
+          "onset_rate": 2.423432
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.000234,
+            0.006853,
+            0.991648,
+            0.001263,
+            1e-06
+          ],
+          "centroid_hz": 810.826,
+          "rolloff95_hz": 1819.556,
+          "hpss_ratio": 4.610501
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+      "condition": "drums-minus6",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.666667,
+            0.0,
+            0.0,
+            0.333333,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.333333,
+          "third_clarity": 0.141698
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.172486,
+          "repetition": 0.753585
+        },
+        "onset_rhythm": {
+          "onset_rate": 3.208333
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            6.1e-05,
+            0.003984,
+            0.941128,
+            0.037417,
+            0.01741
+          ],
+          "centroid_hz": 2803.273,
+          "rolloff95_hz": 9033.179,
+          "hpss_ratio": 3.930119
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.666667,
+            0.0,
+            0.0,
+            0.333333,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.333333,
+          "third_clarity": 0.142219
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.171612,
+          "repetition": 0.745535
+        },
+        "onset_rhythm": {
+          "onset_rate": 4.375
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            3.2e-05,
+            0.003729,
+            0.987678,
+            0.008555,
+            7e-06
+          ],
+          "centroid_hz": 1224.82,
+          "rolloff95_hz": 2890.833,
+          "hpss_ratio": 9.105956
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+      "condition": "drums-bass-0",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.666667,
+            0.0,
+            0.0,
+            0.333333,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.333333,
+          "third_clarity": 0.141698
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.172486,
+          "repetition": 0.753585
+        },
+        "onset_rhythm": {
+          "onset_rate": 3.208333
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            6.1e-05,
+            0.003984,
+            0.941128,
+            0.037417,
+            0.01741
+          ],
+          "centroid_hz": 2803.273,
+          "rolloff95_hz": 9033.179,
+          "hpss_ratio": 3.930119
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.666667,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.333333,
+            0.0
+          ],
+          "root_change_ratio": 0.333333,
+          "third_clarity": 0.106641
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.174542,
+          "repetition": 0.737926
+        },
+        "onset_rhythm": {
+          "onset_rate": 3.791667
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            2.9e-05,
+            0.003144,
+            0.988647,
+            0.008176,
+            4e-06
+          ],
+          "centroid_hz": 1197.161,
+          "rolloff95_hz": 2616.284,
+          "hpss_ratio": 9.114972
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+      "condition": "drums-bass-vocals-plus6",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.666667,
+            0.0,
+            0.0,
+            0.333333,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.333333,
+          "third_clarity": 0.141698
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.172486,
+          "repetition": 0.753585
+        },
+        "onset_rhythm": {
+          "onset_rate": 3.208333
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            6.1e-05,
+            0.003984,
+            0.941128,
+            0.037417,
+            0.01741
+          ],
+          "centroid_hz": 2803.273,
+          "rolloff95_hz": 9033.179,
+          "hpss_ratio": 3.930119
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.666667,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.333333,
+            0.0
+          ],
+          "root_change_ratio": 0.333333,
+          "third_clarity": 0.09459
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.18142,
+          "repetition": 0.69187
+        },
+        "onset_rhythm": {
+          "onset_rate": 3.791667
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            2.1e-05,
+            0.001491,
+            0.992874,
+            0.005593,
+            2.1e-05
+          ],
+          "centroid_hz": 1216.38,
+          "rolloff95_hz": 2594.751,
+          "hpss_ratio": 8.696353
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Various Melody Loop 16 - 150 BPM A Min.wav",
+      "condition": "drums-minus6",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.666667,
+            0.0,
+            0.333333,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 1.0,
+          "third_clarity": 0.097596
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.136259,
+          "repetition": 0.935444
+        },
+        "onset_rhythm": {
+          "onset_rate": 7.5
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.000113,
+            0.18417,
+            0.745182,
+            0.070202,
+            0.000334
+          ],
+          "centroid_hz": 1635.864,
+          "rolloff95_hz": 4274.341,
+          "hpss_ratio": 4.553651
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.333333,
+            0.333333,
+            0.0,
+            0.0,
+            0.333333,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 1.0,
+          "third_clarity": 0.107703
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.135389,
+          "repetition": 0.934779
+        },
+        "onset_rhythm": {
+          "onset_rate": 6.71875
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.000128,
+            0.194003,
+            0.741491,
+            0.064187,
+            0.000191
+          ],
+          "centroid_hz": 1530.522,
+          "rolloff95_hz": 3832.91,
+          "hpss_ratio": 4.686191
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Various Melody Loop 16 - 150 BPM A Min.wav",
+      "condition": "drums-bass-0",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.666667,
+            0.0,
+            0.333333,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 1.0,
+          "third_clarity": 0.097596
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.136259,
+          "repetition": 0.935444
+        },
+        "onset_rhythm": {
+          "onset_rate": 7.5
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.000113,
+            0.18417,
+            0.745182,
+            0.070202,
+            0.000334
+          ],
+          "centroid_hz": 1635.864,
+          "rolloff95_hz": 4274.341,
+          "hpss_ratio": 4.553651
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            0.333333,
+            0.0,
+            0.0,
+            0.0,
+            0.333333,
+            0.0,
+            0.0,
+            0.0,
+            0.333333,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.666667,
+          "third_clarity": 0.113624
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.138703,
+          "repetition": 0.927223
+        },
+        "onset_rhythm": {
+          "onset_rate": 5.9375
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.00014,
+            0.188776,
+            0.746795,
+            0.064109,
+            0.00018
+          ],
+          "centroid_hz": 1526.293,
+          "rolloff95_hz": 3725.244,
+          "hpss_ratio": 4.667822
+        }
+      }
+    },
+    {
+      "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Various Melody Loop 16 - 150 BPM A Min.wav",
+      "condition": "drums-bass-vocals-plus6",
+      "clean": {
+        "harmony": {
+          "root_interval_hist": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.666667,
+            0.0,
+            0.333333,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 1.0,
+          "third_clarity": 0.097596
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.136259,
+          "repetition": 0.935444
+        },
+        "onset_rhythm": {
+          "onset_rate": 7.5
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.000113,
+            0.18417,
+            0.745182,
+            0.070202,
+            0.000334
+          ],
+          "centroid_hz": 1635.864,
+          "rolloff95_hz": 4274.341,
+          "hpss_ratio": 4.553651
+        }
+      },
+      "separated": {
+        "harmony": {
+          "root_interval_hist": [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "root_change_ratio": 0.0,
+          "third_clarity": 0.086999
+        },
+        "pitch_motion_repetition": {
+          "pitch_motion": 0.155803,
+          "repetition": 0.915813
+        },
+        "onset_rhythm": {
+          "onset_rate": 6.09375
+        },
+        "spectrum_texture": {
+          "band_balance": [
+            0.000467,
+            0.127536,
+            0.81498,
+            0.056969,
+            4.7e-05
+          ],
+          "centroid_hz": 1454.683,
+          "rolloff95_hz": 3456.079,
+          "hpss_ratio": 4.882582
+        }
+      }
+    }
+  ],
+  "features": {
+    "harmony.root_change_ratio": {
+      "group": "harmony",
+      "accepted": false,
+      "rho": 0.374873,
+      "median_absolute_error": 0.145833,
+      "clean_iqr": 0.375
+    },
+    "harmony.root_interval_hist": {
+      "group": "harmony",
+      "accepted": false,
+      "distance_median": 0.698278,
+      "distance_p90": 1.0
+    },
+    "harmony.third_clarity": {
+      "group": "harmony",
+      "accepted": false,
+      "rho": 0.328379,
+      "median_absolute_error": 0.019425,
+      "clean_iqr": 0.029581
+    },
+    "onset_rhythm.onset_rate": {
+      "group": "onset_rhythm",
+      "accepted": true,
+      "rho": 0.856786,
+      "median_absolute_error": 1.039322,
+      "clean_iqr": 5.254288
+    },
+    "pitch_motion_repetition.pitch_motion": {
+      "group": "pitch_motion_repetition",
+      "accepted": true,
+      "rho": 0.809127,
+      "median_absolute_error": 0.012232,
+      "clean_iqr": 0.059444
+    },
+    "pitch_motion_repetition.repetition": {
+      "group": "pitch_motion_repetition",
+      "accepted": true,
+      "rho": 0.898446,
+      "median_absolute_error": 0.042007,
+      "clean_iqr": 0.253254
+    },
+    "spectrum_texture.band_balance": {
+      "group": "spectrum_texture",
+      "accepted": false,
+      "distance_median": 0.07957,
+      "distance_p90": 0.587072
+    },
+    "spectrum_texture.centroid_hz": {
+      "group": "spectrum_texture",
+      "accepted": true,
+      "rho": 0.853786,
+      "median_absolute_error": 187.1105,
+      "clean_iqr": 1114.287
+    },
+    "spectrum_texture.hpss_ratio": {
+      "group": "spectrum_texture",
+      "accepted": false,
+      "rho": 0.591083,
+      "median_absolute_error": 1.205943,
+      "clean_iqr": 2.223705
+    },
+    "spectrum_texture.rolloff95_hz": {
+      "group": "spectrum_texture",
+      "accepted": false,
+      "rho": 0.492891,
+      "median_absolute_error": 683.6795,
+      "clean_iqr": 3882.7055
+    }
+  },
+  "comparison_required_features": [
+    "onset_rhythm.onset_rate",
+    "pitch_motion_repetition.pitch_motion",
+    "pitch_motion_repetition.repetition",
+    "spectrum_texture.centroid_hz"
+  ],
+  "stable_groups": [
+    "onset_rhythm",
+    "pitch_motion_repetition",
+    "spectrum_texture"
+  ],
+  "comparison_supported": true,
+  "corpus_library_comparison": {
+    "schema_revision": 1,
+    "required_features": [
+      "onset_rhythm.onset_rate",
+      "pitch_motion_repetition.pitch_motion",
+      "pitch_motion_repetition.repetition",
+      "spectrum_texture.centroid_hz"
+    ],
+    "corpus_n": 22,
+    "library_n": 8,
+    "groups": {
+      "0": {
+        "corpus_members": [
+          "0eCFLpkrqSw",
+          "79yRuKGMmKc",
+          "8YqiaNYwoMY",
+          "AH7tY4nIcp0",
+          "CywjEnmGeNI",
+          "HIZzYz1xk18",
+          "INOnzb8oTcU",
+          "MC6jsEPYzIE",
+          "O0L9rJdbFGE",
+          "OaEEyxZEpfU",
+          "Oj2OqdZ7pXk",
+          "R5396gKwIPg",
+          "Zl1zDf7AuLE",
+          "etXw2kp_QQI",
+          "fc5VJYJaZUc",
+          "m-eW84v2I9w",
+          "nE1nzTE5ESA",
+          "qFd_iWlYMZE",
+          "rga7wNQoZ7w"
+        ],
+        "corpus_n": 19,
+        "library_n": 8,
+        "features": {
+          "onset_rhythm.onset_rate": {
+            "corpus_median": 3.293749,
+            "library_median": 2.6875,
+            "standardized_median_difference": 0.422206
+          },
+          "pitch_motion_repetition.pitch_motion": {
+            "corpus_median": 0.105471,
+            "library_median": 0.100091,
+            "standardized_median_difference": 0.113059
+          },
+          "pitch_motion_repetition.repetition": {
+            "corpus_median": 0.7617,
+            "library_median": 0.92251,
+            "standardized_median_difference": -0.66203
+          },
+          "spectrum_texture.centroid_hz": {
+            "corpus_median": 760.578,
+            "library_median": 843.899,
+            "standardized_median_difference": -0.132063
+          }
+        }
+      },
+      "1": {
+        "corpus_members": [
+          "3umJ9yXFwho",
+          "4TRM3cps2Jo",
+          "6LbPC4ZWFok"
+        ],
+        "corpus_n": 3,
+        "library_n": 8,
+        "features": {
+          "onset_rhythm.onset_rate": {
+            "corpus_median": 2.180207,
+            "library_median": 2.6875,
+            "standardized_median_difference": -0.14095
+          },
+          "pitch_motion_repetition.pitch_motion": {
+            "corpus_median": 0.117833,
+            "library_median": 0.100091,
+            "standardized_median_difference": 0.41576
+          },
+          "pitch_motion_repetition.repetition": {
+            "corpus_median": 0.901267,
+            "library_median": 0.92251,
+            "standardized_median_difference": -0.085669
+          },
+          "spectrum_texture.centroid_hz": {
+            "corpus_median": 1323.818,
+            "library_median": 843.899,
+            "standardized_median_difference": 0.438133
+          }
+        }
+      }
+    },
+    "nearest_library_loops": {
+      "0eCFLpkrqSw": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.116572
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Various Melody Loop 16 - 150 BPM A Min.wav",
+          "distance": 0.150728
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+          "distance": 0.16111
+        }
+      ],
+      "3umJ9yXFwho": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.078477
+        },
+        {
+          "loop": "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity E Piano 1 - 80 BPM D Maj.wav",
+          "distance": 0.098924
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Various Melody Loop 16 - 150 BPM A Min.wav",
+          "distance": 0.139701
+        }
+      ],
+      "4TRM3cps2Jo": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.078635
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Various Melody Loop 16 - 150 BPM A Min.wav",
+          "distance": 0.083116
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+          "distance": 0.098156
+        }
+      ],
+      "6LbPC4ZWFok": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Various Melody Loop 16 - 150 BPM A Min.wav",
+          "distance": 0.079506
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.094713
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle West Coast Melody Loop 7 - 103 BPM C# Min.wav",
+          "distance": 0.103361
+        }
+      ],
+      "79yRuKGMmKc": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.05383
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+          "distance": 0.094731
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle West Coast Melody Loop 7 - 103 BPM C# Min.wav",
+          "distance": 0.106699
+        }
+      ],
+      "8YqiaNYwoMY": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Various Melody Loop 16 - 150 BPM A Min.wav",
+          "distance": 0.071998
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+          "distance": 0.07915
+        },
+        {
+          "loop": "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity E Piano 1 - 80 BPM D Maj.wav",
+          "distance": 0.088708
+        }
+      ],
+      "AH7tY4nIcp0": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.135843
+        },
+        {
+          "loop": "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity Piano Wet 4 - 86 BPM B Maj.wav",
+          "distance": 0.169976
+        },
+        {
+          "loop": "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity E Piano 1 - 80 BPM D Maj.wav",
+          "distance": 0.200318
+        }
+      ],
+      "CywjEnmGeNI": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.106884
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+          "distance": 0.143601
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle West Coast Melody Loop 7 - 103 BPM C# Min.wav",
+          "distance": 0.146175
+        }
+      ],
+      "HIZzYz1xk18": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.078557
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Various Melody Loop 16 - 150 BPM A Min.wav",
+          "distance": 0.111246
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+          "distance": 0.117467
+        }
+      ],
+      "INOnzb8oTcU": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.065186
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+          "distance": 0.123714
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle West Coast Melody Loop 7 - 103 BPM C# Min.wav",
+          "distance": 0.129693
+        }
+      ],
+      "MC6jsEPYzIE": [
+        {
+          "loop": "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity E Piano 1 - 80 BPM D Maj.wav",
+          "distance": 0.0662
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.123912
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+          "distance": 0.142269
+        }
+      ],
+      "O0L9rJdbFGE": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.071911
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+          "distance": 0.12614
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle West Coast Melody Loop 7 - 103 BPM C# Min.wav",
+          "distance": 0.144067
+        }
+      ],
+      "OaEEyxZEpfU": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.068418
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Various Melody Loop 16 - 150 BPM A Min.wav",
+          "distance": 0.10962
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+          "distance": 0.123243
+        }
+      ],
+      "Oj2OqdZ7pXk": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.09765
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+          "distance": 0.129165
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle West Coast Melody Loop 7 - 103 BPM C# Min.wav",
+          "distance": 0.129194
+        }
+      ],
+      "R5396gKwIPg": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.056714
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Various Melody Loop 16 - 150 BPM A Min.wav",
+          "distance": 0.114802
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+          "distance": 0.127305
+        }
+      ],
+      "Zl1zDf7AuLE": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle West Coast Melody Loop 7 - 103 BPM C# Min.wav",
+          "distance": 0.073568
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+          "distance": 0.080609
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.084791
+        }
+      ],
+      "etXw2kp_QQI": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.023958
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Various Melody Loop 16 - 150 BPM A Min.wav",
+          "distance": 0.13939
+        },
+        {
+          "loop": "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity Piano Wet 4 - 86 BPM B Maj.wav",
+          "distance": 0.158798
+        }
+      ],
+      "fc5VJYJaZUc": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.088108
+        },
+        {
+          "loop": "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity Piano Wet 4 - 86 BPM B Maj.wav",
+          "distance": 0.140353
+        },
+        {
+          "loop": "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity E Piano 1 - 80 BPM D Maj.wav",
+          "distance": 0.150335
+        }
+      ],
+      "m-eW84v2I9w": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle West Coast Melody Loop 7 - 103 BPM C# Min.wav",
+          "distance": 0.076544
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+          "distance": 0.076796
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.078471
+        }
+      ],
+      "nE1nzTE5ESA": [
+        {
+          "loop": "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity E Piano 1 - 80 BPM D Maj.wav",
+          "distance": 0.066127
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle West Coast Melody Loop 7 - 103 BPM C# Min.wav",
+          "distance": 0.075396
+        },
+        {
+          "loop": "loops/Cymatics - Eternity - Instruments/Cymatics - Eternity Piano Wet 4 - 86 BPM B Maj.wav",
+          "distance": 0.080266
+        }
+      ],
+      "qFd_iWlYMZE": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.06641
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+          "distance": 0.092531
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Various Melody Loop 16 - 150 BPM A Min.wav",
+          "distance": 0.104211
+        }
+      ],
+      "rga7wNQoZ7w": [
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Happy Melody Loop 1 - 120 BPM C Maj.wav",
+          "distance": 0.07794
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Reverse Melody Loop 3 - 133 BPM E Min.wav",
+          "distance": 0.084671
+        },
+        {
+          "loop": "loops/Cymatics - Oracle - Melodies/Cymatics - Oracle Various Melody Loop 16 - 150 BPM A Min.wav",
+          "distance": 0.101164
+        }
+      ]
+    }
+  }
+}

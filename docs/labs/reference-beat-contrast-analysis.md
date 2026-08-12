@@ -199,4 +199,20 @@ omnibus検定はこの制約を一部緩める（相関した弱い軸をまと�
 4. 実時間のfeature群を正式にschemaへ入れるかを判断する。今回は分離しなかったが、
    相対時間だけで測る構造的な盲点は残っている
 
+## 生出力の在り処と再現手順
+
+本文の数値の出どころ。**再生成できるものはコミットせず、できないものだけ残す**方針にしている。
+
+| 出力 | 場所 | 再現 |
+|---|---|---|
+| 距離表・群候補（`machine-draft.json`） | ローカルのみ | `mise run taste:cluster`（音声不要・決定的） |
+| 境界分析の全軸統計（`contrast.json`） | ローカルのみ | 上に続けて `mise run taste:contrast`（音声不要・決定的） |
+| confound監査（`contrast-confound.json`） | [コミット済み](reference-beat-analysis-outputs/) | **不可**（stem音声とDemucs再実行が要る） |
+| Demucs混入感度（`comparison-sensitivity.json`） | [コミット済み](reference-beat-analysis-outputs/) | **不可**（loop音声が要る） |
+| 耳確認の回答 | [コミット済み](reference-beat-human-answers/) | **不可**（耳確認のやり直しが要る） |
+
+再生成できる2つの入力は `docs/labs/reference-beat-taste-data.json`（コミット済み・音声・絶対パスなし）
+だけ。ただしこれは `cluster.py` / `contrast.py` とfeature schemaが今のままである限りの話で、
+それらを改修すると過去の出力は復元できなくなる。
+
 機械ドラフトは[こちら](reference-beat-contrast-draft.md)。
