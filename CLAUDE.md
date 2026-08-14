@@ -1,7 +1,6 @@
 # LaLa — 個人用DAW
 
 - アプリ名（表示名・成果物名）は **LaLa**。内部識別子（CMakeターゲット `daw`・bundle id `local.d0ne1s.daw`・`~/Music/daw/`・`~/Library/Logs/daw/`・配信repo `daw-releases`・Sparkle鍵アカウント `daw`）は旧名のまま（意図的。TCC・Sparkle・既存データの連続性のため変更しない）
-- 命名の好みは「機能説明ではなく、音の響きがゆるい畳語」（自作IDEは PolePole、DAWは LaLa）。表記はキャメルケースで繰り返しを見せる。Take・Kasane のような意味が直接的な単語案は刺さらない
 
 ## プロジェクト概要
 
