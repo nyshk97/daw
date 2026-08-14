@@ -76,6 +76,7 @@
 - [region-settings.md](docs/design/region-settings.md) — リージョン設定UIの割り当て方針
 - [reference-beat.md](docs/design/reference-beat.md) — リファレンス駆動ビートメイク（長期・2本柱: ガチャで作る＋レポートでわかる）。何を借りて何を借りないか・Python外部パイプライン＋LaLa内ガチャUIの分業・分析レポートとライブラリ蓄積・フェーズ表。実験記録は `docs/labs/reference-beat.md`（追記専用）。**上モノ素材の好みの境界（明るさ・コードの動きの目標帯）を含むので、ループ選び・推薦・上モノガチャを触る前に読む**
 - [corpus-comparison.md](docs/design/corpus-comparison.md) — 2つの集団を比べる分析の作法（1次元化にラベルを使わない・相関した軸へのomnibus検定・交差ペアでhaloを潰す・非対称の事前監査・検出力の下限を書く）。**コーパス比較や対照分析を始める前に必ず読む**
+- [sampling-rights.md](docs/design/sampling-rights.md) — 実曲サンプリングの権利リスクの見立て（検出・特定・執行の3変数）と帯分け（国内曲は全面回避・海外有名曲はYouTube限定・本命は海外×古い×マイナー）・レコード発掘の方針。**サンプリング素材の調達・曲の公開/配信に関わる機能や判断の前に読む**
 
 新しい設計判断が出たらここに追記する（planに書かない。planは1実装分の記録なので後から探せなくなる）。
 
