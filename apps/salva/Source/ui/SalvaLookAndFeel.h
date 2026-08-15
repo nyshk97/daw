@@ -113,9 +113,112 @@ public:
 
     juce::Font getTextButtonFont (juce::TextButton& button, int buttonHeight) override
     {
-        if (const auto v = button.getProperties()["fontSize"]; ! v.isVoid())
-            return juce::Font (juce::FontOptions ((float) (double) v));
-        return LookAndFeel_V4::getTextButtonFont (button, buttonHeight);
+        auto font = [&]
+        {
+            if (const auto v = button.getProperties()["fontSize"]; ! v.isVoid())
+                return juce::Font (juce::FontOptions ((float) (double) v));
+            return LookAndFeel_V4::getTextButtonFont (button, buttonHeight);
+        }();
+        // 主役ボタン（塗り）は太字で押しの強さを揃える
+        if (button.getProperties()["style"].toString() == "primary")
+            font = font.boldened();
+        return font;
+    }
+
+    //==============================================================================
+    // ボタンの3階層（2026-08-15確定ボタンモック）: getProperties()["style"] で役割を指定。
+    //   "primary" = オレンジ塗り・枠なし（主役。1画面に1つまで）
+    //   "action"  = 薄い地＋描画アイコン＋文字（新規録音など）
+    //   "ghost"   = 普段は透明・ホバーで地が出る（戻るなどのナビ）
+    // アイコンは ["icon"] = "recdot"（赤い正円）/ "back"（シェブロン）。
+    // 「●」「←」を文字グリフで置くとベースラインずれ・字間の詰まりが出るため描画にする。
+    // style未指定のボタンは従来のLnF_V4描画（枠付きチップ）のまま
+
+    void drawButtonBackground (juce::Graphics& g, juce::Button& button, const juce::Colour& backgroundColour,
+                               bool highlighted, bool down) override
+    {
+        // "forceHover": 親（空状態のカード等）がホバー中もボタンをホバー表示にする
+        // （カードとボタンはクリックの結果が同じなので、表示も揃える）
+        highlighted = highlighted || (bool) button.getProperties().getWithDefault ("forceHover", false);
+        const auto style = button.getProperties()["style"].toString();
+        if (style.isEmpty())
+        {
+            LookAndFeel_V4::drawButtonBackground (g, button, backgroundColour, highlighted, down);
+            return;
+        }
+        const auto r = button.getLocalBounds().toFloat().reduced (0.5f);
+        if (style == "primary")
+        {
+            g.setColour (down ? accent.darker (0.15f) : highlighted ? accentHover : accent);
+            g.fillRoundedRectangle (r, 8.0f);
+        }
+        else if (style == "action")
+        {
+            g.setColour (down ? buttonFill.darker (0.2f) : highlighted ? hoverFill : buttonFill);
+            g.fillRoundedRectangle (r, 8.0f);
+        }
+        else if (style == "ghost")
+        {
+            if (highlighted || down)
+            {
+                g.setColour (buttonFill);
+                g.fillRoundedRectangle (r, 7.0f);
+            }
+        }
+    }
+
+    void drawButtonText (juce::Graphics& g, juce::TextButton& button, bool highlighted, bool down) override
+    {
+        highlighted = highlighted || (bool) button.getProperties().getWithDefault ("forceHover", false);
+        const auto style = button.getProperties()["style"].toString();
+        if (style.isEmpty())
+        {
+            LookAndFeel_V4::drawButtonText (g, button, highlighted, down);
+            return;
+        }
+
+        const auto font = getTextButtonFont (button, button.getHeight());
+        g.setFont (font);
+        auto textColour = style == "primary" ? accentTextDark
+                        : style == "ghost"   ? (highlighted ? cream : dimText)
+                                             : itemText;
+        if (! button.isEnabled())
+            textColour = textColour.withAlpha (0.5f);
+
+        // アイコン＋間隔＋文字を1組として中央揃え（アイコンなしなら文字だけが中央に来る）
+        const auto icon = button.getProperties()["icon"].toString();
+        const float iconW = icon == "recdot" ? 9.0f : icon == "back" ? 7.0f : 0.0f;
+        const float gap = iconW > 0.0f ? 9.0f : 0.0f;
+        const auto bounds = button.getLocalBounds().toFloat();
+        const float textW = juce::GlyphArrangement::getStringWidth (font, button.getButtonText());
+        const float startX = bounds.getCentreX() - (iconW + gap + textW) * 0.5f;
+        const float cy = bounds.getCentreY();
+
+        if (icon == "recdot")
+        {
+            if (highlighted && button.isEnabled()) // ホバーでほんのり光る
+            {
+                g.setColour (recordRed.withAlpha (0.35f));
+                g.fillEllipse (startX - 3.5f, cy - 8.0f, 16.0f, 16.0f);
+            }
+            g.setColour (recordRed);
+            g.fillEllipse (startX, cy - 4.5f, 9.0f, 9.0f);
+        }
+        else if (icon == "back")
+        {
+            juce::Path p;
+            p.startNewSubPath (startX + 5.5f, cy - 4.5f);
+            p.lineTo (startX + 1.0f, cy);
+            p.lineTo (startX + 5.5f, cy + 4.5f);
+            g.setColour (textColour);
+            g.strokePath (p, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved,
+                                                   juce::PathStrokeType::rounded));
+        }
+
+        g.setColour (textColour);
+        g.drawText (button.getButtonText(),
+                    juce::Rectangle<float> (startX + iconW + gap, 0.0f, textW + 4.0f, bounds.getHeight()),
+                    juce::Justification::centredLeft, false);
     }
 
     //==============================================================================
@@ -158,4 +261,9 @@ private:
     const juce::Colour cream { 0xfff2e8d5 };
     const juce::Colour dimText { 0xff97908a };
     const juce::Colour accent { 0xffff7a2e };
+    const juce::Colour accentHover { 0xffff8a45 };
+    const juce::Colour accentTextDark { 0xff2b1507 };
+    const juce::Colour buttonFill { 0xff2e2d34 };
+    const juce::Colour hoverFill { 0xff3a3842 };
+    const juce::Colour recordRed { 0xffd94a43 };
 };

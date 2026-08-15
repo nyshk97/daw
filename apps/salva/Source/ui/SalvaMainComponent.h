@@ -103,12 +103,32 @@ private:
     EmptyLayout computeEmptyLayout() const;
     juce::Rectangle<int> emptyRecentRowRect (const EmptyLayout& el, int index) const;
     void refreshShownRecentFiles();
+    void syncEmptyCardHover(); // カードのホバーをボタンのホバー表示（forceHover）に同期
     void paintEmptyState (juce::Graphics& g, juce::Rectangle<int> area);
     void paintDisc (juce::Graphics& g, juce::Rectangle<float> bounds);
 
     // 選択の秒数（BPM逆算の入力）
     double selectionSeconds() const;
     int currentBeats() const;
+
+    // 円形の再生/停止ボタン（記号は描画。「▶」の文字グリフはベースラインがずれるため使わない）
+    class TransportPlayButton : public juce::Button
+    {
+    public:
+        // AX名（VoiceOver・検証用AXPress）用の名前。描画は自前なので画面には出ない
+        TransportPlayButton() : juce::Button (juce::String::fromUTF8 (u8"再生")) {}
+        void setPlaying (bool nowPlaying)
+        {
+            if (playing == nowPlaying)
+                return;
+            playing = nowPlaying;
+            repaint();
+        }
+        void paintButton (juce::Graphics& g, bool highlighted, bool down) override;
+
+    private:
+        bool playing = false;
+    };
 
     PlayerEngine engine;
     SalvaSettings settings;
@@ -119,7 +139,7 @@ private:
     std::unique_ptr<juce::FileChooser> fileChooser; // ファイルを開く・書き出し先の選択（録音は無ダイアログ）
     bool recordMode = false;
 
-    juce::TextButton playButton { juce::String::fromUTF8 (u8"▶") };
+    TransportPlayButton playButton;
     juce::Label timeLabel;
     juce::TextButton barsButton;
     juce::Label bpmLabel;

@@ -37,7 +37,6 @@ const juce::Colour accentTextDark { 0xff2b1507 }; // オレンジ地の上の文
 const juce::Colour buttonBg { 0xff2e2d34 };
 const juce::Colour buttonBorder { 0xff46444e };
 const juce::Colour hoverFill { 0xff3a3842 };
-const juce::Colour recordTextColour { 0xffd98a76 };
 // 盤面はアプリアイコン（Assets/make_icon.swift）と同じデザイン・同じ比率で描く
 const juce::Colour discBase { 0xff232228 };
 const juce::Colour discGroove { 0xff3b3a44 };
@@ -134,26 +133,33 @@ SalvaMainComponent::SalvaMainComponent()
     };
 
     addAndMakeVisible (recordModeButton);
-    recordModeButton.setButtonText (jp (u8"● 新規録音")); // 実態は常に新規テイク（パンチインではない）
+    recordModeButton.setButtonText (jp (u8"新規録音")); // 実態は常に新規テイク（パンチインではない）
     recordModeButton.getProperties().set ("fontSize", 12.5);
-    recordModeButton.setColour (juce::TextButton::textColourOffId, recordTextColour);
+    recordModeButton.getProperties().set ("style", "action");
+    recordModeButton.getProperties().set ("icon", "recdot"); // 赤ドットは描画（文字「●」を使わない）
     recordModeButton.onClick = [this] { toggleRecordMode(); };
 
-    // 空状態の主要アクション（D&D以外の入口と録音への導線）
+    // 空状態の主要アクション（D&D以外の入口と録音への導線）。
+    // 「ファイルを選択」だけが画面の主役なのでprimary（オレンジ塗り）
     addChildComponent (openFileButton);
     openFileButton.setButtonText (jp (u8"ファイルを選択…"));
-    openFileButton.setColour (juce::TextButton::buttonColourId, accent);
-    openFileButton.setColour (juce::TextButton::textColourOffId, accentTextDark);
-    openFileButton.setColour (juce::ComboBox::outlineColourId, accent); // LnFの枠線を地色に合わせる
+    openFileButton.getProperties().set ("fontSize", 13.0);
+    openFileButton.getProperties().set ("style", "primary");
     openFileButton.setMouseCursor (juce::MouseCursor::PointingHandCursor);
     openFileButton.onClick = [this] { openFileChooser(); };
 
     addChildComponent (recordEntryButton);
-    recordEntryButton.setButtonText (jp (u8"● 新規録音"));
-    recordEntryButton.setColour (juce::TextButton::buttonColourId, emptyBg);
-    recordEntryButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xffb6afa4));
+    recordEntryButton.setButtonText (jp (u8"新規録音"));
+    recordEntryButton.getProperties().set ("fontSize", 13.0);
+    recordEntryButton.getProperties().set ("style", "action");
+    recordEntryButton.getProperties().set ("icon", "recdot");
     recordEntryButton.setMouseCursor (juce::MouseCursor::PointingHandCursor);
     recordEntryButton.onClick = [this] { toggleRecordMode(); };
+
+    // カード全体とボタンはクリックの結果が同じなので、ホバー表示も一体化する
+    // （ボタン上のマウスもこちらで追跡してカードのハイライトを維持する）
+    openFileButton.addMouseListener (this, false);
+    recordEntryButton.addMouseListener (this, false);
 
     addChildComponent (recordView);
     recordView.onRecordToggle = [this] { toggleRecording(); };
@@ -301,7 +307,7 @@ void SalvaMainComponent::togglePlay()
                    "loop=" + juce::String (waveform.hasSelection() ? 1 : 0)
                        + " from=" + juce::String (engine.uiPlayheadSample()));
     }
-    playButton.setButtonText (engine.isPlaying() ? jp (u8"■") : jp (u8"▶"));
+    playButton.setPlaying (engine.isPlaying());
 }
 
 juce::File SalvaMainComponent::resolveVenvPython() const
@@ -822,7 +828,7 @@ void SalvaMainComponent::timerCallback()
     if (playing && engine.consumeReachedEnd())
     {
         engine.stop();
-        playButton.setButtonText (jp (u8"▶"));
+        playButton.setPlaying (false);
         Log::info ("transport.end_of_file");
     }
 
@@ -844,7 +850,7 @@ void SalvaMainComponent::timerCallback()
         Log::warn ("stream.starved", "totalSamples=" + juce::String (starved));
     }
 
-    playButton.setButtonText (playing ? jp (u8"■") : jp (u8"▶"));
+    playButton.setPlaying (playing);
 }
 
 bool SalvaMainComponent::keyPressed (const juce::KeyPress& key)
@@ -918,6 +924,34 @@ void SalvaMainComponent::filesDropped (const juce::StringArray& files, int, int)
             openFile (juce::File (f));
             return; // 最初の対応ファイルだけ開く
         }
+    }
+}
+
+void SalvaMainComponent::TransportPlayButton::paintButton (juce::Graphics& g, bool highlighted, bool down)
+{
+    auto r = getLocalBounds().toFloat();
+    const float d = juce::jmin (r.getWidth(), r.getHeight());
+    auto circle = r.withSizeKeepingCentre (d, d);
+    if (down)
+        circle = circle.reduced (1.5f);
+
+    g.setColour (! isEnabled() ? buttonBg.withAlpha (0.5f) : highlighted ? hoverFill : buttonBg);
+    g.fillEllipse (circle);
+
+    g.setColour (textColour.withAlpha (isEnabled() ? 1.0f : 0.35f));
+    const auto c = circle.getCentre();
+    if (playing)
+    {
+        // 停止（角丸四角）
+        g.fillRoundedRectangle (juce::Rectangle<float> (11.0f, 11.0f).withCentre (c), 2.5f);
+    }
+    else
+    {
+        // 再生の三角は光学中心へ（幾何中心だと左に寄って見えるので1px右へ）
+        juce::Path p;
+        const float cx = c.x + 1.0f;
+        p.addTriangle (cx - 4.5f, c.y - 6.0f, cx - 4.5f, c.y + 6.0f, cx + 6.5f, c.y);
+        g.fillPath (p);
     }
 }
 
@@ -1171,6 +1205,8 @@ void SalvaMainComponent::mouseUp (const juce::MouseEvent& e)
         showCacheDeleteMenu();
         return;
     }
+    if (e.eventComponent != this)
+        return; // ボタン上のクリックはボタン自身のonClickが処理する（座標系も違う）
     if (engine.hasFile() || recordMode)
         return;
     // 描画と同じレイアウト計算でヒットテスト（座標ズレ防止）。カード全体がクリック領域
@@ -1197,10 +1233,15 @@ void SalvaMainComponent::mouseUp (const juce::MouseEvent& e)
 
 void SalvaMainComponent::mouseMove (const juce::MouseEvent& e)
 {
-    if (e.eventComponent != this)
-        return; // cacheSizeLabelのリスナー経由は座標系が違うので無視
     int hitRow = -1, hitCard = -1;
-    if (! engine.hasFile() && ! recordMode)
+    // カード上のボタンもカードの一部として扱う（ボタンにいる間もカードのハイライトを保つ）
+    if (e.eventComponent == &openFileButton)
+        hitCard = 0;
+    else if (e.eventComponent == &recordEntryButton)
+        hitCard = 1;
+    else if (e.eventComponent != this)
+        return; // cacheSizeLabelのリスナー経由は座標系が違うので無視
+    else if (! engine.hasFile() && ! recordMode)
     {
         const auto el = computeEmptyLayout();
         if (el.cardFile.contains (e.getPosition()))
@@ -1218,6 +1259,7 @@ void SalvaMainComponent::mouseMove (const juce::MouseEvent& e)
     {
         hoveredRecent = hitRow;
         hoveredCard = hitCard;
+        syncEmptyCardHover();
         setMouseCursor ((hitRow >= 0 || hitCard >= 0) ? juce::MouseCursor::PointingHandCursor
                                                       : juce::MouseCursor::NormalCursor);
         repaint (emptyStateArea);
@@ -1230,9 +1272,24 @@ void SalvaMainComponent::mouseExit (const juce::MouseEvent&)
     {
         hoveredRecent = -1;
         hoveredCard = -1;
+        syncEmptyCardHover();
         setMouseCursor (juce::MouseCursor::NormalCursor);
         repaint (emptyStateArea);
     }
+}
+
+void SalvaMainComponent::syncEmptyCardHover()
+{
+    auto apply = [] (juce::Button& b, bool on)
+    {
+        if ((bool) b.getProperties().getWithDefault ("forceHover", false) != on)
+        {
+            b.getProperties().set ("forceHover", on);
+            b.repaint();
+        }
+    };
+    apply (openFileButton, hoveredCard == 0);
+    apply (recordEntryButton, hoveredCard == 1);
 }
 
 void SalvaMainComponent::openFileChooser()
@@ -1291,7 +1348,7 @@ void SalvaMainComponent::closeFileToStart()
     engine.closeFile();
     waveform.clearFile();
     beatsOverride = 0;
-    playButton.setButtonText (jp (u8"▶"));
+    playButton.setPlaying (false);
     timeLabel.setText ("0:00.0", juce::dontSendNotification);
     refreshStemCacheState(); // manifest・ステムパネルを空へ（resized込み）
     updateBpmDisplay();
@@ -1366,12 +1423,13 @@ void SalvaMainComponent::resized()
         refreshShownRecentFiles(); // 行数で縦中央が変わるため先に更新
         const auto el = computeEmptyLayout();
         auto cf = el.cardFile.reduced (14, 12);
-        openFileButton.setBounds (cf.removeFromBottom (28).withWidth (juce::jmin (128, cf.getWidth())));
+        openFileButton.setBounds (cf.removeFromBottom (32).withWidth (juce::jmin (150, cf.getWidth())));
         auto cr = el.cardRecord.reduced (14, 12);
-        recordEntryButton.setBounds (cr.removeFromBottom (28).withWidth (juce::jmin (140, cr.getWidth())));
+        recordEntryButton.setBounds (cr.removeFromBottom (32).withWidth (juce::jmin (130, cr.getWidth())));
     }
 
-    playButton.setBounds (transport.removeFromLeft (44));
+    // 正円38px（トランスポート行30pxの上下パディングへ4pxずつはみ出すが行44px内には収まる）
+    playButton.setBounds (transport.removeFromLeft (38).withSizeKeepingCentre (38, 38));
     transport.removeFromLeft (10);
     timeLabel.setBounds (transport.removeFromLeft (76));
     transport.removeFromLeft (16);

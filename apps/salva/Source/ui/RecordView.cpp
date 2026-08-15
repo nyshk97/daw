@@ -125,11 +125,12 @@ RecordView::RecordView()
             onChannelPairChanged ((channelPairBox.getSelectedId() - 1) * 2);
     };
 
+    // ゴースト＋描画シェブロン: 録音画面の主役は円形録音ボタンなので、ナビは気配を消す
     addAndMakeVisible (backButton);
-    backButton.setButtonText (jp (u8"← 戻る"));
+    backButton.setButtonText (jp (u8"戻る"));
     backButton.getProperties().set ("fontSize", 12.5);
-    backButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff2e2d34));
-    backButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xffb6afa4));
+    backButton.getProperties().set ("style", "ghost");
+    backButton.getProperties().set ("icon", "back");
     backButton.setMouseCursor (juce::MouseCursor::PointingHandCursor);
     backButton.setWantsKeyboardFocus (false);
     backButton.onClick = [this]
@@ -353,7 +354,7 @@ void RecordView::paint (juce::Graphics& g)
 void RecordView::resized()
 {
     auto area = getLocalBounds();
-    backButton.setBounds (14, 14, 84, 30);
+    backButton.setBounds (14, 14, 76, 30);
     const int contentWidth = juce::jmin (440, area.getWidth() - 48);
     auto content = area.withSizeKeepingCentre (contentWidth, 360);
 
