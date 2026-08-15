@@ -43,6 +43,8 @@ public:
 
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void filesDropped (const juce::StringArray& files, int x, int y) override;
+    void fileDragEnter (const juce::StringArray& files, int x, int y) override;
+    void fileDragExit (const juce::StringArray& files) override;
 
 private:
     void timerCallback() override;
@@ -65,7 +67,21 @@ private:
     void updateHeader();
     void rebuildOutputDeviceBox();
     void openRecentAt (int index);
+    void openFileChooser();          // 「ファイルを選択…」ボタン・⌘O
+    void updateSeparateButtonState(); // ファイル有無・録音モード・分離中から算出
+
+    // --- 空状態（Vinyl Warm・2026-08-15確定モック案B） ---
+    // レイアウト計算を描画・ボタン配置・ヒットテストで共有する（座標ズレ防止）
+    struct EmptyLayout
+    {
+        juce::Rectangle<int> disc, title, sub, buttons, recentHeader, rowsTop;
+        int visibleRows = 0; // エリアに収まる最近ファイル行数
+    };
+    EmptyLayout computeEmptyLayout() const;
+    juce::Rectangle<int> emptyRecentRowRect (const EmptyLayout& el, int index) const;
+    void refreshShownRecentFiles();
     void paintEmptyState (juce::Graphics& g, juce::Rectangle<int> area);
+    void paintDisc (juce::Graphics& g, juce::Rectangle<float> bounds);
 
     // 選択の秒数（BPM逆算の入力）
     double selectionSeconds() const;
@@ -73,6 +89,7 @@ private:
 
     PlayerEngine engine;
     SalvaSettings settings;
+    juce::LookAndFeel_V4 salvaLnf; // Vinyl Warmパレット（ボタン・コンボ・ポップアップに適用）
 
     WaveformView waveform;
     RecordView recordView;
@@ -88,6 +105,8 @@ private:
     juce::Label outputLabel;
     juce::ComboBox outputDeviceBox;
     juce::TextButton recordModeButton;
+    juce::TextButton openFileButton;    // 空状態のみ表示（D&D以外の入口）
+    juce::TextButton recordEntryButton; // 空状態のみ表示（録音モードへの導線）
     juce::Label starvedLabel; // read-ahead枯渇の可視化（原因調査の入口。通常は非表示）
 
     // ステム分離（ヘッダー）
@@ -107,8 +126,13 @@ private:
     bool initialFocusDone = false;
     juce::Rectangle<int> emptyStateArea; // 最近のファイル行のクリック判定用
     juce::StringArray shownRecentFiles;
+    bool dragOver = false;   // ファイルドラッグ中（盤面の回転・「ここにドロップ」表示）
+    float discAngle = 0.0f;  // 盤面の回転角（ドラッグ中のみ進む）
+    int hoveredRecent = -1;  // 最近ファイル行のホバー中インデックス（-1 = なし）
 
     void mouseUp (const juce::MouseEvent& e) override; // 空状態の最近ファイル行クリック
+    void mouseMove (const juce::MouseEvent& e) override; // 行ホバーの追跡
+    void mouseExit (const juce::MouseEvent& e) override;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SalvaMainComponent)
 };

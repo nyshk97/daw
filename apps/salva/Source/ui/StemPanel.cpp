@@ -6,20 +6,21 @@ namespace
 {
 juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
 
-const juce::Colour panelBg { 0xff26262a };
-const juce::Colour rowBg { 0xff222226 };
-const juce::Colour border { 0xff2d2d32 };
-const juce::Colour textColour { 0xffd3d3d3 };
-const juce::Colour textSilent { 0xff5a5a60 };
-const juce::Colour accent { 0xff4a6ea9 };
+// Vinyl Warmパレット（アクセント=アンバー。M/Sの機能色はLogic準拠のまま）
+const juce::Colour panelBg { 0xff221d19 };
+const juce::Colour rowBg { 0xff1e1a16 };
+const juce::Colour border { 0xff322b25 };
+const juce::Colour textColour { 0xffe4dac6 };
+const juce::Colour textSilent { 0xff5e5348 };
+const juce::Colour accent { 0xffd99a4e };
 const juce::Colour muteOn { 0xff5b82c4 };
 const juce::Colour soloOn { 0xffdfae4a };
 const juce::Colour meterBg { 0xff111114 };
 const juce::Colour meterGreen { 0xff7bc47b };
 const juce::Colour meterYellow { 0xffdfae4a };
 const juce::Colour meterRed { 0xffd94a43 };
-const juce::Colour msOffBg { 0xff333338 };
-const juce::Colour msOffText { 0xff8a8a90 };
+const juce::Colour msOffBg { 0xff322b25 };
+const juce::Colour msOffText { 0xff8a7d6c };
 
 // ステム別スウォッチ（Logicのトラック色の感覚。固定順）
 const juce::Colour swatches[] = {
@@ -135,7 +136,7 @@ void StemPanel::paint (juce::Graphics& g)
         const bool on = (int) t - 1 == groupIndex;
         g.setColour (on ? accent : rowBg);
         g.fillRoundedRectangle (tabRects[t].toFloat(), 5.0f);
-        g.setColour (on ? juce::Colours::white : msOffText);
+        g.setColour (on ? juce::Colour (0xff241a0d) : msOffText); // アンバー地には暗色文字
         const auto label = t == 0 ? jp (u8"オリジナル") : groups[t - 1].displayName;
         g.drawText (label, tabRects[t], juce::Justification::centred);
     }

@@ -11,19 +11,28 @@ namespace
 {
 juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
 
-const juce::Colour windowBg { 0xff2e2e33 };
-const juce::Colour headerBg { 0xff26262a };
-const juce::Colour panelBorder { 0xff2d2d32 };
-const juce::Colour textColour { 0xffd3d3d3 };
-const juce::Colour textDim { 0xff8a8a90 };
-const juce::Colour accent { 0xff4a6ea9 };
-const juce::Colour playGreen { 0xff7bc47b };
+// Vinyl Warmパレット（2026-08-15確定モック案B: アンバー×濃茶）
+const juce::Colour windowBg { 0xff1d1916 };
+const juce::Colour headerBg { 0xff221d19 };
+const juce::Colour panelBorder { 0xff322b25 };
+const juce::Colour emptyBg { 0xff171310 };
+const juce::Colour textColour { 0xffede4d3 };
+const juce::Colour textDim { 0xff8a7d6c };
+const juce::Colour accent { 0xffd99a4e };
+const juce::Colour accentTextDark { 0xff241a0d }; // アンバー地の上の文字
+const juce::Colour buttonBg { 0xff2e2822 };
+const juce::Colour buttonBorder { 0xff453c33 };
+const juce::Colour hoverFill { 0xff3a322b };
+const juce::Colour recordTextColour { 0xffd98a76 };
+const juce::Colour discBase { 0xff131010 };
+const juce::Colour discGroove { 0xff1e1a17 };
+const juce::Colour discLabelColour { 0xffc9a06b };
 const juce::Colour warnColour { 0xffff4500 };
 
 constexpr int headerHeight = 40;
 constexpr int transportHeight = 44;
 constexpr int bottomHeight = 40;
-constexpr int recentRowHeight = 26;
+constexpr int recentRowHeight = 40;
 
 juce::String formatTime (double seconds)
 {
@@ -31,10 +40,27 @@ juce::String formatTime (double seconds)
     const double s = seconds - m * 60.0;
     return juce::String (m) + ":" + juce::String (s, 1).paddedLeft ('0', 4);
 }
+
+// 最近ファイル行の従属表示用: 親ディレクトリをホーム省略形で（例: ~/Downloads）
+juce::String shortDirPath (const juce::File& file)
+{
+    const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory).getFullPathName();
+    auto dir = file.getParentDirectory().getFullPathName();
+    if (dir.startsWith (home))
+        dir = "~" + dir.substring (home.length());
+    return dir;
+}
 } // namespace
 
 SalvaMainComponent::SalvaMainComponent()
 {
+    // ColourScheme順: windowBackground, widgetBackground, menuBackground,
+    //                 outline, defaultText, defaultFill, highlightedText, highlightedFill, menuText
+    salvaLnf.setColourScheme ({ windowBg, buttonBg, headerBg,
+                                buttonBorder, textColour, accent,
+                                textColour, hoverFill, textColour });
+    setLookAndFeel (&salvaLnf);
+
     settings = SalvaSettings::load();
     engine.initialiseDevice (settings.outputDeviceName);
 
@@ -98,7 +124,22 @@ SalvaMainComponent::SalvaMainComponent()
 
     addAndMakeVisible (recordModeButton);
     recordModeButton.setButtonText (jp (u8"● 録音モード"));
+    recordModeButton.setColour (juce::TextButton::textColourOffId, recordTextColour);
     recordModeButton.onClick = [this] { toggleRecordMode(); };
+
+    // 空状態の主要アクション（D&D以外の入口と録音への導線）
+    addChildComponent (openFileButton);
+    openFileButton.setButtonText (jp (u8"ファイルを選択…"));
+    openFileButton.setColour (juce::TextButton::buttonColourId, accent);
+    openFileButton.setColour (juce::TextButton::textColourOffId, accentTextDark);
+    openFileButton.setColour (juce::ComboBox::outlineColourId, accent); // LnFの枠線を地色に合わせる
+    openFileButton.onClick = [this] { openFileChooser(); };
+
+    addChildComponent (recordEntryButton);
+    recordEntryButton.setButtonText (jp (u8"● レコードから録音"));
+    recordEntryButton.setColour (juce::TextButton::buttonColourId, emptyBg);
+    recordEntryButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xffb3a48d));
+    recordEntryButton.onClick = [this] { toggleRecordMode(); };
 
     addChildComponent (recordView);
     recordView.onRecordToggle = [this] { toggleRecording(); };
@@ -155,9 +196,9 @@ SalvaMainComponent::SalvaMainComponent()
     exportButton.setVisible (false);
 
     addChildComponent (toastLabel);
-    toastLabel.setColour (juce::Label::backgroundColourId, juce::Colour (0xf02c2c30));
+    toastLabel.setColour (juce::Label::backgroundColourId, juce::Colour (0xf02b251f));
     toastLabel.setColour (juce::Label::textColourId, textColour);
-    toastLabel.setColour (juce::Label::outlineColourId, juce::Colour (0xff55555a));
+    toastLabel.setColour (juce::Label::outlineColourId, buttonBorder);
     toastLabel.setJustificationType (juce::Justification::centred);
     toastLabel.setFont (juce::FontOptions (12.0f));
 
@@ -169,7 +210,8 @@ SalvaMainComponent::SalvaMainComponent()
     // スペース=再生/停止を常に効かせる: ボタン類にフォーカスを渡さない
     // （フォーカスされたTextButtonはスペースをクリックとして食ってしまう）
     for (auto* c : { (juce::Component*) &playButton, (juce::Component*) &barsButton,
-                     (juce::Component*) &recordModeButton, (juce::Component*) &outputDeviceBox })
+                     (juce::Component*) &recordModeButton, (juce::Component*) &outputDeviceBox,
+                     (juce::Component*) &openFileButton, (juce::Component*) &recordEntryButton })
         c->setWantsKeyboardFocus (false);
 
     setWantsKeyboardFocus (true);
@@ -177,9 +219,13 @@ SalvaMainComponent::SalvaMainComponent()
     startTimerHz (30);
     updateHeader();
     updateBpmDisplay();
+    updateSeparateButtonState();
 }
 
-SalvaMainComponent::~SalvaMainComponent() = default;
+SalvaMainComponent::~SalvaMainComponent()
+{
+    setLookAndFeel (nullptr); // メンバのsalvaLnfより先に参照を外す
+}
 
 void SalvaMainComponent::openFile (const juce::File& file)
 {
@@ -203,6 +249,7 @@ void SalvaMainComponent::openFile (const juce::File& file)
     refreshStemCacheState(); // ステムキャッシュ自動検出（manifest検証済みのもののみ）
     updateHeader();
     updateBpmDisplay();
+    updateSeparateButtonState();
     repaint();
     Log::info ("file.open", "path=" + file.getFullPathName()
                                 + " sr=" + juce::String (fi.sampleRate, 0)
@@ -498,11 +545,13 @@ void SalvaMainComponent::toggleRecordMode()
     }
 
     recordModeButton.setColour (juce::TextButton::buttonColourId,
-                                recordMode ? juce::Colour (0xff8e2a26) : juce::Colour (0xff3a3a40));
+                                recordMode ? juce::Colour (0xff8e2a26) : buttonBg);
+    recordModeButton.setColour (juce::TextButton::textColourOffId,
+                                recordMode ? textColour : recordTextColour);
     playButton.setEnabled (! recordMode);
     barsButton.setEnabled (! recordMode);
     outputDeviceBox.setEnabled (! recordMode);
-    separateButton.setEnabled (! recordMode && separator.status() != StemSeparator::Status::running);
+    updateSeparateButtonState();
     updateBpmDisplay();
     resized();
     repaint();
@@ -652,6 +701,13 @@ void SalvaMainComponent::timerCallback()
 
     engine.purgeRetired();
 
+    // ドラッグ中は盤面を回す（モックの約9秒/周に合わせた角速度）
+    if (dragOver && ! engine.hasFile() && ! recordMode)
+    {
+        discAngle += 0.023f;
+        repaint (emptyStateArea);
+    }
+
     if (toastTicks > 0 && --toastTicks == 0)
         toastLabel.setVisible (false);
 
@@ -661,7 +717,7 @@ void SalvaMainComponent::timerCallback()
         bool success = false;
         if (separator.consumeResult (identity, success))
         {
-            separateButton.setEnabled (true);
+            updateSeparateButtonState();
             separateProgressLabel.setVisible (false);
             updateCacheSizeLabel();
             if (! success)
@@ -766,6 +822,12 @@ bool SalvaMainComponent::keyPressed (const juce::KeyPress& key)
             toggleRecording();
         return true;
     }
+    if (key == juce::KeyPress ('o', juce::ModifierKeys::commandModifier, 0))
+    {
+        if (! recordMode)
+            openFileChooser();
+        return true;
+    }
     if (key == juce::KeyPress (juce::KeyPress::leftKey, juce::ModifierKeys::commandModifier, 0))
     {
         waveform.zoomOut();
@@ -787,8 +849,22 @@ bool SalvaMainComponent::isInterestedInFileDrag (const juce::StringArray& files)
     return false;
 }
 
+void SalvaMainComponent::fileDragEnter (const juce::StringArray&, int, int)
+{
+    dragOver = true;
+    repaint (emptyStateArea);
+}
+
+void SalvaMainComponent::fileDragExit (const juce::StringArray&)
+{
+    dragOver = false;
+    repaint (emptyStateArea);
+}
+
 void SalvaMainComponent::filesDropped (const juce::StringArray& files, int, int)
 {
+    dragOver = false;
+    repaint (emptyStateArea);
     for (const auto& f : files)
     {
         if (AudioFileTypes::isSupported (f))
@@ -810,9 +886,19 @@ void SalvaMainComponent::paint (juce::Graphics& g)
     g.setColour (panelBorder);
     g.fillRect (header.removeFromBottom (1));
 
+    // ロゴ: ミニ盤面＋アプリ名
+    {
+        const float lr = 9.0f, lx = 14.0f, ly = headerHeight * 0.5f - lr;
+        g.setColour (discBase);
+        g.fillEllipse (lx, ly, lr * 2.0f, lr * 2.0f);
+        g.setColour (discLabelColour);
+        g.fillEllipse (lx + lr - 3.5f, ly + lr - 3.5f, 7.0f, 7.0f);
+        g.setColour (discBase);
+        g.fillEllipse (lx + lr - 1.5f, ly + lr - 1.5f, 3.0f, 3.0f);
+    }
     g.setColour (textColour);
     g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
-    g.drawText ("Salva", 14, 0, 80, headerHeight, juce::Justification::centredLeft);
+    g.drawText ("Salva", 40, 0, 80, headerHeight, juce::Justification::centredLeft);
 
     g.setFont (juce::FontOptions (12.0f));
     if (engine.hasFile())
@@ -823,7 +909,7 @@ void SalvaMainComponent::paint (juce::Graphics& g)
                               + jp (u8"・") + (fi.numChannels >= 2 ? jp (u8"ステレオ") : jp (u8"モノラル"))
                               + jp (u8"・") + formatTime ((double) fi.lengthSamples / fi.sampleRate);
         g.setColour (textDim);
-        g.drawText (infoText, 80, 0, juce::jmax (100, getWidth() - 400), headerHeight,
+        g.drawText (infoText, 92, 0, juce::jmax (100, getWidth() - 412), headerHeight,
                     juce::Justification::centredLeft, true);
     }
 
@@ -832,33 +918,160 @@ void SalvaMainComponent::paint (juce::Graphics& g)
         paintEmptyState (g, emptyStateArea);
 }
 
-void SalvaMainComponent::paintEmptyState (juce::Graphics& g, juce::Rectangle<int> area)
+void SalvaMainComponent::refreshShownRecentFiles()
 {
-    g.setColour (juce::Colour (0xff1e1e22));
-    g.fillRect (area);
-
-    auto content = area.reduced (24);
-    g.setColour (textDim);
-    g.setFont (juce::FontOptions (14.0f));
-    g.drawText (jp (u8"オーディオファイルをここにドロップ（wav / aiff / flac / mp3 / m4a）"),
-                content.removeFromTop (40), juce::Justification::centred);
-
     shownRecentFiles.clear();
     for (const auto& path : settings.recentFiles)
         if (juce::File (path).existsAsFile())
             shownRecentFiles.add (path);
+}
 
-    if (shownRecentFiles.isEmpty())
+SalvaMainComponent::EmptyLayout SalvaMainComponent::computeEmptyLayout() const
+{
+    EmptyLayout el;
+    auto content = emptyStateArea.reduced (40, 20);
+
+    const int discSize = juce::jlimit (60, 210, juce::jmin (content.getHeight() - 10,
+                                                            content.getWidth() * 2 / 5));
+    el.disc = content.removeFromLeft (discSize).withSizeKeepingCentre (discSize, discSize);
+    content.removeFromLeft (36);
+
+    // 右側ブロックは縦中央寄せ。最近ファイル行はエリアに収まる分だけ（保存は最大8件）
+    constexpr int fixedH = 26 + 22 + 8 + 40;   // タイトル＋サブ＋間隔＋ボタン行
+    constexpr int recentHeadH = 18 + 24;       // 間隔＋見出し
+    el.visibleRows = juce::jlimit (0, shownRecentFiles.size(),
+                                   (content.getHeight() - fixedH - recentHeadH) / recentRowHeight);
+
+    const int blockH = fixedH + (el.visibleRows > 0 ? recentHeadH + el.visibleRows * recentRowHeight : 0);
+    auto side = content.withSizeKeepingCentre (content.getWidth(),
+                                               juce::jmin (blockH, content.getHeight()));
+    el.title = side.removeFromTop (26);
+    el.sub = side.removeFromTop (22);
+    side.removeFromTop (8);
+    el.buttons = side.removeFromTop (40);
+    if (el.visibleRows > 0)
+    {
+        side.removeFromTop (18);
+        el.recentHeader = side.removeFromTop (24);
+        el.rowsTop = side;
+    }
+    return el;
+}
+
+juce::Rectangle<int> SalvaMainComponent::emptyRecentRowRect (const EmptyLayout& el, int index) const
+{
+    return { el.rowsTop.getX(), el.rowsTop.getY() + index * recentRowHeight,
+             el.rowsTop.getWidth(), recentRowHeight };
+}
+
+void SalvaMainComponent::paintDisc (juce::Graphics& g, juce::Rectangle<float> bounds)
+{
+    const auto b = dragOver ? bounds.expanded (bounds.getWidth() * 0.02f) : bounds;
+    const auto c = b.getCentre();
+    const float r = b.getWidth() * 0.5f;
+
+    g.setColour (discBase);
+    g.fillEllipse (b);
+
+    // 溝: 細いリングを等間隔に
+    g.setColour (discGroove);
+    for (float gr = r * 0.38f; gr < r * 0.96f; gr += 4.0f)
+        g.drawEllipse (c.x - gr, c.y - gr, gr * 2.0f, gr * 2.0f, 1.0f);
+
+    // 光沢のくさび（非対称なので回転が見える）
+    {
+        juce::Path sheen;
+        sheen.addPieSegment (b, discAngle, discAngle + 0.55f, 0.34f);
+        sheen.addPieSegment (b, discAngle + juce::MathConstants<float>::pi,
+                             discAngle + juce::MathConstants<float>::pi + 0.4f, 0.34f);
+        g.setColour (juce::Colours::white.withAlpha (0.05f));
+        g.fillPath (sheen);
+    }
+
+    // レーベルとセンターホール
+    const float lr = r * 0.31f;
+    g.setColour (discLabelColour);
+    g.fillEllipse (c.x - lr, c.y - lr, lr * 2.0f, lr * 2.0f);
+    g.setColour (discLabelColour.darker (0.4f));
+    g.drawEllipse (c.x - lr, c.y - lr, lr * 2.0f, lr * 2.0f, 1.0f);
+    g.setColour (emptyBg);
+    g.fillEllipse (c.x - 4.0f, c.y - 4.0f, 8.0f, 8.0f);
+
+    if (dragOver)
+    {
+        const auto badge = juce::Rectangle<float> (110.0f, 24.0f).withCentre (c);
+        g.setColour (juce::Colour (0xe0141009));
+        g.fillRoundedRectangle (badge, 12.0f);
+        g.setColour (textColour);
+        g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+        g.drawText (jp (u8"ここにドロップ"), badge.toNearestInt(), juce::Justification::centred);
+    }
+}
+
+void SalvaMainComponent::paintEmptyState (juce::Graphics& g, juce::Rectangle<int> area)
+{
+    g.setColour (emptyBg);
+    g.fillRect (area);
+
+    refreshShownRecentFiles();
+    const auto el = computeEmptyLayout();
+    const auto discF = el.disc.toFloat();
+
+    // 盤面の背後の淡いアンバーのグロー
+    {
+        const auto c = discF.getCentre();
+        juce::ColourGradient glow (accent.withAlpha (0.07f), c.x, c.y,
+                                   accent.withAlpha (0.0f), c.x + discF.getWidth() * 1.1f, c.y, true);
+        g.setGradientFill (glow);
+        g.fillRect (area);
+    }
+
+    paintDisc (g, discF);
+
+    g.setColour (textColour);
+    g.setFont (juce::FontOptions (16.0f, juce::Font::bold));
+    g.drawText (jp (u8"オーディオファイルをドロップ"), el.title, juce::Justification::centredLeft);
+
+    g.setColour (textDim);
+    g.setFont (juce::FontOptions (11.5f));
+    g.drawText (jp (u8"wav / aiff / flac / mp3 / m4a — ウィンドウのどこでも受け付けます"),
+                el.sub, juce::Justification::centredLeft, true);
+
+    if (el.visibleRows <= 0)
         return;
 
-    g.setFont (juce::FontOptions (12.0f));
-    g.drawText (jp (u8"最近開いたファイル:"), content.removeFromTop (24), juce::Justification::centredLeft);
-    g.setColour (textColour);
-    for (const auto& path : shownRecentFiles)
+    g.setColour (textDim.withAlpha (0.85f));
+    g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+    g.drawText (jp (u8"最近開いたファイル"), el.recentHeader, juce::Justification::centredLeft);
+
+    for (int i = 0; i < el.visibleRows; ++i)
     {
-        auto row = content.removeFromTop (recentRowHeight);
-        g.drawText (juce::File (path).getFileName() + "  " + jp (u8"—") + "  " + path,
-                    row.reduced (8, 0), juce::Justification::centredLeft, true);
+        const auto row = emptyRecentRowRect (el, i);
+        const bool hovered = (i == hoveredRecent);
+        if (hovered)
+        {
+            g.setColour (accent.withAlpha (0.09f));
+            g.fillRoundedRectangle (row.toFloat(), 8.0f);
+        }
+        auto inner = row.reduced (10, 6);
+
+        // ミニ盤面アイコン
+        const auto icon = inner.removeFromLeft (26).withSizeKeepingCentre (26, 26).toFloat();
+        g.setColour (discBase);
+        g.fillEllipse (icon);
+        g.setColour (discLabelColour);
+        g.fillEllipse (icon.reduced (icon.getWidth() * 0.32f));
+        g.setColour (discBase);
+        g.fillEllipse (icon.withSizeKeepingCentre (3.0f, 3.0f));
+        inner.removeFromLeft (10);
+
+        const juce::File f (shownRecentFiles[i]);
+        g.setColour (hovered ? textColour : juce::Colour (0xffe4dac6));
+        g.setFont (juce::FontOptions (13.0f));
+        g.drawText (f.getFileName(), inner.removeFromTop (16), juce::Justification::centredLeft, true);
+        g.setColour (textDim.withAlpha (0.8f));
+        g.setFont (juce::FontOptions (10.5f));
+        g.drawText (shortDirPath (f), inner, juce::Justification::centredLeft, true);
     }
 }
 
@@ -871,18 +1084,74 @@ void SalvaMainComponent::mouseUp (const juce::MouseEvent& e)
     }
     if (engine.hasFile() || recordMode || shownRecentFiles.isEmpty())
         return;
-    // paintEmptyStateと同じ計算で行を割り出す（描画とヒットテストの座標を揃える）
-    auto content = emptyStateArea.reduced (24);
-    content.removeFromTop (40);
-    content.removeFromTop (24);
-    for (int i = 0; i < shownRecentFiles.size(); ++i)
+    // 描画と同じレイアウト計算でヒットテスト（座標ズレ防止）
+    const auto el = computeEmptyLayout();
+    for (int i = 0; i < el.visibleRows; ++i)
     {
-        if (content.removeFromTop (recentRowHeight).contains (e.getPosition()))
+        if (emptyRecentRowRect (el, i).contains (e.getPosition()))
         {
             openFile (juce::File (shownRecentFiles[i]));
             return;
         }
     }
+}
+
+void SalvaMainComponent::mouseMove (const juce::MouseEvent& e)
+{
+    if (e.eventComponent != this)
+        return; // cacheSizeLabelのリスナー経由は座標系が違うので無視
+    int hit = -1;
+    if (! engine.hasFile() && ! recordMode)
+    {
+        const auto el = computeEmptyLayout();
+        for (int i = 0; i < el.visibleRows; ++i)
+            if (emptyRecentRowRect (el, i).contains (e.getPosition()))
+            {
+                hit = i;
+                break;
+            }
+    }
+    if (hit != hoveredRecent)
+    {
+        hoveredRecent = hit;
+        setMouseCursor (hit >= 0 ? juce::MouseCursor::PointingHandCursor
+                                 : juce::MouseCursor::NormalCursor);
+        repaint (emptyStateArea);
+    }
+}
+
+void SalvaMainComponent::mouseExit (const juce::MouseEvent&)
+{
+    if (hoveredRecent != -1)
+    {
+        hoveredRecent = -1;
+        setMouseCursor (juce::MouseCursor::NormalCursor);
+        repaint (emptyStateArea);
+    }
+}
+
+void SalvaMainComponent::openFileChooser()
+{
+    const auto downloads = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                               .getChildFile ("Downloads");
+    recordFileChooser = std::make_unique<juce::FileChooser> (
+        jp (u8"オーディオファイルを開く"),
+        downloads.isDirectory() ? downloads
+                                : juce::File::getSpecialLocation (juce::File::userMusicDirectory),
+        "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.m4a");
+    recordFileChooser->launchAsync (
+        juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+        [this] (const juce::FileChooser& fc)
+        {
+            if (const auto f = fc.getResult(); f.existsAsFile())
+                openFile (f);
+        });
+}
+
+void SalvaMainComponent::updateSeparateButtonState()
+{
+    separateButton.setEnabled (engine.hasFile() && ! recordMode
+                               && separator.status() != StemSeparator::Status::running);
 }
 
 void SalvaMainComponent::openRecentAt (int index)
@@ -894,6 +1163,7 @@ void SalvaMainComponent::openRecentAt (int index)
 void SalvaMainComponent::resized()
 {
     auto area = getLocalBounds();
+    const bool emptyState = ! engine.hasFile() && ! recordMode;
 
     // ヘッダー右側: [分離中…] [ステム分離] [キャッシュ x GB ▾]
     auto header = area.removeFromTop (headerHeight).reduced (10, 8);
@@ -904,7 +1174,11 @@ void SalvaMainComponent::resized()
     separateProgressLabel.setBounds (header.removeFromRight (60));
 
     auto bottom = area.removeFromBottom (bottomHeight).reduced (10, 6);
-    auto transport = area.removeFromBottom (transportHeight).reduced (10, 7);
+    // 空状態は死んだトランスポート（▶・0:00.0）を隠し、その高さをドロップ領域に使う
+    auto transport = emptyState ? juce::Rectangle<int>()
+                                : area.removeFromBottom (transportHeight).reduced (10, 7);
+    playButton.setVisible (! emptyState);
+    timeLabel.setVisible (! emptyState);
 
     // ステムM/Sパネル（案B: 縦リスト。グループ未選択時はタブだけの高さ）
     const int stemHeight = (! recordMode && engine.hasFile()) ? stemPanel.preferredHeight() : 0;
@@ -916,6 +1190,19 @@ void SalvaMainComponent::resized()
     recordView.setBounds (area);
     waveform.setVisible (engine.hasFile() && ! recordMode);
     recordView.setVisible (recordMode);
+
+    // 空状態の主要アクション（描画と同じレイアウト計算でボタンを置く）
+    openFileButton.setVisible (emptyState);
+    recordEntryButton.setVisible (emptyState);
+    if (emptyState)
+    {
+        refreshShownRecentFiles(); // 行数で縦中央が変わるため先に更新
+        const auto el = computeEmptyLayout();
+        auto b = el.buttons.withHeight (30);
+        openFileButton.setBounds (b.removeFromLeft (128));
+        b.removeFromLeft (10);
+        recordEntryButton.setBounds (b.removeFromLeft (160));
+    }
 
     playButton.setBounds (transport.removeFromLeft (44));
     transport.removeFromLeft (10);
@@ -934,5 +1221,5 @@ void SalvaMainComponent::resized()
     recordModeButton.setBounds (bottom.removeFromRight (120));
 
     toastLabel.setBounds (getLocalBounds().withSizeKeepingCentre (juce::jmin (520, getWidth() - 40), 28)
-                              .withY (getHeight() - bottomHeight - transportHeight - 40));
+                              .withY (getHeight() - bottomHeight - (emptyState ? 0 : transportHeight) - 40));
 }
