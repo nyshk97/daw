@@ -364,6 +364,7 @@ void SalvaMainComponent::refreshStemCacheState()
     stemPanel.setManifest (currentManifest);
     applyStemConfig();
     updateCacheSizeLabel();
+    updateSeparateButtonState(); // manifestの有無で「STEM分離⇄分離済み」が切り替わる
     resized();
 }
 
@@ -1283,7 +1284,11 @@ void SalvaMainComponent::closeFileToStart()
 
 void SalvaMainComponent::updateSeparateButtonState()
 {
-    separateButton.setEnabled (engine.hasFile() && ! recordMode
+    // 分離済み（有効なmanifestあり）なら押せない: 分離は決定的で再実行に意味がなく、
+    // 数分のCPUを無駄に回すだけの誤操作になる。キャッシュ削除で自動的に復活する
+    const bool separated = currentManifest.valid;
+    separateButton.setButtonText (jp (separated ? u8"分離済み" : u8"STEM分離"));
+    separateButton.setEnabled (engine.hasFile() && ! recordMode && ! separated
                                && separator.status() != StemSeparator::Status::running);
 }
 
