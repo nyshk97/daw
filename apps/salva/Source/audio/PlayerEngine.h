@@ -9,7 +9,7 @@
 #include "shared/ReadAheadStream.h"
 #include "shared/ResampleStage.h"
 
-// Salvaの再生エンジン（出力のみ。録音モードはPhase 4で排他切り替え）。
+// Salvaの再生エンジン（出力のみ。録音は入力専用への開き直しで排他切り替え）。
 //
 // 構成: ReadAheadStream（ディスク先読み・オーディオ側ロックなし）
 //       → PlaybackCallback（自前のAudioIODeviceCallback: ミックス＋リサンプル）
@@ -86,12 +86,12 @@ public:
     // 引退セットが空になるまで待つ（削除前のreader解放待ち。メッセージスレッド専用・短時間ブロック）
     void drainRetired (int timeoutMs);
 
-    // --- 録音モード（再生と排他。デバイスを入力専用で開き直す） ---
+    // --- 録音（再生と排他。デバイスを入力専用で開き直す） ---
     // 空文字=成功。inputChannelPairStart は0-basedのステレオペア先頭ch
     juce::String enterRecordMode (const juce::String& inputDeviceName, int inputChannelPairStart);
     void exitRecordMode (const juce::String& outputDeviceName); // 出力専用で開き直して再生系へ戻す
     bool isRecordMode() const { return recordMode; }
-    juce::String setInputDevice (const juce::String& name, int inputChannelPairStart); // 録音モード中のみ
+    juce::String setInputDevice (const juce::String& name, int inputChannelPairStart); // 入力専用で開いている間のみ
     juce::StringArray inputDeviceNames() const;
     juce::String currentInputDeviceName() const;
     int currentInputChannelCount() const; // 現在の入力デバイスの総入力ch数（ペア候補の構築用）
@@ -128,7 +128,7 @@ private:
         bool sourcePrimed = false;              // 再生開始プライミング（全ストリームにデータが揃ってから消費開始）
     };
 
-    // 録音モードのコールバック: 入力をレコーダーへ渡し、出力は無音（モニタリングはMPC側の領分）
+    // 録音のコールバック: 入力をレコーダーへ渡し、出力は無音（モニタリングはMPC側の領分）
     class RecorderCallback : public juce::AudioIODeviceCallback
     {
     public:

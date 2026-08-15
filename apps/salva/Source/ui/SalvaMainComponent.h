@@ -24,7 +24,7 @@ public:
     ~SalvaMainComponent() override;
 
     void openFile (const juce::File& file);
-    // ウィンドウの×は「1段戻る」: 録音モード退出 or ファイルを閉じてスタート画面へ。
+    // ウィンドウの×は「1段戻る」: 録音画面から戻る or ファイルを閉じてスタート画面へ。
     // true = ここで消費（アプリは終了しない）。スタート画面でのみ false（=終了してよい）
     bool handleCloseRequest();
 
@@ -78,7 +78,7 @@ private:
     void openRecentAt (int index);
     void openFileChooser();          // 「ファイルを選択…」ボタン・⌘O
     void closeFileToStart();         // ファイルを閉じてスタート画面（空状態）へ
-    void updateSeparateButtonState(); // ファイル有無・録音モード・分離中から算出
+    void updateSeparateButtonState(); // ファイル有無・録音画面・分離中から算出
 
     // --- 空状態（Vinyl Warm・2026-08-15確定モック案B） ---
     // レイアウト計算を描画・ボタン配置・ヒットテストで共有する（座標ズレ防止）
@@ -116,7 +116,7 @@ private:
     juce::ComboBox outputDeviceBox;
     juce::TextButton recordModeButton;
     juce::TextButton openFileButton;    // 空状態のみ表示（D&D以外の入口）
-    juce::TextButton recordEntryButton; // 空状態のみ表示（録音モードへの導線）
+    juce::TextButton recordEntryButton; // 空状態のみ表示（録音画面への導線）
     juce::Label starvedLabel; // read-ahead枯渇の可視化（原因調査の入口。通常は非表示）
 
     // ステム分離（ヘッダー）

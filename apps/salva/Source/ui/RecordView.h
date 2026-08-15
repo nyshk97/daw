@@ -4,7 +4,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
-// 録音モードのビュー（確定モック案A: 下部バーのトグルで波形と入れ替え）。
+// 録音画面のビュー（確定モック案A: 下部バーのトグルで波形と入れ替え）。
 // 入力デバイス＋ステレオペア選択・L/Rレベルメーター・録音ボタン・経過時間・伸びるバー。
 // 録音の実行はMainComponent（保存ダイアログ→engine）に委ね、ここは表示と操作だけ
 class RecordView : public juce::Component

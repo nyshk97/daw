@@ -532,7 +532,7 @@ void SalvaMainComponent::showToast (const juce::String& message)
 void SalvaMainComponent::toggleRecordMode()
 {
     if (recordMode && engine.getRecorder().isRecording())
-        return; // 録音中はモードを抜けられない（停止が先）
+        return; // 録音中は戻れない（停止が先）
 
     recordMode = ! recordMode;
     if (recordMode)
@@ -554,10 +554,10 @@ void SalvaMainComponent::toggleRecordMode()
         Log::info ("record.mode.exit");
     }
 
-    // モード中は「終了」の役割（もう一度押すと抜ける）なので文言も切り替える
-    recordModeButton.setButtonText (recordMode ? jp (u8"録音モードを終了") : jp (u8"● 新規録音"));
-    recordModeButton.setColour (juce::TextButton::buttonColourId,
-                                recordMode ? juce::Colour (0xff8e2a26) : buttonBg);
+    // 録音画面では「戻る」の役割（もう一度押すと波形へ戻る）なので文言も切り替える。
+    // 状態に固有名を与えない方針（「モードを終了」のような状態語を出さない）
+    recordModeButton.setButtonText (recordMode ? jp (u8"✕ 戻る") : jp (u8"● 新規録音"));
+    recordModeButton.setColour (juce::TextButton::buttonColourId, buttonBg);
     recordModeButton.setColour (juce::TextButton::textColourOffId,
                                 recordMode ? textColour : recordTextColour);
     playButton.setEnabled (! recordMode);
@@ -840,7 +840,7 @@ bool SalvaMainComponent::keyPressed (const juce::KeyPress& key)
             togglePlay();
         return true;
     }
-    if (key == juce::KeyPress ('r')) // Logic準拠: r = 録音（録音モード中のみ）
+    if (key == juce::KeyPress ('r')) // Logic準拠: r = 録音（録音画面のみ）
     {
         if (recordMode)
             toggleRecording();
@@ -1364,7 +1364,7 @@ void SalvaMainComponent::resized()
 
     outputLabel.setBounds (bottom.removeFromLeft (44));
     outputDeviceBox.setBounds (bottom.removeFromLeft (260));
-    recordModeButton.setBounds (bottom.removeFromRight (132)); // 「録音モードを終了」が収まる幅
+    recordModeButton.setBounds (bottom.removeFromRight (108)); // 「● 新規録音」が収まる幅
 
     toastLabel.setBounds (getLocalBounds().withSizeKeepingCentre (juce::jmin (520, getWidth() - 40), 28)
                               .withY (getHeight() - (emptyState ? 0 : bottomHeight + transportHeight) - 40));

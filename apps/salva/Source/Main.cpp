@@ -177,7 +177,7 @@ private:
 
         void closeButtonPressed() override
         {
-            // ×は「1段戻る」（録音モード退出→ファイルを閉じてスタート画面）。
+            // ×は「1段戻る」（録音画面から戻る→ファイルを閉じてスタート画面）。
             // スタート画面での×だけアプリ終了
             if (content().handleCloseRequest())
                 return;
