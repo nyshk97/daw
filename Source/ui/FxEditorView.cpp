@@ -177,6 +177,8 @@ void FxEditorView::updateMeters (const std::vector<MeterFeed>& trackFeeds,
         case Target::none:   break;
     }
     meter.update (feed->peak);
+    if (target == Target::track)
+        slotPills[1].setGainReductionDb (feed->compGrDb); // Compピルのミニ GRバー
     if (! juce::approximatelyEqual (feed->maxSincePlay, peakMaxDisplay))
     {
         peakMaxDisplay = feed->maxSincePlay;

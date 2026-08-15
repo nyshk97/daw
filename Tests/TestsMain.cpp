@@ -4588,7 +4588,9 @@ void testMixerParamsRoundtrip()
     }
     auto& params = *project->tracks[0].params;
     expect (juce::approximatelyEqual (params.pan.load(), 0.0f), "v3読込: pan=0");
-    expect (params.eqEnabled.load() && params.compEnabled.load(), "v3読込: FXはON補完");
+    // EQはON補完・Compはv15以前のenabledが無意味（DSPなし）なため一律OFFリセット（v16）
+    expect (params.eqEnabled.load() && ! params.compEnabled.load(),
+            "v3読込: EQはON補完・CompはOFFリセット");
     for (int b = 0; b < numSendBuses; ++b)
         expect (juce::approximatelyEqual (params.sends[b].load(), 0.0f), "v3読込: send=0");
     for (int b = 0; b < numSendBuses; ++b)
@@ -4603,6 +4605,7 @@ void testMixerParamsRoundtrip()
     params.sends[0].store (0.3f);
     params.sends[2].store (1.0f);
     params.eqEnabled.store (false);
+    params.compEnabled.store (true); // v16保存ではcompのON/OFFが実際に維持される
     project->busParams[1]->gain.store (0.7f);
     project->busParams[1]->mute.store (true);
     project->masterParams->gain.store (0.9f);
@@ -4867,7 +4870,8 @@ void testEqParamsRoundtrip()
         expect (project.save (error), "保存できること");
     }
     const auto parsed = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
-    expect ((int) parsed.getProperty ("version", 0) == 15, "v15で保存されること");
+    expect ((int) parsed.getProperty ("version", 0) == Project::currentVersion,
+            "現行バージョンで保存されること");
 
     auto reloaded = Project::load (dir, warnings, error);
     expect (reloaded != nullptr && reloaded->tracks.size() == 1, "再読込できること");
@@ -5395,6 +5399,665 @@ void testEngineEqBounceConsistency()
                                                          - bounceOut.getSample (ch, i)));
         // 24bit量子化＋浮動小数点の積和順序差ぶんの許容誤差（フェードイン区間は除外済み）
         expect (maxDiff < 1.0e-4f, "EQ有効時もエンジンとバウンスが許容誤差内で一致すること");
+    }
+    reader.reset();
+    dir.deleteRecursively();
+}
+
+// ---- Compパラメータ: 既定値・保存/復元・旧version（enabledリセット）・不正データの正規化（v16）----
+void testCompParamsRoundtrip()
+{
+    beginTest ("comp params roundtrip");
+
+    // 新規TrackParamsの既定値（OFF・中立スタート: Threshold 0dB / 4:1 / 10ms / 100ms / +0dB / HPF OFF）
+    TrackParams fresh;
+    expect (! fresh.compEnabled.load(), "既定: CompはOFF（真のバイパス）");
+    {
+        const auto v = Comp::load (fresh.comp);
+        expect (juce::approximatelyEqual (v.thresholdDb, 0.0f)
+                    && juce::approximatelyEqual (v.ratio, 4.0f)
+                    && juce::approximatelyEqual (v.attackMs, 10.0f)
+                    && juce::approximatelyEqual (v.releaseMs, 100.0f)
+                    && juce::approximatelyEqual (v.makeupDb, 0.0f) && ! v.detectorHpf,
+                "既定値（中立スタート）");
+    }
+
+    // 値を入れて保存 → 再読込で維持される
+    auto dir = makeTempDir();
+    juce::String error;
+    juce::StringArray warnings;
+    {
+        Project project;
+        project.directory = dir;
+        Track track;
+        track.id = project.allocateId();
+        project.tracks.push_back (std::move (track));
+        auto& params = *project.tracks[0].params;
+        params.compEnabled.store (true);
+        Comp::store (params.comp, Comp::normalized ({ -24.5f, 8.0f, 2.5f, 250.0f, 3.0f, true }));
+        expect (project.save (error), "保存できること");
+    }
+    const auto parsed = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
+    expect ((int) parsed.getProperty ("version", 0) == 16, "v16で保存されること");
+
+    auto reloaded = Project::load (dir, warnings, error);
+    expect (reloaded != nullptr && reloaded->tracks.size() == 1, "再読込できること");
+    if (reloaded != nullptr && ! reloaded->tracks.empty())
+    {
+        auto& p = *reloaded->tracks[0].params;
+        const auto v = Comp::load (p.comp);
+        expect (p.compEnabled.load(), "enabled維持");
+        expect (juce::approximatelyEqual (v.thresholdDb, -24.5f)
+                    && juce::approximatelyEqual (v.ratio, 8.0f)
+                    && juce::approximatelyEqual (v.attackMs, 2.5f)
+                    && juce::approximatelyEqual (v.releaseMs, 250.0f)
+                    && juce::approximatelyEqual (v.makeupDb, 3.0f) && v.detectorHpf,
+                "Compパラメータ維持");
+    }
+    dir.deleteRecursively();
+
+    // v15形式: enabled=trueでもOFFへリセット（DSPが無かった頃の値は無意味）・パラメータは既定値
+    auto dirV15 = makeTempDir();
+    dirV15.getChildFile ("project.json").replaceWithText (R"({
+        "version": 15, "bpm": 120.0, "sampleRate": 0.0, "nextId": 2,
+        "tracks": [ { "id": 1, "type": "audio", "name": "t",
+                      "mute": false, "solo": false, "volume": 0.5,
+                      "fx": { "eq": { "enabled": true },
+                              "comp": { "enabled": true, "threshold": -50.0 } },
+                      "clips": [] } ]
+    })");
+    auto projectV15 = Project::load (dirV15, warnings, error);
+    expect (projectV15 != nullptr && projectV15->tracks.size() == 1, "v15を読込めること");
+    if (projectV15 != nullptr && ! projectV15->tracks.empty())
+    {
+        auto& p = *projectV15->tracks[0].params;
+        expect (! p.compEnabled.load(), "v15読込: enabled=trueでもOFFへリセット");
+        expect (juce::approximatelyEqual (Comp::load (p.comp).thresholdDb, 0.0f),
+                "v15読込: パラメータは既定値（旧JSONの値は読まない）");
+    }
+    dirV15.deleteRecursively();
+
+    // 不正データの正規化: 範囲外値のクランプ（手編集JSON対策）
+    auto dirBad = makeTempDir();
+    dirBad.getChildFile ("project.json").replaceWithText (R"({
+        "version": 16, "bpm": 120.0, "sampleRate": 0.0, "nextId": 2,
+        "tracks": [ { "id": 1, "type": "audio", "name": "t",
+                      "mute": false, "solo": false, "volume": 0.5,
+                      "fx": { "eq": { "enabled": true },
+                              "comp": { "enabled": true, "threshold": 5.0, "ratio": 100.0,
+                                        "attack": -3.0, "release": 99999.0, "makeup": -6.0 } },
+                      "clips": [] } ]
+    })");
+    auto projectBad = Project::load (dirBad, warnings, error);
+    expect (projectBad != nullptr && projectBad->tracks.size() == 1, "不正データを読込めること");
+    if (projectBad != nullptr && ! projectBad->tracks.empty())
+    {
+        const auto v = Comp::load (projectBad->tracks[0].params->comp);
+        expect (juce::approximatelyEqual (v.thresholdDb, 0.0f)
+                    && juce::approximatelyEqual (v.ratio, 20.0f)
+                    && juce::approximatelyEqual (v.attackMs, 0.1f)
+                    && juce::approximatelyEqual (v.releaseMs, 1000.0f)
+                    && juce::approximatelyEqual (v.makeupDb, 0.0f),
+                "範囲外値がクランプされること");
+    }
+    dirBad.deleteRecursively();
+}
+
+// ---- TrackComp: 静的カーブ・時定数（63.2%）・レベル不変性・ステレオリンク・Make Up・
+//      検波HPF・バイパス・再進入reset・平滑化10ms・ブロックサイズ不変・切替の振幅安全性 ----
+void testTrackCompDynamics()
+{
+    beginTest ("track comp dynamics");
+    constexpr double sr = 48000.0;
+    constexpr int blockSize = 512;
+
+    Comp::Values base;
+    base.thresholdDb = -30.0f;
+    base.ratio = 4.0f;
+    base.attackMs = 10.0f;
+    base.releaseMs = 100.0f;
+
+    // 一定振幅ampをsamplesぶん流す（512ずつ・連番serial）
+    auto feedConstant = [&] (TrackComp& comp, juce::uint64& serial, float amp, int samples,
+                             const Comp::Values& targets, bool enabled = true)
+    {
+        float block[blockSize];
+        int done = 0;
+        while (done < samples)
+        {
+            const int n = juce::jmin (blockSize, samples - done);
+            std::fill (block, block + n, amp);
+            comp.process (block, nullptr, n, sr, ++serial, false, enabled, targets);
+            done += n;
+        }
+    };
+
+    // ---- 静的カーブ ----
+    {
+        const float t = -30.0f, r = 4.0f;
+        expect (juce::approximatelyEqual (Comp::computeOutputDb (-50.0f, t, r), -50.0f),
+                "Threshold-20dBは素通し");
+        const float o1 = Comp::computeOutputDb (-20.0f, t, r);
+        const float o2 = Comp::computeOutputDb (-10.0f, t, r);
+        expect (std::abs ((o2 - o1) - 10.0f / r) < 1.0e-4f, "knee上端より上の傾きは1/Ratio");
+        expect (std::abs (o2 - (t + (-10.0f - t) / r)) < 1.0e-4f, "上側の出力はT+over/Ratio");
+        float prev = Comp::computeOutputDb (t - 4.0f, t, r);
+        float maxStep = 0.0f;
+        for (float in = t - 4.0f + 0.01f; in <= t + 4.0f; in += 0.01f)
+        {
+            const float out = Comp::computeOutputDb (in, t, r);
+            maxStep = juce::jmax (maxStep, std::abs (out - prev));
+            prev = out;
+        }
+        expect (maxStep < 0.02f, "knee帯（Threshold±3dB）の出力が連続");
+    }
+
+    // ---- Attack/Release時定数: α=exp(-1/(τ·fs))・τ後に最終GRの63.2% ----
+    // 振幅0.5(-6.02dB)・T=-30・4:1 → 最終GR≒18dB。検波が一定なのでGR目標はステップになる
+    float grFinal = 0.0f;
+    {
+        TrackComp comp;
+        comp.snapTo (sr, true, base);
+        juce::uint64 serial = 0;
+        const int tauAttack = (int) std::lround (base.attackMs * 0.001 * sr); // 480
+        feedConstant (comp, serial, 0.5f, tauAttack, base);
+        const float grAtTau = comp.currentGainReductionDb();
+        feedConstant (comp, serial, 0.5f, (int) sr, base); // 1秒で収束
+        grFinal = comp.currentGainReductionDb();
+        expect (std::abs (grFinal - 17.98f) < 0.1f, "最終GRが静的カーブどおり（約18dB）");
+        expect (std::abs (grAtTau / grFinal - 0.632f) < 0.01f, "Attack: τ後に最終GRの63.2%");
+
+        // Release: 無音に落としてτ_rel後に36.8%（e^-1）まで戻る
+        const int tauRelease = (int) std::lround (base.releaseMs * 0.001 * sr); // 4800
+        feedConstant (comp, serial, 0.0f, tauRelease, base);
+        expect (std::abs (comp.currentGainReductionDb() / grFinal - 0.368f) < 0.01f,
+                "Release: τ後に最終GRの36.8%へ減衰");
+    }
+
+    // ---- レベル不変性: 入力レベルを変えても最終GRで正規化したエンベロープの形が同じ ----
+    {
+        TrackComp compA, compB;
+        compA.snapTo (sr, true, base);
+        compB.snapTo (sr, true, base);
+        juce::uint64 serialA = 0, serialB = 0;
+        const int tauAttack = (int) std::lround (base.attackMs * 0.001 * sr);
+        feedConstant (compA, serialA, 0.5f, tauAttack, base); // 最終GR≒18dB
+        feedConstant (compB, serialB, 0.1f, tauAttack, base); // 最終GR≒7.5dB
+        const float grA = compA.currentGainReductionDb();
+        const float grB = compB.currentGainReductionDb();
+        feedConstant (compA, serialA, 0.5f, (int) sr, base);
+        feedConstant (compB, serialB, 0.1f, (int) sr, base);
+        expect (std::abs (grA / compA.currentGainReductionDb()
+                          - grB / compB.currentGainReductionDb()) < 5.0e-3f,
+                "入力レベルによらず正規化エンベロープが一致（dBドメイン平滑化の性質）");
+    }
+
+    // ---- ステレオリンク: 片chだけ大きくても両chに同量のゲイン（定位不動）----
+    {
+        TrackComp comp;
+        comp.snapTo (sr, true, base);
+        float left[blockSize], right[blockSize], inL[blockSize], inR[blockSize];
+        for (int i = 0; i < blockSize; ++i)
+        {
+            inL[i] = left[i] = 0.5f * (float) std::sin (0.13 * i);
+            inR[i] = right[i] = 0.05f * (float) std::sin (0.13 * i + 1.0);
+        }
+        comp.process (left, right, blockSize, sr, 1, false, true, base);
+        float maxRatioDiff = 0.0f;
+        for (int i = 0; i < blockSize; ++i)
+            if (std::abs (inL[i]) > 1.0e-4f && std::abs (inR[i]) > 1.0e-4f)
+                maxRatioDiff = juce::jmax (maxRatioDiff,
+                                           std::abs (left[i] / inL[i] - right[i] / inR[i]));
+        expect (maxRatioDiff < 1.0e-5f, "両chのゲインが常に同量（定位が動かない）");
+    }
+
+    // ---- Make Up: 圧縮が起きないレベルで+6dB → 出力がちょうど2倍弱（10^(6/20)）----
+    {
+        auto makeup = Comp::defaults; // Threshold 0dB＝掛からない
+        makeup.makeupDb = 6.0f;
+        TrackComp comp;
+        comp.snapTo (sr, true, makeup);
+        float block[blockSize];
+        std::fill (block, block + blockSize, 0.1f);
+        comp.process (block, nullptr, blockSize, sr, 1, false, true, makeup);
+        expect (std::abs (block[blockSize - 1] / 0.1f
+                          - juce::Decibels::decibelsToGain (6.0f)) < 1.0e-3f,
+                "Make Up +6dBが出力に掛かる");
+    }
+
+    // ---- 検波HPF: 80Hzより下のサインはONで検波から外れGRが減る ----
+    {
+        auto hpfOn = base;
+        hpfOn.detectorHpf = true;
+        TrackComp compOff, compOn;
+        compOff.snapTo (sr, true, base);
+        compOn.snapTo (sr, true, hpfOn);
+        juce::uint64 serialOff = 0, serialOn = 0;
+        float block[blockSize];
+        auto feedSine = [&] (TrackComp& comp, juce::uint64& serial, const Comp::Values& targets)
+        {
+            double phase = 0.0;
+            const double inc = juce::MathConstants<double>::twoPi * 40.0 / sr; // 40Hz
+            for (int b = 0; b < 100; ++b) // 約1秒
+            {
+                for (int i = 0; i < blockSize; ++i)
+                {
+                    block[i] = 0.5f * (float) std::sin (phase);
+                    phase += inc;
+                }
+                comp.process (block, nullptr, blockSize, sr, ++serial, false, true, targets);
+            }
+            return comp.currentGainReductionDb();
+        };
+        const float grOff = feedSine (compOff, serialOff, base);
+        const float grOn = feedSine (compOn, serialOn, hpfOn);
+        expect (grOn < grOff - 3.0f, "検波HPF ONで40Hz入力のGRが3dB以上減る");
+    }
+
+    // ---- バイパス（compEnabled=false）: 完全素通し（ビット一致）----
+    {
+        TrackComp comp;
+        comp.snapTo (sr, false, base);
+        expect (! comp.needsActivePath (false), "OFFでsnapToすれば高速パス");
+        float block[blockSize], input[blockSize];
+        juce::Random random (7);
+        for (int i = 0; i < blockSize; ++i)
+            input[i] = block[i] = random.nextFloat() - 0.5f;
+        comp.process (block, nullptr, blockSize, sr, 1, false, false, base);
+        bool identical = true;
+        for (int i = 0; i < blockSize; ++i)
+            identical = identical && juce::exactlyEqual (block[i], input[i]);
+        expect (identical, "バイパスはビット一致の素通し");
+    }
+
+    // ---- 全ゼロ入力（HPF ON/OFF）: 出力が厳密なゼロ・内部状態とメーター値がfinite ----
+    {
+        for (const bool hpf : { false, true })
+        {
+            auto targets = base;
+            targets.detectorHpf = hpf;
+            TrackComp comp;
+            comp.snapTo (sr, true, targets);
+            juce::uint64 serial = 0;
+            float block[blockSize];
+            bool allZero = true;
+            for (int b = 0; b < 8; ++b)
+            {
+                std::fill (block, block + blockSize, 0.0f);
+                comp.process (block, nullptr, blockSize, sr, ++serial, false, true, targets);
+                for (int i = 0; i < blockSize; ++i)
+                    allZero = allZero && block[i] == 0.0f;
+            }
+            expect (allZero, "全ゼロ入力の出力が厳密なゼロ");
+            expect (std::isfinite (comp.currentGainReductionDb())
+                        && std::isfinite (comp.blockMaxGainReductionDb())
+                        && std::isfinite (comp.blockMaxDetectorPeak()),
+                    "無音でもGR・検波メーター値がfinite（dBフロアの検証）");
+        }
+    }
+
+    // ---- 強いGR中にOFF→時間経過→ON: 古いGRが再利用されず0から立ち上がる ----
+    {
+        TrackComp comp;
+        comp.snapTo (sr, true, base);
+        juce::uint64 serial = 0;
+        feedConstant (comp, serial, 0.5f, (int) sr, base); // GR≒18dBまで掛ける
+        expect (comp.currentGainReductionDb() > 15.0f, "前提: 強いGRが掛かっている");
+        int guard = 0;
+        while (comp.needsActivePath (false) && guard++ < 100)
+            feedConstant (comp, serial, 0.5f, blockSize, base, false); // OFF（フェードアウト中はactive）
+        expect (! comp.needsActivePath (false), "OFF後フェード完了で高速パスへ移る");
+        serial += 50; // 高速パス相当の時間経過（processが呼ばれない）
+
+        float one[1] = { 0.5f };
+        comp.process (one, nullptr, 1, sr, ++serial, false, true, base); // 再ON
+        expect (comp.currentGainReductionDb() < 1.0f, "再ONは0からの立ち上がり（凍結GRの再利用なし）");
+        expect (std::abs (one[0] - 0.5f) < 1.0e-3f, "再ONの先頭サンプルはdry（フェードイン開始点）");
+    }
+
+    // ---- パラメータ平滑化: 変更後10msでtargetへ到達・中間はdB直線 ----
+    {
+        auto targets = Comp::defaults; // Threshold 0dB＝GRなし（Make Upだけを観測する）
+        TrackComp comp;
+        comp.snapTo (sr, true, targets);
+        targets.makeupDb = 12.0f;
+        constexpr int rampSamples = 480; // 10ms @ 48k
+        float block[rampSamples + 64];
+        std::fill (block, block + rampSamples + 64, 0.1f);
+        comp.process (block, nullptr, rampSamples + 64, sr, 1, false, true, targets);
+        expect (std::abs (block[240 - 1] / 0.1f - juce::Decibels::decibelsToGain (6.0f)) < 0.02f,
+                "平滑化の中間（5ms）で+6dB＝dBドメインの直線ランプ");
+        expect (std::abs (block[rampSamples + 32] / 0.1f
+                          - juce::Decibels::decibelsToGain (12.0f)) < 0.02f,
+                "10msでtarget（+12dB）へ到達");
+    }
+
+    // ---- ブロックサイズ不変: 64と512で処理しても出力がビット一致 ----
+    {
+        auto targets = base;
+        targets.detectorHpf = true;
+        targets.makeupDb = 2.0f;
+        constexpr int total = 4096;
+        float a[total], b[total];
+        juce::Random random (21);
+        for (int i = 0; i < total; ++i)
+            a[i] = b[i] = (random.nextFloat() - 0.5f) * 0.8f;
+        TrackComp compA, compB;
+        compA.snapTo (sr, true, targets);
+        compB.snapTo (sr, true, targets);
+        juce::uint64 serialA = 0, serialB = 0;
+        for (int pos = 0; pos < total; pos += 64)
+            compA.process (a + pos, nullptr, 64, sr, ++serialA, false, true, targets);
+        for (int pos = 0; pos < total; pos += 512)
+            compB.process (b + pos, nullptr, 512, sr, ++serialB, false, true, targets);
+        bool identical = true;
+        for (int i = 0; i < total; ++i)
+            identical = identical && juce::exactlyEqual (a[i], b[i]);
+        expect (identical, "パラメータ平滑化・エンベロープがブロック境界に依存しない（ビット一致）");
+    }
+
+    // ---- ON/OFF切替の振幅安全性: NaN/Infなし・クロスフェードで跳躍しない ----
+    // ⚠️ これはsmooth branchingの弱点＝**勾配**の不連続を検出しない（GR自体は連続なため）。
+    //    勾配由来の可聴性は耳確認へ分離（plan: 動作確認）
+    {
+        TrackComp comp;
+        comp.snapTo (sr, true, base);
+        juce::uint64 serial = 0;
+        double phase = 0.0;
+        const double inc = juce::MathConstants<double>::twoPi * 1000.0 / sr;
+        float previous = 0.0f, maxJump = 0.0f;
+        bool allFinite = true;
+        float block[blockSize];
+        for (int b = 0; b < 40; ++b)
+        {
+            const bool on = (b / 4) % 2 == 0; // 4ブロックごとにON/OFF
+            for (int i = 0; i < blockSize; ++i)
+            {
+                block[i] = 0.5f * (float) std::sin (phase);
+                phase += inc;
+            }
+            comp.process (block, nullptr, blockSize, sr, ++serial, false, on, base);
+            for (int i = 0; i < blockSize; ++i)
+            {
+                allFinite = allFinite && std::isfinite (block[i]);
+                maxJump = juce::jmax (maxJump, std::abs (block[i] - previous));
+                previous = block[i];
+            }
+        }
+        expect (allFinite, "切替中にNaN/Infが出ないこと");
+        // 1kHz/振幅0.5のサイン自体の最大傾斜は約0.065。瞬時切替ならGR≒18dB分の段差
+        //（最大0.44規模）が出るので、この閾値で退行を検出できる
+        expect (maxJump < 0.15f, "切替がクロスフェードされ跳躍しないこと");
+    }
+}
+
+// ---- エンジン vs バウンス: Comp有効時（EQは中立＝Comp単独のactive経路）の出力一致 ----
+void testEngineCompBounceConsistency()
+{
+    beginTest ("engine vs bounce with active comp");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+    constexpr int numBlocks = 16;
+    constexpr int totalSamples = blockSize * numBlocks;
+    // 音声トラックは再生開始のシーク適用で timelineJumped=true が渡り、Comp/EQとも即時
+    // スナップされる（dryフェードインは再進入時のみ）ため、先頭サンプルから比較できる
+    constexpr int compareFrom = 0;
+
+    auto makeAudio = [] (int channels, int len, float scale)
+    {
+        auto buffer = std::make_shared<juce::AudioBuffer<float>> (channels, len);
+        juce::Random random (11);
+        for (int ch = 0; ch < channels; ++ch)
+            for (int i = 0; i < len; ++i)
+                buffer->setSample (ch, i,
+                                   (std::sin ((float) i * 0.05f + (float) ch) * 0.3f
+                                    + (random.nextFloat() - 0.5f) * 0.2f) * scale);
+        return buffer;
+    };
+
+    Project project;
+    {
+        Track track; // ステレオクリップ＋コンプ（HPFなし・Make Upあり）＋send
+        track.id = 1;
+        track.params->gain.store (0.8f);
+        track.params->pan.store (0.3f);
+        track.params->sends[1].store (0.4f);
+        track.params->compEnabled.store (true);
+        Comp::store (track.params->comp, Comp::normalized ({ -24.0f, 4.0f, 5.0f, 80.0f, 3.0f, false }));
+        Clip clip;
+        clip.audio = makeAudio (2, totalSamples, 1.0f);
+        clip.lengthSamples = totalSamples;
+        track.clips.push_back (std::move (clip));
+        project.tracks.push_back (std::move (track));
+    }
+    {
+        Track track; // モノクリップ＋コンプ（検波HPFあり・速いAttack）
+        track.id = 2;
+        track.params->gain.store (0.7f);
+        track.params->pan.store (-0.5f);
+        track.params->compEnabled.store (true);
+        Comp::store (track.params->comp, Comp::normalized ({ -30.0f, 8.0f, 1.0f, 50.0f, 0.0f, true }));
+        Clip clip;
+        clip.audio = makeAudio (1, totalSamples, 0.8f);
+        clip.lengthSamples = totalSamples;
+        track.clips.push_back (std::move (clip));
+        project.tracks.push_back (std::move (track));
+    }
+    project.busParams[1]->gain.store (0.9f);
+    project.masterParams->gain.store (0.85f);
+
+    auto renderEngine = [&] (juce::AudioBuffer<float>& out)
+    {
+        TransportState transport;
+        SnapshotExchange snapshots;
+        PreviewFifo previewFifo;
+        PlaybackEngine engine (transport, snapshots, previewFifo);
+        engine.prepareToPlay (blockSize, sr);
+        snapshots.push (project.buildSnapshot());
+        transport.seekRequest.store (0);
+        engine.play();
+        juce::AudioBuffer<float> buffer (2, blockSize);
+        for (int blockIndex = 0; blockIndex < numBlocks; ++blockIndex)
+        {
+            buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+            engine.process (info);
+            for (int ch = 0; ch < 2; ++ch)
+                out.copyFrom (ch, blockIndex * blockSize, buffer, ch, 0, blockSize);
+        }
+        engine.stop();
+        snapshots.deleteRetired();
+    };
+
+    juce::AudioBuffer<float> engineOut (2, totalSamples);
+    renderEngine (engineOut);
+
+    // Compが実際に効いていること（OFFとの差がある）を先に確認する — 空一致の防止
+    {
+        project.tracks[0].params->compEnabled.store (false);
+        project.tracks[1].params->compEnabled.store (false);
+        juce::AudioBuffer<float> bypassOut (2, totalSamples);
+        renderEngine (bypassOut);
+        float maxDiff = 0.0f;
+        for (int i = compareFrom; i < totalSamples; ++i)
+            maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (0, i)
+                                                     - bypassOut.getSample (0, i)));
+        expect (maxDiff > 1.0e-3f, "CompありはOFFと出力が異なること（Compが実際に効いている）");
+        project.tracks[0].params->compEnabled.store (true);
+        project.tracks[1].params->compEnabled.store (true);
+    }
+
+    // バウンス側（TrackRenderへプレーン値コピー＝本番と同じ流儀）。
+    // 入力＋Make Up後もピーク1.0未満に収まるレベル設計なので、バウンスのピーク正規化は
+    // 走らず比較が成立する（走ればmaxDiffが大きく出て検出される）
+    const auto dir = makeTempDir();
+    const auto target = dir.getChildFile ("bounce-comp.wav");
+    {
+        BounceRenderer::Request request;
+        request.sampleRate = sr;
+        request.bpm = 120.0;
+        request.endSample = totalSamples;
+        request.targetFile = target;
+        request.busGain[1] = 0.9f;
+        request.masterGain = 0.85f;
+        for (auto& track : project.tracks)
+        {
+            BounceRenderer::TrackRender render;
+            render.gain = track.params->gain.load();
+            render.pan = track.params->pan.load();
+            for (int busIndex = 0; busIndex < numSendBuses; ++busIndex)
+                render.sends[busIndex] = track.params->sends[busIndex].load();
+            render.eqEnabled = track.params->eqEnabled.load();
+            render.eqBands = Eq::loadAll (track.params->eqBands);
+            render.compEnabled = track.params->compEnabled.load();
+            render.comp = Comp::load (track.params->comp);
+            for (auto& clip : track.clips)
+                appendClipPlaybacks (clip, render.clips);
+            request.tracks.push_back (std::move (render));
+        }
+        BounceRenderer renderer;
+        expect (renderer.start (std::move (request)), "startできること");
+        expect (waitForBounce (renderer), "タイムアウトせず完了すること");
+        expect (renderer.takeResult().status == BounceRenderer::Status::success, "successで終わること");
+    }
+
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatReader> reader (
+        wav.createReaderFor (new juce::FileInputStream (target), true));
+    expect (reader != nullptr && reader->lengthInSamples == totalSamples, "バウンス出力を読めること");
+    if (reader != nullptr && reader->lengthInSamples == totalSamples)
+    {
+        juce::AudioBuffer<float> bounceOut (2, totalSamples);
+        reader->read (&bounceOut, 0, totalSamples, 0, true, true);
+        float maxDiff = 0.0f;
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = compareFrom; i < totalSamples; ++i)
+                maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (ch, i)
+                                                         - bounceOut.getSample (ch, i)));
+        // 24bit量子化＋浮動小数点の積和順序差ぶんの許容誤差
+        expect (maxDiff < 1.0e-4f, "Comp有効時もエンジンとバウンスが許容誤差内で一致すること");
+    }
+    reader.reset();
+    dir.deleteRecursively();
+}
+
+// ---- Compの検波はpan前（ステレオのみトラック）: 振っても圧縮量が変わらないこと ----
+// L=大・R=小のステレオクリップをハード右pan（バランス法則でLが消える）にすると、
+// pan後検波なら検波はRの小信号だけ＝GRほぼゼロになる。pan前検波ならLの大信号でGRが掛かり、
+// 出力（R側）が大きく減衰する。エンジンとバウンスの一致も同時に確認する
+void testEngineCompPrePanDetection()
+{
+    beginTest ("engine comp pre-pan detection");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+    constexpr int numBlocks = 16;
+    constexpr int totalSamples = blockSize * numBlocks;
+    constexpr int measureFrom = 4096; // Attack整定後（GRが最終値に達した区間）を測る
+
+    Project project;
+    {
+        Track track;
+        track.id = 1;
+        track.params->gain.store (1.0f);
+        track.params->pan.store (1.0f); // ハード右: バランス法則で balL=0・balR=1
+        track.params->compEnabled.store (true);
+        Comp::store (track.params->comp, Comp::normalized ({ -30.0f, 8.0f, 1.0f, 200.0f, 0.0f, false }));
+        Clip clip;
+        auto audio = std::make_shared<juce::AudioBuffer<float>> (2, totalSamples);
+        for (int i = 0; i < totalSamples; ++i)
+        {
+            audio->setSample (0, i, 0.5f * (float) std::sin (juce::MathConstants<double>::twoPi * 500.0 * i / sr));
+            audio->setSample (1, i, 0.02f * (float) std::sin (juce::MathConstants<double>::twoPi * 700.0 * i / sr));
+        }
+        clip.audio = std::move (audio);
+        clip.lengthSamples = totalSamples;
+        track.clips.push_back (std::move (clip));
+        project.tracks.push_back (std::move (track));
+    }
+
+    auto renderEngine = [&] (juce::AudioBuffer<float>& out)
+    {
+        TransportState transport;
+        SnapshotExchange snapshots;
+        PreviewFifo previewFifo;
+        PlaybackEngine engine (transport, snapshots, previewFifo);
+        engine.prepareToPlay (blockSize, sr);
+        snapshots.push (project.buildSnapshot());
+        transport.seekRequest.store (0);
+        engine.play();
+        juce::AudioBuffer<float> buffer (2, blockSize);
+        for (int blockIndex = 0; blockIndex < numBlocks; ++blockIndex)
+        {
+            buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+            engine.process (info);
+            for (int ch = 0; ch < 2; ++ch)
+                out.copyFrom (ch, blockIndex * blockSize, buffer, ch, 0, blockSize);
+        }
+        engine.stop();
+        snapshots.deleteRetired();
+    };
+
+    auto rmsRight = [&] (const juce::AudioBuffer<float>& out)
+    {
+        double sum = 0.0;
+        for (int i = measureFrom; i < totalSamples; ++i)
+            sum += (double) out.getSample (1, i) * out.getSample (1, i);
+        return std::sqrt (sum / (totalSamples - measureFrom));
+    };
+
+    juce::AudioBuffer<float> onOut (2, totalSamples), offOut (2, totalSamples);
+    renderEngine (onOut);
+    project.tracks[0].params->compEnabled.store (false);
+    renderEngine (offOut);
+    project.tracks[0].params->compEnabled.store (true);
+
+    // pan前検波なら L(-6dB) が閾値-30dBを大きく超え、GR≒21dBがR出力に掛かる。
+    // pan後検波（バグ）だと検波はR(-34dB)のみ＝GRほぼゼロで比が1に近くなる
+    const float ratio = (float) (rmsRight (onOut) / juce::jmax (1.0e-9, rmsRight (offOut)));
+    expect (ratio < 0.3f, "ハード右panでもL側の大信号でGRが掛かる（検波はpan前）");
+    // ハード右panでL出力は無音（バランス法則）
+    expect (onOut.getMagnitude (0, measureFrom, totalSamples - measureFrom) < 1.0e-6f,
+            "ハード右panでL出力は無音のまま");
+
+    // 同条件でエンジンとバウンスが一致（バウンス側のprePan構造の検証）
+    const auto dir = makeTempDir();
+    const auto target = dir.getChildFile ("bounce-prepan.wav");
+    {
+        BounceRenderer::Request request;
+        request.sampleRate = sr;
+        request.bpm = 120.0;
+        request.endSample = totalSamples;
+        request.targetFile = target;
+        BounceRenderer::TrackRender render;
+        render.gain = 1.0f;
+        render.pan = 1.0f;
+        render.compEnabled = true;
+        render.comp = Comp::load (project.tracks[0].params->comp);
+        for (auto& clip : project.tracks[0].clips)
+            appendClipPlaybacks (clip, render.clips);
+        request.tracks.push_back (std::move (render));
+        BounceRenderer renderer;
+        expect (renderer.start (std::move (request)), "startできること");
+        expect (waitForBounce (renderer), "タイムアウトせず完了すること");
+        expect (renderer.takeResult().status == BounceRenderer::Status::success, "successで終わること");
+    }
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatReader> reader (
+        wav.createReaderFor (new juce::FileInputStream (target), true));
+    expect (reader != nullptr && reader->lengthInSamples == totalSamples, "バウンス出力を読めること");
+    if (reader != nullptr && reader->lengthInSamples == totalSamples)
+    {
+        juce::AudioBuffer<float> bounceOut (2, totalSamples);
+        reader->read (&bounceOut, 0, totalSamples, 0, true, true);
+        float maxDiff = 0.0f;
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < totalSamples; ++i) // 音声は再生開始で即時スナップ＝先頭から比較できる
+                maxDiff = juce::jmax (maxDiff, std::abs (onOut.getSample (ch, i)
+                                                         - bounceOut.getSample (ch, i)));
+        expect (maxDiff < 1.0e-4f, "ハード右pan＋Compでもエンジンとバウンスが一致すること");
     }
     reader.reset();
     dir.deleteRecursively();
@@ -10099,6 +10762,10 @@ int main()
     testTrackEqResponse();
     testTrackEqTransitions();
     testEngineEqBounceConsistency();
+    testCompParamsRoundtrip();
+    testTrackCompDynamics();
+    testEngineCompBounceConsistency();
+    testEngineCompPrePanDetection();
     testSpectrumAnalyzer();
     testEngineAnalyzerPreFaderTap();
     testBounceEqTail();

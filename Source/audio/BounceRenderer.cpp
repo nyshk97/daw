@@ -17,6 +17,26 @@ juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
 
 constexpr float silenceThreshold = 0.001f; // -60dB。テールの無音判定
 constexpr int maxScratchChannels = 8;      // DLSは4ch（2バス）。これを超える音源は想定しない
+
+// モノクリップのみのトラックか（RTの hasStereoClip=false＝モノ経路と同じ判定）。
+// FXの掛け方をRTと揃えるために使う: モノ経路はpan前のモノ信号にEQ/Compを掛ける
+bool isMonoClipTrack (const BounceRenderer::TrackRender& track)
+{
+    for (const auto& clip : track.clips)
+        if (clip.audio != nullptr && clip.audio->getNumChannels() >= 2)
+            return false;
+    return true;
+}
+
+// ステレオクリップのみのトラックか。FX有効時にバランスpanをFXの後段へ移す判定
+//（RTの prePanFx と同じ。モノクリップ混在はpan法則が2種混ざるため対象外＝焼き込みのまま）
+bool isStereoOnlyClipTrack (const BounceRenderer::TrackRender& track)
+{
+    for (const auto& clip : track.clips)
+        if (clip.audio != nullptr && clip.audio->getNumChannels() < 2)
+            return false;
+    return true;
+}
 }
 
 bool BounceRenderer::buildItemRender (const Track& track, int itemIndex, double bpm, double sampleRate,
@@ -29,6 +49,8 @@ bool BounceRenderer::buildItemRender (const Track& track, int itemIndex, double 
         out.sends[b] = track.params->sends[b].load();
     out.eqEnabled = track.params->eqEnabled.load();
     out.eqBands = Eq::loadAll (track.params->eqBands);
+    out.compEnabled = track.params->compEnabled.load();
+    out.comp = Comp::load (track.params->comp);
 
     if (track.type == TrackType::audio)
     {
@@ -210,11 +232,14 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
     eqTrackScratch.setSize (2, renderBlockSize);
     midiScratch.ensureSize (4096);
 
-    // EQは平滑を挟まず開始時点の値で即確定する（バウンス中にパラメータは変わらない。
+    // EQ・Compは平滑を挟まず開始時点の値で即確定する（バウンス中にパラメータは変わらない。
     // RT側のようにdryからフェードインすると冒頭だけ再生と違う音になる）
     eqBlockSerial = 0;
     for (auto& track : request.tracks)
+    {
         track.eq.snapTo (sr, track.eqEnabled, track.eqBands);
+        track.compDsp.snapTo (sr, track.compEnabled, track.comp);
+    }
 
     cursors.assign (request.tracks.size(), {});
     // 範囲開始より前のノートの読み飛ばし（サイクル範囲書き出しで rangeStart > 0 になる。
@@ -276,14 +301,22 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
         {
             auto& track = request.tracks[ti];
 
-            // トラックEQ（オーディオトラック）。RTのactive経路と同じ処理順:
-            // 「クリップgainまで合算 → EQ → トラックgain → send/mix」。EQが働くときだけ
+            // トラックEQ・Comp（オーディオトラック）。RTのactive経路と同じ処理順:
+            // 「クリップgainまで合算 → EQ → Comp → トラックgain → send/mix」。FXが働くときだけ
             // 専用スクラッチを経由し、バイパス時は既存の直接ミックスを**完全に**通す（ビット一致契約）
             const bool activeEq = track.synth == nullptr
                                   && track.eqEnabled && ! Eq::isNeutral (track.eqBands);
-            juce::AudioBuffer<float>& clipDest = activeEq ? eqTrackScratch : mix;
-            const float clipTrackGain = activeEq ? 1.0f : track.gain;
-            if (activeEq)
+            const bool activeComp = track.synth == nullptr && track.compEnabled;
+            const bool activeFx = activeEq || activeComp;
+            // モノクリップのみのトラックは、RTのモノ経路と同じく**pan前のモノ信号**にFXを掛けて
+            // からpan分配する。EQは線形なのでpanと可換（stereoに焼き込んでも一致した）だが、
+            // Compは非線形＝検波レベルがpanで変わるため、ここを揃えないと再生と書き出しの音が食い違う
+            const bool monoFx = activeFx && isMonoClipTrack (track);
+            // ステレオのみのトラックはバランスpanをFX後段へ（RTの prePanFx と同じ理由・同じ点）
+            const bool prePanFx = activeFx && ! monoFx && isStereoOnlyClipTrack (track);
+            juce::AudioBuffer<float>& clipDest = activeFx ? eqTrackScratch : mix;
+            const float clipTrackGain = activeFx ? 1.0f : track.gain;
+            if (activeFx)
                 for (int ch = 0; ch < 2; ++ch)
                     eqTrackScratch.clear (ch, 0, n);
 
@@ -310,21 +343,26 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
                 ClipFade::Segment segs[ClipFade::maxSegments];
                 const int numSegs = ClipFade::segments (clip, overlapStart, overlapEnd, pos, segs);
 
-                for (int ch = 0; ch < 2; ++ch)
+                // monoFx: RTのモノ経路と同じく、pan前のモノ合算（ch0のみ・クリップgainまで）を作る
+                const int numDestChannels = monoFx ? 1 : 2;
+                for (int ch = 0; ch < numDestChannels; ++ch)
                 {
                     const float* src = clip.audio->getReadPointer (stereo ? ch : 0, srcOffset);
                     // リージョンゲインはトラックゲインの手前（RTのprocessと同じ順序）。
                     // ユニティ(1.0f)なら track.gain と厳密に同値＝既存の書き出しは変わらない
-                    const float gain = clipTrackGain * clip.gain * (stereo ? (ch == 0 ? balL : balR)
-                                                                          : (ch == 0 ? panL : panR));
+                    const float gain = (monoFx || prePanFx)
+                                           ? clip.gain
+                                           : clipTrackGain * clip.gain
+                                                 * (stereo ? (ch == 0 ? balL : balR)
+                                                           : (ch == 0 ? panL : panR));
                     for (int s = 0; s < numSegs; ++s)
                     {
                         const auto& seg = segs[s];
                         const float* segSrc = src + (seg.destOffset - destOffset);
                         ClipFade::addSegment (clipDest, ch, seg.destOffset, segSrc, seg, gain);
                         // sendにも同じフェードが掛かる（post-fader＝聴こえている信号のコピー）。
-                        // EQ有効時はEQ通過後にまとめてコピーする（下）
-                        if (! activeEq)
+                        // EQ/Comp有効時はFX通過後にまとめてコピーする（下）
+                        if (! activeFx)
                             for (int b = 0; b < numSendBuses; ++b)
                                 if (track.sends[b] > 0.0f)
                                     ClipFade::addSegment (busMix[(size_t) b], ch, seg.destOffset, segSrc, seg,
@@ -333,18 +371,30 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
                 }
             }
 
-            if (activeEq)
+            if (activeFx)
             {
                 // クリップの重なりがないブロックも処理する（RTと同じ: リングアウトを切らない・連番の連続性）
-                track.eq.process (eqTrackScratch.getWritePointer (0), eqTrackScratch.getWritePointer (1),
-                                  n, sr, eqBlockSerial, false, track.eqEnabled, track.eqBands);
+                float* fxL = eqTrackScratch.getWritePointer (0);
+                float* fxR = monoFx ? nullptr : eqTrackScratch.getWritePointer (1);
+                if (activeEq)
+                    track.eq.process (fxL, fxR, n, sr, eqBlockSerial, false,
+                                      track.eqEnabled, track.eqBands);
+                if (activeComp)
+                    track.compDsp.process (fxL, fxR, n, sr, eqBlockSerial, false,
+                                           track.compEnabled, track.comp);
                 for (int ch = 0; ch < 2; ++ch)
                 {
-                    mix.addFrom (ch, 0, eqTrackScratch, ch, 0, n, track.gain);
+                    // monoFx: モノ合算（ch0）をFX後にpan分配 / prePanFx: FX後にバランスpan
+                    //（どちらもRTと同じ処理順）
+                    const int srcCh = monoFx ? 0 : ch;
+                    const float outGain = track.gain
+                                          * (monoFx ? (ch == 0 ? panL : panR)
+                                                    : prePanFx ? (ch == 0 ? balL : balR) : 1.0f);
+                    mix.addFrom (ch, 0, eqTrackScratch, srcCh, 0, n, outGain);
                     for (int b = 0; b < numSendBuses; ++b)
                         if (track.sends[b] > 0.0f)
-                            busMix[(size_t) b].addFrom (ch, 0, eqTrackScratch, ch, 0, n,
-                                                        track.gain * track.sends[b]);
+                            busMix[(size_t) b].addFrom (ch, 0, eqTrackScratch, srcCh, 0, n,
+                                                        outGain * track.sends[b]);
                 }
             }
 
@@ -393,23 +443,42 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
                 auto& track = request.tracks[ti];
 
                 // オーディオトラックのEQリングアウト（入力は無音・フィルタ履歴が減衰しきるまで）。
-                // RT再生は範囲終了後もactive経路が回り続けるので、切ると書き出しだけ余韻が欠ける
+                // RT再生は範囲終了後もactive経路が回り続けるので、切ると書き出しだけ余韻が欠ける。
+                // Comp有効ならリングアウトにも掛ける（RTと同じ処理順。Comp単独の無音テールは
+                // 出力も無音なのでテールに入る条件はEQのまま）
                 if (track.synth == nullptr && track.eqEnabled && ! Eq::isNeutral (track.eqBands))
                 {
+                    // 本編と同じ経路構成（monoFx＝モノ処理→pan分配 / prePanFx＝FX後バランスpan）を
+                    // 維持する。途中でチャンネル構成やpanの掛け場所を変えるとフィルタ履歴・音量が崩れる
+                    const bool monoFx = isMonoClipTrack (track);
+                    const bool prePanFx = ! monoFx && isStereoOnlyClipTrack (track);
+                    float panL = 1.0f, panR = 1.0f;
+                    Pan::monoGains (track.pan, panL, panR);
+                    float balL = 1.0f, balR = 1.0f;
+                    Pan::stereoGains (track.pan, balL, balR);
                     for (int ch = 0; ch < 2; ++ch)
                         eqTrackScratch.clear (ch, 0, renderBlockSize);
-                    track.eq.process (eqTrackScratch.getWritePointer (0),
-                                      eqTrackScratch.getWritePointer (1), renderBlockSize,
+                    float* fxL = eqTrackScratch.getWritePointer (0);
+                    float* fxR = monoFx ? nullptr : eqTrackScratch.getWritePointer (1);
+                    track.eq.process (fxL, fxR, renderBlockSize,
                                       request.sampleRate, eqBlockSerial, false,
                                       track.eqEnabled, track.eqBands);
+                    if (track.compEnabled)
+                        track.compDsp.process (fxL, fxR, renderBlockSize,
+                                               request.sampleRate, eqBlockSerial, false,
+                                               track.compEnabled, track.comp);
                     for (int ch = 0; ch < 2; ++ch)
                     {
-                        mix.addFrom (ch, 0, eqTrackScratch, ch, 0, renderBlockSize, track.gain);
+                        const int srcCh = monoFx ? 0 : ch;
+                        const float outGain = track.gain
+                                              * (monoFx ? (ch == 0 ? panL : panR)
+                                                        : prePanFx ? (ch == 0 ? balL : balR) : 1.0f);
+                        mix.addFrom (ch, 0, eqTrackScratch, srcCh, 0, renderBlockSize, outGain);
                         for (int b = 0; b < numSendBuses; ++b)
                             if (track.sends[b] > 0.0f)
-                                busMix[(size_t) b].addFrom (ch, 0, eqTrackScratch, ch, 0,
+                                busMix[(size_t) b].addFrom (ch, 0, eqTrackScratch, srcCh, 0,
                                                             renderBlockSize,
-                                                            track.gain * track.sends[b]);
+                                                            outGain * track.sends[b]);
                     }
                     continue;
                 }
@@ -568,7 +637,7 @@ void BounceRenderer::renderSynthInto (juce::AudioBuffer<float>& mix,
     else
         synth->sampler->processBlock (block, midiScratch);
 
-    // トラックEQ（シンセ出力直後・gain/panの前。RTのrenderMidiTracksと同じ処理順）
+    // トラックEQ・Comp（シンセ出力直後・gain/panの前。RTのrenderMidiTracksと同じ処理順）
     if (track.eqEnabled && ! Eq::isNeutral (track.eqBands))
     {
         const int eqSrcR = juce::jmin (1, total - 1);
@@ -576,6 +645,14 @@ void BounceRenderer::renderSynthInto (juce::AudioBuffer<float>& mix,
                           eqSrcR != 0 ? block.getWritePointer (eqSrcR) : nullptr,
                           numSamples, request.sampleRate, eqBlockSerial, false,
                           track.eqEnabled, track.eqBands);
+    }
+    if (track.compEnabled)
+    {
+        const int compSrcR = juce::jmin (1, total - 1);
+        track.compDsp.process (block.getWritePointer (0),
+                               compSrcR != 0 ? block.getWritePointer (compSrcR) : nullptr,
+                               numSamples, request.sampleRate, eqBlockSerial, false,
+                               track.compEnabled, track.comp);
     }
 
     // ステレオソースなのでpanはバランス型（RTのrenderMidiTracksと同じ法則）。sendはpost-fader

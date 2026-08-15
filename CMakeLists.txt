@@ -95,6 +95,7 @@ target_sources(daw PRIVATE
     Source/audio/ReferenceAnalyzer.cpp
     Source/audio/ReferenceReportGenerator.cpp
     Source/audio/SamplerEngine.cpp
+    Source/audio/TrackComp.cpp
     Source/audio/TrackEq.cpp
     Source/audio/UrlDownloader.cpp
     Source/shared/GachaSession.cpp
@@ -106,6 +107,7 @@ target_sources(daw PRIVATE
     Source/shared/SpawnedProcess.cpp
     Source/shared/SpectrumAnalyzer.cpp
     Source/shared/SynthBank.cpp
+    Source/ui/CompEditorView.cpp
     Source/ui/EqEditorView.cpp
     Source/ui/FxEditorView.cpp
     Source/ui/GachaPanelView.cpp
@@ -237,6 +239,7 @@ target_sources(daw_tests PRIVATE
     Source/audio/ReferenceAnalyzer.cpp
     Source/audio/ReferenceReportGenerator.cpp
     Source/audio/SamplerEngine.cpp
+    Source/audio/TrackComp.cpp
     Source/audio/TrackEq.cpp
     Source/audio/UrlDownloader.cpp
     Source/shared/GachaSession.cpp

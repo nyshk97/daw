@@ -369,7 +369,10 @@ public:
     //      欠損＝ループ由来でない）。旧LaLaが開いて保存するとアンカーが黙って消えるため版を上げる
     // v15: トラックEQの4バンド（fx.eq.bands 配列。欠損＝既定値。旧LaLaが開いて保存すると
     //      バンド設定が黙って消えるため版を上げる）
-    static constexpr int currentVersion = 15;
+    // v16: トラックCompのパラメータ（fx.comp.threshold/ratio/attack/release/makeup/detectorHpf）。
+    //      v15以前の fx.comp.enabled はDSPが無かった頃の値で無意味なため、読込時に一律OFFへ
+    //      リセットする（既定もOFF: コンプに保証された中立設定が無く、ピルが真のバイパスを担う）
+    static constexpr int currentVersion = 16;
 
     juce::File directory;
     double bpm = 120.0;

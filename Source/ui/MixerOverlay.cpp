@@ -151,6 +151,8 @@ void MixerStrip::bind (const juce::String& name, std::shared_ptr<TrackParams> pa
 void MixerStrip::updateMeter (const MeterFeed& feed)
 {
     meter.update (feed.peak);
+    if (kind == Kind::track)
+        slotPills[1].setGainReductionDb (feed.compGrDb); // Compピルのミニ GRバー
     if (! juce::approximatelyEqual (feed.maxSincePlay, peakMaxDisplay))
     {
         peakMaxDisplay = feed.maxSincePlay;

@@ -10,7 +10,9 @@
 // 「スナップショットが運ぶオーディオスレッド側オブジェクト」だからで、AUの
 // AudioPluginInstance と同じ立ち位置（unique_ptr のため完全型が必要）
 #include "../audio/SamplerEngine.h"
+#include "../audio/TrackComp.h"
 #include "../audio/TrackEq.h"
+#include "CompParams.h"
 #include "EqParams.h"
 
 // send用固定バスの本数（Reverb A / Reverb B / Delay）。本数・並びは固定で、
@@ -31,20 +33,26 @@ struct TrackParams
     std::atomic<bool> mute { false };
     std::atomic<bool> solo { false };
 
-    // 固定ストリップFXのON/OFF（固定チェーンに「挿す」概念はなく常在。既定ON）。
-    // DSP実装（スライス3〜4）でオーディオスレッドが読む前提の共有atomic。
-    // それまではUI＋保存のみで音に影響しない
+    // 固定ストリップFXのON/OFF。EQは既定ON（バンドが中立なら音を変えない）。
+    // Compは既定OFF（v16でDSP結線。コンプに「保証された中立設定」が無いため、
+    // ピルが真のバイパスを担う）
     std::atomic<bool> eqEnabled { true };
-    std::atomic<bool> compEnabled { true };
+    std::atomic<bool> compEnabled { false };
 
     // トラックEQの4バンド（v15。並び・不変条件は shared/EqParams.h）。書き込みは必ず
     // Eq::normalized() を通した値を Eq::store() すること。バス・Masterでは未使用のまま
     Eq::BandParams eqBands[Eq::numBands];
 
+    // トラックCompのパラメータ（v16。shared/CompParams.h）。書き込みは必ず
+    // Comp::normalized() を通した値を Comp::store() すること。バス・Masterでは未使用のまま
+    Comp::Params comp;
+
     // ---- 以下はオーディオスレッド専用（peakL/peakR・SynthInstance::activeNotes と同じ流儀）----
-    // EQのDSP実行状態（biquad履歴・平滑）。スナップショット再構築を跨いで持続させるためここに住む。
+    // EQ/CompのDSP実行状態（biquad履歴・平滑・GRエンベロープ）。スナップショット再構築を
+    // 跨いで持続させるためここに住む。
     // **リアルタイム再生専用**: バウンスは BounceRenderer::TrackRender の独立インスタンスを使う
     TrackEq rtEq;
+    TrackComp rtComp;
 
     TrackParams() { Eq::applyDefaults (eqBands); }
 
@@ -53,6 +61,13 @@ struct TrackParams
     // 走っても最大値が渡る（storeだと最後のブロックしか見えず瞬発音を取りこぼす）
     std::atomic<float> peakL { 0.0f };
     std::atomic<float> peakR { 0.0f };
+
+    // Compの表示用レベル（peakL/peakRと同じCAS max→UI exchange(0)の流儀。
+    // 消費はMainComponentのメータータイマーに一元化し、各表示へ配布する）。
+    // compGrDb は正の減衰量dB（描画時だけ下向きにする）、compDetectorPeak は
+    // 検波入力ピークの**線形振幅**（dBを入れると負値になり exchange(0) のmax更新と両立しない）
+    std::atomic<float> compGrDb { 0.0f };
+    std::atomic<float> compDetectorPeak { 0.0f };
 
     static_assert (std::atomic<float>::is_always_lock_free);
     static_assert (std::atomic<bool>::is_always_lock_free);

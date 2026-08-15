@@ -40,6 +40,18 @@ public:
         repaint();
     }
 
+    // ミニGRバー（Compピルのみ使用）。エディタを開かなくても掛かり具合が見える
+    //（Logicのチャンネルストリップ常設GR表示と同じ用途）。値は正の減衰量dBで、
+    // MainComponentのメータータイマーが一元消費した値の配布を受ける（atomicは読まない）。
+    // 負値（-1等）で非表示＝Comp以外のピルは触らなければ何も描かれない
+    void setGainReductionDb (float grDbToShow)
+    {
+        if (std::abs (grDbToShow - grDb) < 0.05f && (grDbToShow > 0.0f) == (grDb > 0.0f))
+            return;
+        grDb = grDbToShow;
+        repaint();
+    }
+
     std::function<void()> onOpenEditor;   // エディタ側クリック（呼び出し側で詳細エディタを開く）
     std::function<void()> onPowerToggled; // ON/OFFトグル後（dirty化・相方UIのrefresh用）
 
@@ -86,6 +98,17 @@ public:
         else
         {
             StripParts::drawSlotPill (g, getLocalBounds(), name, isOn, grayed);
+        }
+
+        // ミニGRバー: 下端2pxを右から左へ伸ばす（GR=下げている量。スケールは0〜24dBで
+        // Compエディタと同じ）。ON かつ 掛かっているときだけ・hover中の操作UIには重ねない
+        if (grDb > 0.05f && isOn && ! hovered)
+        {
+            const float fraction = juce::jmin (grDb, 24.0f) / 24.0f;
+            const float barWidth = (bounds.getWidth() - 8.0f) * fraction;
+            g.setColour (juce::Colour (0xffd9a13c).withAlpha (0.9f));
+            g.fillRect (juce::Rectangle<float> (bounds.getRight() - 4.0f - barWidth,
+                                                bounds.getBottom() - 4.0f, barWidth, 2.0f));
         }
 
         if (activeOutline)
@@ -148,6 +171,7 @@ private:
     std::atomic<bool>* enabled = nullptr;
     bool grayed = false;
     bool activeOutline = false;
+    float grDb = -1.0f; // ミニGRバー（負=非表示。Compピルのみ配布を受ける）
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SlotPill)
 };

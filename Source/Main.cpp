@@ -108,12 +108,18 @@ public:
     // JUCEアプリの自動確認用に、実機能と同一経路で画面を組み立ててPNGに保存する:
     //   --open <projectDir>  選択画面を迂回してプロジェクトを開く
     //   --eq-editor          FXパネル＋EQ詳細エディタを開く（選択トラック）
+    //   --comp-editor        FXパネル＋Comp詳細エディタを開く（選択トラック）
+    //   --comp-demo          選択トラックにデモ設定のCompを掛ける（-30dB/8:1/5ms/80ms・ON。
+    //                        GR表示・書き出し検証用）
+    //   --bounce <path>      FileChooserを迂回して書き出しを開始する（ログ bounce.start）
     //   --snapshot <path>    表示完了後（2秒後）のUIをPNG保存して知らせる（ログ debug.snapshot）
     void handleDebugLaunchArgs()
     {
         const auto args = getCommandLineParameterArray();
-        juce::File openDir, snapshotFile;
+        juce::File openDir, snapshotFile, bounceFile;
         bool eqEditor = false;
+        bool compEditor = false;
+        bool compDemo = false;
         bool autoplay = false; // --play: 開いた後に再生を開始（アナライザ等の動作確認用）
         for (int i = 0; i < args.size(); ++i)
         {
@@ -123,6 +129,12 @@ public:
                 snapshotFile = juce::File (args[i + 1]);
             else if (args[i] == "--eq-editor")
                 eqEditor = true;
+            else if (args[i] == "--comp-editor")
+                compEditor = true;
+            else if (args[i] == "--comp-demo")
+                compDemo = true;
+            else if (args[i] == "--bounce" && i + 1 < args.size())
+                bounceFile = juce::File (args[i + 1]);
             else if (args[i] == "--play")
                 autoplay = true;
         }
@@ -145,12 +157,34 @@ public:
                         component->debugOpenEqDetail();
             });
 
+        if (compEditor || compDemo)
+            juce::Timer::callAfterDelay (500, [this, compEditor, compDemo]
+            {
+                if (mainWindow == nullptr)
+                    return;
+                if (auto* component = mainWindow->currentMainComponent())
+                {
+                    if (compDemo)
+                        component->debugSetCompParams (true, { -30.0f, 8.0f, 5.0f, 80.0f, 0.0f, false });
+                    if (compEditor)
+                        component->debugOpenCompDetail();
+                }
+            });
+
         if (autoplay)
             juce::Timer::callAfterDelay (700, [this]
             {
                 if (mainWindow != nullptr)
                     if (auto* component = mainWindow->currentMainComponent())
                         component->debugStartPlayback();
+            });
+
+        if (bounceFile != juce::File())
+            juce::Timer::callAfterDelay (900, [this, bounceFile] // --comp-demo（500ms）より後
+            {
+                if (mainWindow != nullptr)
+                    if (auto* component = mainWindow->currentMainComponent())
+                        component->debugStartBounce (bounceFile);
             });
 
         if (snapshotFile != juce::File())

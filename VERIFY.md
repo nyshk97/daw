@@ -30,8 +30,12 @@ sleep 6 && tail -5 ~/Library/Logs/daw/"$(ls -t ~/Library/Logs/daw | head -1)"  #
 
 - `--open <projectDir>`: 選択画面を迂回してプロジェクトを開く（ログ `project.open`）
 - `--eq-editor`: FXパネル＋EQ詳細エディタを開く（ログ `fxdetail.open fx=EQ`）
+- `--comp-editor`: FXパネル＋Comp詳細エディタを開く（ログ `fxdetail.open fx=Comp`）
+- `--comp-demo`: 選択トラックにデモ設定のComp（-30dB/8:1/5ms/80ms・ON）を適用（GR表示・書き出し検証用）
 - `--play`: 開いた後に再生開始（ログ `transport.play`）。**音を出したくない検証**はトラックの
-  `volume: 0.001`（-60dB＝実質無音）にする — EQのアナライザはフェーダー前タップなので表示はフルに出る
+  `volume: 0.001`（-60dB＝実質無音）にする — EQのアナライザ・CompのGR検波はどちらも
+  フェーダー前タップなので表示はフルに出る。Compの表示検証は `~/Music/daw/0-0-comp-test`
+  （2Hzバースト音・GRがポンピングして見える）が使える
 - `--snapshot <path>`: 表示完了後（2秒後）のUIをPNG保存（createComponentSnapshot。別Spaceでも
   ユーザーのフォーカスも奪わない。ログ `debug.snapshot ok=1` で裏取り）
 

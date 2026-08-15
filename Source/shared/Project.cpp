@@ -590,6 +590,16 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
         eqObj->setProperty ("bands", eqBandsArray);
         auto* compObj = new juce::DynamicObject();
         compObj->setProperty ("enabled", track.params->compEnabled.load());
+        // Compパラメータ（v16。shared/CompParams.h）
+        {
+            const auto comp = Comp::load (track.params->comp);
+            compObj->setProperty ("threshold", (double) comp.thresholdDb);
+            compObj->setProperty ("ratio", (double) comp.ratio);
+            compObj->setProperty ("attack", (double) comp.attackMs);
+            compObj->setProperty ("release", (double) comp.releaseMs);
+            compObj->setProperty ("makeup", (double) comp.makeupDb);
+            compObj->setProperty ("detectorHpf", comp.detectorHpf);
+        }
         auto* fxObj = new juce::DynamicObject();
         fxObj->setProperty ("eq", juce::var (eqObj));
         fxObj->setProperty ("comp", juce::var (compObj));
@@ -879,10 +889,28 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
                     track.params->sends[b].store (juce::jlimit (0.0f, 1.0f,
                                                                 (float) (double) (*sendsArray)[b]));
 
-            // 固定ストリップFXのON/OFF（欠損＝旧形式はON補完）
+            // 固定ストリップFXのON/OFF（EQの欠損＝旧形式はON補完）
             const auto fxVar = trackVar.getProperty ("fx", {});
             track.params->eqEnabled.store ((bool) fxVar.getProperty ("eq", {}).getProperty ("enabled", true));
-            track.params->compEnabled.store ((bool) fxVar.getProperty ("comp", {}).getProperty ("enabled", true));
+
+            // Comp（v16）。v15以前の enabled はDSPが無かった頃の値で無意味なため一律OFFへリセット
+            //（trueのまま通すと、アップデートしただけで全トラックに中立でないコンプが挿さり得る）
+            {
+                const auto compVar = fxVar.getProperty ("comp", {});
+                track.params->compEnabled.store (
+                    version >= 16 && (bool) compVar.getProperty ("enabled", false));
+                auto comp = Comp::defaults;
+                if (version >= 16)
+                {
+                    comp.thresholdDb = (float) (double) compVar.getProperty ("threshold", (double) comp.thresholdDb);
+                    comp.ratio = (float) (double) compVar.getProperty ("ratio", (double) comp.ratio);
+                    comp.attackMs = (float) (double) compVar.getProperty ("attack", (double) comp.attackMs);
+                    comp.releaseMs = (float) (double) compVar.getProperty ("release", (double) comp.releaseMs);
+                    comp.makeupDb = (float) (double) compVar.getProperty ("makeup", (double) comp.makeupDb);
+                    comp.detectorHpf = (bool) compVar.getProperty ("detectorHpf", comp.detectorHpf);
+                }
+                Comp::store (track.params->comp, Comp::normalized (comp));
+            }
 
             // EQバンド（v14以前は無い → 既定値）。バンド種別ごとの不変条件（enabled/Q固定等）を
             // normalized で強制する — UIから操作できない値が手編集JSONで入ると戻せない隠れ状態になる

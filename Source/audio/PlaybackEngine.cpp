@@ -246,7 +246,7 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
                                      bool silenceTransport, bool silenceAll, bool resound,
                                      bool timelineJumped)
 {
-    ++eqSerial; // TrackEq の連続性判定用（セグメントごとに1回。トラックのスキップ＝再進入を検出する）
+    ++eqSerial; // TrackEq/TrackComp 共通の連続性判定用（セグメントごとに1回。トラックのスキップ＝再進入を検出する）
 
     // 曲末フェード。呼び出し側が境界でセグメントを切っているので、このセグメントは
     // 「フェード前」「区間内」「終端以後」のいずれかに完全に収まっている
@@ -292,20 +292,25 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
             float panL = 1.0f, panR = 1.0f;
             Pan::monoGains (track.params->pan.load(), panL, panR);
 
-            // ---- トラックEQ（active経路の判定）----
-            // 高速パス（activeEq=false）は既存経路を**完全に**素通しする（ビット一致契約）。
-            // active経路は「クリップgainまで合算 → EQ → トラックgain/pan → メーター/send/mix」に
-            // 組み直す: accumGain でトラックgainの掛け場所をEQの後ろへ移す。
+            // ---- トラックEQ・Comp（active経路の判定）----
+            // 高速パス（activeFx=false）は既存経路を**完全に**素通しする（ビット一致契約）。
+            // active経路は「クリップgainまで合算 → EQ → Comp → トラックgain/pan →
+            // メーター/send/mix」に組み直す: accumGain でトラックgainの掛け場所をFXの後ろへ移す。
             // 高速パス時は accumGain==gain・postGain==1.0f で、既存の式と厳密に同値
-            //（x*1.0f==x）。EQが働くときだけ値が変わる
+            //（x*1.0f==x）。EQ/Compが働くときだけ値が変わる
             const bool eqOn = track.params->eqEnabled.load();
             const auto eqTargets = Eq::loadAll (track.params->eqBands);
+            const bool compOn = track.params->compEnabled.load();
+            const auto compTargets = Comp::load (track.params->comp);
             // アナライザ表示中はEQが中立でもactive経路を使う（タップ点＝EQ直後・フェーダー前の
             // バッファは高速パスに存在しないため。ビット一致の完全素通しは非表示時のみの保証）
             const bool activeEq = canProcess
                                   && track.params->rtEq.needsActivePath (eqOn, eqTargets, tapThis);
-            const float accumGain = activeEq ? 1.0f : gain;
-            const float postGain = activeEq ? (audible ? gain : 0.0f) : 1.0f;
+            const bool activeComp = canProcess
+                                    && track.params->rtComp.needsActivePath (compOn);
+            const bool activeFx = activeEq || activeComp;
+            const float accumGain = activeFx ? 1.0f : gain;
+            const float postGain = activeFx ? (audible ? gain : 0.0f) : 1.0f;
 
             if (! track.hasStereoClip)
             {
@@ -368,15 +373,25 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
 
                 // active経路はクリップの重なりがなくても処理する（フィルタの残響（リングアウト）を
                 // 切らない・連番の連続性を保つ。中身は無音なのでコストは biquad 8本分だけ）
-                if (canProcess && (anyOverlap || activeEq))
+                if (canProcess && (anyOverlap || activeFx))
                 {
                     if (activeEq)
                         track.params->rtEq.process (trackScratch.getWritePointer (0), nullptr,
                                                     segLen, sr, eqSerial, timelineJumped,
                                                     eqOn, eqTargets);
-                    if (tapThis && activeEq) // EQ直後・フェーダー前（モノはLを両chへ複製）
+                    if (tapThis && activeEq) // EQ直後・Comp前・フェーダー前（モノはLを両chへ複製）
                         analyzerTap->pushSamples (track.trackId, trackScratch.getReadPointer (0),
                                                   nullptr, segLen);
+                    if (activeComp)
+                    {
+                        track.params->rtComp.process (trackScratch.getWritePointer (0), nullptr,
+                                                      segLen, sr, eqSerial, timelineJumped,
+                                                      compOn, compTargets);
+                        storePeakMax (track.params->compGrDb,
+                                      track.params->rtComp.blockMaxGainReductionDb());
+                        storePeakMax (track.params->compDetectorPeak,
+                                      track.params->rtComp.blockMaxDetectorPeak());
+                    }
 
                     // メーター: モノソース×pan分配なので L/R = 合算ピーク×panL/panR
                     const float mag = trackScratch.getMagnitude (0, 0, segLen);
@@ -406,6 +421,16 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
                 float balL = 1.0f, balR = 1.0f;
                 Pan::stereoGains (track.params->pan.load(), balL, balR);
 
+                // ステレオクリップのみのトラックは、FX有効時にバランスpanをFXの後段へ移す
+                //（仕様の EQ→Comp→gain/pan。Compは非線形＝検波レベルがpanで変わるため、
+                // pan前の信号に掛けないと振っただけで圧縮量が変わる。MIDI経路・モノ経路と同じ点になる）。
+                // モノクリップ混在トラックは対象外: クリップ種別でpan法則が違い（等パワー/バランス）、
+                // 合算後に1つの後段panとして適用できない。混在時はpan焼き込み後にFXが掛かる（RT/バウンス同順）
+                bool allClipsStereo = true;
+                for (auto& clip : track.clips)
+                    allClipsStereo = allClipsStereo && clip.audio->getNumChannels() >= 2;
+                const bool prePanFx = activeFx && allClipsStereo;
+
                 if (canProcess)
                 {
                     trackScratch.clear (0, 0, segLen);
@@ -427,9 +452,9 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
                     const bool stereo = clip.audio->getNumChannels() >= 2;
                     const float* srcL = clip.audio->getReadPointer (0, srcOffset);
                     const float* srcR = clip.audio->getReadPointer (stereo ? 1 : 0, srcOffset);
-                    const float clipGain = accumGain * clip.gain; // 素材のトリム → 曲中のバランスの順（EQ有効時はトラックgainを後段へ）
-                    const float gainL = clipGain * (stereo ? balL : panL);
-                    const float gainR = clipGain * (stereo ? balR : panR);
+                    const float clipGain = accumGain * clip.gain; // 素材のトリム → 曲中のバランスの順（FX有効時はトラックgainを後段へ）
+                    const float gainL = prePanFx ? clipGain : clipGain * (stereo ? balL : panL);
+                    const float gainR = prePanFx ? clipGain : clipGain * (stereo ? balR : panR);
 
                     // フェードの区間分割はモノ経路と共通（フェードなしなら1区間・ゲイン1.0）
                     ClipFade::Segment segs[ClipFade::maxSegments];
@@ -462,30 +487,45 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
                 }
 
                 // active経路はクリップの重なりがなくても処理する（モノ経路と同じ理由）
-                if (canProcess && (anyOverlap || activeEq))
+                if (canProcess && (anyOverlap || activeFx))
                 {
                     if (activeEq)
                         track.params->rtEq.process (trackScratch.getWritePointer (0),
                                                     trackScratch.getWritePointer (1),
                                                     segLen, sr, eqSerial, timelineJumped,
                                                     eqOn, eqTargets);
-                    if (tapThis && activeEq) // EQ直後・フェーダー前
+                    if (tapThis && activeEq) // EQ直後・Comp前・フェーダー前
                         analyzerTap->pushSamples (track.trackId, trackScratch.getReadPointer (0),
                                                   trackScratch.getReadPointer (1), segLen);
+                    if (activeComp)
+                    {
+                        track.params->rtComp.process (trackScratch.getWritePointer (0),
+                                                      trackScratch.getWritePointer (1),
+                                                      segLen, sr, eqSerial, timelineJumped,
+                                                      compOn, compTargets);
+                        storePeakMax (track.params->compGrDb,
+                                      track.params->rtComp.blockMaxGainReductionDb());
+                        storePeakMax (track.params->compDetectorPeak,
+                                      track.params->rtComp.blockMaxDetectorPeak());
+                    }
 
-                    storePeakMax (track.params->peakL, trackScratch.getMagnitude (0, 0, segLen) * postGain);
-                    storePeakMax (track.params->peakR, trackScratch.getMagnitude (1, 0, segLen) * postGain);
-                    mixScratch.addFrom (0, 0, trackScratch, 0, 0, segLen, postGain);
-                    mixScratch.addFrom (1, 0, trackScratch, 1, 0, segLen, postGain);
+                    // prePanFx時はバランスpanをここ（FX後・フェーダーと同段）で掛ける。
+                    // 高速パス・混在トラックは焼き込み済み（×1.0のまま）
+                    const float postGainL = postGain * (prePanFx ? balL : 1.0f);
+                    const float postGainR = postGain * (prePanFx ? balR : 1.0f);
+                    storePeakMax (track.params->peakL, trackScratch.getMagnitude (0, 0, segLen) * postGainL);
+                    storePeakMax (track.params->peakR, trackScratch.getMagnitude (1, 0, segLen) * postGainR);
+                    mixScratch.addFrom (0, 0, trackScratch, 0, 0, segLen, postGainL);
+                    mixScratch.addFrom (1, 0, trackScratch, 1, 0, segLen, postGainR);
 
-                    // post-fader send（trackScratchは既にpan適用済み。EQ有効時のgainはここで掛かる）
+                    // post-fader send（gain・pan適用後のコピーをバスへ）
                     for (int b = 0; b < numSendBuses; ++b)
                     {
                         const float send = track.params->sends[b].load();
                         if (send <= 0.0f)
                             continue;
-                        busScratch[b].addFrom (0, 0, trackScratch, 0, 0, segLen, postGain * send);
-                        busScratch[b].addFrom (1, 0, trackScratch, 1, 0, segLen, postGain * send);
+                        busScratch[b].addFrom (0, 0, trackScratch, 0, 0, segLen, postGainL * send);
+                        busScratch[b].addFrom (1, 0, trackScratch, 1, 0, segLen, postGainR * send);
                     }
             }
             }
@@ -824,10 +864,24 @@ void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, int numSample
                 track.params->rtEq.process (block.getWritePointer (0),
                                             srcR != 0 ? block.getWritePointer (srcR) : nullptr,
                                             numSamples, sr, eqSerial, false, eqOn, eqTargets);
-            if (tapThis) // EQ直後・gain/pan前
+            if (tapThis) // EQ直後・Comp前・gain/pan前
                 analyzerTap->pushSamples (track.trackId, block.getReadPointer (0),
                                           srcR != 0 ? block.getReadPointer (srcR) : nullptr,
                                           numSamples);
+
+            // トラックComp（EQ直後・gain/panの前。履歴の扱いはEQと同じ理由でtimelineJumped=false）
+            const bool compOn = track.params->compEnabled.load();
+            const auto compTargets = Comp::load (track.params->comp);
+            if (track.params->rtComp.needsActivePath (compOn))
+            {
+                track.params->rtComp.process (block.getWritePointer (0),
+                                              srcR != 0 ? block.getWritePointer (srcR) : nullptr,
+                                              numSamples, sr, eqSerial, false, compOn, compTargets);
+                storePeakMax (track.params->compGrDb,
+                              track.params->rtComp.blockMaxGainReductionDb());
+                storePeakMax (track.params->compDetectorPeak,
+                              track.params->rtComp.blockMaxDetectorPeak());
+            }
 
             if (gain > 0.0f)
             {

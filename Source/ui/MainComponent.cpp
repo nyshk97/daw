@@ -220,6 +220,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         setDirty (true);
         mixerWindow.content().refreshValues(); // ミキサーのスロットピルもeqEnabled/compEnabledを表示する（非表示時はno-op）
         eqDetail.refreshFromModel();  // eqEnabledはEQエディタのカーブ表示（バイパスで沈める）にも効く
+        compDetail.refreshFromModel(); // compEnabledもCompエディタのカーブ表示に効く
     };
     fxEditor.onVolumeChanged = [this]
     {
@@ -267,6 +268,10 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     eqDetail.getSampleRate = [this] { return transport.sampleRate.load(); };
     eqDetail.setAnalyzerTap (&analyzerTap);
     engine.setAnalyzerTap (&analyzerTap);
+
+    // 下部詳細に載せる Comp エディタ。値の書き込みはビュー側（atomic直書き・undo対象外＝EQと
+    // 同じ扱い）。dirty化だけ受ける。GR・検波レベルはメータータイマーが pushLevels で配布する
+    compDetail.onEdited = [this] { setDirty (true); };
 
     instrumentDetail.onPreview = [this] (int pitch)
     {
@@ -720,11 +725,20 @@ void MainComponent::timerCallback()
     meterFeeds.resize (project->tracks.size());
     for (size_t i = 0; i < project->tracks.size(); ++i)
     {
-        const StereoPeak p { project->tracks[i].params->peakL.exchange (0.0f),
-                             project->tracks[i].params->peakR.exchange (0.0f) };
+        auto& params = *project->tracks[i].params;
+        const StereoPeak p { params.peakL.exchange (0.0f), params.peakR.exchange (0.0f) };
         meterPeaks[i] = p;
         meterFeeds[i].peak = p;
         meterFeeds[i].maxSincePlay = juce::jmax (meterFeeds[i].maxSincePlay, p[0], p[1]);
+
+        // CompのGR・検波レベルもここで一元消費する（peakL/peakRと同じ理由: SlotPill×2箇所と
+        // Compエディタが直接exchangeするとピークを奪い合う）。GRはfeed経由でSlotPillへ、
+        // 検波レベルは表示中のCompエディタだけに配る
+        const float grDb = params.compGrDb.exchange (0.0f);
+        const float detectorPeak = params.compDetectorPeak.exchange (0.0f);
+        meterFeeds[i].compGrDb = grDb;
+        if (compDetail.shownTrack() == &project->tracks[i])
+            compDetail.pushLevels (grDb, detectorPeak);
     }
     for (int b = 0; b < numSendBuses; ++b)
     {
@@ -1469,10 +1483,32 @@ void MainComponent::debugOpenEqDetail()
     toggleFxDetailSlot (0); // 0 = EQ（トラック表示時のスロット番号）
 }
 
+void MainComponent::debugOpenCompDetail()
+{
+    openFxEditor();
+    toggleFxDetailSlot (1); // 1 = Comp
+}
+
+void MainComponent::debugSetCompParams (bool enabled, const Comp::Values& values)
+{
+    if (selectedTrack < 0 || selectedTrack >= (int) project->tracks.size())
+        return;
+    auto& params = *project->tracks[(size_t) selectedTrack].params;
+    params.compEnabled.store (enabled);
+    Comp::store (params.comp, Comp::normalized (values));
+    compDetail.refreshFromModel();
+    fxEditor.refreshValues();
+}
+
 void MainComponent::debugStartPlayback()
 {
     if (! transport.isPlaying.load())
         togglePlay();
+}
+
+void MainComponent::debugStartBounce (const juce::File& target)
+{
+    beginBounce (target); // FileChooserだけ迂回（リクエスト構築〜レンダリングは実機能と同一経路）
 }
 #endif
 
@@ -1505,6 +1541,7 @@ void MainComponent::closeFxDetail()
     fxDetail.close(); // 中身（body）の参照はclose側で外れる
     instrumentDetail.setTrack (nullptr);
     eqDetail.setTrack (nullptr);
+    compDetail.setTrack (nullptr);
     fxDetailSlot = -1;
     fxDetailKey.clear();
     fxEditor.setActiveSlot (-1);
@@ -1537,7 +1574,7 @@ void MainComponent::syncFxDetail()
 }
 
 // 下部詳細の中身の載せ替え。Instrumentスロット→InstrumentDetailView、トラックのEQスロット→
-// EqEditorView（他のFXは未実装なので空パネルのまま。Compのエディタも将来ここに足す）。
+// EqEditorView、トラックのCompスロット→CompEditorView（他のFXは未実装なので空パネルのまま）。
 // サンプルを持たないトラックのInstrumentスロットはクリック不可なので、通常ここには来ない
 void MainComponent::updateFxDetailBody()
 {
@@ -1562,28 +1599,35 @@ void MainComponent::updateFxDetailBody()
         }
         instrumentDetail.setTrack (&project->tracks[(size_t) index]);
         eqDetail.setTrack (nullptr);
+        compDetail.setTrack (nullptr);
         fxDetail.setBody (&instrumentDetail);
         return;
     }
 
-    // トラックのEQスロット（スロット名"EQ"はトラックのみ。バス/Masterのslot0はReverb等）
-    if (fxEditor.slotName (fxDetailSlot) == "EQ")
+    // トラックのEQ/Compスロット（スロット名"EQ"/"Comp"はトラックのみ。バス/Masterのslot0はReverb等）
+    const auto slot = fxEditor.slotName (fxDetailSlot);
+    if (slot == "EQ" || slot == "Comp")
     {
         const int index = fxEditor.shownTrack();
         if (index < 0 || index >= (int) project->tracks.size())
         {
             eqDetail.setTrack (nullptr);
+            compDetail.setTrack (nullptr);
             closeFxDetail();
             return;
         }
+        auto* trackPtr = &project->tracks[(size_t) index];
         instrumentDetail.setTrack (nullptr);
-        eqDetail.setTrack (&project->tracks[(size_t) index]);
-        fxDetail.setBody (&eqDetail);
+        eqDetail.setTrack (slot == "EQ" ? trackPtr : nullptr);
+        compDetail.setTrack (slot == "Comp" ? trackPtr : nullptr);
+        fxDetail.setBody (slot == "EQ" ? (juce::Component*) &eqDetail
+                                       : (juce::Component*) &compDetail);
         return;
     }
 
     instrumentDetail.setTrack (nullptr);
     eqDetail.setTrack (nullptr);
+    compDetail.setTrack (nullptr);
     fxDetail.setBody (nullptr);
 }
 
@@ -2052,6 +2096,8 @@ void MainComponent::beginBounce (const juce::File& target)
             trackRender.sends[b] = params.sends[b].load();
         trackRender.eqEnabled = params.eqEnabled.load();
         trackRender.eqBands = Eq::loadAll (params.eqBands);
+        trackRender.compEnabled = params.compEnabled.load();
+        trackRender.comp = Comp::load (params.comp);
         trackRender.clips = std::move (snapshot->tracks[i].clips);
         trackRender.notes = std::move (snapshot->tracks[i].notes);
 

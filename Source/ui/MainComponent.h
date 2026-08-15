@@ -9,6 +9,7 @@
 #include "DeviceSettingsWindow.h"
 #include "FxDetailView.h"
 #include "FxEditorView.h"
+#include "CompEditorView.h"
 #include "EqEditorView.h"
 #include "InstrumentDetailView.h"
 #include "IconButton.h"
@@ -86,6 +87,11 @@ public:
 #if JUCE_DEBUG
     // 検証フック（dev版限定・Main.cppの --eq-editor / --play から）。実機能と同一経路で操作する
     void debugOpenEqDetail();
+    void debugOpenCompDetail();
+    // 検証用: 選択トラックのCompを設定する（--comp-editor と組み合わせて書き出し検証に使う）
+    void debugSetCompParams (bool enabled, const Comp::Values& values);
+    // 検証用: FileChooserを迂回して書き出しを開始する（--bounce <path>）
+    void debugStartBounce (const juce::File& target);
     void debugStartPlayback();
 #endif
 
@@ -315,6 +321,7 @@ private:
     // 下部詳細に載せる中身（fxDetailは非所有なので、こちらが所有してfxDetailより長生きさせる）
     InstrumentDetailView instrumentDetail;
     EqEditorView eqDetail; // トラックEQのエディタ（EQスロットクリックで載る）
+    CompEditorView compDetail; // トラックCompのエディタ（Compスロットクリックで載る）
     int fxDetailSlot = -1;        // 詳細が表示中のスロット（FXパネルの並びに対応）
     juce::String fxDetailKey;     // 詳細が対象にしているチャンネル（fxEditor.targetKey()と比較して追従判定）
 
