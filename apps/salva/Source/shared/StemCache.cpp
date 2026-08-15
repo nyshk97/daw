@@ -178,7 +178,8 @@ void deleteUnreferencedRunsLocked (const juce::File& identityDirectory)
 } // namespace
 
 void sweep (const juce::File& root, juce::int64 myPid,
-            const PidAlive& pidAlive, const PgidAlive& pgidAlive, juce::Time now)
+            const PidAlive& pidAlive, const PgidAlive& pgidAlive, juce::Time now,
+            int currentContractVersion)
 {
     for (const auto& dir : root.findChildFiles (juce::File::findDirectories, false))
     {
@@ -193,6 +194,18 @@ void sweep (const juce::File& root, juce::int64 myPid,
         // ②削除は自分のlockを取ってから（解放〜削除の間に別プロセスが取得したらスキップ）
         if (! acquireLock (dir, myPid))
             continue;
+
+        // ③過去契約versionのidentityは丸ごと削除（モデル更新後は使われないままディスクを占有する）。
+        // 「不一致」でなく「過去」に限定 —— rootはdev/release共有のため、旧アプリを起動しただけで
+        // 新アプリが作った未来versionのキャッシュが消える事故を防ぐ
+        const auto manifest = parseManifest (dir.getChildFile ("manifest.json"));
+        if (manifest.version > 0 && manifest.version < currentContractVersion)
+        {
+            if (! dir.deleteRecursively())
+                releaseLock (dir); // 削除失敗の経路ではロックを残さない
+            continue;
+        }
+
         deleteUnreferencedRunsLocked (dir);
         releaseLock (dir);
     }

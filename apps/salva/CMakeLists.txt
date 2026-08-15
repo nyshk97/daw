@@ -159,6 +159,8 @@ target_include_directories(salva_tests PRIVATE
 target_compile_definitions(salva_tests PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
+    # producer(separate.sh)とconsumer(StemCache.h)のcontractVersion一致テスト用
+    SALVA_SEPARATE_SH_PATH="${CMAKE_CURRENT_SOURCE_DIR}/Resources/separate.sh"
 )
 
 target_link_libraries(salva_tests

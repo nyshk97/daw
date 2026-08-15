@@ -766,6 +766,77 @@ int main (int argc, char* argv[])
         expect (! dirB.exists(), "非使用中identityは削除");
     }
 
+    // ==================== ステム: producer/consumerのcontractVersion一致 ====================
+    {
+        beginTest ("StemCache: separate.shのmanifest出力とStemCache::contractVersionが一致する");
+        // separate.shは "contractVersion": N を直書きしている。片方だけbumpすると
+        // 新しい分離までmanifestUsable()で弾かれるため、両者の一致をここで固定する
+        const juce::File script (SALVA_SEPARATE_SH_PATH);
+        expect (script.existsAsFile(), "separate.sh が見つかる");
+        const auto text = script.loadFileAsString();
+        int scriptVersion = -1;
+        for (const auto& line : juce::StringArray::fromLines (text))
+            if (line.contains ("\"contractVersion\""))
+            {
+                scriptVersion = line.fromFirstOccurrenceOf (":", false, false)
+                                    .upToFirstOccurrenceOf (",", false, false)
+                                    .trim()
+                                    .getIntValue();
+                break;
+            }
+        const auto detail = "separate.sh=" + juce::String (scriptVersion)
+                            + " / StemCache.h=" + juce::String (StemCache::contractVersion);
+        expect (scriptVersion == StemCache::contractVersion, detail.toRawUTF8());
+    }
+
+    // ==================== ステム: 過去契約versionのキャッシュ掃除 ====================
+    {
+        beginTest ("StemCache: sweepは過去versionのidentityだけ削除する（現行・未来・使用中は保持）");
+        const auto root = tempDir.getChildFile ("stems-version-sweep");
+        const auto now = juce::Time::getCurrentTime();
+        const StemCache::SourceIdentity id { "/tmp/src.wav", 10, 20 };
+        const auto alivePid = [] (juce::int64 pid) { return pid == 100; };
+        const auto alivePgid = [] (juce::int64) { return false; };
+        const auto setManifestVersion = [] (const juce::File& dir, int version)
+        {
+            auto v = juce::JSON::parse (dir.getChildFile ("manifest.json").loadFileAsString());
+            v.getDynamicObject()->setProperty ("contractVersion", version);
+            dir.getChildFile ("manifest.json").replaceWithText (juce::JSON::toString (v));
+        };
+
+        // versionはsweepへ注入して機構を固定する（現行contractVersion=1だと「過去」が
+        // 作れないため。本番呼び出しは既定引数でStemCache::contractVersionを使う）
+        constexpr int testVersion = 2;
+
+        // 過去version・死んだlock → identityごと削除
+        const auto pastDead = makeStemFixture (root, "past-dead", id, "run1", "complete", 1, 44100.0, 50);
+        setManifestVersion (pastDead, testVersion - 1);
+        StemCache::acquireLock (pastDead, 999);
+        pastDead.getChildFile ("lock/worker.json").replaceWithText ("{\"pid\": 998, \"pgid\": 999}");
+
+        // 過去version・生きたlock → 保持（dev/release並走の相手が分離中かもしれない）
+        const auto pastAlive = makeStemFixture (root, "past-alive", id, "run1", "complete", 1, 44100.0, 50);
+        setManifestVersion (pastAlive, testVersion - 1);
+        StemCache::acquireLock (pastAlive, 100);
+
+        // 現行version → 保持
+        const auto current = makeStemFixture (root, "current", id, "run1", "complete", 1, 44100.0, 50);
+        setManifestVersion (current, testVersion);
+
+        // 未来version → 保持（rootはdev/release共有: 旧アプリが新アプリのキャッシュを消さない）
+        const auto future = makeStemFixture (root, "future", id, "run1", "complete", 1, 44100.0, 50);
+        setManifestVersion (future, testVersion + 1);
+
+        StemCache::sweep (root, 12345, alivePid, alivePgid, now, testVersion);
+
+        expect (! pastDead.exists(), "過去version・死んだlockはidentityごと削除");
+        expect (pastAlive.getChildFile ("runs/run1").isDirectory(), "過去versionでも生きたlockは保持");
+        expect (current.getChildFile ("runs/run1").isDirectory(), "現行versionは保持");
+        expect (future.getChildFile ("runs/run1").isDirectory(), "未来versionは保持");
+        expect (! current.getChildFile ("lock").isDirectory(), "掃除後にsweep自身のlockが残らない");
+        expect (! future.getChildFile ("lock").isDirectory(), "掃除後にsweep自身のlockが残らない（未来側）");
+    }
+
     // ==================== 書き出し: 聴こえている構成＝内容・クリップ収め・失敗時 ====================
     {
         beginTest ("書き出し: ミックス一致・SR/24bit・クリップゲイン・途中失敗");

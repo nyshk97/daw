@@ -116,8 +116,12 @@ bool lockIsAlive (const LockInfo& info, const PidAlive& pidAlive, const PgidAliv
 // 中途 runs/<uuid>/ の削除。削除は必ず**自分でlockを取得してから**行う（死んだlockの
 // 解放と削除の間に別プロセスが取得して新runを作り始めるTOCTOU競合を塞ぐ。
 // 取得できなかったidentityはスキップする）
+// currentContractVersion はテスト注入用（本番は既定のまま呼ぶ）。
+// manifestのversionがこれより古いidentityは丸ごと削除する（未来versionは保持 ——
+// rootはdev/release共有のため、旧アプリが新アプリのキャッシュを消してはいけない）
 void sweep (const juce::File& root, juce::int64 myPid,
-            const PidAlive& pidAlive, const PgidAlive& pgidAlive, juce::Time now);
+            const PidAlive& pidAlive, const PgidAlive& pgidAlive, juce::Time now,
+            int currentContractVersion = contractVersion);
 
 // 分離成功後の後始末: ①現行manifestが参照しない旧runの削除 —— **呼び出し側が現identityの
 // lockを保持したまま呼ぶ契約**（解放後に呼ぶと、別プロセスの生成中runを消し得る）
