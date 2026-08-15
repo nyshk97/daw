@@ -684,7 +684,8 @@ open -g build/apps/salva/salva_artefacts/Debug/Salva-dev.app \
 ```
 
 - 確認点: ①時刻表示が実時間で進み、選択範囲内で折り返す ②ログ（`~/Library/Logs/salva/salva-*.log`）に `file.open` → `transport.play loop=1` があり `stream.starved` が**出ない** ③選択なし＋`--autoplay` なら終端で `transport.end_of_file` が出て停止する
-- スクショは別Spaceでも `screencapture -x -l <windowID>` で撮れる（windowIDは CGWindowListCopyWindowInfo(.optionAll) で Salva-dev を探す）
+- UIのスクショは `--snapshot <path>` が確実: `open -g ... --args <file> --snapshot /tmp/x.png` で表示完了後（1.5秒後）のUIをPNG保存する（JUCEのcreateComponentSnapshot。**別Spaceでも失敗せず、ユーザーのフォーカスも奪わない**。`screencapture -l` は別Spaceで "could not create image" になることがある）
+- dev版の検証フック一覧（Main.cpp・実機能と同一経路）: `--select <a> <b>` / `--autoplay` / `--stemgroup <n>` / `--separate` / `--export` / `--popup-cache` / `--popup-output`（ポップアップは要前面。`open -g` では即dismiss） / `--switch-output "<name>"`（5秒後に出力切替） / `--snapshot <path>`。再生系は毎秒の実出力ピークログ `debug.outpeak` で音の疎通を裏取りできる
 - 設定の永続化: `~/Library/Application Support/salva/settings.json` に recentFiles・outputDevice が入る
 
 ### ステム分離・M/S・書き出しのスモーク（dev版のみ・音を出さず半自動）

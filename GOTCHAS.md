@@ -215,6 +215,21 @@ macOS（AppKit）はコマンドライン引数のファイルパスを document
 もう一度届く。openFileが状態リセットを伴う実装だと「開いた直後に再生・選択が巻き戻る」症状になる。
 **現在ファイルと同一パスの再オープンはスキップ**して冪等にしておく（Salvaで実例）。
 
+### PopupMenuの落とし穴（カスタムLookAndFeel・角丸・検証）
+
+- **手動生成した `PopupMenu` はターゲットのLookAndFeelを継承しない**: `findLookAndFeel` は `menu.lookAndFeel` しか見ず、未設定ならデフォルトLnFに落ちる（`Options().withTargetComponent()` を渡しても効かない）。`menu.setLookAndFeel (&getLookAndFeel())` を明示する。ComboBoxのポップアップが効くのは内部で明示しているため
+- **メニューの角丸は背景色の不透明度で決まる**: MenuWindowは `findColour (PopupMenu::backgroundColourId).isOpaque()` で `setOpaque` を判定する。完全不透明だと角丸の外が白く塗られる → 背景色をわずかに非不透明（alpha 0xfa等）にして `drawPopupMenuBackgroundWithOptions` で角丸を描く（実装例: `apps/salva/Source/ui/SalvaLookAndFeel.h`）
+- **アプリが前面でないとポップアップは即dismissされる**（`doesAnyJuceCompHaveFocus` が偽で〜10ms後に閉じる）。`open -g` のバックグラウンド起動では開いた瞬間に消えるため検証不可。見た目確認はユーザーの実操作に頼るか、前面化できるタイミングで行う
+
+### 「デバイス切替後に無音」はアプリのバグと限らない（macOSのデバイス別ミュート）
+
+macOSの消音は**出力デバイスごとに記憶される**。切替先が過去にミュートされたままだと、アプリが正しく出力していても無音になる。切り分けは2点:
+
+1. コールバックが書いた実出力ピークをatomicに記録してUIから毎秒ログ（Salvaのdev版 `debug.outpeak` が実装例。0.8等が出ていればJUCE側は健全）
+2. CoreAudioでデバイスの `kAudioDevicePropertyVolumeScalar` / `kAudioDevicePropertyMute`（output scope）を照会（swiftの小ツールで一覧できる。`mute=1` が犯人）
+
+解除はコントロールセンターでそのデバイスを選んで消音解除。
+
 ## オーディオコールバック内の禁止事項
 
 ### 前提: なぜ厳しいのか
@@ -487,6 +502,15 @@ if (activeWriter.load() != nullptr)
 - 履歴を持つDSP（リサンプラー・フィルタ）は不連続のたびに reset しないと旧位置のサンプルが混ざる
 
 実装は `apps/salva/Source/shared/DiscontinuityGuard.h`（真理値表テスト付き）。
+
+### 再生開始プライミング（シーク直後の頭欠け・複数ストリーム同時開始）の設計要点
+
+「枯渇＝無音を出して位置を進める（時間を保つ）」の契約は再生**中**の途切れには正しいが、シーク直後の未配信状態に適用すると選択頭の数百サンプルを毎回スキップする（ループ頭のキックのアタックが削れる）。Salvaで実装した解（`PlayerEngine::audioDeviceIOCallbackWithContext` のゲート＋`ReadAheadStream::hasPendingData`）の要点:
+
+- **ゲートは全ストリーム一斉**: ストリーム単体で位置を止めると、ステム間で採用タイミングが割れて恒久ずれ（フラム）を作る。「全員にリサンプラー初回要求量が揃うまで誰も消費しない」
+- **必要量は `ceil(numOut×ratio)+8`**（ResampleStageの初回要求と同式）。1ブロックでは高比率×大バッファで足りない。上限はリング総容量。非ループのファイル終端・リング満杯（短いループはブロックがループ長で切られる）では早期に開始
+- **遷移がコールバックと重なったブロックの後始末は「世代だけ進める」**（`reissueSeek`。位置を書き直すと並行する新シークを上書きする競合窓ができる）。全ストリームが同じ要求位置へ収束し、ライターも書き直す
+- **枯渇カウンタは2段公開**（ブロック中は一時値→確定でcommit・破棄でdiscard）。atomicを直接加算してから巻き戻すと、UIが一時値を観測でき単調性も崩れる
 
 ## 分析パイプライン（tools/reference）の落とし穴
 
