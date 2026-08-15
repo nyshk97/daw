@@ -90,7 +90,7 @@ for i in $(seq 1 30); do pgrep -x LaLa-dev >/dev/null || break; sleep 3; done
 
 - quitイベントは何も破棄しない。ダイアログ待ちでosascriptに `-128`（ユーザによってキャンセル）が返ることがあるが、プロセスが終了していれば問題ない
 - **quitを送る前に、ユーザーがそのインスタンスを操作中でないかアプリログで確認する**（直近数分に `marker.add` / `edit.*` 等の操作イベントがあれば操作中とみなす）。未保存変更があるとquitは保存ダイアログを出してユーザーの作業を中断させる。誤って出してしまったら「キャンセル」だけ押して復元し、以降そのインスタンスには触らない
-- **ユーザーがdev版を使用中でも検証は止めない**: dev版とRelease版は bundle id が別で同時起動できるため、`cmake --build build-release` → `open -g build-release/daw_artefacts/Release/LaLa.app` で並走検証する（描画コードは同一なのでスクショ検証として等価。検証後は自分でquitして片付ける）
+- **ユーザーがdev版を使用中でも検証は止めない**: dev版とRelease版は bundle id が別で同時起動できるため、`cmake --build build-release` → `open -g build-release/daw_artefacts/Release/LaLa.app` で並走検証する（描画コードは同一なのでスクショ検証として等価。検証後は自分でquitして片付ける）。ただし**検証フック（`--open` `--snapshot` 等）は `#if JUCE_DEBUG` なのでRelease版では動かない**。フックを使う検証は並走で代替できず、既存dev版インスタンスを安全確認（タイトル●・ログ末尾・HIDIdleTime・frontmost）してからquit→新devバイナリで行う
 - **dev版とRelease版を並走しているときは、表示名でquit対象を指定しない**: `tell application "LaLa" to quit` の実行後にRelease版とdev版の両方が終了した実例がある。Release版は `tell application id "local.d0ne1s.daw" to quit`、dev版は `tell application id "local.d0ne1s.daw.dev" to quit` とbundle idで限定し、実行前後に `pgrep -x LaLa` / `pgrep -x LaLa-dev` で対象PIDだけが変化したことを確認する
 
 ```sh
