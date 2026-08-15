@@ -15,10 +15,16 @@ bool SalvaRecorder::start (const juce::File& file, double sampleRate)
 {
     stop(); // 必ず先に前回分を止める
 
-    file.deleteFile();
-    std::unique_ptr<juce::OutputStream> stream = file.createOutputStream();
-    if (stream == nullptr)
+    // 既存ファイルはunlinkせずtruncateで上書きする。deleteFile→再作成だと、
+    // TakeName::claimTargetFileがO_EXCLで確保した名前が一瞬空き、同じ保存先を使う
+    // 別プロセス（Salva/Salva-dev並走）に同名を取られて先発テイクを失う窓ができる
+    auto fileStream = file.createOutputStream(); // 無ければ作成、あればそのまま開く
+    if (fileStream == nullptr)
         return false;
+    fileStream->setPosition (0);
+    if (fileStream->truncate().failed())
+        return false;
+    std::unique_ptr<juce::OutputStream> stream = std::move (fileStream);
 
     juce::WavAudioFormat wavFormat;
     using Opts = juce::AudioFormatWriterOptions;

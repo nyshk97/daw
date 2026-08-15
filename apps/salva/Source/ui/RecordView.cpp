@@ -68,8 +68,8 @@ RecordView::RecordView()
     hintLabel.setFont (juce::FontOptions (11.0f));
     hintLabel.setColour (juce::Label::textColourId, textDim);
     hintLabel.setJustificationType (juce::Justification::centred);
-    hintLabel.setText (jp (u8"録音開始時に保存先を指定 → そのファイルへ直接書き込み。停止でこのWAVを開く"),
-                       juce::dontSendNotification);
+    // 実際の保存先は setSaveFolderText で差し込む（既定文言は差し込み前のフォールバック）
+    hintLabel.setText (jp (u8"自動命名で保存 → 停止でこのWAVを開く"), juce::dontSendNotification);
 
     for (auto* c : { (juce::Component*) &inputDeviceBox, (juce::Component*) &channelPairBox })
         c->setWantsKeyboardFocus (false);
@@ -84,6 +84,12 @@ void RecordView::setInputDevices (const juce::StringArray& names, const juce::St
     const int idx = names.indexOf (current);
     if (idx >= 0)
         inputDeviceBox.setSelectedId (idx + 1, juce::dontSendNotification);
+}
+
+void RecordView::setSaveFolderText (const juce::String& folderDisplay)
+{
+    hintLabel.setText (folderDisplay + jp (u8" へ自動保存 → 停止でこのWAVを開く"),
+                       juce::dontSendNotification);
 }
 
 void RecordView::setChannelPairs (int totalInputChannels, int currentPairStart)

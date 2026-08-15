@@ -21,7 +21,8 @@ public:
     SalvaRecorder();
     ~SalvaRecorder();
 
-    // 録音開始（24bitステレオ・sampleRate）。既存ファイルは上書き。成功でtrue
+    // 録音開始（24bitステレオ・sampleRate）。既存ファイルはtruncateで上書き
+    //（unlinkしない＝TakeName::claimTargetFileの排他確保を破らない）。成功でtrue
     bool start (const juce::File& file, double sampleRate);
 
     // 停止してヘッダ確定。確定後のWAVの実サンプル長を返す（開けなければ-1、未録音なら-1）

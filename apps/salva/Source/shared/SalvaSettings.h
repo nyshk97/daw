@@ -11,7 +11,7 @@ struct SalvaSettings
     juce::String inputDeviceName;           // 入力デバイス（Phase 4）
     int inputChannelPairStart = 2;          // 入力ステレオペアの先頭ch（0-based。既定2 = 3-4ch = mk5背面Line In 1-2想定・実測後に見直し）
     juce::StringArray recentFiles;          // 最近開いたファイル（新しい順・最大8件）
-    juce::String recordDirectory;           // 録音の保存先（前回記憶）
+    juce::String recordDirectory;           // 録音の保存先（空=既定 ~/Music/salva。設定JSONの手編集で上書き）
     juce::String exportDirectory;           // 区間書き出し先（Phase 5）
     juce::String venvPathOverride;          // ステム分離venvの上書き（Phase 5。空=既定）
 

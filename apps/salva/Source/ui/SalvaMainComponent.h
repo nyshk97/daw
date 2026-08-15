@@ -61,6 +61,7 @@ private:
     void toggleRecordMode();
     void toggleRecording();
     void finishRecording();
+    juce::File recordTargetDirectory() const; // 既定 ~/Music/salva（設定JSONの recordDirectory で上書き）
     void selectionChanged (juce::int64 start, juce::int64 end);
     void selectionCleared();
     void updateBpmDisplay();
@@ -103,7 +104,7 @@ private:
 
     WaveformView waveform;
     RecordView recordView;
-    std::unique_ptr<juce::FileChooser> recordFileChooser;
+    std::unique_ptr<juce::FileChooser> fileChooser; // ファイルを開く・書き出し先の選択（録音は無ダイアログ）
     bool recordMode = false;
 
     juce::TextButton playButton { juce::String::fromUTF8 (u8"▶") };

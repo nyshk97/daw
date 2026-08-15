@@ -16,6 +16,7 @@
 #include "shared/SalvaSettings.h"
 #include "shared/StemCache.h"
 #include "shared/StemMix.h"
+#include "shared/TakeName.h"
 
 namespace
 {
@@ -527,6 +528,33 @@ int main (int argc, char* argv[])
                 "四捨五入の整数bpm");
         expect (BpmMath::exportFileName ("rec", 8, 5.0) == "rec_2bars_96bpm.wav", "2小節");
         expect (BpmMath::exportFileName ("x", 4, 2.6) == "x_1bars_92bpm.wav", "92.3->92");
+    }
+
+    // ==================== 録音テイクの自動命名 ====================
+    {
+        beginTest ("TakeName: record-YYYYMMDD-HHMMSS.wav・確保＝原子的作成・連番で先発を消さない");
+        const juce::Time t (2026, 7, 15, 21, 47, 33); // 月は0始まり = 8月15日
+        expect (TakeName::fileNameFor (t) == "record-20260815-214733.wav", "テイク名の形式");
+
+        const auto dir = tempDir.getChildFile ("takename");
+        dir.createDirectory();
+        const auto first = TakeName::claimTargetFile (dir, t);
+        expect (first.getFileName() == "record-20260815-214733.wav", "初回は素の名前");
+        expect (first.exists(), "確保＝作成（exists確認→開始の窓がない）");
+        const auto second = TakeName::claimTargetFile (dir, t);
+        expect (second.getFileName() == "record-20260815-214733_2.wav", "同一秒は連番");
+        expect (second.exists() && first.exists(), "確保が先発のファイルを消さない");
+        expect (TakeName::claimTargetFile (juce::File ("/nonexistent-root-dir"), t) == juce::File {},
+                "作成できない場所は無効なFile（エラー経路へ）");
+
+        // Recorderは確保済みファイルをunlinkせずtruncateで書く（確保が破れない）契約
+        SalvaRecorder recorder;
+        expect (recorder.start (first, 48000.0), "確保済みの0バイトファイルへ録音開始できる");
+        float l[16] = {}, r[16] = {};
+        const float* chans[2] = { l, r };
+        recorder.pushBlock (chans, 2, 16);
+        expect (recorder.stop() >= 0, "停止でヘッダ確定（既存ファイル上でも有効なWAV）");
+        expect (first.exists(), "録音を通してもファイルは同一パスに存在し続ける");
     }
 
     // ==================== 設定の保存・読込 ====================

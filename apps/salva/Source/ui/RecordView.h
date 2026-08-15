@@ -14,6 +14,8 @@ public:
 
     void setInputDevices (const juce::StringArray& names, const juce::String& current);
     void setChannelPairs (int totalInputChannels, int currentPairStart);
+    // 保存先フォルダの表示（録音はダイアログなしでここへ自動保存されることを伝える）
+    void setSaveFolderText (const juce::String& folderDisplay);
     // Timerから流し込む（peakはリニア振幅）
     void update (float peakL, float peakR, bool recording, double elapsedSeconds);
 

@@ -6,10 +6,23 @@
 #include "shared/BpmMath.h"
 #include "shared/Log.h"
 #include "shared/RecordingCheck.h"
+#include "shared/TakeName.h"
 
 namespace
 {
 juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
+
+// パス表示用にホームを ~ に縮める（保存先ヒント・保存トースト）。
+// 境界判定つき: /Users/xx-backup のような「ホーム名が接頭辞の別パス」を誤って縮めない
+juce::String homeAbbrev (const juce::String& path)
+{
+    const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory).getFullPathName();
+    if (path == home)
+        return "~";
+    if (path.startsWith (home + "/"))
+        return "~" + path.substring (home.length());
+    return path;
+}
 
 // パレットはアプリアイコン（make_icon.swift）基準: 盤面のチャコール地＋スリーブのクリーム文字
 // ＋レーベルwarmグラデ由来のオレンジをアクセントに使う
@@ -50,11 +63,7 @@ juce::String formatTime (double seconds)
 // 最近ファイル行の従属表示用: 親ディレクトリをホーム省略形で（例: ~/Downloads）
 juce::String shortDirPath (const juce::File& file)
 {
-    const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory).getFullPathName();
-    auto dir = file.getParentDirectory().getFullPathName();
-    if (dir.startsWith (home))
-        dir = "~" + dir.substring (home.length());
-    return dir;
+    return homeAbbrev (file.getParentDirectory().getFullPathName());
 }
 } // namespace
 
@@ -470,10 +479,10 @@ void SalvaMainComponent::startExport()
     // 書き出し先はユーザー選択＋記憶（初回のみダイアログ）
     if (settings.exportDirectory.isEmpty() || ! juce::File (settings.exportDirectory).isDirectory())
     {
-        recordFileChooser = std::make_unique<juce::FileChooser> (
+        fileChooser = std::make_unique<juce::FileChooser> (
             jp (u8"書き出し先フォルダ"),
             juce::File::getSpecialLocation (juce::File::userMusicDirectory));
-        recordFileChooser->launchAsync (
+        fileChooser->launchAsync (
             juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
             [this] (const juce::FileChooser& fc)
             {
@@ -544,6 +553,7 @@ void SalvaMainComponent::toggleRecordMode()
             Log::warn ("record.enter.error", "error=" + error);
         recordView.setInputDevices (engine.inputDeviceNames(), engine.currentInputDeviceName());
         recordView.setChannelPairs (engine.currentInputChannelCount(), settings.inputChannelPairStart);
+        recordView.setSaveFolderText (homeAbbrev (recordTargetDirectory().getFullPathName()));
         Log::info ("record.mode.enter", "input=" + engine.currentInputDeviceName()
                                             + " sr=" + juce::String (engine.currentDeviceSampleRate(), 0));
     }
@@ -578,32 +588,39 @@ void SalvaMainComponent::toggleRecording()
         return;
     }
 
-    // 保存先＋ファイル名は録音開始前にダイアログで指定（テイク破棄は手動削除。キャンセル経路なし）
-    const auto defaultDir = settings.recordDirectory.isNotEmpty()
-                                ? juce::File (settings.recordDirectory)
-                                : juce::File::getSpecialLocation (juce::File::userMusicDirectory);
-    const auto defaultName = "record-" + juce::Time::getCurrentTime().formatted ("%Y%m%d-%H%M") + ".wav";
-    recordFileChooser = std::make_unique<juce::FileChooser> (
-        jp (u8"録音の保存先"), defaultDir.getChildFile (defaultName), "*.wav");
-    recordFileChooser->launchAsync (
-        juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
-        [this] (const juce::FileChooser& fc)
-        {
-            const auto file = fc.getResult();
-            if (file == juce::File {})
-                return; // ダイアログのキャンセル（録音自体が始まっていないので副作用なし）
-            settings.recordDirectory = file.getParentDirectory().getFullPathName();
-            settings.save();
-            const auto sr = engine.currentDeviceSampleRate();
-            if (sr <= 0.0 || ! engine.getRecorder().start (file, sr))
-            {
-                Log::error ("record.start.failed", "path=" + file.getFullPathName());
-                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
-                                                        "Salva", jp (u8"録音を開始できませんでした"));
-                return;
-            }
-            Log::info ("record.start", "path=" + file.getFullPathName() + " sr=" + juce::String (sr, 0));
-        });
+    // 保存はダイアログなしの自動命名・自動保存（針を落とした後の操作を録音ボタン1つにする。
+    // テイクは中間素材で、名前付きの成果物は区間書き出しが担う。破棄は手動削除・キャンセル経路なし）
+    // ファイルを作らずに検証できる条件（SR・保存フォルダ）を先に確認する
+    const auto dir = recordTargetDirectory();
+    const auto sr = engine.currentDeviceSampleRate();
+    const auto dirResult = dir.createDirectory(); // 既存ならそのまま成功
+    if (sr <= 0.0 || dirResult.failed())
+    {
+        Log::error ("record.start.failed", "dir=" + dir.getFullPathName()
+                                               + " sr=" + juce::String (sr, 0)
+                                               + " error=" + dirResult.getErrorMessage());
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                                                "Salva", jp (u8"録音を開始できませんでした"));
+        return;
+    }
+    const auto file = TakeName::claimTargetFile (dir, juce::Time::getCurrentTime()); // 名前の確保＝原子的作成
+    if (file == juce::File {} || ! engine.getRecorder().start (file, sr))
+    {
+        file.deleteFile(); // 確保だけして開始に失敗した0バイトファイルを残さない（無効Fileなら何もしない）
+        Log::error ("record.start.failed", "dir=" + dir.getFullPathName()
+                                               + " path=" + file.getFullPathName());
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                                                "Salva", jp (u8"録音を開始できませんでした"));
+        return;
+    }
+    Log::info ("record.start", "path=" + file.getFullPathName() + " sr=" + juce::String (sr, 0));
+}
+
+juce::File SalvaMainComponent::recordTargetDirectory() const
+{
+    return settings.recordDirectory.isNotEmpty()
+               ? juce::File (settings.recordDirectory)
+               : juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("salva");
 }
 
 void SalvaMainComponent::finishRecording()
@@ -633,9 +650,10 @@ void SalvaMainComponent::finishRecording()
         juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Salva", warning);
     }
 
-    // 停止 → 再生系へ戻して、そのWAVを現在ファイルとして開く
+    // 停止 → 再生系へ戻して、そのWAVを現在ファイルとして開く（保存先はトーストで通知）
     toggleRecordMode();
     openFile (file);
+    showToast (jp (u8"保存: ") + homeAbbrev (file.getFullPathName()));
 }
 
 void SalvaMainComponent::selectionChanged (juce::int64 start, juce::int64 end)
@@ -1220,12 +1238,12 @@ void SalvaMainComponent::openFileChooser()
 {
     const auto downloads = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
                                .getChildFile ("Downloads");
-    recordFileChooser = std::make_unique<juce::FileChooser> (
+    fileChooser = std::make_unique<juce::FileChooser> (
         jp (u8"オーディオファイルを開く"),
         downloads.isDirectory() ? downloads
                                 : juce::File::getSpecialLocation (juce::File::userMusicDirectory),
         "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.m4a");
-    recordFileChooser->launchAsync (
+    fileChooser->launchAsync (
         juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
         [this] (const juce::FileChooser& fc)
         {
