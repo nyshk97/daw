@@ -61,10 +61,11 @@ private:
 
 std::unique_ptr<SessionLogger> sessionLogger;
 
-juce::File logsDirectory()
+juce::File logsDirectory (const juce::String& appId)
 {
     return juce::File::getSpecialLocation (juce::File::userHomeDirectory)
-        .getChildFile ("Library/Logs/daw");
+        .getChildFile ("Library/Logs")
+        .getChildFile (appId);
 }
 
 juce::String makeLine (const char* level, const juce::String& event, const juce::String& detail)
@@ -76,13 +77,13 @@ juce::String makeLine (const char* level, const juce::String& event, const juce:
 }
 } // namespace
 
-void Log::init (const juce::String& appVersion)
+void Log::init (const juce::String& appVersion, const juce::String& appId)
 {
-    auto dir = logsDirectory();
+    auto dir = logsDirectory (appId);
     dir.createDirectory();
 
     // ファイル名のタイムスタンプ順 = 時系列。新しい順に20世代だけ残す
-    auto oldLogs = dir.findChildFiles (juce::File::findFiles, false, "daw-*.log");
+    auto oldLogs = dir.findChildFiles (juce::File::findFiles, false, appId + "-*.log");
     std::sort (oldLogs.begin(), oldLogs.end(),
                [] (const juce::File& a, const juce::File& b)
                { return a.getFileName() > b.getFileName(); });
@@ -97,7 +98,7 @@ void Log::init (const juce::String& appVersion)
     // ミリ秒まで入れて同一秒の再起動でも別ファイルにする（同名再利用は異常終了判定を壊す）
     const auto now = juce::Time::getCurrentTime();
     const auto file = dir.getChildFile (
-        "daw-" + now.formatted ("%Y%m%d-%H%M%S")
+        appId + "-" + now.formatted ("%Y%m%d-%H%M%S")
         + "-" + juce::String (now.toMilliseconds() % 1000).paddedLeft ('0', 3) + ".log");
     sessionLogger = std::make_unique<SessionLogger> (file);
     if (! sessionLogger->openedOk())

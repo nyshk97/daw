@@ -656,3 +656,61 @@ CLAUDE_BIN="$PWD/tools/reference/tests/fake-claude-demo.sh" \
 - ログの並び: `report.generate.start` → `report.generate.spawn` → `report.generate.end status=2`（2=success）→ `report.open`
 - 生成中に ⌘Q →「レポート生成中です」の確認が**未保存確認より先に**出る。キャンセルを選ぶと生成は継続（経過行が進み続ける）、「中断して終了」で `report.generate.cancel reason=close`
 - 実 claude での生成（約8分・Claude Code の利用枠を消費）: `CLAUDE_BIN` を付けずに起動したアプリのボタンから、またはターミナルで `./tools/reference/report.sh <リファレンスフォルダ>`（アプリと同じトランザクション・排他が効く）
+
+## Salva（apps/salva/）の確認
+
+### ビルド・テスト・起動
+
+```sh
+mise run build:salva   # dev版（Salva-dev.app）
+mise run test:salva    # salva_tests（read-aheadの時間整合・BPM逆算・設定JSON）
+mise run start:salva
+```
+
+### 再生コアのスモーク（音を出さず半自動・dev版のみ）
+
+```sh
+# 無音WAVを作る（20秒・48kHz）
+python3 -c '
+import wave
+w = wave.open("/tmp/salva-silent.wav", "wb")
+w.setnchannels(2); w.setsampwidth(2); w.setframerate(48000)
+w.writeframes(b"\x00" * 48000 * 2 * 2 * 20); w.close()'
+
+# --select <start> <end>（サンプル） --autoplay はdev版限定の検証フック。
+# 1.0〜3.4秒の2.4秒ループ = 「1小節・100.0 BPM」表示と salva-silent_1bars_100bpm.wav のファイル名が出るはず
+open -g build/apps/salva/salva_artefacts/Debug/Salva-dev.app \
+  --args /tmp/salva-silent.wav --select 48000 163200 --autoplay
+```
+
+- 確認点: ①時刻表示が実時間で進み、選択範囲内で折り返す ②ログ（`~/Library/Logs/salva/salva-*.log`）に `file.open` → `transport.play loop=1` があり `stream.starved` が**出ない** ③選択なし＋`--autoplay` なら終端で `transport.end_of_file` が出て停止する
+- スクショは別Spaceでも `screencapture -x -l <windowID>` で撮れる（windowIDは CGWindowListCopyWindowInfo(.optionAll) で Salva-dev を探す）
+- 設定の永続化: `~/Library/Application Support/salva/settings.json` に recentFiles・outputDevice が入る
+
+### ステム分離・M/S・書き出しのスモーク（dev版のみ・音を出さず半自動）
+
+```sh
+# 前提: ~/daw/tools/reference/.venv に demucs 入りvenv（無ければ mise run ref:setup）
+# ① アプリ経由の分離（無音20秒なら約10秒で完了）
+open -g build/apps/salva/salva_artefacts/Debug/Salva-dev.app \
+  --args /tmp/salva-silent.wav --separate
+# ログに separate.start → separate.done identity=<hash> が並び、
+# ~/Library/Application Support/salva/stems/<hash>/ に manifest.json と runs/<uuid>/ ができる
+
+# ② 6ステム構成でループ再生（--stemgroup 0=4ステム, 1=6ステム）
+open -g build/apps/salva/salva_artefacts/Debug/Salva-dev.app \
+  --args /tmp/salva-silent.wav --stemgroup 1 --select 48000 163200 --autoplay
+# ログに stems.group id=htdemucs_6s / transport.play loop=1。20秒待って stream.starved が出ないこと
+
+# ③ 聴こえている構成の書き出し（settings.json の exportDirectory を先に設定しておく）
+open -g build/apps/salva/salva_artefacts/Debug/Salva-dev.app \
+  --args /tmp/salva-silent.wav --stemgroup 0 --select 48000 163200 --export
+# ログに export.start → export.done gain=1.0000、出力先に <base>_1bars_100bpm.wav（2.4秒・24bit）
+```
+
+- separate.sh 単体の契約検証: identityディレクトリに `lock/` をmkdirしてから
+  `bash <app>/Contents/Resources/separate.sh <入力> <identityディレクトリ> <venv>/bin/python <SR> <サンプル長>`（SR・長さはアプリが渡す契約。m4a対応のため）。
+  検証点は manifest.json の source identity（mtimeMs = st_mtime_ns//1e6 でJUCEと一致）・
+  status=complete・全ステムが元音源と同SR・同長・ステレオ・PCM_24・runs/<uuid>/work が消えていること
+- キャッシュの排他はテストで固定済み（`mise run test:salva` の StemCache 群）。手動確認するなら
+  dev/release 2プロセスで同じファイルの分離を同時に押し、後発が「別プロセスが分離中」トーストになること

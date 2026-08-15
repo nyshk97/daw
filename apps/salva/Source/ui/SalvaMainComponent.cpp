@@ -1,0 +1,938 @@
+#include "SalvaMainComponent.h"
+
+#include <unistd.h> // getpid（キャッシュ削除時のlock owner記録）
+
+#include "shared/AudioFileTypes.h"
+#include "shared/BpmMath.h"
+#include "shared/Log.h"
+#include "shared/RecordingCheck.h"
+
+namespace
+{
+juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
+
+const juce::Colour windowBg { 0xff2e2e33 };
+const juce::Colour headerBg { 0xff26262a };
+const juce::Colour panelBorder { 0xff2d2d32 };
+const juce::Colour textColour { 0xffd3d3d3 };
+const juce::Colour textDim { 0xff8a8a90 };
+const juce::Colour accent { 0xff4a6ea9 };
+const juce::Colour playGreen { 0xff7bc47b };
+const juce::Colour warnColour { 0xffff4500 };
+
+constexpr int headerHeight = 40;
+constexpr int transportHeight = 44;
+constexpr int bottomHeight = 40;
+constexpr int recentRowHeight = 26;
+
+juce::String formatTime (double seconds)
+{
+    const int m = (int) (seconds / 60.0);
+    const double s = seconds - m * 60.0;
+    return juce::String (m) + ":" + juce::String (s, 1).paddedLeft ('0', 4);
+}
+} // namespace
+
+SalvaMainComponent::SalvaMainComponent()
+{
+    settings = SalvaSettings::load();
+    engine.initialiseDevice (settings.outputDeviceName);
+
+    addAndMakeVisible (waveform);
+    waveform.onSelectionChanged = [this] (juce::int64 s, juce::int64 e) { selectionChanged (s, e); };
+    waveform.onSelectionCleared = [this] { selectionCleared(); };
+    waveform.onSeek = [this] (juce::int64 pos)
+    {
+        engine.seek (pos);
+        Log::info ("transport.seek", "sample=" + juce::String (pos));
+    };
+
+    addAndMakeVisible (playButton);
+    playButton.onClick = [this] { togglePlay(); };
+
+    addAndMakeVisible (timeLabel);
+    timeLabel.setJustificationType (juce::Justification::centred);
+    timeLabel.setColour (juce::Label::textColourId, textColour);
+    timeLabel.setText ("0:00.0", juce::dontSendNotification);
+
+    addAndMakeVisible (barsButton);
+    barsButton.onClick = [this]
+    {
+        if (! waveform.hasSelection())
+            return;
+        beatsOverride = BpmMath::nextBeats (currentBeats());
+        updateBpmDisplay();
+    };
+
+    addAndMakeVisible (bpmLabel);
+    bpmLabel.setColour (juce::Label::textColourId, textColour);
+    bpmLabel.setFont (juce::FontOptions (16.0f, juce::Font::bold));
+
+    addAndMakeVisible (exportNameLabel);
+    exportNameLabel.setColour (juce::Label::textColourId, textDim);
+    exportNameLabel.setJustificationType (juce::Justification::centredRight);
+    exportNameLabel.setFont (juce::FontOptions (11.0f));
+
+    addAndMakeVisible (outputLabel);
+    outputLabel.setText (jp (u8"出力:"), juce::dontSendNotification);
+    outputLabel.setColour (juce::Label::textColourId, textDim);
+
+    addAndMakeVisible (outputDeviceBox);
+    rebuildOutputDeviceBox();
+    outputDeviceBox.onChange = [this]
+    {
+        const auto name = outputDeviceBox.getText();
+        if (name.isEmpty() || name == engine.currentOutputDeviceName())
+            return;
+        const auto error = engine.setOutputDevice (name);
+        if (error.isNotEmpty())
+        {
+            Log::warn ("device.output.error", "name=" + name + " error=" + error);
+            rebuildOutputDeviceBox(); // 失敗したら実際のデバイスへ表示を戻す
+            return;
+        }
+        settings.outputDeviceName = engine.currentOutputDeviceName();
+        settings.save();
+        Log::info ("device.output.set", "name=" + settings.outputDeviceName);
+    };
+
+    addAndMakeVisible (recordModeButton);
+    recordModeButton.setButtonText (jp (u8"● 録音モード"));
+    recordModeButton.onClick = [this] { toggleRecordMode(); };
+
+    addChildComponent (recordView);
+    recordView.onRecordToggle = [this] { toggleRecording(); };
+    recordView.onInputDeviceChanged = [this] (juce::String name)
+    {
+        if (engine.getRecorder().isRecording())
+            return; // 録音中のデバイス変更は不可
+        const auto error = engine.setInputDevice (name, settings.inputChannelPairStart);
+        if (error.isNotEmpty())
+            Log::warn ("device.input.error", "name=" + name + " error=" + error);
+        settings.inputDeviceName = engine.currentInputDeviceName();
+        settings.save();
+        recordView.setInputDevices (engine.inputDeviceNames(), engine.currentInputDeviceName());
+        recordView.setChannelPairs (engine.currentInputChannelCount(), settings.inputChannelPairStart);
+        Log::info ("device.input.set", "name=" + settings.inputDeviceName);
+    };
+    recordView.onChannelPairChanged = [this] (int pairStart)
+    {
+        if (engine.getRecorder().isRecording())
+            return;
+        settings.inputChannelPairStart = pairStart;
+        settings.save();
+        engine.setInputDevice (engine.currentInputDeviceName(), pairStart);
+        Log::info ("device.input.pair", "start=" + juce::String (pairStart));
+    };
+
+    addChildComponent (starvedLabel);
+    starvedLabel.setColour (juce::Label::textColourId, warnColour);
+    starvedLabel.setFont (juce::FontOptions (11.0f));
+
+    // --- ステム分離（ヘッダー）＋M/Sパネル＋書き出し ---
+    addAndMakeVisible (separateButton);
+    separateButton.setButtonText (jp (u8"ステム分離"));
+    separateButton.onClick = [this] { startSeparation(); };
+
+    addChildComponent (separateProgressLabel);
+    separateProgressLabel.setColour (juce::Label::textColourId, textDim);
+    separateProgressLabel.setFont (juce::FontOptions (11.0f));
+    separateProgressLabel.setText (jp (u8"分離中…"), juce::dontSendNotification);
+
+    addAndMakeVisible (cacheSizeLabel);
+    cacheSizeLabel.setColour (juce::Label::textColourId, textDim);
+    cacheSizeLabel.setFont (juce::FontOptions (11.0f));
+    cacheSizeLabel.setJustificationType (juce::Justification::centredRight);
+    cacheSizeLabel.setInterceptsMouseClicks (true, false);
+    cacheSizeLabel.addMouseListener (this, false); // クリックで削除メニュー
+
+    addAndMakeVisible (stemPanel);
+    stemPanel.onConfigChanged = [this] { applyStemConfig(); };
+
+    addAndMakeVisible (exportButton);
+    exportButton.setButtonText (jp (u8"書き出し"));
+    exportButton.onClick = [this] { startExport(); };
+    exportButton.setVisible (false);
+
+    addChildComponent (toastLabel);
+    toastLabel.setColour (juce::Label::backgroundColourId, juce::Colour (0xf02c2c30));
+    toastLabel.setColour (juce::Label::textColourId, textColour);
+    toastLabel.setColour (juce::Label::outlineColourId, juce::Colour (0xff55555a));
+    toastLabel.setJustificationType (juce::Justification::centred);
+    toastLabel.setFont (juce::FontOptions (12.0f));
+
+    // 起動時掃除: 死んだlockの解放＋非参照・ロックなしの中途runの削除
+    StemCache::sweep (StemCache::stemsRoot(), (juce::int64) getpid(), StemCache::defaultPidAlive,
+                      StemCache::defaultPgidAlive, juce::Time::getCurrentTime());
+    updateCacheSizeLabel();
+
+    // スペース=再生/停止を常に効かせる: ボタン類にフォーカスを渡さない
+    // （フォーカスされたTextButtonはスペースをクリックとして食ってしまう）
+    for (auto* c : { (juce::Component*) &playButton, (juce::Component*) &barsButton,
+                     (juce::Component*) &recordModeButton, (juce::Component*) &outputDeviceBox })
+        c->setWantsKeyboardFocus (false);
+
+    setWantsKeyboardFocus (true);
+    setSize (860, 480);
+    startTimerHz (30);
+    updateHeader();
+    updateBpmDisplay();
+}
+
+SalvaMainComponent::~SalvaMainComponent() = default;
+
+void SalvaMainComponent::openFile (const juce::File& file)
+{
+    if (! AudioFileTypes::isSupported (file) || ! file.existsAsFile())
+        return;
+    // 同一ファイルの再オープンは無視する（macOSはargvのファイルパスをopenFileイベントでも
+    // 届けるため、起動時に二重オープンになり再生・選択状態がリセットされる）
+    if (engine.hasFile() && engine.fileInfo().file == file)
+        return;
+    if (! engine.openFile (file))
+    {
+        Log::warn ("file.open.failed", "path=" + file.getFullPathName());
+        return;
+    }
+    const auto& fi = engine.fileInfo();
+    waveform.setFile (file, fi.sampleRate, fi.lengthSamples);
+    waveform.setVisible (true);
+    beatsOverride = 0;
+    settings.addRecentFile (file.getFullPathName());
+    settings.save();
+    refreshStemCacheState(); // ステムキャッシュ自動検出（manifest検証済みのもののみ）
+    updateHeader();
+    updateBpmDisplay();
+    repaint();
+    Log::info ("file.open", "path=" + file.getFullPathName()
+                                + " sr=" + juce::String (fi.sampleRate, 0)
+                                + " length=" + juce::String (fi.lengthSamples)
+                                + " ch=" + juce::String (fi.numChannels));
+}
+
+void SalvaMainComponent::togglePlay()
+{
+    if (! engine.hasFile())
+        return;
+
+    if (engine.isPlaying())
+    {
+        engine.stop();
+        Log::info ("transport.stop", "sample=" + juce::String (engine.uiPlayheadSample()));
+    }
+    else
+    {
+        if (waveform.hasSelection())
+        {
+            engine.play (waveform.selectionStart(), true, waveform.selectionStart(), waveform.selectionEnd());
+        }
+        else
+        {
+            auto from = engine.uiPlayheadSample();
+            if (from >= engine.fileInfo().lengthSamples)
+                from = 0; // 終端で止まっていたら先頭から
+            engine.play (from, false, 0, 0);
+        }
+        Log::info ("transport.play",
+                   "loop=" + juce::String (waveform.hasSelection() ? 1 : 0)
+                       + " from=" + juce::String (engine.uiPlayheadSample()));
+    }
+    playButton.setButtonText (engine.isPlaying() ? jp (u8"■") : jp (u8"▶"));
+}
+
+juce::File SalvaMainComponent::resolveVenvPython() const
+{
+    const auto venv = settings.venvPathOverride.isNotEmpty()
+                          ? juce::File (settings.venvPathOverride)
+                          : juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                                .getChildFile ("daw/tools/reference/.venv");
+    return venv.getChildFile ("bin/python");
+}
+
+void SalvaMainComponent::startSeparation()
+{
+    if (! engine.hasFile() || separator.status() == StemSeparator::Status::running)
+        return;
+
+    // venvの解決はアプリ側の責務。見つからなければ構築手順を出す（release版でも機能する診断）
+    const auto python = resolveVenvPython();
+    if (! python.existsAsFile())
+    {
+        juce::AlertWindow::showMessageBoxAsync (
+            juce::MessageBoxIconType::WarningIcon, "Salva",
+            jp (u8"ステム分離用のPython環境が見つかりません:\n") + python.getFullPathName()
+                + jp (u8"\n\n構築手順:\n1. dawリポジトリで `mise run ref:setup` を実行（venvを作成）\n"
+                      u8"2. 別の場所に作った場合は設定ファイル\n"
+                      u8"   ~/Library/Application Support/salva/settings.json の\n"
+                      u8"   venvPathOverride にvenvのパスを指定"));
+        return;
+    }
+
+    const auto script = juce::File::getSpecialLocation (juce::File::currentApplicationFile)
+                            .getChildFile ("Contents/Resources/separate.sh");
+    if (! script.existsAsFile())
+    {
+        showToast (jp (u8"separate.sh がバンドルに見つかりません"));
+        return;
+    }
+
+    StemSeparator::Request request;
+    request.input = engine.fileInfo().file;
+    request.identity = StemCache::SourceIdentity::forFile (request.input);
+    request.script = script;
+    request.python = python;
+    // 元音源のSR/長さはアプリ側（CoreAudio）が読んで渡す契約（libsndfileはm4aを読めない）
+    request.sampleRate = engine.fileInfo().sampleRate;
+    request.lengthSamples = engine.fileInfo().lengthSamples;
+
+    if (! separator.startSeparation (request))
+    {
+        showToast (jp (u8"別プロセスがこのファイルを分離中です"));
+        return;
+    }
+    separateButton.setEnabled (false);
+    separateProgressLabel.setVisible (true);
+    Log::info ("separate.start", "path=" + request.input.getFullPathName()
+                                     + " identity=" + request.identity.hash());
+}
+
+void SalvaMainComponent::refreshStemCacheState()
+{
+    currentManifest = {};
+    if (engine.hasFile())
+    {
+        const auto identity = StemCache::SourceIdentity::forFile (engine.fileInfo().file);
+        const auto dir = StemCache::identityDir (identity);
+        const auto manifest = StemCache::parseManifest (dir.getChildFile ("manifest.json"));
+        if (StemCache::manifestUsable (manifest, identity, dir))
+            currentManifest = manifest;
+    }
+    stemPanel.setManifest (currentManifest);
+    applyStemConfig();
+    updateCacheSizeLabel();
+    resized();
+}
+
+void SalvaMainComponent::applyStemConfig()
+{
+    const auto* group = stemPanel.currentGroup();
+    if (group == nullptr)
+    {
+        if (engine.isStemMode())
+            engine.clearStems();
+        activeGroupId.clear();
+        resized(); // パネル高さがグループ有無で変わる
+        return;
+    }
+
+    if (group->id != activeGroupId)
+    {
+        const auto identity = StemCache::SourceIdentity::forFile (engine.fileInfo().file);
+        const auto dir = StemCache::identityDir (identity);
+        std::vector<std::pair<juce::String, juce::File>> files;
+        for (const auto& s : group->stems)
+            files.emplace_back (s.name, dir.getChildFile (s.relPath));
+        if (! engine.setStemVoices (files))
+        {
+            showToast (jp (u8"ステムWAVを開けません（キャッシュを再分離してください）"));
+            stemPanel.clear();
+            activeGroupId.clear();
+            return;
+        }
+        activeGroupId = group->id;
+        Log::info ("stems.group", "id=" + group->id);
+    }
+
+    const auto audible = stemPanel.audibleStems();
+    for (size_t i = 0; i < audible.size(); ++i)
+        engine.setStemGain ((int) i, audible[i] ? 1.0f : 0.0f);
+    resized();
+}
+
+void SalvaMainComponent::updateCacheSizeLabel()
+{
+    const auto bytes = StemCache::totalCacheBytes (StemCache::stemsRoot());
+    const auto text = bytes <= 0
+                          ? jp (u8"キャッシュ 0")
+                          : jp (u8"キャッシュ ") + juce::File::descriptionOfSizeInBytes (bytes);
+    cacheSizeLabel.setText (text + jp (u8" ▾"), juce::dontSendNotification);
+}
+
+void SalvaMainComponent::showCacheDeleteMenu()
+{
+    juce::PopupMenu menu;
+    menu.addItem (1, jp (u8"現在ファイルのステムを削除"), engine.hasFile());
+    menu.addItem (2, jp (u8"全ステムキャッシュを削除"));
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&cacheSizeLabel),
+                        [this] (int result)
+                        {
+                            if (result == 0)
+                                return;
+                            // 現在再生中のidentityは再生停止・reader解放後に削除（planの契約）
+                            engine.stop();
+                            if (engine.isStemMode())
+                            {
+                                engine.clearStems();
+                                stemPanel.clear();
+                                activeGroupId.clear();
+                            }
+                            engine.drainRetired (500);
+
+                            const auto myPid = (juce::int64) getpid();
+                            StemCache::DeleteResult r;
+                            if (result == 1)
+                            {
+                                const auto identity = StemCache::SourceIdentity::forFile (engine.fileInfo().file);
+                                r = StemCache::deleteIdentity (StemCache::identityDir (identity), myPid,
+                                                               StemCache::defaultPidAlive,
+                                                               StemCache::defaultPgidAlive,
+                                                               juce::Time::getCurrentTime());
+                            }
+                            else
+                            {
+                                r = StemCache::deleteAll (StemCache::stemsRoot(), myPid,
+                                                          StemCache::defaultPidAlive,
+                                                          StemCache::defaultPgidAlive,
+                                                          juce::Time::getCurrentTime());
+                            }
+                            auto message = jp (u8"削除: ") + juce::String (r.deleted) + jp (u8"件");
+                            if (r.skippedInUse > 0)
+                                message += jp (u8"（使用中のためスキップ: ") + juce::String (r.skippedInUse) + jp (u8"件）");
+                            showToast (message);
+                            Log::info ("stems.delete", "deleted=" + juce::String (r.deleted)
+                                                           + " skipped=" + juce::String (r.skippedInUse));
+                            refreshStemCacheState();
+                        });
+}
+
+void SalvaMainComponent::startExport()
+{
+    if (! engine.hasFile() || ! waveform.hasSelection() || exportWorker.isBusy())
+        return;
+
+    // 書き出し先はユーザー選択＋記憶（初回のみダイアログ）
+    if (settings.exportDirectory.isEmpty() || ! juce::File (settings.exportDirectory).isDirectory())
+    {
+        recordFileChooser = std::make_unique<juce::FileChooser> (
+            jp (u8"書き出し先フォルダ"),
+            juce::File::getSpecialLocation (juce::File::userMusicDirectory));
+        recordFileChooser->launchAsync (
+            juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+            [this] (const juce::FileChooser& fc)
+            {
+                const auto dir = fc.getResult();
+                if (dir == juce::File {} || ! dir.isDirectory())
+                    return;
+                settings.exportDirectory = dir.getFullPathName();
+                settings.save();
+                startExport();
+            });
+        return;
+    }
+
+    // 聴こえている音を1ファイル: ステム構成中はM/S結果、オリジナル中は元ファイル
+    std::vector<RegionExport::Source> sources;
+    if (engine.isStemMode())
+    {
+        const auto* group = stemPanel.currentGroup();
+        const auto audible = stemPanel.audibleStems();
+        const auto identity = StemCache::SourceIdentity::forFile (engine.fileInfo().file);
+        const auto dir = StemCache::identityDir (identity);
+        for (size_t i = 0; group != nullptr && i < group->stems.size(); ++i)
+            if (i < audible.size() && audible[i])
+                sources.push_back ({ dir.getChildFile (group->stems[i].relPath), 1.0f });
+        if (sources.empty())
+        {
+            showToast (jp (u8"鳴っているステムがありません"));
+            return;
+        }
+    }
+    else
+    {
+        sources.push_back ({ engine.fileInfo().file, 1.0f });
+    }
+
+    const double sec = selectionSeconds();
+    const auto name = BpmMath::exportFileName (engine.fileInfo().file.getFileNameWithoutExtension(),
+                                               currentBeats(), sec);
+    const auto outFile = juce::File (settings.exportDirectory).getChildFile (name).getNonexistentSibling();
+
+    if (! exportWorker.startExport (std::move (sources), waveform.selectionStart(),
+                                    waveform.selectionEnd(), engine.fileInfo().sampleRate, outFile))
+        return;
+    exportButton.setEnabled (false);
+    Log::info ("export.start", "out=" + outFile.getFullPathName());
+}
+
+void SalvaMainComponent::showToast (const juce::String& message)
+{
+    toastLabel.setText (message, juce::dontSendNotification);
+    toastLabel.setVisible (true);
+    toastTicks = 75; // 30Hzで約2.5秒
+    resized();
+}
+
+void SalvaMainComponent::toggleRecordMode()
+{
+    if (recordMode && engine.getRecorder().isRecording())
+        return; // 録音中はモードを抜けられない（停止が先）
+
+    recordMode = ! recordMode;
+    if (recordMode)
+    {
+        if (engine.isPlaying())
+            togglePlay(); // 録音と再生は排他
+        const auto error = engine.enterRecordMode (settings.inputDeviceName, settings.inputChannelPairStart);
+        if (error.isNotEmpty())
+            Log::warn ("record.enter.error", "error=" + error);
+        recordView.setInputDevices (engine.inputDeviceNames(), engine.currentInputDeviceName());
+        recordView.setChannelPairs (engine.currentInputChannelCount(), settings.inputChannelPairStart);
+        Log::info ("record.mode.enter", "input=" + engine.currentInputDeviceName()
+                                            + " sr=" + juce::String (engine.currentDeviceSampleRate(), 0));
+    }
+    else
+    {
+        engine.exitRecordMode (settings.outputDeviceName);
+        rebuildOutputDeviceBox();
+        Log::info ("record.mode.exit");
+    }
+
+    recordModeButton.setColour (juce::TextButton::buttonColourId,
+                                recordMode ? juce::Colour (0xff8e2a26) : juce::Colour (0xff3a3a40));
+    playButton.setEnabled (! recordMode);
+    barsButton.setEnabled (! recordMode);
+    outputDeviceBox.setEnabled (! recordMode);
+    separateButton.setEnabled (! recordMode && separator.status() != StemSeparator::Status::running);
+    updateBpmDisplay();
+    resized();
+    repaint();
+}
+
+void SalvaMainComponent::toggleRecording()
+{
+    auto& recorder = engine.getRecorder();
+    if (recorder.isRecording())
+    {
+        finishRecording();
+        return;
+    }
+
+    // 保存先＋ファイル名は録音開始前にダイアログで指定（テイク破棄は手動削除。キャンセル経路なし）
+    const auto defaultDir = settings.recordDirectory.isNotEmpty()
+                                ? juce::File (settings.recordDirectory)
+                                : juce::File::getSpecialLocation (juce::File::userMusicDirectory);
+    const auto defaultName = "record-" + juce::Time::getCurrentTime().formatted ("%Y%m%d-%H%M") + ".wav";
+    recordFileChooser = std::make_unique<juce::FileChooser> (
+        jp (u8"録音の保存先"), defaultDir.getChildFile (defaultName), "*.wav");
+    recordFileChooser->launchAsync (
+        juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
+        [this] (const juce::FileChooser& fc)
+        {
+            const auto file = fc.getResult();
+            if (file == juce::File {})
+                return; // ダイアログのキャンセル（録音自体が始まっていないので副作用なし）
+            settings.recordDirectory = file.getParentDirectory().getFullPathName();
+            settings.save();
+            const auto sr = engine.currentDeviceSampleRate();
+            if (sr <= 0.0 || ! engine.getRecorder().start (file, sr))
+            {
+                Log::error ("record.start.failed", "path=" + file.getFullPathName());
+                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                                                        "Salva", jp (u8"録音を開始できませんでした"));
+                return;
+            }
+            Log::info ("record.start", "path=" + file.getFullPathName() + " sr=" + juce::String (sr, 0));
+        });
+}
+
+void SalvaMainComponent::finishRecording()
+{
+    auto& recorder = engine.getRecorder();
+    const auto expected = recorder.attemptedSamples();
+    const auto sr = recorder.recordingSampleRate();
+    const auto file = recorder.recordedFile();
+    const auto actual = recorder.stop(); // ヘッダ確定
+
+    Log::info ("record.stop", "path=" + file.getFullPathName()
+                                  + " expected=" + juce::String (expected)
+                                  + " actual=" + juce::String (actual)
+                                  + " dropped=" + juce::String ((juce::int64) recorder.droppedWrites()));
+
+    // 期待サンプル数と実WAV長の照合（欠けた録音を正常テイクとして黙って開かない）
+    const auto warning = RecordingCheck::mismatchWarning (expected, actual, sr);
+    if (actual < 0)
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Salva",
+                                                jp (u8"録音ファイルの確定に失敗しました"));
+        return;
+    }
+    if (warning.isNotEmpty())
+    {
+        Log::warn ("record.mismatch", "missing=" + juce::String (expected - actual));
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Salva", warning);
+    }
+
+    // 停止 → 再生系へ戻して、そのWAVを現在ファイルとして開く
+    toggleRecordMode();
+    openFile (file);
+}
+
+void SalvaMainComponent::selectionChanged (juce::int64 start, juce::int64 end)
+{
+    beatsOverride = 0; // 区間が変わったら小節数は自動選択に戻す
+    engine.updateLoop (true, start, end);
+    updateBpmDisplay();
+}
+
+void SalvaMainComponent::selectionCleared()
+{
+    beatsOverride = 0;
+    engine.updateLoop (false, 0, 0);
+    updateBpmDisplay();
+}
+
+double SalvaMainComponent::selectionSeconds() const
+{
+    const auto& fi = engine.fileInfo();
+    if (! waveform.hasSelection() || fi.sampleRate <= 0.0)
+        return 0.0;
+    return (double) (waveform.selectionEnd() - waveform.selectionStart()) / fi.sampleRate;
+}
+
+int SalvaMainComponent::currentBeats() const
+{
+    return beatsOverride > 0 ? beatsOverride : BpmMath::autoBeats (selectionSeconds());
+}
+
+void SalvaMainComponent::updateBpmDisplay()
+{
+    const bool has = waveform.hasSelection() && selectionSeconds() > 0.0;
+    barsButton.setVisible (has);
+    bpmLabel.setVisible (has);
+    exportNameLabel.setVisible (has);
+    if (! has)
+        return;
+
+    const double sec = selectionSeconds();
+    const int beats = currentBeats();
+    barsButton.setButtonText (juce::String (beats / 4) + jp (u8"小節 ▾"));
+    bpmLabel.setText (BpmMath::bpmDisplayText (beats, sec) + " BPM", juce::dontSendNotification);
+    exportNameLabel.setText (
+        BpmMath::exportFileName (engine.fileInfo().file.getFileNameWithoutExtension(), beats, sec),
+        juce::dontSendNotification);
+    exportButton.setVisible (has && ! recordMode);
+}
+
+void SalvaMainComponent::updateHeader()
+{
+    repaint (0, 0, getWidth(), headerHeight);
+}
+
+void SalvaMainComponent::rebuildOutputDeviceBox()
+{
+    outputDeviceBox.clear (juce::dontSendNotification);
+    const auto names = engine.outputDeviceNames();
+    int id = 1;
+    for (const auto& n : names)
+        outputDeviceBox.addItem (n, id++);
+    const auto current = engine.currentOutputDeviceName();
+    const int idx = names.indexOf (current);
+    if (idx >= 0)
+        outputDeviceBox.setSelectedId (idx + 1, juce::dontSendNotification);
+}
+
+void SalvaMainComponent::timerCallback()
+{
+    // 起動直後のgrabKeyboardFocusはisShowing()が偽で空振りする（GOTCHAS）→ 表示後に1回だけ
+    if (! initialFocusDone && isShowing())
+    {
+        grabKeyboardFocus();
+        initialFocusDone = true;
+    }
+
+    engine.purgeRetired();
+
+    if (toastTicks > 0 && --toastTicks == 0)
+        toastLabel.setVisible (false);
+
+    // 分離ジョブの完了（identity一致時のみM/S行を点灯。実行中に別ファイルへ切り替えても誤接続しない）
+    {
+        StemCache::SourceIdentity identity;
+        bool success = false;
+        if (separator.consumeResult (identity, success))
+        {
+            separateButton.setEnabled (true);
+            separateProgressLabel.setVisible (false);
+            updateCacheSizeLabel();
+            if (! success)
+            {
+                showToast (jp (u8"ステム分離に失敗しました（ログ参照）"));
+                Log::warn ("separate.failed");
+            }
+            else if (engine.hasFile()
+                     && StemCache::SourceIdentity::forFile (engine.fileInfo().file) == identity)
+            {
+                refreshStemCacheState();
+                showToast (jp (u8"ステム分離が完了しました"));
+                Log::info ("separate.done", "identity=" + identity.hash());
+            }
+            else
+            {
+                Log::info ("separate.done_other_file", "identity=" + identity.hash());
+            }
+        }
+    }
+
+    // 書き出しの完了
+    {
+        RegionExport::Result result;
+        juce::File outFile;
+        if (exportWorker.consumeResult (result, outFile))
+        {
+            exportButton.setEnabled (true);
+            if (! result.ok)
+            {
+                showToast (jp (u8"書き出しに失敗: ") + result.error);
+                Log::warn ("export.failed", "error=" + result.error);
+            }
+            else
+            {
+                auto message = jp (u8"書き出しました: ") + outFile.getFileName();
+                if (result.appliedGain < 1.0f)
+                    message += jp (u8"（0dBFS超のため ")
+                               + juce::String (20.0f * std::log10 (result.appliedGain), 1)
+                               + jp (u8"dB 下げて収めました）");
+                showToast (message);
+                Log::info ("export.done", "out=" + outFile.getFullPathName()
+                                              + " gain=" + juce::String (result.appliedGain, 4));
+            }
+        }
+    }
+
+    // ステム行のレベルメーター（案B）
+    if (stemPanel.hasStems() && engine.isStemMode())
+        stemPanel.updatePeaks ([this] (int i) { return engine.stemPeak (i); });
+
+    if (recordMode)
+    {
+        auto& recorder = engine.getRecorder();
+        const double sr = recorder.isRecording() ? recorder.recordingSampleRate() : 0.0;
+        recordView.update (recorder.peakL(), recorder.peakR(), recorder.isRecording(),
+                           sr > 0.0 ? (double) recorder.attemptedSamples() / sr : 0.0);
+        return;
+    }
+
+    const bool playing = engine.isPlaying();
+
+    if (playing && engine.consumeReachedEnd())
+    {
+        engine.stop();
+        playButton.setButtonText (jp (u8"▶"));
+        Log::info ("transport.end_of_file");
+    }
+
+    if (engine.hasFile())
+    {
+        const auto pos = engine.uiPlayheadSample();
+        const auto& fi = engine.fileInfo();
+        timeLabel.setText (formatTime ((double) pos / fi.sampleRate), juce::dontSendNotification);
+        waveform.setPlayhead (pos, true);
+    }
+
+    // read-aheadの枯渇はatomicカウンタで観測し、UI側で表示・ログする（GOTCHAS: pull型）
+    const auto starved = engine.starvedSamples();
+    if (starved != lastStarved)
+    {
+        lastStarved = starved;
+        starvedLabel.setText (jp (u8"読み込み遅延 ") + juce::String (starved), juce::dontSendNotification);
+        starvedLabel.setVisible (true);
+        Log::warn ("stream.starved", "totalSamples=" + juce::String (starved));
+    }
+
+    playButton.setButtonText (playing ? jp (u8"■") : jp (u8"▶"));
+}
+
+bool SalvaMainComponent::keyPressed (const juce::KeyPress& key)
+{
+    if (key == juce::KeyPress::spaceKey)
+    {
+        if (! recordMode)
+            togglePlay();
+        return true;
+    }
+    if (key == juce::KeyPress ('r')) // Logic準拠: r = 録音（録音モード中のみ）
+    {
+        if (recordMode)
+            toggleRecording();
+        return true;
+    }
+    if (key == juce::KeyPress (juce::KeyPress::leftKey, juce::ModifierKeys::commandModifier, 0))
+    {
+        waveform.zoomOut();
+        return true;
+    }
+    if (key == juce::KeyPress (juce::KeyPress::rightKey, juce::ModifierKeys::commandModifier, 0))
+    {
+        waveform.zoomIn();
+        return true;
+    }
+    return false;
+}
+
+bool SalvaMainComponent::isInterestedInFileDrag (const juce::StringArray& files)
+{
+    for (const auto& f : files)
+        if (AudioFileTypes::isSupported (f))
+            return true;
+    return false;
+}
+
+void SalvaMainComponent::filesDropped (const juce::StringArray& files, int, int)
+{
+    for (const auto& f : files)
+    {
+        if (AudioFileTypes::isSupported (f))
+        {
+            openFile (juce::File (f));
+            return; // 最初の対応ファイルだけ開く
+        }
+    }
+}
+
+void SalvaMainComponent::paint (juce::Graphics& g)
+{
+    g.fillAll (windowBg);
+
+    // ヘッダー
+    auto header = getLocalBounds().removeFromTop (headerHeight);
+    g.setColour (headerBg);
+    g.fillRect (header);
+    g.setColour (panelBorder);
+    g.fillRect (header.removeFromBottom (1));
+
+    g.setColour (textColour);
+    g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+    g.drawText ("Salva", 14, 0, 80, headerHeight, juce::Justification::centredLeft);
+
+    g.setFont (juce::FontOptions (12.0f));
+    if (engine.hasFile())
+    {
+        const auto& fi = engine.fileInfo();
+        const auto infoText = fi.file.getFileName()
+                              + jp (u8" — ") + juce::String (fi.sampleRate / 1000.0, 1) + "kHz"
+                              + jp (u8"・") + (fi.numChannels >= 2 ? jp (u8"ステレオ") : jp (u8"モノラル"))
+                              + jp (u8"・") + formatTime ((double) fi.lengthSamples / fi.sampleRate);
+        g.setColour (textDim);
+        g.drawText (infoText, 80, 0, juce::jmax (100, getWidth() - 400), headerHeight,
+                    juce::Justification::centredLeft, true);
+    }
+
+    // ファイル未オープン時: 波形エリアに空状態（ドロップ案内＋最近のファイル）
+    if (! engine.hasFile() && ! recordMode)
+        paintEmptyState (g, emptyStateArea);
+}
+
+void SalvaMainComponent::paintEmptyState (juce::Graphics& g, juce::Rectangle<int> area)
+{
+    g.setColour (juce::Colour (0xff1e1e22));
+    g.fillRect (area);
+
+    auto content = area.reduced (24);
+    g.setColour (textDim);
+    g.setFont (juce::FontOptions (14.0f));
+    g.drawText (jp (u8"オーディオファイルをここにドロップ（wav / aiff / flac / mp3 / m4a）"),
+                content.removeFromTop (40), juce::Justification::centred);
+
+    shownRecentFiles.clear();
+    for (const auto& path : settings.recentFiles)
+        if (juce::File (path).existsAsFile())
+            shownRecentFiles.add (path);
+
+    if (shownRecentFiles.isEmpty())
+        return;
+
+    g.setFont (juce::FontOptions (12.0f));
+    g.drawText (jp (u8"最近開いたファイル:"), content.removeFromTop (24), juce::Justification::centredLeft);
+    g.setColour (textColour);
+    for (const auto& path : shownRecentFiles)
+    {
+        auto row = content.removeFromTop (recentRowHeight);
+        g.drawText (juce::File (path).getFileName() + "  " + jp (u8"—") + "  " + path,
+                    row.reduced (8, 0), juce::Justification::centredLeft, true);
+    }
+}
+
+void SalvaMainComponent::mouseUp (const juce::MouseEvent& e)
+{
+    if (e.eventComponent == &cacheSizeLabel)
+    {
+        showCacheDeleteMenu();
+        return;
+    }
+    if (engine.hasFile() || recordMode || shownRecentFiles.isEmpty())
+        return;
+    // paintEmptyStateと同じ計算で行を割り出す（描画とヒットテストの座標を揃える）
+    auto content = emptyStateArea.reduced (24);
+    content.removeFromTop (40);
+    content.removeFromTop (24);
+    for (int i = 0; i < shownRecentFiles.size(); ++i)
+    {
+        if (content.removeFromTop (recentRowHeight).contains (e.getPosition()))
+        {
+            openFile (juce::File (shownRecentFiles[i]));
+            return;
+        }
+    }
+}
+
+void SalvaMainComponent::openRecentAt (int index)
+{
+    if (index >= 0 && index < shownRecentFiles.size())
+        openFile (juce::File (shownRecentFiles[index]));
+}
+
+void SalvaMainComponent::resized()
+{
+    auto area = getLocalBounds();
+
+    // ヘッダー右側: [分離中…] [ステム分離] [キャッシュ x GB ▾]
+    auto header = area.removeFromTop (headerHeight).reduced (10, 8);
+    cacheSizeLabel.setBounds (header.removeFromRight (130));
+    header.removeFromRight (8);
+    separateButton.setBounds (header.removeFromRight (90));
+    header.removeFromRight (8);
+    separateProgressLabel.setBounds (header.removeFromRight (60));
+
+    auto bottom = area.removeFromBottom (bottomHeight).reduced (10, 6);
+    auto transport = area.removeFromBottom (transportHeight).reduced (10, 7);
+
+    // ステムM/Sパネル（案B: 縦リスト。グループ未選択時はタブだけの高さ）
+    const int stemHeight = (! recordMode && engine.hasFile()) ? stemPanel.preferredHeight() : 0;
+    stemPanel.setBounds (area.removeFromBottom (stemHeight));
+    stemPanel.setVisible (stemHeight > 0);
+
+    emptyStateArea = area;
+    waveform.setBounds (area);
+    recordView.setBounds (area);
+    waveform.setVisible (engine.hasFile() && ! recordMode);
+    recordView.setVisible (recordMode);
+
+    playButton.setBounds (transport.removeFromLeft (44));
+    transport.removeFromLeft (10);
+    timeLabel.setBounds (transport.removeFromLeft (76));
+    transport.removeFromLeft (16);
+    barsButton.setBounds (transport.removeFromLeft (86));
+    transport.removeFromLeft (8);
+    bpmLabel.setBounds (transport.removeFromLeft (110));
+    starvedLabel.setBounds (transport.removeFromLeft (120));
+    exportButton.setBounds (transport.removeFromRight (78));
+    transport.removeFromRight (8);
+    exportNameLabel.setBounds (transport);
+
+    outputLabel.setBounds (bottom.removeFromLeft (44));
+    outputDeviceBox.setBounds (bottom.removeFromLeft (260));
+    recordModeButton.setBounds (bottom.removeFromRight (120));
+
+    toastLabel.setBounds (getLocalBounds().withSizeKeepingCentre (juce::jmin (520, getWidth() - 40), 28)
+                              .withY (getHeight() - bottomHeight - transportHeight - 40));
+}

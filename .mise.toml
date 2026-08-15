@@ -277,6 +277,44 @@ run = 'open build/daw_artefacts/Debug/LaLa-dev.app'
 description = 'dev版アプリ（LaLa-dev.app）を停止する'
 run = 'pkill -f "LaLa-dev.app/Contents/MacOS/LaLa-dev" || true'
 
+# --- Salva（apps/salva/。LaLaとbuildディレクトリを共有する別ターゲット） ---
+
+[tasks."build:salva"]
+description = 'Salva dev版（Debug・Salva-dev.app）をビルドする。初回はconfigure（JUCE取得・数分）も自動実行'
+run = '''
+#!/usr/bin/env bash
+set -e
+[ -f build/CMakeCache.txt ] || cmake -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build --target salva
+'''
+
+[tasks."build:salva-release"]
+description = 'Salva常用版（Release・Salva.app）をビルドする。初回はconfigureも自動実行'
+run = '''
+#!/usr/bin/env bash
+set -e
+[ -f build-release/CMakeCache.txt ] || cmake -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --target salva
+'''
+
+[tasks."test:salva"]
+description = 'salva_tests（Salva C++回帰テスト）をビルドして実行する'
+run = '''
+#!/usr/bin/env bash
+set -e
+[ -f build/CMakeCache.txt ] || cmake -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build --target salva_tests
+build/apps/salva/salva_tests_artefacts/Debug/salva_tests
+'''
+
+[tasks."start:salva"]
+description = 'Salva dev版アプリ（Salva-dev.app）を起動する'
+run = 'open build/apps/salva/salva_artefacts/Debug/Salva-dev.app'
+
+[tasks."stop:salva"]
+description = 'Salva dev版アプリ（Salva-dev.app）を停止する'
+run = 'pkill -f "Salva-dev.app/Contents/MacOS/Salva-dev" || true'
+
 [tasks.release]
 description = 'いまのHEADをリリースする（バージョン自動bump→CHANGELOG自動生成(claude)→ビルド→notarize→署名→GitHub Release。notarytoolがkeychainを使うためユーザーのTerminalで実行すること）'
 usage = 'arg "<version>" default="auto" help="auto(既定)=リリース済みならminor bump / patch|minor|major=刻み指定 / 0.3.0等=明示指定"'

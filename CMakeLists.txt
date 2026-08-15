@@ -262,3 +262,7 @@ target_link_libraries(daw_tests
 )
 
 add_test(NAME daw_tests COMMAND daw_tests)
+
+# ---- Salva（レコード/ローカル音源のサンプリング素材化アプリ。apps/salva/CLAUDE.md参照）----
+# JUCE・codesign identity の解決後に読み込む（サブディレクトリ側が両方を使う）
+add_subdirectory(apps/salva)
