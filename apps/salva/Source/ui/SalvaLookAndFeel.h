@@ -15,9 +15,9 @@ public:
     {
         // ColourScheme順: windowBackground, widgetBackground, menuBackground,
         //                 outline, defaultText, defaultFill, highlightedText, highlightedFill, menuText
-        setColourScheme ({ juce::Colour (0xff1d1916), juce::Colour (0xff2e2822), juce::Colour (0xff221d19),
-                           juce::Colour (0xff453c33), juce::Colour (0xffede4d3), juce::Colour (0xffd99a4e),
-                           juce::Colour (0xffede4d3), juce::Colour (0xff3a322b), juce::Colour (0xffede4d3) });
+        setColourScheme ({ juce::Colour (0xff201f24), juce::Colour (0xff2e2d34), juce::Colour (0xff242328),
+                           juce::Colour (0xff46444e), juce::Colour (0xfff2e8d5), juce::Colour (0xffff7a2e),
+                           juce::Colour (0xfff2e8d5), juce::Colour (0xff3a3842), juce::Colour (0xfff2e8d5) });
         setColour (juce::PopupMenu::backgroundColourId, menuBg);
         setColour (juce::PopupMenu::textColourId, itemText);
         setColour (juce::PopupMenu::highlightedTextColourId, cream);
@@ -152,10 +152,10 @@ public:
 private:
     static constexpr float cornerRadius = 9.0f;
     // 0xfa = 微透過（角丸の透明抜きのため非不透明にする。見た目はほぼ不透明）
-    const juce::Colour menuBg { 0xfa1f1a16 };
-    const juce::Colour menuBorder { 0xff453c33 };
-    const juce::Colour itemText { 0xffe4dac6 };
-    const juce::Colour cream { 0xffede4d3 };
-    const juce::Colour dimText { 0xff8a7d6c };
-    const juce::Colour accent { 0xffd99a4e };
+    const juce::Colour menuBg { 0xfa1f1e23 };
+    const juce::Colour menuBorder { 0xff46444e };
+    const juce::Colour itemText { 0xffe8e0d2 };
+    const juce::Colour cream { 0xfff2e8d5 };
+    const juce::Colour dimText { 0xff97908a };
+    const juce::Colour accent { 0xffff7a2e };
 };

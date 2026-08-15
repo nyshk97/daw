@@ -4,8 +4,8 @@ namespace
 {
 juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
 
-const juce::Colour bg { 0xff171310 };
-const juce::Colour textDim { 0xff8a7d6c };
+const juce::Colour bg { 0xff17161a };
+const juce::Colour textDim { 0xff97908a };
 const juce::Colour meterBg { 0xff111114 };
 const juce::Colour meterGreen { 0xff7bc47b };
 const juce::Colour meterYellow { 0xffdfae4a };

@@ -11,22 +11,28 @@ namespace
 {
 juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
 
-// Vinyl Warmパレット（2026-08-15確定モック案B: アンバー×濃茶）
-const juce::Colour windowBg { 0xff1d1916 };
-const juce::Colour headerBg { 0xff221d19 };
-const juce::Colour panelBorder { 0xff322b25 };
-const juce::Colour emptyBg { 0xff171310 };
-const juce::Colour textColour { 0xffede4d3 };
-const juce::Colour textDim { 0xff8a7d6c };
-const juce::Colour accent { 0xffd99a4e };
-const juce::Colour accentTextDark { 0xff241a0d }; // アンバー地の上の文字
-const juce::Colour buttonBg { 0xff2e2822 };
-const juce::Colour buttonBorder { 0xff453c33 };
-const juce::Colour hoverFill { 0xff3a322b };
+// パレットはアプリアイコン（make_icon.swift）基準: 盤面のチャコール地＋スリーブのクリーム文字
+// ＋レーベルwarmグラデ由来のオレンジをアクセントに使う
+const juce::Colour windowBg { 0xff201f24 };
+const juce::Colour headerBg { 0xff242328 };
+const juce::Colour panelBorder { 0xff34323a };
+const juce::Colour emptyBg { 0xff17161a };
+const juce::Colour textColour { 0xfff2e8d5 };
+const juce::Colour textDim { 0xff97908a };
+const juce::Colour accent { 0xffff7a2e }; // アイコンのレーベル中間色
+const juce::Colour accentTextDark { 0xff2b1507 }; // オレンジ地の上の文字
+const juce::Colour buttonBg { 0xff2e2d34 };
+const juce::Colour buttonBorder { 0xff46444e };
+const juce::Colour hoverFill { 0xff3a3842 };
 const juce::Colour recordTextColour { 0xffd98a76 };
-const juce::Colour discBase { 0xff131010 };
-const juce::Colour discGroove { 0xff1e1a17 };
-const juce::Colour discLabelColour { 0xffc9a06b };
+// 盤面はアプリアイコン（Assets/make_icon.swift）と同じデザイン・同じ比率で描く
+const juce::Colour discBase { 0xff232228 };
+const juce::Colour discGroove { 0xff3b3a44 };
+const juce::Colour discHole { 0xfff2e5c6 };
+const juce::Colour discBracket { 0xfff6ecd4 };
+const juce::Colour labelTop { 0xffffd23f };
+const juce::Colour labelMid { 0xffff7a2e };
+const juce::Colour labelBottom { 0xffe02fb0 };
 const juce::Colour warnColour { 0xffff4500 };
 
 constexpr int headerHeight = 40;
@@ -135,7 +141,7 @@ SalvaMainComponent::SalvaMainComponent()
     addChildComponent (recordEntryButton);
     recordEntryButton.setButtonText (jp (u8"● レコードから録音"));
     recordEntryButton.setColour (juce::TextButton::buttonColourId, emptyBg);
-    recordEntryButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xffb3a48d));
+    recordEntryButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xffb6afa4));
     recordEntryButton.setMouseCursor (juce::MouseCursor::PointingHandCursor);
     recordEntryButton.onClick = [this] { toggleRecordMode(); };
 
@@ -195,7 +201,7 @@ SalvaMainComponent::SalvaMainComponent()
     exportButton.setVisible (false);
 
     addChildComponent (toastLabel);
-    toastLabel.setColour (juce::Label::backgroundColourId, juce::Colour (0xf02b251f));
+    toastLabel.setColour (juce::Label::backgroundColourId, juce::Colour (0xf0252429));
     toastLabel.setColour (juce::Label::textColourId, textColour);
     toastLabel.setColour (juce::Label::outlineColourId, buttonBorder);
     toastLabel.setJustificationType (juce::Justification::centred);
@@ -887,19 +893,11 @@ void SalvaMainComponent::paint (juce::Graphics& g)
     g.setColour (panelBorder);
     g.fillRect (header.removeFromBottom (1));
 
-    // ロゴ: ミニ盤面＋アプリ名
-    {
-        const float lr = 9.0f, lx = 14.0f, ly = headerHeight * 0.5f - lr;
-        g.setColour (discBase);
-        g.fillEllipse (lx, ly, lr * 2.0f, lr * 2.0f);
-        g.setColour (discLabelColour);
-        g.fillEllipse (lx + lr - 3.5f, ly + lr - 3.5f, 7.0f, 7.0f);
-        g.setColour (discBase);
-        g.fillEllipse (lx + lr - 1.5f, ly + lr - 1.5f, 3.0f, 3.0f);
-    }
+    // レコードのモチーフは空状態の大きな盤面1つに絞る（アプリアイコンと微妙に違う
+    // ミニ盤面を並べない）。ヘッダーはアプリ名の文字だけ
     g.setColour (textColour);
     g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
-    g.drawText ("Salva", 40, 0, 80, headerHeight, juce::Justification::centredLeft);
+    g.drawText ("Salva", 14, 0, 80, headerHeight, juce::Justification::centredLeft);
 
     g.setFont (juce::FontOptions (12.0f));
     if (engine.hasFile())
@@ -910,7 +908,7 @@ void SalvaMainComponent::paint (juce::Graphics& g)
                               + jp (u8"・") + (fi.numChannels >= 2 ? jp (u8"ステレオ") : jp (u8"モノラル"))
                               + jp (u8"・") + formatTime ((double) fi.lengthSamples / fi.sampleRate);
         g.setColour (textDim);
-        g.drawText (infoText, 92, 0, juce::jmax (100, getWidth() - 412), headerHeight,
+        g.drawText (infoText, 80, 0, juce::jmax (100, getWidth() - 400), headerHeight,
                     juce::Justification::centredLeft, true);
     }
 
@@ -967,6 +965,9 @@ juce::Rectangle<int> SalvaMainComponent::emptyRecentRowRect (const EmptyLayout& 
 
 void SalvaMainComponent::paintDisc (juce::Graphics& g, juce::Rectangle<float> bounds)
 {
+    // アプリアイコンと同じ構成（make_icon.swift の比率を盤半径基準に換算）。
+    // 回転はレーベルのグラデーション角度で見せ、選択ブラケットは固定
+    //（回る盤の上に区間選択が乗っている、というアプリの動作そのものの表現）
     const auto b = dragOver ? bounds.expanded (bounds.getWidth() * 0.02f) : bounds;
     const auto c = b.getCentre();
     const float r = b.getWidth() * 0.5f;
@@ -974,34 +975,62 @@ void SalvaMainComponent::paintDisc (juce::Graphics& g, juce::Rectangle<float> bo
     g.setColour (discBase);
     g.fillEllipse (b);
 
-    // 溝: 細いリングを等間隔に
-    g.setColour (discGroove);
-    for (float gr = r * 0.38f; gr < r * 0.96f; gr += 4.0f)
-        g.drawEllipse (c.x - gr, c.y - gr, gr * 2.0f, gr * 2.0f, 1.0f);
-
-    // 光沢のくさび（非対称なので回転が見える）
+    // 溝: 26本の同心円（外周ほど密・うっすら明るい線）
+    for (int i = 0; i < 26; ++i)
     {
-        juce::Path sheen;
-        sheen.addPieSegment (b, discAngle, discAngle + 0.55f, 0.34f);
-        sheen.addPieSegment (b, discAngle + juce::MathConstants<float>::pi,
-                             discAngle + juce::MathConstants<float>::pi + 0.4f, 0.34f);
-        g.setColour (juce::Colours::white.withAlpha (0.05f));
-        g.fillPath (sheen);
+        const float t = (float) i / 25.0f;
+        const float gr = r * (0.42f + t * 0.55f);
+        g.setColour (discGroove.withAlpha (0.35f + 0.25f * (1.0f - t)));
+        g.drawEllipse (c.x - gr, c.y - gr, gr * 2.0f, gr * 2.0f, 1.0f);
     }
 
-    // レーベルとセンターホール
-    const float lr = r * 0.31f;
-    g.setColour (discLabelColour);
-    g.fillEllipse (c.x - lr, c.y - lr, lr * 2.0f, lr * 2.0f);
-    g.setColour (discLabelColour.darker (0.4f));
-    g.drawEllipse (c.x - lr, c.y - lr, lr * 2.0f, lr * 2.0f, 1.0f);
-    g.setColour (emptyBg);
-    g.fillEllipse (c.x - 4.0f, c.y - 4.0f, 8.0f, 8.0f);
+    // 照り: 左上からの光（固定＝照明。盤が回ってもここは動かない）
+    {
+        juce::Graphics::ScopedSaveState save (g);
+        juce::Path clip;
+        clip.addEllipse (b);
+        g.reduceClipRegion (clip);
+        g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.10f),
+                                                 c.x - r, c.y - r,
+                                                 juce::Colours::white.withAlpha (0.0f),
+                                                 c.x, c.y, false));
+        g.fillRect (b);
+    }
+
+    // レーベル: アイコンと同じwarmグラデ。ドラッグ中はグラデ方向が回る
+    {
+        const float lr = r * 0.359f;
+        const juce::Point<float> dir { std::sin (discAngle), -std::cos (discAngle) };
+        const auto top = c + dir * lr;
+        const auto bottom = c - dir * lr;
+        juce::ColourGradient grad (labelTop, top.x, top.y, labelBottom, bottom.x, bottom.y, false);
+        grad.addColour (0.48, labelMid);
+        g.setGradientFill (grad);
+        g.fillEllipse (c.x - lr, c.y - lr, lr * 2.0f, lr * 2.0f);
+    }
+
+    // 区間選択のブラケット: レーベルを跨ぐ2本の縦線＋間の半透明帯
+    {
+        const float halfW = r * 0.217f, halfH = r * 0.402f;
+        const float barW = juce::jmax (2.0f, r * 0.030f);
+        g.setColour (juce::Colours::white.withAlpha (0.16f));
+        g.fillRect (juce::Rectangle<float> (c.x - halfW, c.y - halfH, halfW * 2.0f, halfH * 2.0f));
+        g.setColour (discBracket.withAlpha (0.9f));
+        g.fillRect (juce::Rectangle<float> (c.x - halfW - barW * 0.5f, c.y - halfH, barW, halfH * 2.0f));
+        g.fillRect (juce::Rectangle<float> (c.x + halfW - barW * 0.5f, c.y - halfH, barW, halfH * 2.0f));
+    }
+
+    // センターホール
+    {
+        const float hr = r * 0.048f;
+        g.setColour (discHole);
+        g.fillEllipse (c.x - hr, c.y - hr, hr * 2.0f, hr * 2.0f);
+    }
 
     if (dragOver)
     {
         const auto badge = juce::Rectangle<float> (110.0f, 24.0f).withCentre (c);
-        g.setColour (juce::Colour (0xe0141009));
+        g.setColour (juce::Colour (0xe0121115));
         g.fillRoundedRectangle (badge, 12.0f);
         g.setColour (textColour);
         g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
@@ -1054,20 +1083,10 @@ void SalvaMainComponent::paintEmptyState (juce::Graphics& g, juce::Rectangle<int
             g.setColour (accent.withAlpha (0.09f));
             g.fillRoundedRectangle (row.toFloat(), 8.0f);
         }
-        auto inner = row.reduced (10, 6);
-
-        // ミニ盤面アイコン
-        const auto icon = inner.removeFromLeft (26).withSizeKeepingCentre (26, 26).toFloat();
-        g.setColour (discBase);
-        g.fillEllipse (icon);
-        g.setColour (discLabelColour);
-        g.fillEllipse (icon.reduced (icon.getWidth() * 0.32f));
-        g.setColour (discBase);
-        g.fillEllipse (icon.withSizeKeepingCentre (3.0f, 3.0f));
-        inner.removeFromLeft (10);
+        auto inner = row.reduced (12, 6);
 
         const juce::File f (shownRecentFiles[i]);
-        g.setColour (hovered ? textColour : juce::Colour (0xffe4dac6));
+        g.setColour (hovered ? textColour : juce::Colour (0xffe8e0d2));
         g.setFont (juce::FontOptions (13.0f));
         g.drawText (f.getFileName(), inner.removeFromTop (16), juce::Justification::centredLeft, true);
         g.setColour (textDim.withAlpha (0.8f));

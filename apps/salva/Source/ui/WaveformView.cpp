@@ -3,13 +3,13 @@
 namespace
 {
 // 配色はLaLaのThemeに揃える（Salvaは別アプリだが、目の慣れを共有する）
-// Vinyl Warmパレット（波形=アンバー、選択=クリームで対比を取る）
-const juce::Colour waveBg { 0xff171310 };
-const juce::Colour waveColour { 0xffd99a4e };
-const juce::Colour selectionFill { juce::Colour (0xffede4d3).withAlpha (0.12f) };
-const juce::Colour selectionEdge { 0xffede4d3 };
+// アイコン基準パレット（波形=レーベルのオレンジ、選択=クリームで対比を取る）
+const juce::Colour waveBg { 0xff17161a };
+const juce::Colour waveColour { 0xffef8a3f };
+const juce::Colour selectionFill { juce::Colour (0xfff2e8d5).withAlpha (0.12f) };
+const juce::Colour selectionEdge { 0xfff2e8d5 };
 const juce::Colour playheadColour { 0xffffffff };
-const juce::Colour timeLabelColour { 0xff8a7d6c };
+const juce::Colour timeLabelColour { 0xff97908a };
 } // namespace
 
 WaveformView::WaveformView()
