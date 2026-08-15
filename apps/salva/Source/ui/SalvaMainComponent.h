@@ -78,7 +78,7 @@ private:
     // レイアウト計算を描画・ボタン配置・ヒットテストで共有する（座標ズレ防止）
     struct EmptyLayout
     {
-        juce::Rectangle<int> disc, title, sub, buttons, recentHeader, rowsTop;
+        juce::Rectangle<int> disc, title, cardFile, cardRecord, recentHeader, rowsTop;
         int visibleRows = 0; // エリアに収まる最近ファイル行数
     };
     EmptyLayout computeEmptyLayout() const;
@@ -133,6 +133,7 @@ private:
     bool dragOver = false;   // ファイルドラッグ中（盤面の回転・「ここにドロップ」表示）
     float discAngle = 0.0f;  // 盤面の回転角（ドラッグ中のみ進む）
     int hoveredRecent = -1;  // 最近ファイル行のホバー中インデックス（-1 = なし）
+    int hoveredCard = -1;    // 入口カードのホバー（0 = ファイルから, 1 = レコードから）
 
     void mouseUp (const juce::MouseEvent& e) override; // 空状態の最近ファイル行クリック
     void mouseMove (const juce::MouseEvent& e) override; // 行ホバーの追跡

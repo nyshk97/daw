@@ -139,7 +139,7 @@ SalvaMainComponent::SalvaMainComponent()
     openFileButton.onClick = [this] { openFileChooser(); };
 
     addChildComponent (recordEntryButton);
-    recordEntryButton.setButtonText (jp (u8"● レコードから録音"));
+    recordEntryButton.setButtonText (jp (u8"● 録音モードへ"));
     recordEntryButton.setColour (juce::TextButton::buttonColourId, emptyBg);
     recordEntryButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xffb6afa4));
     recordEntryButton.setMouseCursor (juce::MouseCursor::PointingHandCursor);
@@ -939,21 +939,24 @@ SalvaMainComponent::EmptyLayout SalvaMainComponent::computeEmptyLayout() const
     content.removeFromLeft (36);
 
     // 右側ブロックは縦中央寄せ。最近ファイル行はエリアに収まる分だけ（保存は最大8件）
-    constexpr int fixedH = 26 + 22 + 8 + 40;   // タイトル＋サブ＋間隔＋ボタン行
-    constexpr int recentHeadH = 18 + 24;       // 間隔＋見出し
+    constexpr int cardH = 118;
+    constexpr int fixedH = 20 + 8 + cardH;     // セクションラベル＋間隔＋カード行
+    constexpr int recentHeadH = 20 + 24;       // 間隔＋見出し
     el.visibleRows = juce::jlimit (0, shownRecentFiles.size(),
                                    (content.getHeight() - fixedH - recentHeadH) / recentRowHeight);
 
     const int blockH = fixedH + (el.visibleRows > 0 ? recentHeadH + el.visibleRows * recentRowHeight : 0);
     auto side = content.withSizeKeepingCentre (content.getWidth(),
                                                juce::jmin (blockH, content.getHeight()));
-    el.title = side.removeFromTop (26);
-    el.sub = side.removeFromTop (22);
+    el.title = side.removeFromTop (20);
     side.removeFromTop (8);
-    el.buttons = side.removeFromTop (40);
+    auto cardsRow = side.removeFromTop (cardH);
+    el.cardFile = cardsRow.removeFromLeft ((cardsRow.getWidth() - 12) / 2);
+    cardsRow.removeFromLeft (12);
+    el.cardRecord = cardsRow;
     if (el.visibleRows > 0)
     {
-        side.removeFromTop (18);
+        side.removeFromTop (20);
         el.recentHeader = side.removeFromTop (24);
         el.rowsTop = side;
     }
@@ -1061,14 +1064,34 @@ void SalvaMainComponent::paintEmptyState (juce::Graphics& g, juce::Rectangle<int
 
     paintDisc (g, discF);
 
-    g.setColour (textColour);
-    g.setFont (juce::FontOptions (16.0f, juce::Font::bold));
-    g.drawText (jp (u8"オーディオファイルをドロップ"), el.title, juce::Justification::centredLeft);
+    // 「最近開いたファイル」と同格のセクションラベル（大見出しにすると階層が浮く）
+    g.setColour (textDim.withAlpha (0.85f));
+    g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+    g.drawText (jp (u8"音源を取り込む"), el.title, juce::Justification::centredLeft);
 
-    g.setColour (textDim);
-    g.setFont (juce::FontOptions (11.5f));
-    g.drawText (jp (u8"wav / aiff / flac / mp3 / m4a — ウィンドウのどこでも受け付けます"),
-                el.sub, juce::Justification::centredLeft, true);
+    // 入口カード×2（「ファイルから」「レコードから」は対等な入口。ドロップは全域で受ける）
+    auto drawCard = [&g] (juce::Rectangle<int> r, bool hoveredNow, bool primary,
+                                const char* title, const char* line1, const char* line2)
+    {
+        g.setColour (juce::Colour (0xff1d1c21));
+        g.fillRoundedRectangle (r.toFloat(), 10.0f);
+        g.setColour (hoveredNow ? (primary ? accent : juce::Colour (0xff6a6774)) : buttonBg);
+        g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 10.0f, 1.0f);
+
+        auto inner = r.reduced (14, 12);
+        g.setColour (textColour);
+        g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
+        g.drawText (jp (title), inner.removeFromTop (18), juce::Justification::centredLeft, true);
+        inner.removeFromTop (2);
+        g.setColour (textDim);
+        g.setFont (juce::FontOptions (11.0f));
+        g.drawText (jp (line1), inner.removeFromTop (15), juce::Justification::centredLeft, true);
+        g.drawText (jp (line2), inner.removeFromTop (15), juce::Justification::centredLeft, true);
+    };
+    drawCard (el.cardFile, hoveredCard == 0, true, u8"ファイルから",
+              u8"ドロップ / クリックで選択", u8"wav / aiff / flac / mp3 / m4a");
+    drawCard (el.cardRecord, hoveredCard == 1, false, u8"レコードから",
+              u8"ターンテーブルの音を録音して", u8"そのまま素材にする");
 
     if (el.visibleRows <= 0)
         return;
@@ -1105,10 +1128,20 @@ void SalvaMainComponent::mouseUp (const juce::MouseEvent& e)
         showCacheDeleteMenu();
         return;
     }
-    if (engine.hasFile() || recordMode || shownRecentFiles.isEmpty())
+    if (engine.hasFile() || recordMode)
         return;
-    // 描画と同じレイアウト計算でヒットテスト（座標ズレ防止）
+    // 描画と同じレイアウト計算でヒットテスト（座標ズレ防止）。カード全体がクリック領域
     const auto el = computeEmptyLayout();
+    if (el.cardFile.contains (e.getPosition()))
+    {
+        openFileChooser();
+        return;
+    }
+    if (el.cardRecord.contains (e.getPosition()))
+    {
+        toggleRecordMode();
+        return;
+    }
     for (int i = 0; i < el.visibleRows; ++i)
     {
         if (emptyRecentRowRect (el, i).contains (e.getPosition()))
@@ -1123,31 +1156,37 @@ void SalvaMainComponent::mouseMove (const juce::MouseEvent& e)
 {
     if (e.eventComponent != this)
         return; // cacheSizeLabelのリスナー経由は座標系が違うので無視
-    int hit = -1;
+    int hitRow = -1, hitCard = -1;
     if (! engine.hasFile() && ! recordMode)
     {
         const auto el = computeEmptyLayout();
-        for (int i = 0; i < el.visibleRows; ++i)
+        if (el.cardFile.contains (e.getPosition()))
+            hitCard = 0;
+        else if (el.cardRecord.contains (e.getPosition()))
+            hitCard = 1;
+        for (int i = 0; hitCard < 0 && i < el.visibleRows; ++i)
             if (emptyRecentRowRect (el, i).contains (e.getPosition()))
             {
-                hit = i;
+                hitRow = i;
                 break;
             }
     }
-    if (hit != hoveredRecent)
+    if (hitRow != hoveredRecent || hitCard != hoveredCard)
     {
-        hoveredRecent = hit;
-        setMouseCursor (hit >= 0 ? juce::MouseCursor::PointingHandCursor
-                                 : juce::MouseCursor::NormalCursor);
+        hoveredRecent = hitRow;
+        hoveredCard = hitCard;
+        setMouseCursor ((hitRow >= 0 || hitCard >= 0) ? juce::MouseCursor::PointingHandCursor
+                                                      : juce::MouseCursor::NormalCursor);
         repaint (emptyStateArea);
     }
 }
 
 void SalvaMainComponent::mouseExit (const juce::MouseEvent&)
 {
-    if (hoveredRecent != -1)
+    if (hoveredRecent != -1 || hoveredCard != -1)
     {
         hoveredRecent = -1;
+        hoveredCard = -1;
         setMouseCursor (juce::MouseCursor::NormalCursor);
         repaint (emptyStateArea);
     }
@@ -1227,10 +1266,10 @@ void SalvaMainComponent::resized()
     {
         refreshShownRecentFiles(); // 行数で縦中央が変わるため先に更新
         const auto el = computeEmptyLayout();
-        auto b = el.buttons.withHeight (30);
-        openFileButton.setBounds (b.removeFromLeft (128));
-        b.removeFromLeft (10);
-        recordEntryButton.setBounds (b.removeFromLeft (160));
+        auto cf = el.cardFile.reduced (14, 12);
+        openFileButton.setBounds (cf.removeFromBottom (28).withWidth (juce::jmin (128, cf.getWidth())));
+        auto cr = el.cardRecord.reduced (14, 12);
+        recordEntryButton.setBounds (cr.removeFromBottom (28).withWidth (juce::jmin (140, cr.getWidth())));
     }
 
     playButton.setBounds (transport.removeFromLeft (44));
