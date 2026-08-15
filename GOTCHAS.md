@@ -200,6 +200,21 @@ macOS では **`~/Library/Caches/<実行ファイル名>/`**（`juce_Files_mac.m
 「無い」と「壊れている」を分けて警告できる。実装例は `Project.cpp` の `strictIntVar` /
 `anchorFromContractJson` と `GachaSession::parseRecommendJson`。
 
+### `JSON::parse(...).getDynamicObject()` を一時式のまま使わない
+
+`if (auto* obj = juce::JSON::parse (text).getDynamicObject())` は、条件式の完全式終了で一時 `var` が
+破棄され（DynamicObjectは参照カウントで道連れ）、if本体の `obj` がdanglingになる。読める値が返る
+こともあり症状が不安定（StemCacheのlock読取で実バグ→テストが検出）。
+`const auto parsed = juce::JSON::parse (text);` と名前を付けて生かしてから `getDynamicObject()` する。
+なお `DynamicObject::getProperty()` は `const var&` を返すので同パターンでも安全。
+
+### 起動引数のファイルパスは openFile イベントでも二重に届く
+
+macOS（AppKit）はコマンドライン引数のファイルパスを document open イベントとしても配送するため、
+`initialise (commandLine)` で自前パースして開くと、直後に `anotherInstanceStarted` 経由で同じファイルが
+もう一度届く。openFileが状態リセットを伴う実装だと「開いた直後に再生・選択が巻き戻る」症状になる。
+**現在ファイルと同一パスの再オープンはスキップ**して冪等にしておく（Salvaで実例）。
+
 ## オーディオコールバック内の禁止事項
 
 ### 前提: なぜ厳しいのか
@@ -236,6 +251,18 @@ macOS では **`~/Library/Caches/<実行ファイル名>/`**（`juce_Files_mac.m
 - **`std::vector::push_back` / `resize`** — 容量超過で再確保。コールバックから触るコンテナは事前に容量固定
 - **`std::function` へのラムダ代入** — キャプチャが大きいとヒープ確保
 - **`juce::ChangeBroadcaster::sendChangeMessage()` / `AsyncUpdater::triggerAsyncUpdate()`** — 「どのスレッドからでも呼べる」とドキュメントにあるが、内部でOSのメッセージキューに触るため厳密にはリアルタイム安全ではない。通知はpush型でなく、UI側のTimerによるpull型（後述）にする
+
+### AudioSourcePlayer / ResamplingAudioSource は使わない（コールバック内ロック・確保）
+
+BufferingAudioSource（前述）だけでなく、`AudioSourcePlayer` はコールバックで CriticalSection を取り
+（`juce_AudioSourcePlayer.cpp:81`）、`ResamplingAudioSource` も CriticalSection＋SpinLock を取った上で、
+比率が上がると `buffer.setSize()` の再確保に到達する（`juce_ResamplingAudioSource.cpp:92/:109`。
+96kHz音源→48kHzデバイス等）。代替は**直接 `AudioIODeviceCallback` を実装**し、`LagrangeInterpolator`＋
+`audioDeviceAboutToStart` で事前確保したバッファでリサンプルする（`audioDeviceAboutToStart` は
+コールバック開始前に呼ばれる＝prepareToPlay相当で確保してよい）。ただし4点Lagrangeは帯域制限
+しないので、**ダウンサンプリング時は補間前・アップ時は補間後に2次ローパス**を入れる
+（JUCEのcreateLowPassと同じバイリニアButterworth。実装は `apps/salva/Source/shared/ResampleStage.h`。
+エイリアス抑圧はGoertzelで回帰テストできる）。
 
 ### 判断に迷ったら
 
@@ -444,6 +471,22 @@ if (activeWriter.load() != nullptr)
 - オーディオスレッドから「UIに知らせたい」ことがあっても、`sendChangeMessage()`等でpushしない（上記の通り厳密にはRT安全でない）
 - UI側が`juce::Timer`（30〜60Hz）でatomic/FIFOを覗きに行くpull型に統一する。レイテンシは最大1ポーリング周期分だが、画面表示用途では問題にならない
 - `juce::AudioThumbnail`を波形表示に使う場合も同じ扱い: 公式デモではコールバックから`addBlock()`を呼んでいるが、内部実装への依存になるので、自前FIFOで渡してUI側で`addBlock`する方が原則に忠実
+
+### 複数ストリームにまたがる遷移は epoch（begin/end）で囲み、重なったブロックを無効化する
+
+「シークした」を別のatomic通知で知らせる方式は、**通知と適用（各ストリームのseek採用）が別atomic
+である限り競合窓が残る**（通知を見ずに一部ストリームだけ適用されたブロックができる。masterだけ
+監視しても非masterだけ変わる順序を取りこぼす — Salvaでレビュー3往復の実例）。正解はエンジン側で
+遷移全体を epoch で囲むこと:
+
+- begin で `active++`（release）→ `version++`（release）、requestSeekの列、end で `active--`
+- オーディオ側はブロック前に version→active の順で acquire 読み（versionのacquireが
+  active++ の可視性を保証する）、ブロック後に version を読み直す
+- **開始時 active>0、または処理中に version が進んだブロックは丸ごと無音化＋DSP状態リセット**
+  （最悪1ブロックの無音。シーク自体が音の断絶なので実用上は聞こえない）
+- 履歴を持つDSP（リサンプラー・フィルタ）は不連続のたびに reset しないと旧位置のサンプルが混ざる
+
+実装は `apps/salva/Source/shared/DiscontinuityGuard.h`（真理値表テスト付き）。
 
 ## 分析パイプライン（tools/reference）の落とし穴
 
