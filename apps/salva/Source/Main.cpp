@@ -88,6 +88,23 @@ public:
                 juce::Timer::callAfterDelay (5000, [this, name]
                                              { mainWindow->content().switchOutputForVerification (name); });
             }
+            // UIスナップショット: 画面の見た目をPNG保存（screencaptureと違い別Spaceでも撮れる。
+            // ユーザーのフォーカスを奪わないUI検証用）
+            const int snapIdx = tokens.indexOf ("--snapshot");
+            if (snapIdx >= 0 && snapIdx + 1 < tokens.size())
+            {
+                const auto path = tokens[snapIdx + 1].unquoted();
+                juce::Timer::callAfterDelay (1500, [this, path]
+                {
+                    auto& c = mainWindow->content();
+                    const auto img = c.createComponentSnapshot (c.getLocalBounds());
+                    juce::File f (path);
+                    f.deleteFile();
+                    juce::FileOutputStream os (f);
+                    if (os.openedOk())
+                        juce::PNGImageFormat().writeImageToStream (img, os);
+                });
+            }
         }
 #endif
     }
