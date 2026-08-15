@@ -73,6 +73,32 @@ public:
     // 保留中のシークを適用する（これが無いとシーク後の再生開始が毎回枯渇から始まる）
     void discardStale();
 
+    // readerPositionから連続で minSamples 読めるか（再生開始プライミングの判定用）。
+    // ループは折り返し先を連続として数える。非ループのソース終端まで書けている場合だけ
+    // それ以上待てないので true。先に discardStale() で採用・読み捨てを済ませてから呼ぶ。
+    // オーディオスレッド専用
+    bool hasPendingData (int minSamples) const;
+
+    // 現在の要求位置のまま世代だけ進める（遷移がコールバックと重なったブロックの後始末用。
+    // オーディオスレッドから呼べる）。全ストリームに撃つと、採用タイミング差でずれた
+    // readerPositionが同じ要求位置へ収束し、ライターもそこから書き直す。
+    // ※ seekPositionを書き直さないのは、並行する新しいrequestSeekの位置を上書きしないため
+    void reissueSeek() { seekGeneration.fetch_add (1, std::memory_order_release); }
+
+    // 枯渇カウンタの2段公開（オーディオスレッド専用）: readAudioはブロック中の枯渇を
+    // 一時値に貯めるだけで、公開カウンタ(starvedSamples)には触れない。ブロックが確定したら
+    // commit、遷移競合で破棄したら discard を呼ぶ。UIが破棄ブロックの一時値を観測することは
+    // なく、公開カウンタは単調増加のまま
+    void commitStarved()
+    {
+        if (pendingStarved > 0)
+        {
+            starvedCount.fetch_add (pendingStarved, std::memory_order_relaxed);
+            pendingStarved = 0;
+        }
+    }
+    void discardStarved() { pendingStarved = 0; }
+
     // --- 観測（UIスレッドから読む） ---
     juce::int64 playheadPosition() const { return playheadSample.load(); }
     // UI表示用: 未適用のシークがあればその位置、なければリーダーの現在位置
@@ -127,6 +153,7 @@ private:
     std::atomic<juce::int64> playheadSample { 0 };
     std::atomic<juce::uint32> appliedGeneration { 0 };
     std::atomic<juce::uint64> starvedCount { 0 };
+    juce::uint64 pendingStarved = 0; // ブロック中の未公開の枯渇量（オーディオスレッドのみ）
     std::atomic<bool> endFlag { false };
 
     static_assert (std::atomic<juce::int64>::is_always_lock_free);

@@ -481,7 +481,10 @@ void PlayerEngine::PlaybackCallback::audioDeviceIOCallbackWithContext (
     const auto versionBefore = engine.transitionVersion.load (std::memory_order_acquire);
     const auto activeBefore = engine.transitionsActive.load (std::memory_order_acquire);
     if (guard.preBlock (versionBefore, activeBefore))
+    {
         resampleStage.reset();
+        sourcePrimed = false; // シーク等の遷移後は再プライミング
+    }
 
     if (! engine.playing.load())
     {
@@ -489,6 +492,7 @@ void PlayerEngine::PlaybackCallback::audioDeviceIOCallbackWithContext (
         if (auto* set = engine.audioStemSet.load())
             for (auto& v : set->voices)
                 v->stream->discardStale();
+        sourcePrimed = false;
         return;
     }
 
@@ -498,6 +502,38 @@ void PlayerEngine::PlaybackCallback::audioDeviceIOCallbackWithContext (
     const double sourceRate = engine.sourceSampleRateAtomic.load();
     const double deviceRate = engine.deviceSampleRateAtomic.load();
     const double ratio = (sourceRate > 0.0 && deviceRate > 0.0) ? sourceRate / deviceRate : 1.0;
+
+    // 再生開始プライミング: シーク直後はリングが空で、従来は無音を出しつつ位置を進めて
+    // いた（＝選択頭の数百サンプルを削って再生し、枯渇にも数えていた）。
+    // ここで**全ストリームに初回コールバックの要求量が揃うまで**位置を進めず無音で待つ。
+    // 全員一斉に走り出すので、ステム間が数サンプルずれて固定される事故も起きない
+    if (! sourcePrimed)
+    {
+        // リサンプラーの初回要求量（ResampleStage::processのneededと同じ式）まで揃える。
+        // 1ブロック(4096)だけでは高比率×大バッファで数サンプル枯渇し頭が欠けるため。
+        // 上限はリング総容量: 容量を超える要求はプライミングでは永久に揃わないため頭打ちにし、
+        // 収まる要求は全量揃うまで待つ（プライミング開始は常にシーク＝ブロック境界からの
+        // 書き直しなので、部分消費で総容量に届かないケースはない）。超過分は枯渇契約で吸収
+        const int minNeeded = juce::jmin ((int) std::ceil (numSamples * ratio) + 8,
+                                          ReadAheadStream::blockSamples * ReadAheadStream::numBlocks);
+        bool ready = true;
+        if (auto* set = engine.stemMode.load() ? engine.audioStemSet.load() : nullptr)
+        {
+            for (auto& v : set->voices)
+            {
+                v->stream->discardStale();
+                ready = v->stream->hasPendingData (minNeeded) && ready;
+            }
+        }
+        else
+        {
+            engine.stream.discardStale();
+            ready = engine.stream.hasPendingData (minNeeded);
+        }
+        if (! ready)
+            return; // 出力は冒頭でクリア済み＝無音。次ブロックで再判定
+        sourcePrimed = true;
+    }
 
     if (! resampleStage.canHandle (ratio))
         return; // 想定外の比率（384kHz超相当）は無音。事前確保の範囲を守る
@@ -511,9 +547,32 @@ void PlayerEngine::PlaybackCallback::audioDeviceIOCallbackWithContext (
     if (guard.postBlock (engine.transitionVersion.load (std::memory_order_acquire)))
     {
         resampleStage.reset();
+        // 遷移がこのブロックと重なった＝ストリームごとに採用タイミングが割れ、
+        // readerPositionが「シーク先＋進んだ分」と「シーク先」に分かれた可能性がある。
+        // 世代を再発行して全ストリームを共通の要求位置へ収束させる（ライターも書き直すので
+        // 消費済みブロックの欠落による待機・頭欠けも起きない）。primedも戻して再プライミング
+        sourcePrimed = false;
+        engine.stream.reissueSeek();
+        engine.stream.discardStarved(); // 破棄ブロックの枯渇は公開前に捨てる（誤検知防止）
+        if (auto* set = engine.audioStemSet.load())
+        {
+            for (auto& v : set->voices)
+            {
+                v->stream->reissueSeek();
+                v->stream->discardStarved();
+            }
+        }
         juce::FloatVectorOperations::clear (left, numSamples);
         if (right != left)
             juce::FloatVectorOperations::clear (right, numSamples);
+    }
+    else
+    {
+        // ブロック確定: このブロック中の枯渇を公開カウンタへ（UIは確定分だけを見る）
+        engine.stream.commitStarved();
+        if (auto* set = engine.audioStemSet.load())
+            for (auto& v : set->voices)
+                v->stream->commitStarved();
     }
 
     // 実際にデバイスへ渡すバッファのピークを記録（「JUCE側は音を書けているか」の診断）

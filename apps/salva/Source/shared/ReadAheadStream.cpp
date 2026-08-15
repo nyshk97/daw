@@ -125,8 +125,9 @@ void ReadAheadStream::readAudio (float* outL, float* outR, int numSamples)
         const auto ri = readIndex.load (std::memory_order_relaxed);
         if (writeIndex.load (std::memory_order_acquire) == ri)
         {
-            // 枯渇: 無音を出して位置は進める（追いついたら続きから鳴る＝時間を保つ）
-            starvedCount.fetch_add ((juce::uint64) want, std::memory_order_relaxed);
+            // 枯渇: 無音を出して位置は進める（追いついたら続きから鳴る＝時間を保つ）。
+            // カウントは一時値に貯め、ブロック確定時のcommitStarvedで公開する
+            pendingStarved += (juce::uint64) want;
             readerPosition = pos + want;
             out += want;
             continue;
@@ -144,7 +145,7 @@ void ReadAheadStream::readAudio (float* outL, float* outR, int numSamples)
         {
             // 次のデータはまだ先: そこまで無音で埋める（ブロック欠落）
             const int gap = (int) juce::jmin ((juce::int64) want, block.start - pos);
-            starvedCount.fetch_add ((juce::uint64) gap, std::memory_order_relaxed);
+            pendingStarved += (juce::uint64) gap;
             readerPosition = pos + gap;
             out += gap;
             continue;
@@ -183,6 +184,65 @@ void ReadAheadStream::discardStale()
 
     playheadSample.store (readerPosition);
     appliedGeneration.store (readerGeneration, std::memory_order_release);
+}
+
+bool ReadAheadStream::hasPendingData (int minSamples) const
+{
+    // 「readerPositionから連続して読める量」がminSamples揃ったかを数える。
+    // 未採用のシークが残っている間はfalse（先にdiscardStaleで採用・読み捨てさせる）
+    const auto gen = seekGeneration.load (std::memory_order_acquire);
+    if (gen != readerGeneration)
+        return false;
+
+    const auto wi = writeIndex.load (std::memory_order_acquire);
+    const auto riStart = readIndex.load (std::memory_order_relaxed);
+    auto ri = riStart;
+
+    const auto len = sourceLengthSamples.load();
+    const bool loop = loopOn.load();
+    const auto ls = loopStartSample.load();
+    const auto le = loopEndSample.load();
+
+    auto pos = normalize (readerPosition, ls, le, loop);
+    if (! loop && pos >= len)
+        return true; // 非ループ終端: データは来ない。readAudioに終端(endFlag)を確定させる
+
+    juce::int64 have = 0;
+    while (ri != wi)
+    {
+        const auto& b = blocks[ri % numBlocks];
+        if (b.generation != gen)
+            return false; // 先頭に旧世代（discardStaleが読み捨てる前）
+        if (b.start + b.numSamples <= pos)
+        {
+            ++ri; // 既読・過去のブロックは数えない（部分消費後の再プライミングで全量数えない）
+            continue;
+        }
+        if (b.start > pos)
+            return false; // 現在位置のデータがまだ無い
+
+        have += (b.start + b.numSamples) - pos; // 先頭ブロックはpos以降だけ数える
+        if (have >= minSamples)
+            return true;
+        pos = b.start + b.numSamples;
+
+        // 端の扱い: 非ループのファイル終端だけ「これ以上増えない」ので早期true。
+        // ループ端はライターが次の周回を先読みするので、折り返し先を連続として数え続ける
+        const auto limit = (loop && pos <= le) ? juce::jmin (le, len) : len;
+        if (pos >= limit)
+        {
+            if (! loop)
+                return true;
+            pos = ls;
+        }
+        ++ri;
+    }
+    // リングは64「ブロック」であり、ブロックはループ端で短く切られる（極端には1サンプル）。
+    // 全ブロックが現世代・連続のままリング満杯なら、これ以上は充填できないので要求量未満でも開始する
+    //（リーダーが消費しない限りライターも進めず、待ち続けると永久にプライミングが終わらない）
+    if (wi - riStart >= (juce::uint32) numBlocks)
+        return true;
+    return false;
 }
 
 juce::int64 ReadAheadStream::uiPosition() const

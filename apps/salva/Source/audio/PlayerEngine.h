@@ -125,6 +125,7 @@ private:
         static constexpr double maxRatio = 8.0; // 384kHz音源→48kHzデバイスまで（超える比率は無音）
         ResampleStage resampleStage;            // 帯域制限＋補間＋キャリー（shared/ResampleStage.h）
         DiscontinuityGuard guard;               // 通知/適用の競合検出（shared/DiscontinuityGuard.h）
+        bool sourcePrimed = false;              // 再生開始プライミング（全ストリームにデータが揃ってから消費開始）
     };
 
     // 録音モードのコールバック: 入力をレコーダーへ渡し、出力は無音（モニタリングはMPC側の領分）

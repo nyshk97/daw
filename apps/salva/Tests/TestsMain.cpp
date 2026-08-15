@@ -296,6 +296,7 @@ int main (int argc, char* argv[])
         for (const auto v : silent.l)
             allZero = allZero && feq (v, 0.0f);
         expect (allZero, "枯渇区間は無音");
+        stream.commitStarved(); // ブロック確定（コールバックが破棄しなかったブロックの扱い）
         expect (stream.starvedSamples() == (juce::uint64) starvedN, "枯渇カウンタ加算");
         expect (stream.playheadPosition() == starvedN, "枯渇中も位置は進む（時間を保つ）");
 
@@ -307,7 +308,153 @@ int main (int argc, char* argv[])
         for (int i = 0; i < n; ++i)
             ok = ok && feq (out.l[(size_t) i], valueAt (starvedN + i));
         expect (ok, "復帰後のサンプルが絶対位置どおり（遅延ブロックの過去部分を再生していない）");
+        stream.commitStarved();
         expect (stream.starvedSamples() == (juce::uint64) starvedN, "復帰後は枯渇が増えない");
+    }
+
+    // ==================== プライミング判定: hasPendingData ====================
+    // PlaybackCallbackは再生開始時、全ストリームでこれがtrueになるまで消費を始めない
+    //（シーク直後の頭欠け・枯渇誤カウント・ステム間の走り出しずれの防止）
+    {
+        beginTest ("read-ahead: hasPendingDataはシーク直後false・充填後true");
+        std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (fixture));
+        ReadAheadStream stream;
+        stream.prepare (fixtureLength);
+        expect (! stream.hasPendingData (1), "初期状態はデータなし");
+        fillFully (stream, *reader);
+        stream.discardStale(); // 世代の採用（コールバックは常にdiscardStale→判定の順）
+        expect (stream.hasPendingData (4096), "充填後はデータあり");
+
+        // シークで世代が変わると、リングに残る旧世代ブロックはプライミング用データにならない
+        stream.requestSeek (2000);
+        stream.discardStale(); // コールバックの停止中処理と同じ（旧世代の読み捨て）
+        expect (! stream.hasPendingData (1), "シーク直後は現行世代のブロックがない");
+        fillFully (stream, *reader);
+        expect (stream.hasPendingData (4096), "再充填後はデータあり");
+
+        const int n = 100;
+        const auto out = readSamples (stream, n);
+        bool ok = true;
+        for (int i = 0; i < n; ++i)
+            ok = ok && feq (out.l[(size_t) i], valueAt (2000 + i));
+        expect (ok, "プライミング後の読みはシーク位置ちょうどから（頭欠けなし）");
+        expect (stream.starvedSamples() == 0, "枯渇に数えていない");
+    }
+
+    // ==================== プライミング判定: 必要量と終端の扱い ====================
+    {
+        beginTest ("read-ahead: hasPendingDataは必要量まで待ち、終端/ループ端では待たない");
+        // 1ブロック(4096)では高比率×大バッファの初回要求(例: 1024×4+8)に足りないケースがある
+        {
+            std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (fixture));
+            ReadAheadStream stream;
+            stream.prepare (fixtureLength);
+            stream.fillOnce (*reader); // 1ブロックだけ
+            stream.discardStale();
+            expect (stream.hasPendingData (4096), "1ブロックで4096は足りる");
+            expect (! stream.hasPendingData (4104), "1ブロックで4104は足りない（揃うまで待つ）");
+            stream.fillOnce (*reader); // 連続する2ブロック目
+            expect (stream.hasPendingData (4104), "連続2ブロックで足りる");
+        }
+        // 部分消費後の再プライミング: 先頭ブロックはreaderPosition以降だけ数える
+        {
+            std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (fixture));
+            ReadAheadStream stream;
+            stream.prepare (fixtureLength);
+            stream.fillOnce (*reader);
+            stream.fillOnce (*reader); // 0..8192
+            readSamples (stream, 5000); // 先頭ブロックを跨いで部分消費（残り3192）。世代もここで採用される
+            expect (stream.hasPendingData (3192), "残量ちょうどはtrue");
+            expect (! stream.hasPendingData (3193), "読み終えた分を数えない（全量カウントならtrueになってしまう）");
+        }
+        // 非ループのソース終端: 要求量まで書けなくても「これ以上増えない」ので待たない
+        {
+            std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (fixture));
+            ReadAheadStream stream;
+            stream.prepare (fixtureLength);
+            stream.requestSeek (fixtureLength - 1000);
+            stream.discardStale();
+            fillFully (stream, *reader);
+            expect (stream.hasPendingData (8000), "終端まで書けていれば要求量未満でもtrue");
+        }
+        // ファイル終端ちょうどへのシーク: データは来ないが即readyにして
+        // readAudioに終端(endFlag)を確定させる（永久プライミング待ちの防止）
+        {
+            std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (fixture));
+            ReadAheadStream stream;
+            stream.prepare (fixtureLength);
+            stream.requestSeek (fixtureLength);
+            stream.discardStale();
+            expect (stream.hasPendingData (1), "終端シークは充填ゼロでもtrue");
+        }
+        // 遷移競合の後始末: reissueSeekで要求位置へ収束し直す（位置は書き換えず世代だけ進める）
+        {
+            std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (fixture));
+            ReadAheadStream stream;
+            stream.prepare (fixtureLength);
+            stream.requestSeek (2000);
+            stream.discardStale();
+            fillFully (stream, *reader);
+            readSamples (stream, 1000); // 競合ブロックで進んでしまった位置（=3000）を模す
+            stream.reissueSeek();
+            stream.discardStale(); // 再採用 → 位置は要求位置2000へ戻る
+            expect (! stream.hasPendingData (1), "再発行直後は現行世代のデータがない（ライターが書き直す）");
+            fillFully (stream, *reader);
+            const auto out = readSamples (stream, 100);
+            bool ok = true;
+            for (int i = 0; i < 100; ++i)
+                ok = ok && feq (out.l[(size_t) i], valueAt (2000 + i));
+            expect (ok, "再発行後は要求位置ちょうどから読める（進んだ分が残らない）");
+        }
+        // 枯渇カウンタの2段公開: readAudioは一時値に貯め、commitで公開・discardで破棄。
+        // UIが破棄ブロックの枯渇を観測することはなく、公開カウンタは単調増加のまま
+        {
+            std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (fixture));
+            ReadAheadStream stream;
+            stream.prepare (fixtureLength);
+            stream.fillOnce (*reader);
+            readSamples (stream, 5000); // 4096実データ＋904枯渇
+            expect (stream.starvedSamples() == 0, "commit前は公開されない（UIは一時値を見ない）");
+            stream.commitStarved();
+            expect (stream.starvedSamples() == 904, "commitで公開");
+            readSamples (stream, 1000); // 破棄されるブロックの枯渇を模す
+            stream.discardStarved();
+            stream.commitStarved(); // 破棄後のcommitは何も足さない
+            expect (stream.starvedSamples() == 904, "discardしたブロックの枯渇は公開されない");
+        }
+        // ループ端: ライターは次の周回を先読みできるので「増えない」扱いにしない。
+        // 折り返し先を連続として数え、要求量まで待つ
+        {
+            std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (fixture));
+            ReadAheadStream stream;
+            stream.prepare (fixtureLength);
+            stream.setLoop (1000, 3000, true); // 2000サンプルのループ
+            stream.requestSeek (1000);
+            stream.discardStale();
+            stream.fillOnce (*reader); // 1周目のみ（2000）
+            expect (stream.hasPendingData (2000), "1周分はtrue");
+            expect (! stream.hasPendingData (2001), "折り返し後が未充填なら待つ（早期trueにしない）");
+            stream.fillOnce (*reader); // 2周目（+2000）
+            expect (stream.hasPendingData (2001), "折り返しを連続として数える");
+            fillFully (stream, *reader);
+            expect (stream.hasPendingData (8000), "多周先読みで要求量まで数えられる");
+        }
+        // 極端に短いループ: ブロックがループ長で切られ、リング満杯でも要求量に届かないことがある。
+        // その場合は「これ以上充填できない」として開始する（永久プライミング待ちの防止）
+        {
+            std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (fixture));
+            ReadAheadStream stream;
+            stream.prepare (fixtureLength);
+            stream.setLoop (1000, 1002, true); // 2サンプルのループ → 64ブロックでも128サンプル
+            stream.requestSeek (1000);
+            stream.discardStale();
+            fillFully (stream, *reader); // リング満杯（64ブロック×2サンプル）
+            expect (stream.hasPendingData (4104), "リング満杯なら要求量未満でも開始する");
+            const auto out = readSamples (stream, 6);
+            expect (feq (out.l[0], valueAt (1000)) && feq (out.l[1], valueAt (1001))
+                        && feq (out.l[2], valueAt (1000)) && feq (out.l[3], valueAt (1001)),
+                    "極小ループの折り返しが正しく読める");
+        }
     }
 
     // ==================== シーク: generationによる旧データ無効化 ====================
