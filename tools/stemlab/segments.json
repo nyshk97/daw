@@ -1,0 +1,27 @@
+{
+  "_comment": "試聴区間の固定（Phase 2実行前に確定）。根拠は seg-*.txt（既存demucsステムの4小節窓RMS表）。時刻はtrack.wav基準の秒。",
+  "rau-def-freeze": {
+    "bpm": 97.6,
+    "segments": {
+      "1_vo_uwamono": { "start": 78.7, "end": 98.4, "bars": 8, "why": "窓8-9: vocals -16dB台で活発・上モノ -24dB台" },
+      "2_novocal_thin": { "start": 186.9, "end": 206.6, "bars": 8, "why": "窓19-20: vocals -33〜-37dB（実質無し）・上モノ -18dB台のアウトロ" },
+      "3_dense": { "start": 29.5, "end": 49.2, "bars": 8, "why": "窓3-4: mix -9.9/-9.6dBで曲中最大帯" }
+    }
+  },
+  "rip-slyme-楽園ベイベー": {
+    "bpm": 112.946,
+    "segments": {
+      "1_vo_uwamono": { "start": 17.0, "end": 34.0, "bars": 8, "why": "窓2-3: vocals -27dB台・mix -23dB台の歌サビ帯" },
+      "2_novocal_thin": { "start": 246.5, "end": 263.5, "bars": 8, "why": "窓29-30: vocals -55〜-88dB のアウトロ" },
+      "3_dense": { "start": 161.5, "end": 178.5, "bars": 8, "why": "窓19-20: mix -23.9dB・上モノ -33.5dB と比較的厚い帯" }
+    }
+  },
+  "stuts-sikk-o-鈴木真海子-summer-situation": {
+    "bpm": 84.5,
+    "segments": {
+      "1_vo_uwamono": { "start": 90.9, "end": 113.6, "bars": 8, "why": "窓8-9: vocals -18dB台で活発" },
+      "2_novocal_thin": { "start": 0.0, "end": 11.4, "bars": 4, "why": "窓0: vocals -38.7dBのイントロ。この曲は8小節連続のボーカル無し区間が存在しないため4小節の例外（窓1以降はvocals -29dB台で歌が入る）" },
+      "3_dense": { "start": 147.7, "end": 170.4, "bars": 8, "why": "窓13-14: mix -10.4/-10.5dBで曲中最大帯" }
+    }
+  }
+}

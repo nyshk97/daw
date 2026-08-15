@@ -8,3 +8,14 @@
 # 分析パイプラインの venv（tools/reference/setup.sh で再構築）
 /tools/reference/.venv/
 __pycache__/
+
+# ステム分離モデル選定ラボ（tools/stemlab/）の生成物。スクリプトとsegments.jsonだけコミットする
+/tools/stemlab/.venv/
+/tools/stemlab/runs/
+/tools/stemlab/listen/
+/tools/stemlab/logs/
+/tools/stemlab/out-*/
+/tools/stemlab/work/
+/tools/stemlab/*.log
+/tools/stemlab/*.txt
+/tools/stemlab/scratch/

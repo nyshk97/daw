@@ -417,3 +417,43 @@ design/ には「決めたこと」だけを置き、ここには「試したこ
   「2軸での選別で足りる」案は棄却 → **実曲サンプリングへの転換の根拠が立った**
 - 対照分析の2軸の位置づけは変わらない（好き嫌いの判定器ではなく「寄せる方向」。
   重なり0.42〜0.57と明記済みのとおり、帯内でも嫌いは普通に存在する）
+
+---
+
+## 2026-08-15 ステム分離モデル選定ラボ — demucs vs BS-RoFormer SW vs 多段（結論: 全枠で現行demucs維持）
+
+- **問い**: Salva（耳で使える分離音）とreference分析（下流分析が正しくなるステム）の分離を、demucsから BS-RoFormer SW単発 or 多段（vocal特化RoFormer→demucs）へ乗り換えるべきか。plan: `docs/plans/2026-08-14-1912-stem-model-lab.md`（判定基準は試聴前に固定）
+- **素材**: rau-def-freeze / rip-slyme-楽園ベイベー / stuts-summer-situation の3曲 × 3区間（`tools/stemlab/segments.json` に固定）
+
+### 実測（run1/run2・real秒・M系GPU。曲長 230〜283s）
+
+| 候補 | rau | rip | stuts | ピークRSS |
+|---|---|---|---|---|
+| demucs 4s+6s（現行） | 42s / 42s | 93s / 61s | 67s / 60s | 〜3.4GB |
+| BS-RoFormer SW単発 | 315s / 379s | 338s / 356s | 325s / 317s | 〜4.0GB |
+| 多段（Kim vocal＋demucs2本） | 162s / 168s | 209s / 213s | 227s / 230s | 〜3.3GB |
+
+- **SW単発は全曲で許容上限（5分/曲）超**。`bs-roformer-infer` の device auto はMPSに乗らずCPUに落ちる（`--device mps` 必須。CPUだと490s）
+- **run間の揺れ**: demucsはステム比 -0.9〜-26.1dB（htdemucs_6s piano が最悪。ステム自体 -47〜-63dB と微小＝内容がrun毎にほぼ別物）。**SW・Kim vocalはrun間ビット一致＝決定的**（CPU/MPS間ですらステム比 -66dB以下）
+
+### reference分析側（SWをscratch配置で回帰。多段は未評価=Salva専用候補）
+
+- analyze.py の枠（stems/htdemucs・htdemucs_6s）へSWを配置（4s枠のotherは piano+guitar+other を生float加算）。アダプタ不要で6本完走
+- **人間確認済みの正解と照合できた項目は全て同等**: rauループ長（最終回答4小節・両者正解）・rauベース7音スケール一致・stutsベース3音リフ G#/G/C（96.0% vs 95.7%）・クラップ2/4拍・スウィング≒0.50
+- gateは一長一短（SWはrauで正解のguitarをusable落ち・誤答のpianoを残す。stutsでは既存で落ちていたpianoが通る）。変化量はbass HPRが rau 11→21 / rip 5.4→3.8 と**方向不定**
+- → **分析は現行demucs併用のまま**（4分割=ベース・ドラム、6分割=上モノの使い分けも不変）
+
+### 耳（ブラインドA/B・ペア提示・対応表は回答完了後開示）
+
+- 手順: 候補ペア（X/Y・demucs側ランダム化）、ステム単体はラウドネス一致（activity判定つき）、再加算は生加算＋共通ゲイン。回答・対応表は `docs/labs/reference-beat-human-answers/2026-08-15-blind-*.{md,json}`
+- **4ステム枠（多段 vs htdemucs）**: 多段はボーカルの漏れ改善（2/3曲）だが**インスト側の欠落が3曲一貫して悪化**（vocal SDRの高いモデルが楽器成分を声側へ持っていく既知の弱点と整合）。声質はdemucsが微優位。主評価軸未達・合計負 → 不採用
+- **6ステム枠（多段6s vs htdemucs_6s）**: 主評価軸（上モノへの滲み）は全行差ゼロ。欠落は rau piano+2・rip guitar+1 vs stuts guitar/other -1 と**曲間で逆転** → 未達・不採用
+- 拒否条件級の破綻（-2）・再加算の劣化はどちらにも無し
+- **SW単発（P6a）は耳未検証のまま見送り**: 速度が全曲で上限超（採用にはMLX等の高速化が前提）＋分析側で改善なしが確定していたため、耳の検証を省略して閉じた
+
+### 結論と再現性
+
+- **Salva・reference分析とも現行demucs（htdemucs＋htdemucs_6s）維持**。separate.sh・venv・キャッシュ契約は無変更（副産物: StemCacheのsweepに過去契約versionの掃除＋テストを先行実装済み）
+- 環境: `tools/stemlab/`（.venv・スクリプト一式・`env-freeze-2026-08-15.lock`）。SW checkpoint `BS-Rofo-SW-Fixed.ckpt` SHA256 `24e7d35e…`（699MB）、vocal `vocals_mel_band_roformer.ckpt` SHA256 `87201f4d…`（913MB）。audio-separator 0.44.5 は librosa<1.0 必須
+- MLX実装（mlx-audio-separator）は品質比較から除外（同一ckptのバックエンド差）。SWを将来再訪するなら「MLXで5分内に収まるか」から
+- **次に効く知見**: 世間のモデル評はボーカル抜き用途中心。**インスト・ステム素材化の用途では多段の旨味は通説より薄い**（ボーカルモデルが楽器を食う）。再訪の引き金は「編成の厚い実曲サンプリングで上モノの滲みが実害になったとき」

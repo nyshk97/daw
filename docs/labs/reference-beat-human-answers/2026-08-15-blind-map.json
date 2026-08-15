@@ -1,0 +1,883 @@
+{
+  "created": "2026-08-15",
+  "run_used": "run1",
+  "activity_threshold_db_rel_mix": -40.0,
+  "stem_target_lufs": -20.0,
+  "mix_target_lufs": -16.0,
+  "resample": "全試聴コピーを48000Hzへsoxrで統一（demucsは44.1k出力・Salva本番も元SRへresampleするため条件一致）",
+  "entries": [
+    {
+      "song": "rau-def-freeze",
+      "segment": "1_vo_uwamono",
+      "pair": "P4",
+      "X": "challenger",
+      "Y": "demucs",
+      "challenger": "multi4s",
+      "stems": {
+        "vocals": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -6.4,
+          "chal_rel_db": -7.0,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -10.8,
+          "chal_rel_db": -12.8,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "rau-def-freeze",
+      "segment": "1_vo_uwamono",
+      "pair": "P6a",
+      "X": "demucs",
+      "Y": "challenger",
+      "challenger": "sw",
+      "stems": {
+        "piano": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -14.0,
+          "chal_rel_db": -11.0,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "guitar": {
+          "mode": "common_gain",
+          "demucs_rel_db": -53.9,
+          "chal_rel_db": -95.6,
+          "demucs_active": false,
+          "chal_active": false,
+          "na_axes": [
+            "欠落",
+            "アタック"
+          ]
+        },
+        "other": {
+          "mode": "common_gain",
+          "demucs_rel_db": -36.0,
+          "chal_rel_db": -91.0,
+          "demucs_active": true,
+          "chal_active": false,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "rau-def-freeze",
+      "segment": "1_vo_uwamono",
+      "pair": "P6b",
+      "X": "demucs",
+      "Y": "challenger",
+      "challenger": "multi6s",
+      "stems": {
+        "piano": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -14.0,
+          "chal_rel_db": -14.1,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "guitar": {
+          "mode": "common_gain",
+          "demucs_rel_db": -53.9,
+          "chal_rel_db": -45.4,
+          "demucs_active": false,
+          "chal_active": false,
+          "na_axes": [
+            "欠落",
+            "アタック"
+          ]
+        },
+        "other": {
+          "mode": "common_gain",
+          "demucs_rel_db": -36.0,
+          "chal_rel_db": -43.0,
+          "demucs_active": true,
+          "chal_active": false,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "rau-def-freeze",
+      "segment": "2_novocal_thin",
+      "pair": "P4",
+      "X": "challenger",
+      "Y": "demucs",
+      "challenger": "multi4s",
+      "stems": {
+        "vocals": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -22.5,
+          "chal_rel_db": -23.5,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -5.2,
+          "chal_rel_db": -7.3,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "rau-def-freeze",
+      "segment": "2_novocal_thin",
+      "pair": "P6a",
+      "X": "challenger",
+      "Y": "demucs",
+      "challenger": "sw",
+      "stems": {
+        "piano": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -26.4,
+          "chal_rel_db": -27.0,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "guitar": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -11.2,
+          "chal_rel_db": -17.5,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -6.9,
+          "chal_rel_db": -4.7,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "rau-def-freeze",
+      "segment": "2_novocal_thin",
+      "pair": "P6b",
+      "X": "demucs",
+      "Y": "challenger",
+      "challenger": "multi6s",
+      "stems": {
+        "piano": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -26.4,
+          "chal_rel_db": -27.9,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "guitar": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -11.2,
+          "chal_rel_db": -13.5,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -6.9,
+          "chal_rel_db": -9.6,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "rau-def-freeze",
+      "segment": "3_dense",
+      "pair": "P4",
+      "X": "challenger",
+      "Y": "demucs",
+      "challenger": "multi4s",
+      "stems": {
+        "vocals": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -6.9,
+          "chal_rel_db": -7.5,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -11.1,
+          "chal_rel_db": -13.8,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "rau-def-freeze",
+      "segment": "3_dense",
+      "pair": "P6a",
+      "X": "demucs",
+      "Y": "challenger",
+      "challenger": "sw",
+      "stems": {
+        "piano": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -17.1,
+          "chal_rel_db": -11.8,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "guitar": {
+          "mode": "common_gain",
+          "demucs_rel_db": -25.8,
+          "chal_rel_db": -91.2,
+          "demucs_active": true,
+          "chal_active": false,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -20.3,
+          "chal_rel_db": -16.1,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "rau-def-freeze",
+      "segment": "3_dense",
+      "pair": "P6b",
+      "X": "demucs",
+      "Y": "challenger",
+      "challenger": "multi6s",
+      "stems": {
+        "piano": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -17.1,
+          "chal_rel_db": -15.7,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "guitar": {
+          "mode": "common_gain",
+          "demucs_rel_db": -25.8,
+          "chal_rel_db": -49.1,
+          "demucs_active": true,
+          "chal_active": false,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -20.3,
+          "chal_rel_db": -18.1,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "rip-slyme-楽園ベイベー",
+      "segment": "1_vo_uwamono",
+      "pair": "P4",
+      "X": "challenger",
+      "Y": "demucs",
+      "challenger": "multi4s",
+      "stems": {
+        "vocals": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -4.1,
+          "chal_rel_db": -3.9,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -10.2,
+          "chal_rel_db": -9.8,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "rip-slyme-楽園ベイベー",
+      "segment": "1_vo_uwamono",
+      "pair": "P6a",
+      "X": "challenger",
+      "Y": "demucs",
+      "challenger": "sw",
+      "stems": {
+        "piano": {
+          "mode": "common_gain",
+          "demucs_rel_db": -62.8,
+          "chal_rel_db": -93.2,
+          "demucs_active": false,
+          "chal_active": false,
+          "na_axes": [
+            "欠落",
+            "アタック"
+          ]
+        },
+        "guitar": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -10.4,
+          "chal_rel_db": -18.3,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -35.4,
+          "chal_rel_db": -16.6,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "rip-slyme-楽園ベイベー",
+      "segment": "1_vo_uwamono",
+      "pair": "P6b",
+      "X": "demucs",
+      "Y": "challenger",
+      "challenger": "multi6s",
+      "stems": {
+        "piano": {
+          "mode": "common_gain",
+          "demucs_rel_db": -62.8,
+          "chal_rel_db": -66.1,
+          "demucs_active": false,
+          "chal_active": false,
+          "na_axes": [
+            "欠落",
+            "アタック"
+          ]
+        },
+        "guitar": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -10.4,
+          "chal_rel_db": -10.2,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "common_gain",
+          "demucs_rel_db": -35.4,
+          "chal_rel_db": -69.0,
+          "demucs_active": true,
+          "chal_active": false,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "rip-slyme-楽園ベイベー",
+      "segment": "2_novocal_thin",
+      "pair": "P4",
+      "X": "challenger",
+      "Y": "demucs",
+      "challenger": "multi4s",
+      "stems": {
+        "vocals": {
+          "mode": "common_gain",
+          "demucs_rel_db": -32.1,
+          "chal_rel_db": -40.8,
+          "demucs_active": true,
+          "chal_active": false,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -6.8,
+          "chal_rel_db": -6.8,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "rip-slyme-楽園ベイベー",
+      "segment": "2_novocal_thin",
+      "pair": "P6a",
+      "X": "demucs",
+      "Y": "challenger",
+      "challenger": "sw",
+      "stems": {
+        "piano": {
+          "mode": "common_gain",
+          "demucs_rel_db": -46.6,
+          "chal_rel_db": -90.9,
+          "demucs_active": false,
+          "chal_active": false,
+          "na_axes": [
+            "欠落",
+            "アタック"
+          ]
+        },
+        "guitar": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -11.5,
+          "chal_rel_db": -6.6,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -11.3,
+          "chal_rel_db": -18.9,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "rip-slyme-楽園ベイベー",
+      "segment": "2_novocal_thin",
+      "pair": "P6b",
+      "X": "demucs",
+      "Y": "challenger",
+      "challenger": "multi6s",
+      "stems": {
+        "piano": {
+          "mode": "common_gain",
+          "demucs_rel_db": -46.6,
+          "chal_rel_db": -42.9,
+          "demucs_active": false,
+          "chal_active": false,
+          "na_axes": [
+            "欠落",
+            "アタック"
+          ]
+        },
+        "guitar": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -11.5,
+          "chal_rel_db": -10.5,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -11.3,
+          "chal_rel_db": -11.6,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "rip-slyme-楽園ベイベー",
+      "segment": "3_dense",
+      "pair": "P4",
+      "X": "demucs",
+      "Y": "challenger",
+      "challenger": "multi4s",
+      "stems": {
+        "vocals": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -5.1,
+          "chal_rel_db": -4.9,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -9.7,
+          "chal_rel_db": -9.5,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "rip-slyme-楽園ベイベー",
+      "segment": "3_dense",
+      "pair": "P6a",
+      "X": "challenger",
+      "Y": "demucs",
+      "challenger": "sw",
+      "stems": {
+        "piano": {
+          "mode": "common_gain",
+          "demucs_rel_db": -62.1,
+          "chal_rel_db": -95.2,
+          "demucs_active": false,
+          "chal_active": false,
+          "na_axes": [
+            "欠落",
+            "アタック"
+          ]
+        },
+        "guitar": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -10.7,
+          "chal_rel_db": -16.9,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -20.9,
+          "chal_rel_db": -14.1,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "rip-slyme-楽園ベイベー",
+      "segment": "3_dense",
+      "pair": "P6b",
+      "X": "challenger",
+      "Y": "demucs",
+      "challenger": "multi6s",
+      "stems": {
+        "piano": {
+          "mode": "common_gain",
+          "demucs_rel_db": -62.1,
+          "chal_rel_db": -63.4,
+          "demucs_active": false,
+          "chal_active": false,
+          "na_axes": [
+            "欠落",
+            "アタック"
+          ]
+        },
+        "guitar": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -10.7,
+          "chal_rel_db": -10.4,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -20.9,
+          "chal_rel_db": -24.2,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "stuts-sikk-o-鈴木真海子-summer-situation",
+      "segment": "1_vo_uwamono",
+      "pair": "P4",
+      "X": "challenger",
+      "Y": "demucs",
+      "challenger": "multi4s",
+      "stems": {
+        "vocals": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -7.4,
+          "chal_rel_db": -8.3,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -9.4,
+          "chal_rel_db": -10.6,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "stuts-sikk-o-鈴木真海子-summer-situation",
+      "segment": "1_vo_uwamono",
+      "pair": "P6a",
+      "X": "demucs",
+      "Y": "challenger",
+      "challenger": "sw",
+      "stems": {
+        "piano": {
+          "mode": "common_gain",
+          "demucs_rel_db": -47.4,
+          "chal_rel_db": -15.7,
+          "demucs_active": false,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "guitar": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -11.6,
+          "chal_rel_db": -11.7,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -19.5,
+          "chal_rel_db": -17.4,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "stuts-sikk-o-鈴木真海子-summer-situation",
+      "segment": "1_vo_uwamono",
+      "pair": "P6b",
+      "X": "challenger",
+      "Y": "demucs",
+      "challenger": "multi6s",
+      "stems": {
+        "piano": {
+          "mode": "common_gain",
+          "demucs_rel_db": -47.4,
+          "chal_rel_db": -31.1,
+          "demucs_active": false,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "guitar": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -11.6,
+          "chal_rel_db": -14.0,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -19.5,
+          "chal_rel_db": -16.9,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "stuts-sikk-o-鈴木真海子-summer-situation",
+      "segment": "2_novocal_thin",
+      "pair": "P4",
+      "X": "challenger",
+      "Y": "demucs",
+      "challenger": "multi4s",
+      "stems": {
+        "vocals": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -20.5,
+          "chal_rel_db": -20.3,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -7.3,
+          "chal_rel_db": -9.5,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "stuts-sikk-o-鈴木真海子-summer-situation",
+      "segment": "2_novocal_thin",
+      "pair": "P6a",
+      "X": "demucs",
+      "Y": "challenger",
+      "challenger": "sw",
+      "stems": {
+        "piano": {
+          "mode": "common_gain",
+          "demucs_rel_db": -62.3,
+          "chal_rel_db": -17.8,
+          "demucs_active": false,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "guitar": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -8.6,
+          "chal_rel_db": -10.7,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -19.7,
+          "chal_rel_db": -21.9,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "stuts-sikk-o-鈴木真海子-summer-situation",
+      "segment": "2_novocal_thin",
+      "pair": "P6b",
+      "X": "challenger",
+      "Y": "demucs",
+      "challenger": "multi6s",
+      "stems": {
+        "piano": {
+          "mode": "common_gain",
+          "demucs_rel_db": -62.3,
+          "chal_rel_db": -65.0,
+          "demucs_active": false,
+          "chal_active": false,
+          "na_axes": [
+            "欠落",
+            "アタック"
+          ]
+        },
+        "guitar": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -8.6,
+          "chal_rel_db": -10.3,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -19.7,
+          "chal_rel_db": -25.4,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "stuts-sikk-o-鈴木真海子-summer-situation",
+      "segment": "3_dense",
+      "pair": "P4",
+      "X": "demucs",
+      "Y": "challenger",
+      "challenger": "multi4s",
+      "stems": {
+        "vocals": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -6.7,
+          "chal_rel_db": -7.5,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -7.7,
+          "chal_rel_db": -9.3,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "stuts-sikk-o-鈴木真海子-summer-situation",
+      "segment": "3_dense",
+      "pair": "P6a",
+      "X": "challenger",
+      "Y": "demucs",
+      "challenger": "sw",
+      "stems": {
+        "piano": {
+          "mode": "common_gain",
+          "demucs_rel_db": -61.4,
+          "chal_rel_db": -22.9,
+          "demucs_active": false,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "guitar": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -12.9,
+          "chal_rel_db": -13.3,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -12.3,
+          "chal_rel_db": -9.5,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    },
+    {
+      "song": "stuts-sikk-o-鈴木真海子-summer-situation",
+      "segment": "3_dense",
+      "pair": "P6b",
+      "X": "challenger",
+      "Y": "demucs",
+      "challenger": "multi6s",
+      "stems": {
+        "piano": {
+          "mode": "common_gain",
+          "demucs_rel_db": -61.4,
+          "chal_rel_db": -37.1,
+          "demucs_active": false,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "guitar": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -12.9,
+          "chal_rel_db": -14.8,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        },
+        "other": {
+          "mode": "lufs_match",
+          "demucs_rel_db": -12.3,
+          "chal_rel_db": -13.1,
+          "demucs_active": true,
+          "chal_active": true,
+          "na_axes": []
+        }
+      }
+    }
+  ]
+}
