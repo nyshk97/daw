@@ -161,6 +161,14 @@ SalvaMainComponent::SalvaMainComponent()
     openFileButton.addMouseListener (this, false);
     recordEntryButton.addMouseListener (this, false);
 
+    // ヘッダー左端の「‹」: スタート画面（最近のファイル一覧）へ戻る。⌘W・ウィンドウ×と同じ経路
+    addAndMakeVisible (homeButton);
+    homeButton.getProperties().set ("style", "ghost");
+    homeButton.getProperties().set ("icon", "back");
+    homeButton.setTitle (jp (u8"スタート画面へ")); // AX名（アイコンのみでテキストなしのため）
+    homeButton.setMouseCursor (juce::MouseCursor::PointingHandCursor);
+    homeButton.onClick = [this] { closeFileToStart(); };
+
     addChildComponent (recordView);
     recordView.onRecordToggle = [this] { toggleRecording(); };
     recordView.onBack = [this] { toggleRecordMode(); };
@@ -977,22 +985,27 @@ void SalvaMainComponent::paint (juce::Graphics& g)
     g.setColour (panelBorder);
     g.fillRect (header.removeFromBottom (1));
 
-    // レコードのモチーフは空状態の大きな盤面1つに絞る（アプリアイコンと微妙に違う
-    // ミニ盤面を並べない）。ヘッダーはアプリ名の文字だけ
-    g.setColour (textColour);
-    g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
-    g.drawText ("Salva", 14, 0, 80, headerHeight, juce::Justification::centredLeft);
-
-    g.setFont (juce::FontOptions (12.0f));
+    // ヘッダー左は「いま開いているもの」の場所（アプリ名はタイトルバーが持っている）。
+    // ファイル名を主役（太字クリーム）、フォーマット情報は従属（dim）。x=46 は「‹」ボタンの右
     if (engine.hasFile())
     {
         const auto& fi = engine.fileInfo();
-        const auto infoText = fi.file.getFileName()
-                              + jp (u8" — ") + juce::String (fi.sampleRate / 1000.0, 1) + "kHz"
+        const auto name = fi.file.getFileName();
+        const juce::Font nameFont { juce::FontOptions (13.0f, juce::Font::bold) };
+        const int maxNameW = juce::jmax (60, getWidth() - 430); // 右側チップ＋メタ表示の逃げ
+        const int nameW = juce::jmin (maxNameW,
+                                      (int) std::ceil (juce::GlyphArrangement::getStringWidth (nameFont, name)) + 2);
+        g.setColour (textColour);
+        g.setFont (nameFont);
+        g.drawText (name, 46, 0, nameW, headerHeight, juce::Justification::centredLeft, true);
+
+        const auto metaText = juce::String (fi.sampleRate / 1000.0, 1) + "kHz"
                               + jp (u8"・") + (fi.numChannels >= 2 ? jp (u8"ステレオ") : jp (u8"モノラル"))
                               + jp (u8"・") + formatTime ((double) fi.lengthSamples / fi.sampleRate);
         g.setColour (textDim);
-        g.drawText (infoText, 80, 0, juce::jmax (100, getWidth() - 400), headerHeight,
+        g.setFont (juce::FontOptions (12.0f));
+        g.drawText (metaText, 46 + nameW + 10, 0,
+                    juce::jmax (60, getWidth() - (46 + nameW + 10) - 320), headerHeight,
                     juce::Justification::centredLeft, true);
     }
 }
@@ -1386,6 +1399,7 @@ void SalvaMainComponent::resized()
     // ヘッダー右側: [分離中…] [ステム分離] [キャッシュ x GB ▾]
     auto header = fullBleed ? juce::Rectangle<int>()
                             : area.removeFromTop (headerHeight).reduced (10, 8);
+    homeButton.setBounds (header.removeFromLeft (28));
     cacheSizeLabel.setBounds (header.removeFromRight (130));
     header.removeFromRight (8);
     separateButton.setBounds (header.removeFromRight (90));
@@ -1399,7 +1413,7 @@ void SalvaMainComponent::resized()
     for (auto* c : { (juce::Component*) &playButton, (juce::Component*) &timeLabel,
                      (juce::Component*) &separateButton, (juce::Component*) &cacheSizeLabel,
                      (juce::Component*) &outputLabel, (juce::Component*) &outputDeviceBox,
-                     (juce::Component*) &recordModeButton })
+                     (juce::Component*) &recordModeButton, (juce::Component*) &homeButton })
         c->setVisible (! fullBleed);
 
     // ステムM/Sパネルは波形右の固定幅カラム（2026-08-15確定モック案B）。

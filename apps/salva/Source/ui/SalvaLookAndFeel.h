@@ -185,12 +185,13 @@ public:
         if (! button.isEnabled())
             textColour = textColour.withAlpha (0.5f);
 
-        // アイコン＋間隔＋文字を1組として中央揃え（アイコンなしなら文字だけが中央に来る）
+        // アイコン＋間隔＋文字を1組として中央揃え
+        // （アイコンなしなら文字だけ、文字なしならアイコンだけが中央に来る）
         const auto icon = button.getProperties()["icon"].toString();
         const float iconW = icon == "recdot" ? 9.0f : icon == "back" ? 7.0f : 0.0f;
-        const float gap = iconW > 0.0f ? 9.0f : 0.0f;
         const auto bounds = button.getLocalBounds().toFloat();
         const float textW = juce::GlyphArrangement::getStringWidth (font, button.getButtonText());
+        const float gap = iconW > 0.0f && textW > 0.0f ? 9.0f : 0.0f;
         const float startX = bounds.getCentreX() - (iconW + gap + textW) * 0.5f;
         const float cy = bounds.getCentreY();
 

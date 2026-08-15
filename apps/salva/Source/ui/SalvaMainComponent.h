@@ -148,6 +148,7 @@ private:
     juce::Label outputLabel;
     juce::ComboBox outputDeviceBox;
     juce::TextButton recordModeButton;
+    juce::TextButton homeButton;        // ヘッダー左端の「‹」（スタート画面へ＝⌘Wの可視化）
     juce::TextButton openFileButton;    // 空状態のみ表示（D&D以外の入口）
     juce::TextButton recordEntryButton; // 空状態のみ表示（録音画面への導線）
     juce::Label starvedLabel; // read-ahead枯渇の可視化（原因調査の入口。通常は非表示）
