@@ -789,6 +789,18 @@ void SalvaMainComponent::timerCallback()
 
     const bool playing = engine.isPlaying();
 
+#if JUCE_DEBUG
+    // 「JUCE側はデバイスへ音を書けているか」の切り分け用（dev版のみ・再生中毎秒）
+    if (playing && ++peakLogTicks >= 30)
+    {
+        peakLogTicks = 0;
+        Log::info ("debug.outpeak",
+                   "peak=" + juce::String (engine.consumeOutputPeak(), 3)
+                       + " device=" + engine.currentOutputDeviceName()
+                       + " sr=" + juce::String (engine.currentDeviceSampleRate(), 0));
+    }
+#endif
+
     if (playing && engine.consumeReachedEnd())
     {
         engine.stop();
@@ -1218,6 +1230,19 @@ void SalvaMainComponent::openFileChooser()
                 openFile (f);
         });
 }
+
+#if JUCE_DEBUG
+void SalvaMainComponent::switchOutputForVerification (const juce::String& name)
+{
+    const auto error = engine.setOutputDevice (name);
+    settings.outputDeviceName = engine.currentOutputDeviceName();
+    settings.save();
+    rebuildOutputDeviceBox();
+    Log::info ("debug.switch_output", "requested=" + name
+                                          + " actual=" + engine.currentOutputDeviceName()
+                                          + " error=" + (error.isEmpty() ? "none" : error));
+}
+#endif
 
 bool SalvaMainComponent::handleCloseRequest()
 {

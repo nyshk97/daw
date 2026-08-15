@@ -515,4 +515,12 @@ void PlayerEngine::PlaybackCallback::audioDeviceIOCallbackWithContext (
         if (right != left)
             juce::FloatVectorOperations::clear (right, numSamples);
     }
+
+    // 実際にデバイスへ渡すバッファのピークを記録（「JUCE側は音を書けているか」の診断）
+    {
+        const auto mm = juce::FloatVectorOperations::findMinAndMax (left, numSamples);
+        const float p = juce::jmax (std::abs (mm.getStart()), std::abs (mm.getEnd()));
+        if (p > engine.outputPeakAtomic.load (std::memory_order_relaxed))
+            engine.outputPeakAtomic.store (p, std::memory_order_relaxed);
+    }
 }

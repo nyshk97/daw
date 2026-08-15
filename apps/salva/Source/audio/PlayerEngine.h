@@ -96,6 +96,8 @@ public:
     juce::String currentInputDeviceName() const;
     int currentInputChannelCount() const; // 現在の入力デバイスの総入力ch数（ペア候補の構築用）
     double currentDeviceSampleRate() const;
+    // デバイスへ書いた実出力ピーク（前回consume以降の最大値。読み出しで0にリセット）
+    float consumeOutputPeak() { return outputPeakAtomic.exchange (0.0f); }
     SalvaRecorder& getRecorder() { return recorder; }
 
 private:
@@ -213,6 +215,7 @@ private:
     std::atomic<StemSet*> audioStemSet { nullptr };          // audio/writerが読む
     std::atomic<bool> stemMode { false };
     std::atomic<juce::uint64> callbackCounter { 0 };         // audioコールバックごと++
+    std::atomic<float> outputPeakAtomic { 0.0f };            // デバイスへ書いた実出力のピーク（診断用）
     std::atomic<juce::uint64> writerEpoch { 0 };             // ライターループごと++
     struct RetiredSet
     {

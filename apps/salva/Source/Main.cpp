@@ -80,6 +80,14 @@ public:
                 juce::Timer::callAfterDelay (600, [this] { mainWindow->content().showCacheMenuForVerification(); });
             if (tokens.contains ("--popup-output"))
                 juce::Timer::callAfterDelay (600, [this] { mainWindow->content().showOutputPopupForVerification(); });
+            // 出力デバイス切替バグの再現: 再生開始から5秒後に指定デバイスへ切り替える
+            const int swIdx = tokens.indexOf ("--switch-output");
+            if (swIdx >= 0 && swIdx + 1 < tokens.size())
+            {
+                const auto name = tokens[swIdx + 1].unquoted();
+                juce::Timer::callAfterDelay (5000, [this, name]
+                                             { mainWindow->content().switchOutputForVerification (name); });
+            }
         }
 #endif
     }

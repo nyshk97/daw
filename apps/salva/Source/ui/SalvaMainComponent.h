@@ -42,6 +42,8 @@ public:
     // ポップアップの見た目確認用（--popup-cache / --popup-output）。実機能と同一経路
     void showCacheMenuForVerification() { showCacheDeleteMenu(); }
     void showOutputPopupForVerification() { outputDeviceBox.showPopup(); }
+    // 出力デバイス切替の再現用（--switch-output <name>）。コンボのonChangeと同じ経路
+    void switchOutputForVerification (const juce::String& name);
 #endif
 
     void paint (juce::Graphics& g) override;
@@ -128,6 +130,9 @@ private:
     ExportWorker exportWorker;
     juce::Label toastLabel;
     int toastTicks = 0;
+#if JUCE_DEBUG
+    int peakLogTicks = 0; // dev版のみ: 再生中に毎秒、実出力ピークをログ（診断用）
+#endif
 
     int beatsOverride = 0; // 0 = 自動（BpmMath::autoBeats）
     juce::uint64 lastStarved = 0;
