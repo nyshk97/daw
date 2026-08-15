@@ -44,6 +44,18 @@ public:
     void showOutputPopupForVerification() { outputDeviceBox.showPopup(); }
     // 出力デバイス切替の再現用（--switch-output <name>）。コンボのonChangeと同じ経路
     void switchOutputForVerification (const juce::String& name);
+    // 録音画面の見た目確認用（--record-view / --record-start）。実機能と同一経路
+    void enterRecordViewForVerification()
+    {
+        if (! recordMode)
+            toggleRecordMode();
+    }
+    void startRecordingForVerification()
+    {
+        enterRecordViewForVerification();
+        if (! engine.getRecorder().isRecording())
+            toggleRecording();
+    }
 #endif
 
     void paint (juce::Graphics& g) override;

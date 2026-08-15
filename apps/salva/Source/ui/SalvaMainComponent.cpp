@@ -157,6 +157,7 @@ SalvaMainComponent::SalvaMainComponent()
 
     addChildComponent (recordView);
     recordView.onRecordToggle = [this] { toggleRecording(); };
+    recordView.onBack = [this] { toggleRecordMode(); };
     recordView.onInputDeviceChanged = [this] (juce::String name)
     {
         if (engine.getRecorder().isRecording())
@@ -564,12 +565,8 @@ void SalvaMainComponent::toggleRecordMode()
         Log::info ("record.mode.exit");
     }
 
-    // 録音画面では「戻る」の役割（もう一度押すと波形へ戻る）なので文言も切り替える。
-    // 状態に固有名を与えない方針（「モードを終了」のような状態語を出さない）
-    recordModeButton.setButtonText (recordMode ? jp (u8"✕ 戻る") : jp (u8"● 新規録音"));
-    recordModeButton.setColour (juce::TextButton::buttonColourId, buttonBg);
-    recordModeButton.setColour (juce::TextButton::textColourOffId,
-                                recordMode ? textColour : recordTextColour);
+    // 録音画面はフルブリード（resizedでヘッダー・フッターごと隠れる）。
+    // 出口はRecordView左上の「← 戻る」なので、フッターの録音ボタンの文言は変えない
     playButton.setEnabled (! recordMode);
     barsButton.setEnabled (! recordMode);
     outputDeviceBox.setEnabled (! recordMode);
@@ -934,6 +931,10 @@ void SalvaMainComponent::paint (juce::Graphics& g)
         paintEmptyState (g, emptyStateArea);
         return;
     }
+
+    // 録音画面もフルブリード（RecordViewが全面を塗る。ヘッダー・フッターは描かない）
+    if (recordMode)
+        return;
 
     // ヘッダー
     auto header = getLocalBounds().removeFromTop (headerHeight);
@@ -1321,26 +1322,28 @@ void SalvaMainComponent::resized()
     auto area = getLocalBounds();
     const bool emptyState = ! engine.hasFile() && ! recordMode;
 
-    // 空状態はヘッダー・トランスポート・フッターを丸ごと隠す（載っているものが全部
-    // 死んでいるか空状態のボタンと重複のため）。フルブリードの選択画面にする
+    // 空状態と録音画面はヘッダー・トランスポート・フッターを丸ごと隠す（載っているものが
+    // 全部死んでいるか無関係のため）。フルブリードにする。録音画面の出口は
+    // RecordView左上の「← 戻る」（＋⌘W・ウィンドウ×）
+    const bool fullBleed = emptyState || recordMode;
     // ヘッダー右側: [分離中…] [ステム分離] [キャッシュ x GB ▾]
-    auto header = emptyState ? juce::Rectangle<int>()
-                             : area.removeFromTop (headerHeight).reduced (10, 8);
+    auto header = fullBleed ? juce::Rectangle<int>()
+                            : area.removeFromTop (headerHeight).reduced (10, 8);
     cacheSizeLabel.setBounds (header.removeFromRight (130));
     header.removeFromRight (8);
     separateButton.setBounds (header.removeFromRight (90));
     header.removeFromRight (8);
     separateProgressLabel.setBounds (header.removeFromRight (60));
 
-    auto bottom = emptyState ? juce::Rectangle<int>()
-                             : area.removeFromBottom (bottomHeight).reduced (10, 6);
-    auto transport = emptyState ? juce::Rectangle<int>()
-                                : area.removeFromBottom (transportHeight).reduced (10, 7);
+    auto bottom = fullBleed ? juce::Rectangle<int>()
+                            : area.removeFromBottom (bottomHeight).reduced (10, 6);
+    auto transport = fullBleed ? juce::Rectangle<int>()
+                               : area.removeFromBottom (transportHeight).reduced (10, 7);
     for (auto* c : { (juce::Component*) &playButton, (juce::Component*) &timeLabel,
                      (juce::Component*) &separateButton, (juce::Component*) &cacheSizeLabel,
                      (juce::Component*) &outputLabel, (juce::Component*) &outputDeviceBox,
                      (juce::Component*) &recordModeButton })
-        c->setVisible (! emptyState);
+        c->setVisible (! fullBleed);
 
     // ステムM/Sパネルは波形右の固定幅カラム（2026-08-15確定モック案B）。
     // タブ切替（ORIGINAL/4/6）で波形のレイアウトが一切動かない。未分離ならカラムなし
@@ -1385,5 +1388,5 @@ void SalvaMainComponent::resized()
     recordModeButton.setBounds (bottom.removeFromRight (108)); // 「● 新規録音」が収まる幅
 
     toastLabel.setBounds (getLocalBounds().withSizeKeepingCentre (juce::jmin (520, getWidth() - 40), 28)
-                              .withY (getHeight() - (emptyState ? 0 : bottomHeight + transportHeight) - 40));
+                              .withY (getHeight() - (fullBleed ? 0 : bottomHeight + transportHeight) - 40));
 }

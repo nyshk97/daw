@@ -88,13 +88,24 @@ public:
                 juce::Timer::callAfterDelay (5000, [this, name]
                                              { mainWindow->content().switchOutputForVerification (name); });
             }
+            // 録音画面の見た目確認: --record-view で録音画面を開く、--record-start は
+            // さらに実録音を開始する（実入力から録るので、確認後はできたWAVを消すこと）
+            if (tokens.contains ("--record-view"))
+                juce::Timer::callAfterDelay (600, [this] { mainWindow->content().enterRecordViewForVerification(); });
+            if (tokens.contains ("--record-start"))
+                juce::Timer::callAfterDelay (600, [this] { mainWindow->content().startRecordingForVerification(); });
             // UIスナップショット: 画面の見た目をPNG保存（screencaptureと違い別Spaceでも撮れる。
             // ユーザーのフォーカスを奪わないUI検証用）
             const int snapIdx = tokens.indexOf ("--snapshot");
             if (snapIdx >= 0 && snapIdx + 1 < tokens.size())
             {
                 const auto path = tokens[snapIdx + 1].unquoted();
-                juce::Timer::callAfterDelay (1500, [this, path]
+                // --snapshot-delay <ms> で撮影タイミングを遅らせる（録音経過の見た目確認など）
+                const int delayIdx = tokens.indexOf ("--snapshot-delay");
+                const int delayMs = delayIdx >= 0 && delayIdx + 1 < tokens.size()
+                                        ? juce::jmax (100, tokens[delayIdx + 1].getIntValue())
+                                        : 1500;
+                juce::Timer::callAfterDelay (delayMs, [this, path]
                 {
                     auto& c = mainWindow->content();
                     const auto img = c.createComponentSnapshot (c.getLocalBounds());
