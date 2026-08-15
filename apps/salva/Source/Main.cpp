@@ -71,6 +71,17 @@ public:
                 mainWindow->content().exportForVerification();
 #endif
         }
+#if JUCE_DEBUG
+        // ポップアップの見た目確認（ファイル引数なしでも使う。表示完了を待ってから開く。
+        // 注意: JUCEのポップアップはアプリが前面でないと即dismissされるため、open -g では確認できない）
+        {
+            const auto tokens = juce::StringArray::fromTokens (commandLine, true);
+            if (tokens.contains ("--popup-cache"))
+                juce::Timer::callAfterDelay (600, [this] { mainWindow->content().showCacheMenuForVerification(); });
+            if (tokens.contains ("--popup-output"))
+                juce::Timer::callAfterDelay (600, [this] { mainWindow->content().showOutputPopupForVerification(); });
+        }
+#endif
     }
 
     void anotherInstanceStarted (const juce::String& commandLine) override

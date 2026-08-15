@@ -54,12 +54,7 @@ juce::String shortDirPath (const juce::File& file)
 
 SalvaMainComponent::SalvaMainComponent()
 {
-    // ColourScheme順: windowBackground, widgetBackground, menuBackground,
-    //                 outline, defaultText, defaultFill, highlightedText, highlightedFill, menuText
-    salvaLnf.setColourScheme ({ windowBg, buttonBg, headerBg,
-                                buttonBorder, textColour, accent,
-                                textColour, hoverFill, textColour });
-    setLookAndFeel (&salvaLnf);
+    setLookAndFeel (&salvaLnf); // 配色スキームはSalvaLookAndFeelのコンストラクタで設定済み
 
     settings = SalvaSettings::load();
     engine.initialiseDevice (settings.outputDeviceName);
@@ -408,6 +403,8 @@ void SalvaMainComponent::updateCacheSizeLabel()
 void SalvaMainComponent::showCacheDeleteMenu()
 {
     juce::PopupMenu menu;
+    // 手動生成のPopupMenuはターゲットのLnFを継承しない（デフォルトLnFに落ちる）ので明示する
+    menu.setLookAndFeel (&getLookAndFeel());
     menu.addItem (1, jp (u8"現在ファイルのステムを削除"), engine.hasFile());
     menu.addItem (2, jp (u8"全ステムキャッシュを削除"));
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&cacheSizeLabel),

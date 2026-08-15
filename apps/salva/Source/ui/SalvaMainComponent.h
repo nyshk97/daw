@@ -6,6 +6,7 @@
 #include "audio/RegionExport.h"
 #include "audio/StemSeparator.h"
 #include "shared/SalvaSettings.h"
+#include "ui/SalvaLookAndFeel.h"
 #include "ui/RecordView.h"
 #include "ui/StemPanel.h"
 #include "ui/WaveformView.h"
@@ -35,6 +36,9 @@ public:
     void selectStemGroupForVerification (int index) { stemPanel.selectGroup (index); }
     void separateForVerification() { startSeparation(); }
     void exportForVerification() { startExport(); }
+    // ポップアップの見た目確認用（--popup-cache / --popup-output）。実機能と同一経路
+    void showCacheMenuForVerification() { showCacheDeleteMenu(); }
+    void showOutputPopupForVerification() { outputDeviceBox.showPopup(); }
 #endif
 
     void paint (juce::Graphics& g) override;
@@ -89,7 +93,7 @@ private:
 
     PlayerEngine engine;
     SalvaSettings settings;
-    juce::LookAndFeel_V4 salvaLnf; // Vinyl Warmパレット（ボタン・コンボ・ポップアップに適用）
+    SalvaLookAndFeel salvaLnf; // Vinyl Warmテーマ（ボタン・コンボ・ポップアップメニューの描画）
 
     WaveformView waveform;
     RecordView recordView;
