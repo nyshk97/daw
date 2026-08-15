@@ -19,6 +19,19 @@ else()
     set(SALVA_ICON "${CMAKE_CURRENT_SOURCE_DIR}/Assets/icon-dev.png")
 endif()
 
+# ---- Sparkle（アプリ内アップデート。LaLaと同じ流儀・配信は完全分離）----
+# framework・鍵運用はLaLaと共有（.sparkle/ はルートのconfigureで取得済み、
+# EdDSA鍵もkeychainアカウント "daw" を共用）。feed URLだけがsalva-releases固定。
+# SUFeedURLはRelease のみ（dev版で誤って常用版の更新を引かない）
+set(SALVA_SPARKLE_PUBLIC_KEY "qicnPwvUMYYTOBCfRGm4wmJHdGYbpv+MPsO9n6OZhVk=")
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(_salva_sparkle_feed "<key>SUFeedURL</key><string>https://github.com/nyshk97/salva-releases/releases/latest/download/appcast.xml</string>")
+else()
+    set(_salva_sparkle_feed "")
+endif()
+set(SALVA_PLIST_TO_MERGE
+    "<plist><dict>${_salva_sparkle_feed}<key>SUPublicEDKey</key><string>${SALVA_SPARKLE_PUBLIC_KEY}</string><key>SUEnableAutomaticChecks</key><false/></dict></plist>")
+
 juce_add_gui_app(salva
     PRODUCT_NAME "${SALVA_PRODUCT_NAME}"
     VERSION "${SALVA_VERSION}"
@@ -28,6 +41,7 @@ juce_add_gui_app(salva
     ICON_BIG "${SALVA_ICON}"
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT "レコード録音のためにオーディオ入力を使用します"
+    PLIST_TO_MERGE "${SALVA_PLIST_TO_MERGE}"
 )
 
 # separate.sh はバンドルのResourcesへ同梱（配布版はソースrepoの位置を知らないため。
@@ -49,6 +63,7 @@ target_sources(salva PRIVATE
     Source/ui/StemPanel.cpp
     Source/ui/WaveformView.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Resources/separate.sh
+    ${CMAKE_SOURCE_DIR}/Source/mac/SparkleBridge.mm
     ${CMAKE_SOURCE_DIR}/Source/shared/Log.cpp
     ${CMAKE_SOURCE_DIR}/Source/shared/SpawnedProcess.cpp
 )
@@ -78,6 +93,15 @@ target_link_libraries(salva
         juce::juce_recommended_warning_flags
 )
 
+# Sparkle.framework のリンク（SparkleBridge.mm の #import と実行時ロードの両方に必要）。
+# DAW_SPARKLE_DIR はルートのconfigureで解決済み
+target_compile_options(salva PRIVATE "-F${DAW_SPARKLE_DIR}")
+target_link_options(salva PRIVATE
+    "-F${DAW_SPARKLE_DIR}"
+    "-framework" "Sparkle"
+    "-Wl,-rpath,@executable_path/../Frameworks"
+)
+
 # 安定署名（LaLaと同じ理由: ad-hoc だとリビルドごとに cdhash が変わり TCC の
 # マイク許可が毎回リセットされる）。identity は親スコープの DAW_CODESIGN_IDENTITY。
 # Makefile ジェネレータはバンドルリソースを POST_BUILD より後にコピーするため、
@@ -103,6 +127,12 @@ endif()
 
 add_custom_command(TARGET salva POST_BUILD
     ${_salva_resource_copy_cmds}
+    # Sparkle.framework も署名より前に埋め込む（ルートのdawターゲットと同じ手口。
+    # dittoでsymlinkを保持・更新時の残骸を防ぐため先に消す）
+    COMMAND ${CMAKE_COMMAND} -E rm -rf
+        "$<TARGET_BUNDLE_DIR:salva>/Contents/Frameworks/Sparkle.framework"
+    COMMAND ditto "${DAW_SPARKLE_DIR}/Sparkle.framework"
+        "$<TARGET_BUNDLE_DIR:salva>/Contents/Frameworks/Sparkle.framework"
     COMMAND codesign --force
         --sign "${DAW_CODESIGN_IDENTITY}"
         "$<TARGET_BUNDLE_DIR:salva>"

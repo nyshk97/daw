@@ -2,12 +2,25 @@
 
 #include <juce_gui_extra/juce_gui_extra.h>
 
+#include "mac/SparkleBridge.h"
 #include "shared/AudioFileTypes.h"
 #include "shared/Log.h"
 #include "ui/SalvaMainComponent.h"
 
 namespace
 {
+juce::String jpText (const char* text) { return juce::String::fromUTF8 (text); }
+
+// メニューバーはアプリメニューの "Check for Updates…" のためだけに立てる
+// （SalvaにFileメニュー等は無い。更新チェックのUIはSparkleが出す）
+class SalvaMenuModel : public juce::MenuBarModel
+{
+public:
+    juce::StringArray getMenuBarNames() override { return {}; }
+    juce::PopupMenu getMenuForIndex (int, const juce::String&) override { return {}; }
+    void menuItemSelected (int, int) override {}
+};
+
 // コマンドライン（起動引数 / 既存インスタンスへの受け渡し）から開くファイルを探す
 juce::File fileFromCommandLine (const juce::String& commandLine)
 {
@@ -31,6 +44,10 @@ public:
     void initialise (const juce::String& commandLine) override
     {
         Log::init (SALVA_APP_VERSION, "salva");
+        // Sparkle: 手動チェックのみ（SUEnableAutomaticChecks=false）。
+        // canCheckの変化でアプリメニューの項目を作り直す
+        SparkleBridge::init ([this] (bool canCheck) { rebuildMacMainMenu (canCheck); });
+        rebuildMacMainMenu (false); // コールバックを待たずメニューを出す
         mainWindow = std::make_unique<MainWindow> (getApplicationName());
         if (const auto file = fileFromCommandLine (commandLine); file.existsAsFile())
         {
@@ -67,6 +84,11 @@ public:
 
     void shutdown() override
     {
+        // 先にSparkleのコールバックを無効化してからメニューを片付ける
+        // （queue済みコールバックが破棄後のメニューを再構築するのを防ぐ）
+        SparkleBridge::shutdown();
+        juce::MenuBarModel::setMacMainMenu (nullptr);
+        menuModel.reset();
         mainWindow = nullptr;
         Log::shutdown();
     }
@@ -83,6 +105,21 @@ public:
     }
 
 private:
+    void rebuildMacMainMenu (bool canCheckForUpdates)
+    {
+        juce::PopupMenu extraAppleMenuItems;
+        juce::PopupMenu::Item checkItem (jpText (u8"Check for Updates…"));
+        checkItem.isEnabled = canCheckForUpdates;
+        checkItem.action = [] { SparkleBridge::checkForUpdates(); };
+        extraAppleMenuItems.addItem (std::move (checkItem));
+
+        if (menuModel == nullptr)
+            menuModel = std::make_unique<SalvaMenuModel>();
+        juce::MenuBarModel::setMacMainMenu (menuModel.get(), &extraAppleMenuItems);
+    }
+
+    std::unique_ptr<SalvaMenuModel> menuModel;
+
     class MainWindow : public juce::DocumentWindow
     {
     public:

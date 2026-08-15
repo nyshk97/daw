@@ -5,7 +5,7 @@
 ## LaLaとの境界（このディレクトリの掟）
 
 - Salvaは**おもちゃレーン寄り**の別アプリ。LaLaのTierスコープ・`docs/design/feature-scope.md` の引き算基準・`ui-principles.md` の見送りリストで**裁かない**（機能の要否はSalvaのplanと本人の判断で決める）
-- LaLaと共有してよいのはリポジトリルート `Source/shared/` の**汎用部品**（`AudioFileTypes`・`GainScale`・`Log`・`SpawnedProcess`・`TempDirSweep` 等）まで。LaLa固有コード（`Project` モデル・ルートの `Source/ui/`・`Source/audio/`）には依存しない
+- LaLaと共有してよいのはリポジトリルート `Source/shared/` の**汎用部品**（`AudioFileTypes`・`GainScale`・`Log`・`SpawnedProcess`・`TempDirSweep` 等）と、`Source/mac/` の**汎用ブリッジ**（`SparkleBridge`）まで。LaLa固有コード（`Project` モデル・ルートの `Source/ui/`・`Source/audio/`）には依存しない
 - スレッド境界の流儀はLaLaと同じ（audio/ui/shared の3分割・`GOTCHAS.md` 必読。audio/ のコードはオーディオスレッド前提・ui/ への直接参照禁止）
 - **判断ロジックをUIに書かない**: 区間丸め・BPM逆算・ファイル名生成・マニフェスト検証・クリップ判定などは `salva_tests` でテストできる場所に置く（LaLaと同じ基準）
 
@@ -24,5 +24,6 @@ mise run test:salva    # salva_tests（C++回帰テスト）
 
 - 配信repoは `salva-releases`（`daw-releases` に相乗りしない）・ソースrepoのタグは `salva-vX.Y.Z`
 - バージョンは `apps/salva/CMakeLists.txt` の `SALVA_VERSION`（LaLaのproject VERSIONと独立）
-- リリーススクリプトは `scripts/release-salva.sh`・変更履歴は `CHANGELOG-salva.md`（Phase 7で整備）
+- リリースは `mise run release:salva`（`scripts/release-salva.sh`。notarytoolがkeychainを使うため**ユーザーのTerminalで実行**）・変更履歴は `docs/CHANGELOG-salva.md`
+- Sparkle: feed URLは salva-releases 固定（Releaseのみ・dev版はfeed無し）。EdDSA鍵はLaLaとkeychainアカウント `daw` を共用
 - LaLa側の `release.sh`・appcast URLには触れない

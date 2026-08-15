@@ -315,6 +315,62 @@ run = 'open build/apps/salva/salva_artefacts/Debug/Salva-dev.app'
 description = 'Salva dev版アプリ（Salva-dev.app）を停止する'
 run = 'pkill -f "Salva-dev.app/Contents/MacOS/Salva-dev" || true'
 
+[tasks."release:salva"]
+description = 'SalvaのいまのHEADをリリースする（バージョン自動bump→CHANGELOG自動生成(claude)→ビルド→notarize→署名→salva-releasesへGitHub Release。notarytoolがkeychainを使うためユーザーのTerminalで実行すること）'
+usage = 'arg "<version>" default="auto" help="auto(既定)=リリース済みならminor bump / patch|minor|major=刻み指定 / 0.2.0等=明示指定"'
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+v="$usage_version"
+current=$(sed -nE 's/^set\(SALVA_VERSION ([0-9.]+)\)/\1/p' apps/salva/CMakeLists.txt)
+if [ -z "$current" ]; then
+  echo "ERROR: apps/salva/CMakeLists.txt から現在バージョンを取得できません"
+  exit 1
+fi
+
+# 「未リリースかどうか」はリモートの実タグで判定する（別クローンからのリリース対策。LaLaと同じ）
+git fetch origin --tags --quiet
+
+case "$v" in
+auto|major|minor|patch)
+  if [ "$v" = "auto" ] && ! git rev-parse "salva-v$current" >/dev/null 2>&1; then
+    echo "==> apps/salva/CMakeLists.txt の $current は未リリースのため、そのままリリースします"
+    v="$current"
+  else
+    kind="$v"; [ "$kind" = "auto" ] && kind=minor
+    IFS=. read -r maj min pat <<< "$current"
+    case "$kind" in
+    major) v="$((maj + 1)).0.0" ;;
+    minor) v="$maj.$((min + 1)).0" ;;
+    patch) v="$maj.$min.$((pat + 1))" ;;
+    esac
+    echo "==> $current から $kind bump: $v"
+  fi
+  ;;
+*)
+  if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "ERROR: バージョンは x.y.z 形式か auto/major/minor/patch で指定してください: $v"
+    exit 1
+  fi
+  ;;
+esac
+
+if [ "$v" != "$current" ]; then
+  dirty=$(git status --porcelain | grep -v '^?? docs/plans/' || true)
+  if [ -n "$dirty" ]; then
+    echo "ERROR: 未コミットの変更があります。commit してから再実行してください"
+    echo "$dirty"
+    exit 1
+  fi
+  sed -i '' -E "s/^set\(SALVA_VERSION [0-9.]+\)/set(SALVA_VERSION $v)/" apps/salva/CMakeLists.txt
+  git add apps/salva/CMakeLists.txt
+  git commit -m "chore: bump salva version to $v"
+  echo "==> apps/salva/CMakeLists.txt を $v に bump してコミットしました"
+fi
+
+exec scripts/release-salva.sh "$v"
+'''
+
 [tasks.release]
 description = 'いまのHEADをリリースする（バージョン自動bump→CHANGELOG自動生成(claude)→ビルド→notarize→署名→GitHub Release。notarytoolがkeychainを使うためユーザーのTerminalで実行すること）'
 usage = 'arg "<version>" default="auto" help="auto(既定)=リリース済みならminor bump / patch|minor|major=刻み指定 / 0.3.0等=明示指定"'
