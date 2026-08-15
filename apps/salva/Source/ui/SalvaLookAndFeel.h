@@ -108,6 +108,17 @@ public:
     }
 
     //==============================================================================
+    // TextButtonの文字サイズ上書き: button.getProperties()["fontSize"] があればそれを使う
+    // （TextButtonにはフォント設定APIが無いため、個別ボタンの縮小はここで受ける）
+
+    juce::Font getTextButtonFont (juce::TextButton& button, int buttonHeight) override
+    {
+        if (const auto v = button.getProperties()["fontSize"]; ! v.isVoid())
+            return juce::Font (juce::FontOptions ((float) (double) v));
+        return LookAndFeel_V4::getTextButtonFont (button, buttonHeight);
+    }
+
+    //==============================================================================
     // ComboBox本体（閉じた状態の箱と矢印）
 
     void drawComboBox (juce::Graphics& g, int width, int height, bool /*isButtonDown*/,

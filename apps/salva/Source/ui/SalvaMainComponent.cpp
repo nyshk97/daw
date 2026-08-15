@@ -119,6 +119,7 @@ SalvaMainComponent::SalvaMainComponent()
 
     addAndMakeVisible (recordModeButton);
     recordModeButton.setButtonText (jp (u8"● 録音モード"));
+    recordModeButton.getProperties().set ("fontSize", 12.5);
     recordModeButton.setColour (juce::TextButton::textColourOffId, recordTextColour);
     recordModeButton.onClick = [this] { toggleRecordMode(); };
 
@@ -128,12 +129,14 @@ SalvaMainComponent::SalvaMainComponent()
     openFileButton.setColour (juce::TextButton::buttonColourId, accent);
     openFileButton.setColour (juce::TextButton::textColourOffId, accentTextDark);
     openFileButton.setColour (juce::ComboBox::outlineColourId, accent); // LnFの枠線を地色に合わせる
+    openFileButton.setMouseCursor (juce::MouseCursor::PointingHandCursor);
     openFileButton.onClick = [this] { openFileChooser(); };
 
     addChildComponent (recordEntryButton);
     recordEntryButton.setButtonText (jp (u8"● レコードから録音"));
     recordEntryButton.setColour (juce::TextButton::buttonColourId, emptyBg);
     recordEntryButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xffb3a48d));
+    recordEntryButton.setMouseCursor (juce::MouseCursor::PointingHandCursor);
     recordEntryButton.onClick = [this] { toggleRecordMode(); };
 
     addChildComponent (recordView);
@@ -167,7 +170,8 @@ SalvaMainComponent::SalvaMainComponent()
 
     // --- ステム分離（ヘッダー）＋M/Sパネル＋書き出し ---
     addAndMakeVisible (separateButton);
-    separateButton.setButtonText (jp (u8"ステム分離"));
+    separateButton.setButtonText (jp (u8"STEM分離"));
+    separateButton.getProperties().set ("fontSize", 12.5);
     separateButton.onClick = [this] { startSeparation(); };
 
     addChildComponent (separateProgressLabel);
