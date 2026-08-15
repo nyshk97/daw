@@ -9,6 +9,7 @@
 #include "../shared/PreviewFifo.h"
 
 class AudioFilePreview;
+class AnalyzerTap;
 
 // サンプル位置ベースの自前ミックスエンジン。process() はオーディオスレッドで走る。
 // クリップ/トラック構成は SnapshotExchange 経由で受け取り、単一値は TransportState の atomic を読む。
@@ -24,6 +25,8 @@ public:
     void process (const juce::AudioSourceChannelInfo& bufferToFill);
     void releaseResources();
     void setFilePreview (AudioFilePreview* previewToUse) { filePreview = previewToUse; }
+    // アナライザタップ（EQエディタのスペクトラム表示）。オーディオ開始前にセットすること
+    void setAnalyzerTap (AnalyzerTap* tapToUse) { analyzerTap = tapToUse; }
 
     // ---- メッセージスレッド専用 ----
     void play();
@@ -61,18 +64,21 @@ private:
     // （スクラッチバッファは常にオフセット0から segLen 分を使い、最終出力だけずらす）。
     // fadeStartSample/fadeEndSample = 曲末フェード（サンプル換算済み・無効は 0/0）。呼び出し側が
     // 境界でセグメントを切るので、1セグメントは「フェード前／区間内／終端以後」のどれかに収まる
+    // timelineJumped: シーク・再生開始・サイクルラップ等の時間不連続（EQのIIR履歴リセットに使う。
+    // snapshotChanged は含めない — リージョンゲイン調整等の差し替えは時間が連続している）
     void processSegment (juce::AudioBuffer<float>& buffer, int outOffset, int segLen, juce::int64 segPos,
                          bool playing, bool armed, juce::int64 punchIn,
                          PlaybackSnapshot* snapshot, bool anySolo, bool canProcess, float masterGain,
                          juce::int64 fadeStartSample, juce::int64 fadeEndSample,
                          double sr, double bpm, double beatLen,
-                         bool silenceTransport, bool silenceAll, bool resound);
+                         bool silenceTransport, bool silenceAll, bool resound, bool timelineJumped);
 
     TransportState& transport;
     SnapshotExchange& snapshots;
     PreviewFifo& previewFifo;
     Recorder recorder;
     AudioFilePreview* filePreview = nullptr;
+    AnalyzerTap* analyzerTap = nullptr; // 非所有（MainComponentが所有）。テスト等ではnullptrのまま
 
     double currentSampleRate = 0.0;
 
@@ -118,6 +124,11 @@ private:
     // ポインタでなく PlaybackSnapshot::midiGeneration を見るので、オーディオ側だけの差し替え
     // （リージョンゲインのドラッグ）では発音を乱さない。0 = まだ何も受け取っていない
     juce::uint64 lastSeenMidiGeneration = 0;
+
+    // EQ用のセグメント連番（processSegmentごとに+1）。各トラックの TrackEq がこの連続性で
+    // 「処理されない期間があったか」（＝再進入・履歴リセットが要るか）を判定する
+    juce::uint64 eqSerial = 0;
+
     juce::int64 lastBeatIndex = 0;
     double clickPhase = 0.0;
     double clickFreq = 880.0;

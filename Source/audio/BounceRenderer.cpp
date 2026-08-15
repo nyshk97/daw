@@ -27,6 +27,8 @@ bool BounceRenderer::buildItemRender (const Track& track, int itemIndex, double 
     out.pan = track.params->pan.load();
     for (int b = 0; b < numSendBuses; ++b)
         out.sends[b] = track.params->sends[b].load();
+    out.eqEnabled = track.params->eqEnabled.load();
+    out.eqBands = Eq::loadAll (track.params->eqBands);
 
     if (track.type == TrackType::audio)
     {
@@ -205,7 +207,14 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
             synthChannels = juce::jmax (synthChannels, track.synth->totalOutputChannels);
     jassert (synthChannels <= maxScratchChannels);
     synthScratch.setSize (juce::jmin (synthChannels, maxScratchChannels), renderBlockSize);
+    eqTrackScratch.setSize (2, renderBlockSize);
     midiScratch.ensureSize (4096);
+
+    // EQは平滑を挟まず開始時点の値で即確定する（バウンス中にパラメータは変わらない。
+    // RT側のようにdryからフェードインすると冒頭だけ再生と違う音になる）
+    eqBlockSerial = 0;
+    for (auto& track : request.tracks)
+        track.eq.snapTo (sr, track.eqEnabled, track.eqBands);
 
     cursors.assign (request.tracks.size(), {});
     // 範囲開始より前のノートの読み飛ばし（サイクル範囲書き出しで rangeStart > 0 になる。
@@ -261,10 +270,22 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
         mix.clear();
         for (auto& bus : busMix)
             bus.clear();
+        ++eqBlockSerial;
 
         for (size_t ti = 0; ti < request.tracks.size(); ++ti)
         {
             auto& track = request.tracks[ti];
+
+            // トラックEQ（オーディオトラック）。RTのactive経路と同じ処理順:
+            // 「クリップgainまで合算 → EQ → トラックgain → send/mix」。EQが働くときだけ
+            // 専用スクラッチを経由し、バイパス時は既存の直接ミックスを**完全に**通す（ビット一致契約）
+            const bool activeEq = track.synth == nullptr
+                                  && track.eqEnabled && ! Eq::isNeutral (track.eqBands);
+            juce::AudioBuffer<float>& clipDest = activeEq ? eqTrackScratch : mix;
+            const float clipTrackGain = activeEq ? 1.0f : track.gain;
+            if (activeEq)
+                for (int ch = 0; ch < 2; ++ch)
+                    eqTrackScratch.clear (ch, 0, n);
 
             // クリップ: 重なりは加算再生・クリップ単位でpan分配してL/Rへ（RTのprocessと同じ法則。
             // モノは等パワー補正型・ステレオはバランス型）。sendはpost-fader（gain・pan適用後）。
@@ -294,19 +315,36 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
                     const float* src = clip.audio->getReadPointer (stereo ? ch : 0, srcOffset);
                     // リージョンゲインはトラックゲインの手前（RTのprocessと同じ順序）。
                     // ユニティ(1.0f)なら track.gain と厳密に同値＝既存の書き出しは変わらない
-                    const float gain = track.gain * clip.gain * (stereo ? (ch == 0 ? balL : balR)
-                                                                       : (ch == 0 ? panL : panR));
+                    const float gain = clipTrackGain * clip.gain * (stereo ? (ch == 0 ? balL : balR)
+                                                                          : (ch == 0 ? panL : panR));
                     for (int s = 0; s < numSegs; ++s)
                     {
                         const auto& seg = segs[s];
                         const float* segSrc = src + (seg.destOffset - destOffset);
-                        ClipFade::addSegment (mix, ch, seg.destOffset, segSrc, seg, gain);
-                        // sendにも同じフェードが掛かる（post-fader＝聴こえている信号のコピー）
-                        for (int b = 0; b < numSendBuses; ++b)
-                            if (track.sends[b] > 0.0f)
-                                ClipFade::addSegment (busMix[(size_t) b], ch, seg.destOffset, segSrc, seg,
-                                                      gain * track.sends[b]);
+                        ClipFade::addSegment (clipDest, ch, seg.destOffset, segSrc, seg, gain);
+                        // sendにも同じフェードが掛かる（post-fader＝聴こえている信号のコピー）。
+                        // EQ有効時はEQ通過後にまとめてコピーする（下）
+                        if (! activeEq)
+                            for (int b = 0; b < numSendBuses; ++b)
+                                if (track.sends[b] > 0.0f)
+                                    ClipFade::addSegment (busMix[(size_t) b], ch, seg.destOffset, segSrc, seg,
+                                                          gain * track.sends[b]);
                     }
+                }
+            }
+
+            if (activeEq)
+            {
+                // クリップの重なりがないブロックも処理する（RTと同じ: リングアウトを切らない・連番の連続性）
+                track.eq.process (eqTrackScratch.getWritePointer (0), eqTrackScratch.getWritePointer (1),
+                                  n, sr, eqBlockSerial, false, track.eqEnabled, track.eqBands);
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    mix.addFrom (ch, 0, eqTrackScratch, ch, 0, n, track.gain);
+                    for (int b = 0; b < numSendBuses; ++b)
+                        if (track.sends[b] > 0.0f)
+                            busMix[(size_t) b].addFrom (ch, 0, eqTrackScratch, ch, 0, n,
+                                                        track.gain * track.sends[b]);
                 }
             }
 
@@ -349,9 +387,33 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
             mix.clear();
             for (auto& bus : busMix)
                 bus.clear();
+            ++eqBlockSerial; // テール中もEQ連番を進める（連続処理＝リセットさせない）
             for (size_t ti = 0; ti < request.tracks.size(); ++ti)
             {
                 auto& track = request.tracks[ti];
+
+                // オーディオトラックのEQリングアウト（入力は無音・フィルタ履歴が減衰しきるまで）。
+                // RT再生は範囲終了後もactive経路が回り続けるので、切ると書き出しだけ余韻が欠ける
+                if (track.synth == nullptr && track.eqEnabled && ! Eq::isNeutral (track.eqBands))
+                {
+                    for (int ch = 0; ch < 2; ++ch)
+                        eqTrackScratch.clear (ch, 0, renderBlockSize);
+                    track.eq.process (eqTrackScratch.getWritePointer (0),
+                                      eqTrackScratch.getWritePointer (1), renderBlockSize,
+                                      request.sampleRate, eqBlockSerial, false,
+                                      track.eqEnabled, track.eqBands);
+                    for (int ch = 0; ch < 2; ++ch)
+                    {
+                        mix.addFrom (ch, 0, eqTrackScratch, ch, 0, renderBlockSize, track.gain);
+                        for (int b = 0; b < numSendBuses; ++b)
+                            if (track.sends[b] > 0.0f)
+                                busMix[(size_t) b].addFrom (ch, 0, eqTrackScratch, ch, 0,
+                                                            renderBlockSize,
+                                                            track.gain * track.sends[b]);
+                    }
+                    continue;
+                }
+
                 // サンプラーもテールを回す（範囲を跨ぐ追従ノートの余韻に必要。
                 // pluginだけを見て continue するとサンプラーがテールで一切鳴らない）
                 if (track.synth == nullptr || ! track.synth->hasRenderer())
@@ -488,7 +550,7 @@ void BounceRenderer::scheduleBlockMidi (const TrackRender& track, SynthCursor& c
 
 void BounceRenderer::renderSynthInto (juce::AudioBuffer<float>& mix,
                                       std::vector<juce::AudioBuffer<float>>& busMix,
-                                      const TrackRender& track, int numSamples)
+                                      TrackRender& track, int numSamples)
 {
     auto* synth = track.synth.get();
     const int total = synth->totalOutputChannels;
@@ -505,6 +567,16 @@ void BounceRenderer::renderSynthInto (juce::AudioBuffer<float>& mix,
         synth->plugin->processBlock (block, midiScratch);
     else
         synth->sampler->processBlock (block, midiScratch);
+
+    // トラックEQ（シンセ出力直後・gain/panの前。RTのrenderMidiTracksと同じ処理順）
+    if (track.eqEnabled && ! Eq::isNeutral (track.eqBands))
+    {
+        const int eqSrcR = juce::jmin (1, total - 1);
+        track.eq.process (block.getWritePointer (0),
+                          eqSrcR != 0 ? block.getWritePointer (eqSrcR) : nullptr,
+                          numSamples, request.sampleRate, eqBlockSerial, false,
+                          track.eqEnabled, track.eqBands);
+    }
 
     // ステレオソースなのでpanはバランス型（RTのrenderMidiTracksと同じ法則）。sendはpost-fader
     float balL = 1.0f, balR = 1.0f;

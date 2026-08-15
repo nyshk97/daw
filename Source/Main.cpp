@@ -97,7 +97,78 @@ public:
         SparkleBridge::init ([this] (bool canCheck) { rebuildMacMainMenu (canCheck); });
         rebuildMacMainMenu (false); // Sparkleのコールバックを待たずFileメニューを出す
         mainWindow = std::make_unique<MainWindow>();
+
+#if JUCE_DEBUG
+        handleDebugLaunchArgs();
+#endif
     }
+
+#if JUCE_DEBUG
+    // 検証フック（dev版限定・Salvaの --snapshot と同じ流儀）。合成キー・座標クリックが効かない
+    // JUCEアプリの自動確認用に、実機能と同一経路で画面を組み立ててPNGに保存する:
+    //   --open <projectDir>  選択画面を迂回してプロジェクトを開く
+    //   --eq-editor          FXパネル＋EQ詳細エディタを開く（選択トラック）
+    //   --snapshot <path>    表示完了後（2秒後）のUIをPNG保存して知らせる（ログ debug.snapshot）
+    void handleDebugLaunchArgs()
+    {
+        const auto args = getCommandLineParameterArray();
+        juce::File openDir, snapshotFile;
+        bool eqEditor = false;
+        bool autoplay = false; // --play: 開いた後に再生を開始（アナライザ等の動作確認用）
+        for (int i = 0; i < args.size(); ++i)
+        {
+            if (args[i] == "--open" && i + 1 < args.size())
+                openDir = juce::File (args[i + 1]);
+            else if (args[i] == "--snapshot" && i + 1 < args.size())
+                snapshotFile = juce::File (args[i + 1]);
+            else if (args[i] == "--eq-editor")
+                eqEditor = true;
+            else if (args[i] == "--play")
+                autoplay = true;
+        }
+
+        if (openDir.isDirectory())
+        {
+            juce::StringArray warnings;
+            juce::String error;
+            if (auto project = Project::load (openDir, warnings, error))
+                mainWindow->debugOpenProject (std::move (project));
+            else
+                Log::error ("debug.open_failed", "error=" + error);
+        }
+
+        if (eqEditor)
+            juce::Timer::callAfterDelay (500, [this]
+            {
+                if (mainWindow != nullptr)
+                    if (auto* component = mainWindow->currentMainComponent())
+                        component->debugOpenEqDetail();
+            });
+
+        if (autoplay)
+            juce::Timer::callAfterDelay (700, [this]
+            {
+                if (mainWindow != nullptr)
+                    if (auto* component = mainWindow->currentMainComponent())
+                        component->debugStartPlayback();
+            });
+
+        if (snapshotFile != juce::File())
+            juce::Timer::callAfterDelay (2000, [this, snapshotFile]
+            {
+                if (mainWindow == nullptr || mainWindow->getContentComponent() == nullptr)
+                    return;
+                auto* content = mainWindow->getContentComponent();
+                auto image = content->createComponentSnapshot (content->getLocalBounds(), true, 2.0f);
+                snapshotFile.deleteFile();
+                juce::PNGImageFormat png;
+                std::unique_ptr<juce::OutputStream> out (snapshotFile.createOutputStream());
+                const bool ok = out != nullptr && png.writeImageToStream (image, *out);
+                Log::info ("debug.snapshot", "path=" + snapshotFile.getFullPathName()
+                                                 + " ok=" + juce::String (ok ? 1 : 0));
+            });
+    }
+#endif
 
     void shutdown() override
     {
@@ -285,6 +356,19 @@ private:
 
         // Fileメニューのenable判定・コマンド委譲用（所有はsetContentOwned側のまま）
         MainComponent* currentMainComponent() const { return mainComp; }
+
+#if JUCE_DEBUG
+        // 検証フック（dev版限定）: 選択画面を迂回してプロジェクトを直接開く。
+        // 実機能と同一経路（openPendingProject）を通す
+        void debugOpenProject (std::unique_ptr<Project> project)
+        {
+            if (flowPending)
+                return;
+            flowPending = true;
+            pendingProject = std::move (project);
+            openPendingProject();
+        }
+#endif
 
         // Fileメニュー「プロジェクトを閉じる」からも呼ばれる
         void closeProjectToChooser()

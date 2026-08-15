@@ -37,6 +37,13 @@ public:
         float gain = 1.0f;                    // 開始時に固定済み（非可聴トラックはRequestに入れない）
         float pan = 0.0f;                     // -1..+1（モノクリップは等パワー補正型・ステレオクリップとシンセはバランス型。RTと同じ法則）
         float sends[numSendBuses] { 0.0f, 0.0f, 0.0f }; // post-fader send量
+
+        // トラックEQ（開始時にプレーン値で固定。共有atomicの TrackParams は参照しない）。
+        // eq はバウンス専用の独立DSPインスタンス — RT再生用の TrackParams::rtEq と履歴を
+        // 共有すると両スレッドが同時更新してしまうため、renderPass 開始時に snapTo で初期化する
+        bool eqEnabled = true;
+        Eq::Values eqBands = Eq::defaultValues();
+        TrackEq eq;
     };
 
     struct Request
@@ -161,8 +168,9 @@ private:
 
     void scheduleBlockMidi (const TrackRender& track, SynthCursor& cursor,
                             juce::int64 pos, int numSamples, double tps);
+    // track は EQ の実行状態（track.eq）を進めるため非const
     void renderSynthInto (juce::AudioBuffer<float>& mix, std::vector<juce::AudioBuffer<float>>& busMix,
-                          const TrackRender& track, int numSamples);
+                          TrackRender& track, int numSamples);
 
     // 素通しバス（busGain/busMute適用）をmixへ合流 → Masterゲイン（RTのprocessと同じ順序）
     // absPos = このブロックの絶対サンプル位置（曲末フェードの評価に必要）
@@ -178,6 +186,8 @@ private:
     juce::File tempFloatFile, tempFinalFile;
     juce::MidiBuffer midiScratch;
     juce::AudioBuffer<float> synthScratch;
+    juce::AudioBuffer<float> eqTrackScratch; // EQ有効トラックのクリップ合算用（EQをトラックgainの前に掛けるため）
+    juce::uint64 eqBlockSerial = 0;          // TrackEq の連続性判定用（renderPassで0に戻しブロックごとに+1）
     std::unique_ptr<juce::AudioFormatReader> convertReader; // パス2で一時float WAVを読み戻す
     std::vector<SynthCursor> cursors;
     float runningPeak = 0.0f;

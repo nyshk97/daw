@@ -575,6 +575,19 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
         // 固定ストリップFX。後続スライスで各FXのパラメータを同じオブジェクトに足す
         auto* eqObj = new juce::DynamicObject();
         eqObj->setProperty ("enabled", track.params->eqEnabled.load());
+        // EQバンド（v15）。4本固定・並びは shared/EqParams.h。将来のバンド増設は配列を伸ばすだけ
+        juce::Array<juce::var> eqBandsArray;
+        for (int i = 0; i < Eq::numBands; ++i)
+        {
+            const auto band = Eq::load (track.params->eqBands[i]);
+            auto* bandObj = new juce::DynamicObject();
+            bandObj->setProperty ("enabled", band.enabled);
+            bandObj->setProperty ("freq", (double) band.freqHz);
+            bandObj->setProperty ("gain", (double) band.gainDb);
+            bandObj->setProperty ("q", (double) band.q);
+            eqBandsArray.add (juce::var (bandObj));
+        }
+        eqObj->setProperty ("bands", eqBandsArray);
         auto* compObj = new juce::DynamicObject();
         compObj->setProperty ("enabled", track.params->compEnabled.load());
         auto* fxObj = new juce::DynamicObject();
@@ -870,6 +883,26 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
             const auto fxVar = trackVar.getProperty ("fx", {});
             track.params->eqEnabled.store ((bool) fxVar.getProperty ("eq", {}).getProperty ("enabled", true));
             track.params->compEnabled.store ((bool) fxVar.getProperty ("comp", {}).getProperty ("enabled", true));
+
+            // EQバンド（v14以前は無い → 既定値）。バンド種別ごとの不変条件（enabled/Q固定等）を
+            // normalized で強制する — UIから操作できない値が手編集JSONで入ると戻せない隠れ状態になる
+            {
+                const auto* eqBandsArray = fxVar.getProperty ("eq", {}).getProperty ("bands", {}).getArray();
+                for (int i = 0; i < Eq::numBands; ++i)
+                {
+                    auto band = Eq::defaults[i];
+                    if (eqBandsArray != nullptr && i < eqBandsArray->size()
+                        && (*eqBandsArray)[i].isObject())
+                    {
+                        const auto& bandVar = (*eqBandsArray)[i];
+                        band.enabled = (bool) bandVar.getProperty ("enabled", band.enabled);
+                        band.freqHz = (float) (double) bandVar.getProperty ("freq", (double) band.freqHz);
+                        band.gainDb = (float) (double) bandVar.getProperty ("gain", (double) band.gainDb);
+                        band.q = (float) (double) bandVar.getProperty ("q", (double) band.q);
+                    }
+                    Eq::store (track.params->eqBands[i], Eq::normalized (i, band));
+                }
+            }
 
             if (track.type == TrackType::audio)
             {

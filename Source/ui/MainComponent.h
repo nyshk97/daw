@@ -9,6 +9,7 @@
 #include "DeviceSettingsWindow.h"
 #include "FxDetailView.h"
 #include "FxEditorView.h"
+#include "EqEditorView.h"
 #include "InstrumentDetailView.h"
 #include "IconButton.h"
 #include "MixerWindow.h"
@@ -82,6 +83,12 @@ public:
     // 前回クラッシュ等で残った一時ディレクトリの掃除。アプリ起動時に1回呼ぶ
     // （MainComponent生成前＝選択画面の時点で走らせたいので static かつ public）
     static void sweepStaleUrlTempDirs();
+#if JUCE_DEBUG
+    // 検証フック（dev版限定・Main.cppの --eq-editor / --play から）。実機能と同一経路で操作する
+    void debugOpenEqDetail();
+    void debugStartPlayback();
+#endif
+
     juce::String windowTitle() const;
     std::function<void (const juce::String&)> onTitleChanged;
     std::function<void()> onOpenChooserRequested; // ⌘O: プロジェクトを閉じて選択画面へ（未保存確認はMainWindow側）
@@ -296,6 +303,7 @@ private:
     SynthBank synthBank; // メッセージスレッド専用。MIDIトラックのGM音源を管理
     UndoStack undoStack; // 構造編集のundo/redo（メッセージスレッド専用）
     PreviewFifo previewFifo;
+    AnalyzerTap analyzerTap; // EQエディタのスペクトラム用タップ（engineより先に構築・後に破棄）
     AudioFilePreview filePreview;
     PlaybackEngine engine { transport, snapshots, previewFifo };
 
@@ -306,6 +314,7 @@ private:
     FxDetailView fxDetail; // 下部のFX詳細（スロットクリックで開く。ピアノロールと排他・後勝ち）
     // 下部詳細に載せる中身（fxDetailは非所有なので、こちらが所有してfxDetailより長生きさせる）
     InstrumentDetailView instrumentDetail;
+    EqEditorView eqDetail; // トラックEQのエディタ（EQスロットクリックで載る）
     int fxDetailSlot = -1;        // 詳細が表示中のスロット（FXパネルの並びに対応）
     juce::String fxDetailKey;     // 詳細が対象にしているチャンネル（fxEditor.targetKey()と比較して追従判定）
 

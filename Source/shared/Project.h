@@ -367,7 +367,9 @@ public:
     //      projectを開いて保存するとキーを黙って消すため、追加時に版を上げている）/
     // v14: 採用ループのアンカー（loopAnchor。欠損＝未採用）とクリップの出自（clips[].loopSource。
     //      欠損＝ループ由来でない）。旧LaLaが開いて保存するとアンカーが黙って消えるため版を上げる
-    static constexpr int currentVersion = 14;
+    // v15: トラックEQの4バンド（fx.eq.bands 配列。欠損＝既定値。旧LaLaが開いて保存すると
+    //      バンド設定が黙って消えるため版を上げる）
+    static constexpr int currentVersion = 15;
 
     juce::File directory;
     double bpm = 120.0;

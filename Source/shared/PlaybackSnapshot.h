@@ -10,6 +10,8 @@
 // 「スナップショットが運ぶオーディオスレッド側オブジェクト」だからで、AUの
 // AudioPluginInstance と同じ立ち位置（unique_ptr のため完全型が必要）
 #include "../audio/SamplerEngine.h"
+#include "../audio/TrackEq.h"
+#include "EqParams.h"
 
 // send用固定バスの本数（Reverb A / Reverb B / Delay）。本数・並びは固定で、
 // UI・保存形式・エンジンすべてこの順序を前提にする（バスの作成・削除UIは作らない）
@@ -34,6 +36,17 @@ struct TrackParams
     // それまではUI＋保存のみで音に影響しない
     std::atomic<bool> eqEnabled { true };
     std::atomic<bool> compEnabled { true };
+
+    // トラックEQの4バンド（v15。並び・不変条件は shared/EqParams.h）。書き込みは必ず
+    // Eq::normalized() を通した値を Eq::store() すること。バス・Masterでは未使用のまま
+    Eq::BandParams eqBands[Eq::numBands];
+
+    // ---- 以下はオーディオスレッド専用（peakL/peakR・SynthInstance::activeNotes と同じ流儀）----
+    // EQのDSP実行状態（biquad履歴・平滑）。スナップショット再構築を跨いで持続させるためここに住む。
+    // **リアルタイム再生専用**: バウンスは BounceRenderer::TrackRender の独立インスタンスを使う
+    TrackEq rtEq;
+
+    TrackParams() { Eq::applyDefaults (eqBands); }
 
     // トラック出力のL/Rピークレベル（UIメーター用）。オーディオスレッドはCASでmax更新し、
     // UI（30Hz Timer）は exchange(0) で読み取りリセットする。1UIフレームに複数ブロックが

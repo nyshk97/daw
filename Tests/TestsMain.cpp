@@ -6,6 +6,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_formats/juce_audio_formats.h>
+#include <juce_dsp/juce_dsp.h> // EQの解析応答（getMagnitudeForFrequency）との照合用
 
 #include "audio/AudioImporter.h"
 #include "audio/AudioFilePreview.h"
@@ -32,6 +33,8 @@
 #include "shared/SpawnedProcess.h"
 #include "shared/TempDirSweep.h"
 #include "shared/AnalyzeProgress.h"
+#include "shared/AnalyzerTap.h"
+#include "shared/SpectrumAnalyzer.h"
 #include "shared/YtDlpOutput.h"
 #include "ui/AppLookAndFeel.h"
 #include "ui/BottomPanelHistory.h"
@@ -4634,6 +4637,769 @@ void testMixerParamsRoundtrip()
     dir.deleteRecursively();
 }
 
+// ---- TrackEq: サイン波を通した実測ゲインが解析応答（RBJの設計式）と一致すること ----
+// 合格基準は「係数から計算した解析応答と実信号の実測ゲインの一致」（planの冒頭）。
+// 入力振幅0.25のサイン波1秒を処理し、後半0.5秒のRMSからゲインを求める
+double measureEqGainDb (const Eq::Values& targets, bool eqOn, double freqHz, double sr)
+{
+    TrackEq eq;
+    eq.snapTo (sr, eqOn, targets);
+    constexpr int blockSize = 512;
+    const int totalBlocks = (int) (sr / blockSize) + 1;
+    juce::uint64 serial = 0;
+    std::vector<float> out;
+    out.reserve ((size_t) blockSize * (size_t) totalBlocks);
+    double phase = 0.0;
+    const double inc = juce::MathConstants<double>::twoPi * freqHz / sr;
+    float block[blockSize];
+    for (int b = 0; b < totalBlocks; ++b)
+    {
+        for (int i = 0; i < blockSize; ++i)
+        {
+            block[i] = (float) std::sin (phase) * 0.25f;
+            phase += inc;
+        }
+        eq.process (block, nullptr, blockSize, sr, ++serial, false, eqOn, targets);
+        out.insert (out.end(), block, block + blockSize);
+    }
+    double sum = 0.0;
+    const size_t half = out.size() / 2;
+    for (size_t i = half; i < out.size(); ++i)
+        sum += (double) out[i] * (double) out[i];
+    const double rms = std::sqrt (sum / (double) (out.size() - half));
+    return juce::Decibels::gainToDecibels (rms / (0.25 / std::sqrt (2.0)));
+}
+
+void testTrackEqResponse()
+{
+    beginTest ("track eq response vs analytic");
+    constexpr double sr = 48000.0;
+    const auto neutral = Eq::defaultValues();
+
+    // ---- ベル +6dB@1kHz Q1: 中心で+6dB・解析応答と一致 ----
+    {
+        auto targets = neutral;
+        targets[Eq::bell1] = Eq::normalized (Eq::bell1, { true, 1000.0f, 6.0f, 1.0f });
+        expect (std::abs (measureEqGainDb (targets, true, 1000.0, sr) - 6.0) < 0.15,
+                "ベル中心周波数で+6dB");
+        const auto analytic = juce::dsp::IIR::Coefficients<float>::makePeakFilter (
+            sr, 1000.0f, 1.0f, juce::Decibels::decibelsToGain (6.0f));
+        for (const double f : { 250.0, 1000.0, 4000.0 })
+        {
+            const double expected = juce::Decibels::gainToDecibels (
+                analytic->getMagnitudeForFrequency (f, sr));
+            expect (std::abs (measureEqGainDb (targets, true, f, sr) - expected) < 0.3,
+                    "実測ゲインが解析応答と一致（ベル）");
+        }
+    }
+
+    // ---- ハイパス 200Hz: カットオフで-3dB・遮断域はおよそ12dB/oct ----
+    {
+        auto targets = neutral;
+        targets[Eq::highpass] = Eq::normalized (Eq::highpass, { true, 200.0f, 0.0f, 0.0f });
+        expect (std::abs (measureEqGainDb (targets, true, 200.0, sr) - (-3.01)) < 0.3,
+                "HPカットオフで-3dB（Butterworth）");
+        const double g100 = measureEqGainDb (targets, true, 100.0, sr);
+        const double g50 = measureEqGainDb (targets, true, 50.0, sr);
+        expect (g100 - g50 > 10.0 && g100 - g50 < 14.0, "HP遮断域の傾きがおよそ12dB/oct");
+        const auto analytic = juce::dsp::IIR::Coefficients<float>::makeHighPass (sr, 200.0f, Eq::fixedQ);
+        const double expected50 = juce::Decibels::gainToDecibels (
+            analytic->getMagnitudeForFrequency (50.0, sr));
+        expect (std::abs (g50 - expected50) < 0.5, "実測ゲインが解析応答と一致（HP）");
+
+        // HPを無効にしたら（クロスフェード量0）素通しになること
+        auto hpOff = targets;
+        hpOff[Eq::highpass].enabled = false;
+        expect (std::abs (measureEqGainDb (hpOff, true, 50.0, sr)) < 0.05, "HP無効なら低域が素通し");
+    }
+
+    // ---- ハイシェルフ +4dB@10kHz: 棚の上で+4dB・解析応答と一致 ----
+    {
+        auto targets = neutral;
+        targets[Eq::highShelf] = Eq::normalized (Eq::highShelf, { true, 10000.0f, 4.0f, 0.0f });
+        const auto analytic = juce::dsp::IIR::Coefficients<float>::makeHighShelf (
+            sr, 10000.0f, Eq::fixedQ, juce::Decibels::decibelsToGain (4.0f));
+        for (const double f : { 4000.0, 16000.0 })
+        {
+            const double expected = juce::Decibels::gainToDecibels (
+                analytic->getMagnitudeForFrequency (f, sr));
+            expect (std::abs (measureEqGainDb (targets, true, f, sr) - expected) < 0.3,
+                    "実測ゲインが解析応答と一致（シェルフ）");
+        }
+    }
+
+    // ---- バイパス相当（中立・eqOff）は高速パス判定になること ----
+    {
+        TrackEq eq;
+        expect (! eq.needsActivePath (true, neutral, false), "中立は高速パス");
+        auto boosted = neutral;
+        boosted[Eq::bell1].gainDb = 6.0f;
+        expect (! eq.needsActivePath (false, boosted, false), "eqOffは高速パス");
+        expect (eq.needsActivePath (true, boosted, false), "非中立＋ONはactive");
+        expect (eq.needsActivePath (false, neutral, true), "アナライザタップ中はactive");
+    }
+}
+
+// ---- TrackEq: ON/OFF切替のクリック・時間ジャンプのリセット・中立化後の高速パス遷移 ----
+void testTrackEqTransitions()
+{
+    beginTest ("track eq transitions");
+    constexpr double sr = 48000.0;
+    constexpr int blockSize = 512;
+    const auto neutral = Eq::defaultValues();
+    auto boosted = neutral;
+    boosted[Eq::bell1] = Eq::normalized (Eq::bell1, { true, 1000.0f, 12.0f, 1.0f });
+    boosted[Eq::highpass] = Eq::normalized (Eq::highpass, { true, 300.0f, 0.0f, 0.0f });
+
+    // ---- eqEnabled・HPのON/OFFを繰り返してもNaN/Inf・不連続なサンプル跳躍が出ないこと ----
+    {
+        TrackEq eq;
+        eq.snapTo (sr, true, boosted);
+        juce::uint64 serial = 0;
+        double phase = 0.0;
+        const double inc = juce::MathConstants<double>::twoPi * 1000.0 / sr;
+        float previous = 0.0f;
+        float maxJump = 0.0f;
+        bool allFinite = true;
+        for (int b = 0; b < 40; ++b)
+        {
+            const bool eqOn = (b / 4) % 2 == 0;      // 4ブロックごとに全体ON/OFF
+            auto targets = boosted;
+            targets[Eq::highpass].enabled = (b / 8) % 2 == 0; // 8ブロックごとにHP ON/OFF
+            float block[blockSize];
+            for (int i = 0; i < blockSize; ++i)
+            {
+                block[i] = (float) std::sin (phase) * 0.5f;
+                phase += inc;
+            }
+            eq.process (block, nullptr, blockSize, sr, ++serial, false, eqOn, targets);
+            for (int i = 0; i < blockSize; ++i)
+            {
+                allFinite = allFinite && std::isfinite (block[i]);
+                maxJump = juce::jmax (maxJump, std::abs (block[i] - previous));
+                previous = block[i];
+            }
+        }
+        expect (allFinite, "切替中にNaN/Infが出ないこと");
+        // 1kHz/振幅0.5(+12dBで最大2.0)のサイン自体の最大傾斜は約0.26。クロスフェードなしの
+        // 瞬時切替なら波形差ぶんの跳躍（最大1.5規模）が出るので、この閾値で退行を検出できる
+        expect (maxJump < 0.5f, "切替がクロスフェードされ跳躍しないこと");
+    }
+
+    // ---- timelineJumped後の出力が「初期化直後」と決定的に一致すること（旧履歴の混入なし）----
+    {
+        TrackEq warmed, fresh;
+        warmed.snapTo (sr, true, boosted);
+        fresh.snapTo (sr, true, boosted);
+        juce::uint64 serial = 0;
+        float noise[blockSize];
+        juce::Random random (42);
+        for (int b = 0; b < 8; ++b) // warmedにだけ履歴を溜める
+        {
+            for (int i = 0; i < blockSize; ++i)
+                noise[i] = random.nextFloat() - 0.5f;
+            warmed.process (noise, nullptr, blockSize, sr, ++serial, false, true, boosted);
+        }
+        float a[blockSize], bBuf[blockSize];
+        for (int i = 0; i < blockSize; ++i)
+            a[i] = bBuf[i] = (float) std::sin ((double) i * 0.13) * 0.4f;
+        warmed.process (a, nullptr, blockSize, sr, ++serial, true, true, boosted); // ジャンプ
+        fresh.process (bBuf, nullptr, blockSize, sr, 1, false, true, boosted);
+        bool identical = true;
+        for (int i = 0; i < blockSize; ++i)
+            identical = identical && juce::exactlyEqual (a[i], bBuf[i]);
+        expect (identical, "ジャンプ後は初期化直後とビット一致（旧IIR履歴が混入しない）");
+    }
+
+    // ---- 中立へ戻した後、平滑完了までactiveに残り、その後高速パスへ移ること ----
+    {
+        TrackEq eq;
+        eq.snapTo (sr, true, boosted);
+        expect (eq.needsActivePath (true, boosted, false), "非中立はactive");
+        juce::uint64 serial = 0;
+        float block[blockSize];
+        auto runBlock = [&] (const Eq::Values& targets)
+        {
+            std::fill (block, block + blockSize, 0.1f);
+            eq.process (block, nullptr, blockSize, sr, ++serial, false, true, targets);
+        };
+        runBlock (boosted);
+        runBlock (neutral); // 目標を中立へ（HPも無効へ）
+        expect (eq.needsActivePath (true, neutral, false),
+                "中立化直後は平滑が残るのでactiveに留まる");
+        for (int b = 0; b < 20; ++b) // 20ブロック≒213ms >> 平滑20ms
+            runBlock (neutral);
+        expect (! eq.needsActivePath (true, neutral, false), "平滑完了後は高速パスへ移れる");
+    }
+}
+
+// ---- EQバンド: 既定値・保存/復元・旧version補完・不変条件の正規化（v15）----
+void testEqParamsRoundtrip()
+{
+    beginTest ("eq params roundtrip");
+
+    // 新規TrackParamsの既定値（HP=OFF/80Hz・ベル250/3.5k・シェルフ10k・全gain 0dB）
+    TrackParams fresh;
+    expect (! fresh.eqBands[Eq::highpass].enabled.load()
+                && juce::approximatelyEqual (fresh.eqBands[Eq::highpass].freqHz.load(), 80.0f),
+            "既定: HPはOFF・80Hz");
+    expect (juce::approximatelyEqual (fresh.eqBands[Eq::bell1].freqHz.load(), 250.0f)
+                && juce::approximatelyEqual (fresh.eqBands[Eq::bell2].freqHz.load(), 3500.0f)
+                && juce::approximatelyEqual (fresh.eqBands[Eq::highShelf].freqHz.load(), 10000.0f),
+            "既定: ベル250/3500・シェルフ10000");
+    expect (Eq::isNeutral (Eq::loadAll (fresh.eqBands)), "既定値は中立（音を変えない）");
+
+    // 値を入れて保存 → 再読込で維持される
+    auto dir = makeTempDir();
+    juce::String error;
+    juce::StringArray warnings;
+    {
+        Project project;
+        project.directory = dir;
+        Track track;
+        track.id = project.allocateId();
+        project.tracks.push_back (std::move (track));
+        auto& params = *project.tracks[0].params;
+        Eq::store (params.eqBands[Eq::highpass], Eq::normalized (Eq::highpass, { true, 120.0f, 0.0f, 0.0f }));
+        Eq::store (params.eqBands[Eq::bell1], Eq::normalized (Eq::bell1, { true, 300.0f, -3.5f, 2.0f }));
+        Eq::store (params.eqBands[Eq::bell2], Eq::normalized (Eq::bell2, { true, 5000.0f, 4.0f, 0.5f }));
+        Eq::store (params.eqBands[Eq::highShelf], Eq::normalized (Eq::highShelf, { true, 12000.0f, 2.0f, 0.0f }));
+        expect (project.save (error), "保存できること");
+    }
+    const auto parsed = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
+    expect ((int) parsed.getProperty ("version", 0) == 15, "v15で保存されること");
+
+    auto reloaded = Project::load (dir, warnings, error);
+    expect (reloaded != nullptr && reloaded->tracks.size() == 1, "再読込できること");
+    if (reloaded != nullptr && ! reloaded->tracks.empty())
+    {
+        const auto bands = Eq::loadAll (reloaded->tracks[0].params->eqBands);
+        expect (bands[Eq::highpass].enabled
+                    && juce::approximatelyEqual (bands[Eq::highpass].freqHz, 120.0f)
+                    && juce::approximatelyEqual (bands[Eq::highpass].q, Eq::fixedQ),
+                "HP維持（enabled/freq。Qは固定値）");
+        expect (juce::approximatelyEqual (bands[Eq::bell1].freqHz, 300.0f)
+                    && juce::approximatelyEqual (bands[Eq::bell1].gainDb, -3.5f)
+                    && juce::approximatelyEqual (bands[Eq::bell1].q, 2.0f),
+                "ベル1維持（freq/gain/q）");
+        expect (juce::approximatelyEqual (bands[Eq::bell2].gainDb, 4.0f)
+                    && juce::approximatelyEqual (bands[Eq::bell2].q, 0.5f),
+                "ベル2維持");
+        expect (juce::approximatelyEqual (bands[Eq::highShelf].gainDb, 2.0f)
+                    && juce::approximatelyEqual (bands[Eq::highShelf].q, Eq::fixedQ),
+                "シェルフ維持（Qは固定値）");
+        expect (! Eq::isNeutral (bands), "非中立と判定されること");
+    }
+    dir.deleteRecursively();
+
+    // v14形式（bands欠損）→ 既定値補完
+    auto dirV14 = makeTempDir();
+    dirV14.getChildFile ("project.json").replaceWithText (R"({
+        "version": 14, "bpm": 120.0, "sampleRate": 0.0, "nextId": 2,
+        "tracks": [ { "id": 1, "type": "audio", "name": "t",
+                      "mute": false, "solo": false, "volume": 0.5,
+                      "fx": { "eq": { "enabled": false }, "comp": { "enabled": true } },
+                      "clips": [] } ]
+    })");
+    auto projectV14 = Project::load (dirV14, warnings, error);
+    expect (projectV14 != nullptr && projectV14->tracks.size() == 1, "v14を読込めること");
+    if (projectV14 != nullptr && ! projectV14->tracks.empty())
+    {
+        const auto bands = Eq::loadAll (projectV14->tracks[0].params->eqBands);
+        expect (! bands[Eq::highpass].enabled
+                    && juce::approximatelyEqual (bands[Eq::bell1].freqHz, 250.0f)
+                    && juce::approximatelyEqual (bands[Eq::bell1].gainDb, 0.0f),
+                "v14読込: バンドは既定値補完");
+        expect (! projectV14->tracks[0].params->eqEnabled.load(), "v14読込: eq.enabledは維持");
+    }
+    dirV14.deleteRecursively();
+
+    // 不正データの正規化: UIから戻せない隠れ状態（ベルenabled=false・シェルフq変更・HPのgain・
+    // 範囲外値）を読込時に潰す
+    auto dirBad = makeTempDir();
+    dirBad.getChildFile ("project.json").replaceWithText (R"({
+        "version": 15, "bpm": 120.0, "sampleRate": 0.0, "nextId": 2,
+        "tracks": [ { "id": 1, "type": "audio", "name": "t",
+                      "mute": false, "solo": false, "volume": 0.5,
+                      "fx": { "eq": { "enabled": true, "bands": [
+                          { "enabled": true, "freq": 5000.0, "gain": 6.0, "q": 5.0 },
+                          { "enabled": false, "freq": 5.0, "gain": 100.0, "q": 0.01 },
+                          { "enabled": true, "freq": 30000.0, "gain": -100.0, "q": 50.0 },
+                          { "enabled": false, "freq": 100.0, "gain": 3.0, "q": 3.0 }
+                      ] }, "comp": { "enabled": true } },
+                      "clips": [] } ]
+    })");
+    auto projectBad = Project::load (dirBad, warnings, error);
+    expect (projectBad != nullptr && projectBad->tracks.size() == 1, "不正バンドでも読込めること");
+    if (projectBad != nullptr && ! projectBad->tracks.empty())
+    {
+        const auto bands = Eq::loadAll (projectBad->tracks[0].params->eqBands);
+        expect (juce::approximatelyEqual (bands[Eq::highpass].freqHz, 1000.0f)
+                    && juce::approximatelyEqual (bands[Eq::highpass].gainDb, 0.0f)
+                    && juce::approximatelyEqual (bands[Eq::highpass].q, Eq::fixedQ),
+                "HP: freqは上限1kへクランプ・gain無視・Q固定");
+        expect (bands[Eq::bell1].enabled
+                    && juce::approximatelyEqual (bands[Eq::bell1].freqHz, 20.0f)
+                    && juce::approximatelyEqual (bands[Eq::bell1].gainDb, Eq::maxGainDb)
+                    && juce::approximatelyEqual (bands[Eq::bell1].q, Eq::minQ),
+                "ベル1: enabled=true強制・freq/gain/qクランプ");
+        expect (juce::approximatelyEqual (bands[Eq::bell2].freqHz, 20000.0f)
+                    && juce::approximatelyEqual (bands[Eq::bell2].gainDb, -Eq::maxGainDb)
+                    && juce::approximatelyEqual (bands[Eq::bell2].q, Eq::maxQ),
+                "ベル2: 上限側クランプ");
+        expect (bands[Eq::highShelf].enabled
+                    && juce::approximatelyEqual (bands[Eq::highShelf].freqHz, 1000.0f)
+                    && juce::approximatelyEqual (bands[Eq::highShelf].q, Eq::fixedQ),
+                "シェルフ: enabled=true強制・freq下限1k・Q固定");
+    }
+    dirBad.deleteRecursively();
+}
+
+// ---- スペクトラムアナライザ: 正規化・L/Rパワー平均・floor・世代照合 ----
+void testSpectrumAnalyzer()
+{
+    beginTest ("spectrum analyzer");
+    constexpr double sr = 48000.0;
+
+    // bin中心のサイン波を blockSamples 単位で積む（世代・trackIdはタップの現在値が付く）
+    auto pushSine = [] (AnalyzerTap& tap, juce::uint64 trackId, double freq, float amp,
+                        int totalSamples, bool antiphaseRight)
+    {
+        std::vector<float> left (AnalyzerTap::blockSamples), right (AnalyzerTap::blockSamples);
+        double phase = 0.0;
+        const double inc = juce::MathConstants<double>::twoPi * freq / sr;
+        for (int pushed = 0; pushed < totalSamples; pushed += AnalyzerTap::blockSamples)
+        {
+            for (int i = 0; i < AnalyzerTap::blockSamples; ++i)
+            {
+                left[(size_t) i] = (float) std::sin (phase) * amp;
+                right[(size_t) i] = antiphaseRight ? -left[(size_t) i] : left[(size_t) i];
+                phase += inc;
+            }
+            tap.pushSamples (trackId, left.data(), right.data(), AnalyzerTap::blockSamples);
+        }
+    };
+
+    // 表示ビンのindex（対象周波数に最も近いもの）
+    auto displayBinFor = [] (double freq)
+    {
+        int best = 0;
+        double bestDiff = 1.0e12;
+        for (int i = 0; i < SpectrumAnalyzer::numBins; ++i)
+        {
+            const double diff = std::abs ((double) SpectrumAnalyzer::binFrequency (i) - freq);
+            if (diff < bestDiff)
+            {
+                bestDiff = diff;
+                best = i;
+            }
+        }
+        return best;
+    };
+
+    const double binCenterFreq = 256.0 * sr / SpectrumAnalyzer::fftSize; // = 3000Hz（FFT bin 256）
+
+    // ---- フルスケールのサイン波がbin中心で 0dBFS になること（振幅正規化・窓補正・片側補正）----
+    {
+        AnalyzerTap tap;
+        SpectrumAnalyzer analyzer;
+        tap.setTarget (1, true);
+        pushSine (tap, 1, binCenterFreq, 1.0f, SpectrumAnalyzer::fftSize + SpectrumAnalyzer::hopSize,
+                  false);
+        expect (analyzer.update (tap, sr), "フレームが生成されること");
+        const float peak = analyzer.magnitudesDb()[(size_t) displayBinFor (binCenterFreq)];
+        expect (std::abs (peak - 0.0f) < 0.3f, "フルスケールサインがbin中心で0dBFS");
+        // 離れた帯域はサイドローブ床まで落ちること（100Hz付近）
+        expect (analyzer.magnitudesDb()[(size_t) displayBinFor (100.0)] < -50.0f,
+                "離れた帯域は-50dB以下");
+    }
+
+    // ---- 振幅0.1（-20dBFS）の正確さ ----
+    {
+        AnalyzerTap tap;
+        SpectrumAnalyzer analyzer;
+        tap.setTarget (1, true);
+        pushSine (tap, 1, binCenterFreq, 0.1f, SpectrumAnalyzer::fftSize + SpectrumAnalyzer::hopSize,
+                  false);
+        expect (analyzer.update (tap, sr), "フレームが生成されること");
+        const float peak = analyzer.magnitudesDb()[(size_t) displayBinFor (binCenterFreq)];
+        expect (std::abs (peak - (-20.0f)) < 0.3f, "振幅0.1は-20dBFS");
+    }
+
+    // ---- L/R逆相でもパワー平均後の表示が消えないこと（モノ和なら打ち消えて床に落ちる）----
+    {
+        AnalyzerTap tap;
+        SpectrumAnalyzer analyzer;
+        tap.setTarget (1, true);
+        pushSine (tap, 1, binCenterFreq, 1.0f, SpectrumAnalyzer::fftSize + SpectrumAnalyzer::hopSize,
+                  true);
+        expect (analyzer.update (tap, sr), "フレームが生成されること");
+        const float peak = analyzer.magnitudesDb()[(size_t) displayBinFor (binCenterFreq)];
+        expect (std::abs (peak - 0.0f) < 0.3f, "L/R逆相でも0dBFSのまま（パワー平均）");
+    }
+
+    // ---- 無音はfloor（-60dB）----
+    {
+        AnalyzerTap tap;
+        SpectrumAnalyzer analyzer;
+        tap.setTarget (1, true);
+        std::vector<float> silence (AnalyzerTap::blockSamples, 0.0f);
+        for (int pushed = 0; pushed < SpectrumAnalyzer::fftSize + SpectrumAnalyzer::hopSize;
+             pushed += AnalyzerTap::blockSamples)
+            tap.pushSamples (1, silence.data(), nullptr, AnalyzerTap::blockSamples);
+        expect (analyzer.update (tap, sr), "無音でもフレームは生成されること");
+        bool allFloor = true;
+        for (const float db : analyzer.magnitudesDb())
+            allFloor = allFloor && juce::approximatelyEqual (db, SpectrumAnalyzer::floorDb);
+        expect (allFloor, "無音は全ビンがfloor（-60dB）");
+    }
+
+    // ---- 世代の異なるブロックが混ざらないこと（切替直後にキューへ残った旧データを弾く）----
+    {
+        AnalyzerTap tap;
+        SpectrumAnalyzer analyzer;
+        tap.setTarget (1, true);
+        pushSine (tap, 1, binCenterFreq, 1.0f, SpectrumAnalyzer::fftSize + SpectrumAnalyzer::hopSize,
+                  false); // 旧世代のデータがFIFOに溜まった状態
+        tap.setTarget (2, true); // 表示対象を切替（世代が進む）
+        expect (! analyzer.update (tap, sr), "旧世代のブロックからはフレームを作らない");
+        bool allFloor = true;
+        for (const float db : analyzer.magnitudesDb())
+            allFloor = allFloor && juce::approximatelyEqual (db, SpectrumAnalyzer::floorDb);
+        expect (allFloor, "切替後は旧トラックのスペクトルが残らない");
+    }
+}
+
+// ---- アナライザのタップはフェーダー前: フェーダー0でも表示信号が流れ、出力は無音のまま ----
+void testEngineAnalyzerPreFaderTap()
+{
+    beginTest ("engine analyzer pre-fader tap");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+    constexpr int numBlocks = 8;
+    constexpr int totalSamples = blockSize * numBlocks;
+
+    Project project;
+    {
+        Track track;
+        track.id = 7;
+        track.params->gain.store (0.0f); // フェーダーを完全に下げる
+        Clip clip;
+        clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, totalSamples);
+        for (int i = 0; i < totalSamples; ++i)
+            clip.audio->setSample (0, i, std::sin ((float) i * 0.1f) * 0.5f);
+        clip.lengthSamples = totalSamples;
+        track.clips.push_back (std::move (clip));
+        project.tracks.push_back (std::move (track));
+    }
+
+    TransportState transport;
+    SnapshotExchange snapshots;
+    PreviewFifo previewFifo;
+    AnalyzerTap tap;
+    PlaybackEngine engine (transport, snapshots, previewFifo);
+    engine.setAnalyzerTap (&tap);
+    tap.setTarget (7, true);
+    engine.prepareToPlay (blockSize, sr);
+    snapshots.push (project.buildSnapshot());
+    transport.seekRequest.store (0);
+    engine.play();
+
+    float outputPeak = 0.0f;
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    for (int blockIndex = 0; blockIndex < numBlocks; ++blockIndex)
+    {
+        buffer.clear();
+        juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+        engine.process (info);
+        for (int ch = 0; ch < 2; ++ch)
+            outputPeak = juce::jmax (outputPeak, buffer.getMagnitude (ch, 0, blockSize));
+    }
+    engine.stop();
+    snapshots.deleteRetired();
+
+    expect (outputPeak < 1.0e-6f, "フェーダー0の出力は無音のまま");
+
+    AnalyzerTap::Header header;
+    std::vector<float> left (AnalyzerTap::blockSamples), right (AnalyzerTap::blockSamples);
+    int blocks = 0;
+    float tapPeak = 0.0f;
+    while (tap.popBlock (header, left.data(), right.data()))
+    {
+        ++blocks;
+        expect (header.trackId == 7, "タップのtrackIdが正しいこと");
+        for (const float v : left)
+            tapPeak = juce::jmax (tapPeak, std::abs (v));
+    }
+    expect (blocks > 0, "フェーダー0でもタップにブロックが流れること（pre-fader）");
+    expect (tapPeak > 0.3f, "タップ信号はフェーダー前のフル振幅であること");
+}
+
+// ---- 通常バウンス: オーディオトラックEQのリングアウトが曲末で切れず、RTと一致すること ----
+void testBounceEqTail()
+{
+    beginTest ("bounce eq ring-out tail");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+    constexpr int numBlocks = 16;
+    constexpr int totalSamples = blockSize * numBlocks; // クリップ終端＝書き出し範囲終端
+    constexpr int tailCompare = 2048;                   // 終端直後の比較区間
+
+    Project project;
+    {
+        Track track;
+        track.id = 1;
+        track.params->gain.store (1.0f);
+        // 高Q・大ブーストのベル（100Hz）: リングアウトが数百msの規模で残る設定
+        Eq::store (track.params->eqBands[Eq::bell1],
+                   Eq::normalized (Eq::bell1, { true, 100.0f, 24.0f, 10.0f }));
+        Clip clip;
+        clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, totalSamples);
+        const double inc = juce::MathConstants<double>::twoPi * 100.0 / sr;
+        for (int i = 0; i < totalSamples; ++i)
+            clip.audio->setSample (0, i, (float) std::sin (inc * i) * 0.05f);
+        clip.lengthSamples = totalSamples;
+        track.clips.push_back (std::move (clip));
+        project.tracks.push_back (std::move (track));
+    }
+
+    // RT: 範囲終端を越えて処理を続け、リングアウトを採取する
+    juce::AudioBuffer<float> engineOut (2, totalSamples + tailCompare);
+    {
+        TransportState transport;
+        SnapshotExchange snapshots;
+        PreviewFifo previewFifo;
+        PlaybackEngine engine (transport, snapshots, previewFifo);
+        engine.prepareToPlay (blockSize, sr);
+        snapshots.push (project.buildSnapshot());
+        transport.seekRequest.store (0);
+        engine.play();
+        juce::AudioBuffer<float> buffer (2, blockSize);
+        for (int blockIndex = 0; blockIndex < numBlocks + tailCompare / blockSize; ++blockIndex)
+        {
+            buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+            engine.process (info);
+            for (int ch = 0; ch < 2; ++ch)
+                engineOut.copyFrom (ch, blockIndex * blockSize, buffer, ch, 0, blockSize);
+        }
+        engine.stop();
+        snapshots.deleteRetired();
+    }
+
+    const auto dir = makeTempDir();
+    const auto target = dir.getChildFile ("bounce-eq-tail.wav");
+    juce::int64 writtenSamples = 0;
+    {
+        BounceRenderer::Request request;
+        request.sampleRate = sr;
+        request.bpm = 120.0;
+        request.endSample = totalSamples;
+        request.wantTail = true; // MainComponentがEQ有効オーディオトラックで立てる判断のミラー
+        request.targetFile = target;
+        for (auto& track : project.tracks)
+        {
+            BounceRenderer::TrackRender render;
+            render.gain = track.params->gain.load();
+            render.eqEnabled = track.params->eqEnabled.load();
+            render.eqBands = Eq::loadAll (track.params->eqBands);
+            for (auto& clip : track.clips)
+                appendClipPlaybacks (clip, render.clips);
+            request.tracks.push_back (std::move (render));
+        }
+        BounceRenderer renderer;
+        expect (renderer.start (std::move (request)), "startできること");
+        expect (waitForBounce (renderer), "タイムアウトせず完了すること");
+        const auto result = renderer.takeResult();
+        expect (result.status == BounceRenderer::Status::success, "successで終わること");
+        writtenSamples = result.writtenSamples;
+    }
+
+    expect (writtenSamples > totalSamples, "リングアウトのテールが書き出されること");
+
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatReader> reader (
+        wav.createReaderFor (new juce::FileInputStream (target), true));
+    expect (reader != nullptr && reader->lengthInSamples >= totalSamples + tailCompare,
+            "テール込みの長さで読めること");
+    if (reader != nullptr && reader->lengthInSamples >= totalSamples + tailCompare)
+    {
+        juce::AudioBuffer<float> bounceOut (2, totalSamples + tailCompare);
+        reader->read (&bounceOut, 0, totalSamples + tailCompare, 0, true, true);
+
+        float tailPeak = 0.0f;
+        float maxDiff = 0.0f;
+        for (int i = totalSamples; i < totalSamples + tailCompare; ++i)
+        {
+            tailPeak = juce::jmax (tailPeak, std::abs (bounceOut.getSample (0, i)));
+            for (int ch = 0; ch < 2; ++ch)
+                maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (ch, i)
+                                                         - bounceOut.getSample (ch, i)));
+        }
+        expect (tailPeak > 1.0e-3f, "終端直後にリングアウトが実在すること");
+        expect (maxDiff < 1.0e-4f, "リングアウトがRT再生と一致すること");
+    }
+    reader.reset();
+    dir.deleteRecursively();
+}
+
+// ---- EQ有効時のエンジンとバウンスの一致（同じ処理順で通っていることの証明）----
+void testEngineEqBounceConsistency()
+{
+    beginTest ("engine vs bounce with active eq");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+    constexpr int numBlocks = 16;
+    constexpr int totalSamples = blockSize * numBlocks;
+    // RT側は再生開始時にdryからのクロスフェードイン（約10ms=441サンプル）があるため、
+    // 先頭は比較から除外する（バウンスは開始時に確定値へスナップする仕様）
+    constexpr int compareFrom = 2048;
+
+    auto makeAudio = [] (int channels, int len, float scale)
+    {
+        auto buffer = std::make_shared<juce::AudioBuffer<float>> (channels, len);
+        juce::Random random (7);
+        for (int ch = 0; ch < channels; ++ch)
+            for (int i = 0; i < len; ++i)
+                buffer->setSample (ch, i,
+                                   (std::sin ((float) i * 0.05f + (float) ch) * 0.3f
+                                    + (random.nextFloat() - 0.5f) * 0.2f) * scale);
+        return buffer;
+    };
+
+    Project project;
+    {
+        Track track; // ステレオクリップ＋ベルブースト＋send
+        track.id = 1;
+        track.params->gain.store (0.8f);
+        track.params->pan.store (0.3f);
+        track.params->sends[1].store (0.4f);
+        Eq::store (track.params->eqBands[Eq::bell1],
+                   Eq::normalized (Eq::bell1, { true, 500.0f, 6.0f, 1.2f }));
+        Clip clip;
+        clip.audio = makeAudio (2, totalSamples, 1.0f);
+        clip.lengthSamples = totalSamples;
+        track.clips.push_back (std::move (clip));
+        project.tracks.push_back (std::move (track));
+    }
+    {
+        Track track; // モノクリップ＋HP＋シェルフ
+        track.id = 2;
+        track.params->gain.store (0.7f);
+        track.params->pan.store (-0.5f);
+        Eq::store (track.params->eqBands[Eq::highpass],
+                   Eq::normalized (Eq::highpass, { true, 150.0f, 0.0f, 0.0f }));
+        Eq::store (track.params->eqBands[Eq::highShelf],
+                   Eq::normalized (Eq::highShelf, { true, 8000.0f, 3.0f, 0.0f }));
+        Clip clip;
+        clip.audio = makeAudio (1, totalSamples, 0.8f);
+        clip.lengthSamples = totalSamples;
+        track.clips.push_back (std::move (clip));
+        project.tracks.push_back (std::move (track));
+    }
+    project.busParams[1]->gain.store (0.9f);
+    project.masterParams->gain.store (0.85f);
+
+    auto renderEngine = [&] (juce::AudioBuffer<float>& out)
+    {
+        TransportState transport;
+        SnapshotExchange snapshots;
+        PreviewFifo previewFifo;
+        PlaybackEngine engine (transport, snapshots, previewFifo);
+        engine.prepareToPlay (blockSize, sr);
+        snapshots.push (project.buildSnapshot());
+        transport.seekRequest.store (0);
+        engine.play();
+        juce::AudioBuffer<float> buffer (2, blockSize);
+        for (int blockIndex = 0; blockIndex < numBlocks; ++blockIndex)
+        {
+            buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+            engine.process (info);
+            for (int ch = 0; ch < 2; ++ch)
+                out.copyFrom (ch, blockIndex * blockSize, buffer, ch, 0, blockSize);
+        }
+        engine.stop();
+        snapshots.deleteRetired();
+    };
+
+    juce::AudioBuffer<float> engineOut (2, totalSamples);
+    renderEngine (engineOut);
+
+    // EQが実際に効いていること（中立との差がある）を先に確認する
+    // — 両経路で「EQが掛かっていない」ままの空一致で通ることを防ぐ
+    {
+        Eq::Values savedBell = Eq::loadAll (project.tracks[0].params->eqBands);
+        Eq::Values savedHp = Eq::loadAll (project.tracks[1].params->eqBands);
+        Eq::applyDefaults (project.tracks[0].params->eqBands);
+        Eq::applyDefaults (project.tracks[1].params->eqBands);
+        juce::AudioBuffer<float> neutralOut (2, totalSamples);
+        renderEngine (neutralOut);
+        float maxDiff = 0.0f;
+        for (int i = compareFrom; i < totalSamples; ++i)
+            maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (0, i)
+                                                     - neutralOut.getSample (0, i)));
+        expect (maxDiff > 1.0e-3f, "EQありは中立と出力が異なること（EQが実際に効いている）");
+        for (int i = 0; i < Eq::numBands; ++i)
+        {
+            Eq::store (project.tracks[0].params->eqBands[i], savedBell[(size_t) i]);
+            Eq::store (project.tracks[1].params->eqBands[i], savedHp[(size_t) i]);
+        }
+    }
+
+    // バウンス側（TrackRenderへプレーン値コピー＝本番と同じ流儀）
+    const auto dir = makeTempDir();
+    const auto target = dir.getChildFile ("bounce-eq.wav");
+    {
+        BounceRenderer::Request request;
+        request.sampleRate = sr;
+        request.bpm = 120.0;
+        request.endSample = totalSamples;
+        request.targetFile = target;
+        request.busGain[1] = 0.9f;
+        request.masterGain = 0.85f;
+        for (auto& track : project.tracks)
+        {
+            BounceRenderer::TrackRender render;
+            render.gain = track.params->gain.load();
+            render.pan = track.params->pan.load();
+            for (int busIndex = 0; busIndex < numSendBuses; ++busIndex)
+                render.sends[busIndex] = track.params->sends[busIndex].load();
+            render.eqEnabled = track.params->eqEnabled.load();
+            render.eqBands = Eq::loadAll (track.params->eqBands);
+            for (auto& clip : track.clips)
+                appendClipPlaybacks (clip, render.clips);
+            request.tracks.push_back (std::move (render));
+        }
+        BounceRenderer renderer;
+        expect (renderer.start (std::move (request)), "startできること");
+        expect (waitForBounce (renderer), "タイムアウトせず完了すること");
+        expect (renderer.takeResult().status == BounceRenderer::Status::success, "successで終わること");
+    }
+
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatReader> reader (
+        wav.createReaderFor (new juce::FileInputStream (target), true));
+    expect (reader != nullptr && reader->lengthInSamples == totalSamples, "バウンス出力を読めること");
+    if (reader != nullptr && reader->lengthInSamples == totalSamples)
+    {
+        juce::AudioBuffer<float> bounceOut (2, totalSamples);
+        reader->read (&bounceOut, 0, totalSamples, 0, true, true);
+        float maxDiff = 0.0f;
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = compareFrom; i < totalSamples; ++i)
+                maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (ch, i)
+                                                         - bounceOut.getSample (ch, i)));
+        // 24bit量子化＋浮動小数点の積和順序差ぶんの許容誤差（フェードイン区間は除外済み）
+        expect (maxDiff < 1.0e-4f, "EQ有効時もエンジンとバウンスが許容誤差内で一致すること");
+    }
+    reader.reset();
+    dir.deleteRecursively();
+}
+
 // ---- エンジン: pan法則・post-fader send（素通しバス）・busGain/mute・Masterゲイン・メーター ----
 void testEnginePanSendsMaster()
 {
@@ -6232,7 +6998,7 @@ void testLoopAnchorRoundtrip()
 
     expect (project->save (error), "保存できること");
     const auto saved = juce::JSON::parse (project->directory.getChildFile ("project.json").loadFileAsString());
-    expect ((int) saved.getProperty ("version", 0) == 14, "v14で保存されること");
+    expect ((int) saved.getProperty ("version", 0) == Project::currentVersion, "現行バージョンで保存されること");
     expect (saved.getProperty ("loopAnchor", {}).isObject(), "loopAnchorが保存されること");
 
     juce::StringArray warnings;
@@ -9114,7 +9880,7 @@ void testProjectKey()
     expect (project.save (error), "未設定のまま保存できる");
     {
         const auto parsed = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
-        expect ((int) parsed.getProperty ("version", 0) == 14, "currentVersion は 14");
+        expect ((int) parsed.getProperty ("version", 0) == Project::currentVersion, "現行バージョンで保存されること");
         expect (! parsed.hasProperty ("key"), "未設定は JSON を汚さない");
         auto reloaded = Project::load (dir, warnings, error);
         expect (reloaded != nullptr && ! reloaded->key.has_value(), "未設定のまま往復する");
@@ -9329,6 +10095,13 @@ int main()
     testBuildItemRender();
     testProjectMemoRoundtrip();
     testMixerParamsRoundtrip();
+    testEqParamsRoundtrip();
+    testTrackEqResponse();
+    testTrackEqTransitions();
+    testEngineEqBounceConsistency();
+    testSpectrumAnalyzer();
+    testEngineAnalyzerPreFaderTap();
+    testBounceEqTail();
     testEnginePanSendsMaster();
     testEngineOutputChannelRule();
     testPreviewThroughMaster();

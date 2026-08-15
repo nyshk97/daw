@@ -18,6 +18,23 @@ open build/daw_artefacts/Debug/LaLa-dev.app
 sleep 3 && pgrep -fl "LaLa-dev.app/Contents/MacOS/LaLa-dev"   # プロセス生存確認
 ```
 
+### dev版の検証フック（起動引数。Main.cpp・実機能と同一経路）
+
+合成クリック・フォーカス奪取なしでUI検証まで通せる（Salvaの `--snapshot` と同じ流儀）:
+
+```sh
+open -g build/daw_artefacts/Debug/LaLa-dev.app --args \
+  --open ~/Music/daw/<プロジェクト名> --eq-editor --play --snapshot /tmp/check.png
+sleep 6 && tail -5 ~/Library/Logs/daw/"$(ls -t ~/Library/Logs/daw | head -1)"  # debug.snapshot ok=1 を確認
+```
+
+- `--open <projectDir>`: 選択画面を迂回してプロジェクトを開く（ログ `project.open`）
+- `--eq-editor`: FXパネル＋EQ詳細エディタを開く（ログ `fxdetail.open fx=EQ`）
+- `--play`: 開いた後に再生開始（ログ `transport.play`）。**音を出したくない検証**はトラックの
+  `volume: 0.001`（-60dB＝実質無音）にする — EQのアナライザはフェーダー前タップなので表示はフルに出る
+- `--snapshot <path>`: 表示完了後（2秒後）のUIをPNG保存（createComponentSnapshot。別Spaceでも
+  ユーザーのフォーカスも奪わない。ログ `debug.snapshot ok=1` で裏取り）
+
 - 起動するとプロジェクト選択画面が出る（`~/Music/daw/` のフォルダ一覧＋新規作成）
 - **2つ目のインスタンスは起動できない**（`moreThanOneInstanceAllowed() == false`）。`open -n` でも既存インスタンスが前面化されるだけなので、新旧バイナリの並行確認はできない（dev版とRelease版はbundle idが別なので同時起動は可能）。「起動したのにログへ `session.start` が増えない」ときはこれ
 - **実機の状態はウィンドウタイトルで読める**（`CGWindowListCopyWindowInfo` の name）: `LaLa-dev` だけなら選択画面、`LaLa-dev — <プロジェクト名>` ならメイン画面、**末尾の `●` は未保存**。`●` があるときにquitすると保存ダイアログが出てユーザーの作業を止めるので、起動中インスタンスをquit・再起動する前に ①タイトルの `●` ②アプリログ末尾の操作イベント ③`ioreg -c IOHIDSystem` のHIDIdleTime ④frontmostプロセス、を確認する

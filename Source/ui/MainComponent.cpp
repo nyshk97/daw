@@ -219,6 +219,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     {
         setDirty (true);
         mixerWindow.content().refreshValues(); // ミキサーのスロットピルもeqEnabled/compEnabledを表示する（非表示時はno-op）
+        eqDetail.refreshFromModel();  // eqEnabledはEQエディタのカーブ表示（バイパスで沈める）にも効く
     };
     fxEditor.onVolumeChanged = [this]
     {
@@ -259,6 +260,14 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         // ピアノロールの固定行（forcedPitch）が切り替わる。pushSnapshot内のrefreshFromModelが描き直す
         timeline.refresh();
     };
+    // 下部詳細に載せる EQ エディタ。値の書き込みはビュー側（atomic直書き・undo対象外＝フェーダーと
+    // 同じ扱い）。dirty化だけ受ける。カーブ計算のSRはデバイス追従（未確定は48kで描く: 形はSR依存が
+    // ほぼ無く、確定後のrepaintで正しくなる）
+    eqDetail.onEdited = [this] { setDirty (true); };
+    eqDetail.getSampleRate = [this] { return transport.sampleRate.load(); };
+    eqDetail.setAnalyzerTap (&analyzerTap);
+    engine.setAnalyzerTap (&analyzerTap);
+
     instrumentDetail.onPreview = [this] (int pitch)
     {
         if (transport.isPlaying.load() || engine.isRecording())
@@ -1453,6 +1462,20 @@ void MainComponent::closeRightPanel()
     resized();
 }
 
+#if JUCE_DEBUG
+void MainComponent::debugOpenEqDetail()
+{
+    openFxEditor();
+    toggleFxDetailSlot (0); // 0 = EQ（トラック表示時のスロット番号）
+}
+
+void MainComponent::debugStartPlayback()
+{
+    if (! transport.isPlaying.load())
+        togglePlay();
+}
+#endif
+
 void MainComponent::toggleFxDetailSlot (int slot)
 {
     if (fxDetail.isOpen() && fxDetailSlot == slot && fxDetailKey == fxEditor.targetKey())
@@ -1481,6 +1504,7 @@ void MainComponent::closeFxDetail()
     Log::info ("fxdetail.close");
     fxDetail.close(); // 中身（body）の参照はclose側で外れる
     instrumentDetail.setTrack (nullptr);
+    eqDetail.setTrack (nullptr);
     fxDetailSlot = -1;
     fxDetailKey.clear();
     fxEditor.setActiveSlot (-1);
@@ -1512,8 +1536,8 @@ void MainComponent::syncFxDetail()
     closeFxDetail();
 }
 
-// 下部詳細の中身の載せ替え。Instrumentスロットのときだけ InstrumentDetailView を載せる
-// （他のFXは未実装なので空パネルのまま。EQ/Compのエディタも将来ここに足す）。
+// 下部詳細の中身の載せ替え。Instrumentスロット→InstrumentDetailView、トラックのEQスロット→
+// EqEditorView（他のFXは未実装なので空パネルのまま。Compのエディタも将来ここに足す）。
 // サンプルを持たないトラックのInstrumentスロットはクリック不可なので、通常ここには来ない
 void MainComponent::updateFxDetailBody()
 {
@@ -1537,11 +1561,29 @@ void MainComponent::updateFxDetailBody()
             return;
         }
         instrumentDetail.setTrack (&project->tracks[(size_t) index]);
+        eqDetail.setTrack (nullptr);
         fxDetail.setBody (&instrumentDetail);
         return;
     }
 
+    // トラックのEQスロット（スロット名"EQ"はトラックのみ。バス/Masterのslot0はReverb等）
+    if (fxEditor.slotName (fxDetailSlot) == "EQ")
+    {
+        const int index = fxEditor.shownTrack();
+        if (index < 0 || index >= (int) project->tracks.size())
+        {
+            eqDetail.setTrack (nullptr);
+            closeFxDetail();
+            return;
+        }
+        instrumentDetail.setTrack (nullptr);
+        eqDetail.setTrack (&project->tracks[(size_t) index]);
+        fxDetail.setBody (&eqDetail);
+        return;
+    }
+
     instrumentDetail.setTrack (nullptr);
+    eqDetail.setTrack (nullptr);
     fxDetail.setBody (nullptr);
 }
 
@@ -2008,6 +2050,8 @@ void MainComponent::beginBounce (const juce::File& target)
         trackRender.pan = params.pan.load();
         for (int b = 0; b < numSendBuses; ++b)
             trackRender.sends[b] = params.sends[b].load();
+        trackRender.eqEnabled = params.eqEnabled.load();
+        trackRender.eqBands = Eq::loadAll (params.eqBands);
         trackRender.clips = std::move (snapshot->tracks[i].clips);
         trackRender.notes = std::move (snapshot->tracks[i].notes);
 
@@ -2049,6 +2093,13 @@ void MainComponent::beginBounce (const juce::File& target)
             }
             request.wantTail = true; // 可聴なMIDIトラックがあるときだけ余韻テールを付ける
         }
+
+        // EQが働くオーディオトラックはフィルタのリングアウト（余韻）が曲末を越えて残るため、
+        // MIDIと同じテール（-60dB打ち切り）を付けてRT再生との一致を保つ。
+        // サイクル書き出し・曲末フェードは後段で wantTail=false に上書きされ厳密長のまま
+        if (model.type == TrackType::audio && trackRender.eqEnabled
+            && ! Eq::isNeutral (trackRender.eqBands))
+            request.wantTail = true;
 
         request.tracks.push_back (std::move (trackRender));
     }

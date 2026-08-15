@@ -95,6 +95,7 @@ target_sources(daw PRIVATE
     Source/audio/ReferenceAnalyzer.cpp
     Source/audio/ReferenceReportGenerator.cpp
     Source/audio/SamplerEngine.cpp
+    Source/audio/TrackEq.cpp
     Source/audio/UrlDownloader.cpp
     Source/shared/GachaSession.cpp
     Source/shared/Log.cpp
@@ -103,7 +104,9 @@ target_sources(daw PRIVATE
     Source/shared/ReferenceAlign.cpp
     Source/shared/ReferenceExport.cpp
     Source/shared/SpawnedProcess.cpp
+    Source/shared/SpectrumAnalyzer.cpp
     Source/shared/SynthBank.cpp
+    Source/ui/EqEditorView.cpp
     Source/ui/FxEditorView.cpp
     Source/ui/GachaPanelView.cpp
     Source/ui/InstrumentDetailView.cpp
@@ -135,6 +138,7 @@ target_link_libraries(daw
     PRIVATE
         juce::juce_audio_utils
         juce::juce_audio_processors
+        juce::juce_dsp
         juce::juce_gui_extra
     PUBLIC
         juce::juce_recommended_config_flags
@@ -233,6 +237,7 @@ target_sources(daw_tests PRIVATE
     Source/audio/ReferenceAnalyzer.cpp
     Source/audio/ReferenceReportGenerator.cpp
     Source/audio/SamplerEngine.cpp
+    Source/audio/TrackEq.cpp
     Source/audio/UrlDownloader.cpp
     Source/shared/GachaSession.cpp
     Source/shared/Log.cpp
@@ -241,6 +246,7 @@ target_sources(daw_tests PRIVATE
     Source/shared/ReferenceAlign.cpp
     Source/shared/ReferenceExport.cpp
     Source/shared/SpawnedProcess.cpp
+    Source/shared/SpectrumAnalyzer.cpp
     Source/shared/SynthBank.cpp
 )
 
@@ -256,6 +262,7 @@ target_link_libraries(daw_tests
     PRIVATE
         juce::juce_audio_utils
         juce::juce_audio_processors
+        juce::juce_dsp
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
