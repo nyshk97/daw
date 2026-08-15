@@ -55,6 +55,7 @@ public:
     juce::String setOutputDevice (const juce::String& name); // 空文字=成功、それ以外はエラーメッセージ
 
     bool openFile (const juce::File& file); // 成功時 fileInfo を更新し位置0へ
+    void closeFile(); // 停止＋ステム解除＋hasFile()=falseへ（スタート画面へ戻る用）
     bool hasFile() const { return info.lengthSamples > 0; }
     const FileInfo& fileInfo() const { return info; }
 

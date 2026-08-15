@@ -81,6 +81,20 @@ bool PlayerEngine::openFile (const juce::File& file)
     return true;
 }
 
+void PlayerEngine::closeFile()
+{
+    if (! hasFile())
+        return;
+    stop();
+    if (stemMode.load())
+        clearStems();
+    updateLoop (false, 0, 0);
+    info = {};
+    // activeReaderと本流streamは読み上げスレッド所有なのでここでは触らない。
+    // hasFile()==false になった時点でUIからの play/seek/書き出しは全て塞がるため、
+    // 残っていても鳴らない（次のopenFileの世代付きハンドオフで置き換わる）
+}
+
 void PlayerEngine::play (juce::int64 fromSample, bool loop, juce::int64 loopStart, juce::int64 loopEnd)
 {
     if (! hasFile())

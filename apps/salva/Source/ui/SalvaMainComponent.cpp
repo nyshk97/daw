@@ -829,6 +829,13 @@ bool SalvaMainComponent::keyPressed (const juce::KeyPress& key)
             toggleRecording();
         return true;
     }
+    if (key == juce::KeyPress ('w', juce::ModifierKeys::commandModifier, 0))
+    {
+        // ×ボタンと同じ「1段戻る」。スタート画面ではアプリ終了（macOSの⌘W慣習に合わせる）
+        if (! handleCloseRequest())
+            juce::JUCEApplication::getInstance()->systemRequestedQuit();
+        return true;
+    }
     if (key == juce::KeyPress ('o', juce::ModifierKeys::commandModifier, 0))
     {
         if (! recordMode)
@@ -1208,6 +1215,41 @@ void SalvaMainComponent::openFileChooser()
             if (const auto f = fc.getResult(); f.existsAsFile())
                 openFile (f);
         });
+}
+
+bool SalvaMainComponent::handleCloseRequest()
+{
+    if (recordMode)
+    {
+        if (engine.getRecorder().isRecording())
+        {
+            showToast (jp (u8"録音を停止してから閉じてください"));
+            return true; // 録音中の×で黙ってテイクを失わせない
+        }
+        toggleRecordMode(); // ファイル画面 or スタート画面へ戻る
+        return true;
+    }
+    if (engine.hasFile())
+    {
+        closeFileToStart();
+        return true;
+    }
+    return false; // スタート画面での×はアプリ終了
+}
+
+void SalvaMainComponent::closeFileToStart()
+{
+    engine.closeFile();
+    waveform.clearFile();
+    beatsOverride = 0;
+    playButton.setButtonText (jp (u8"▶"));
+    timeLabel.setText ("0:00.0", juce::dontSendNotification);
+    refreshStemCacheState(); // manifest・ステムパネルを空へ（resized込み）
+    updateBpmDisplay();
+    updateSeparateButtonState();
+    updateHeader();
+    repaint();
+    Log::info ("file.close");
 }
 
 void SalvaMainComponent::updateSeparateButtonState()

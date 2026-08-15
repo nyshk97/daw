@@ -24,6 +24,9 @@ public:
     ~SalvaMainComponent() override;
 
     void openFile (const juce::File& file);
+    // ウィンドウの×は「1段戻る」: 録音モード退出 or ファイルを閉じてスタート画面へ。
+    // true = ここで消費（アプリは終了しない）。スタート画面でのみ false（=終了してよい）
+    bool handleCloseRequest();
 
 #if JUCE_DEBUG
     // dev版の自動動作確認用（Main.cppの --autoplay / --select / --stemgroup）。実機能と同一経路を通す
@@ -72,6 +75,7 @@ private:
     void rebuildOutputDeviceBox();
     void openRecentAt (int index);
     void openFileChooser();          // 「ファイルを選択…」ボタン・⌘O
+    void closeFileToStart();         // ファイルを閉じてスタート画面（空状態）へ
     void updateSeparateButtonState(); // ファイル有無・録音モード・分離中から算出
 
     // --- 空状態（Vinyl Warm・2026-08-15確定モック案B） ---
