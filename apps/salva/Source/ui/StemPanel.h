@@ -7,13 +7,16 @@
 
 #include "shared/StemCache.h"
 
-// ステムM/Sパネル（確定モック案B: 縦リスト＋ステム別レベルメーター）。
-// グループ（4ステム/6ステム等）はマニフェストの内容から動的に表示し、
-// 1群しかなければ切替タブを隠す。M/S状態はグループごとに保持する。
+// ステムM/Sパネル（2026-08-15確定モック案B: 波形右の固定幅カラム）。
+// タブ（ORIGINAL/4 STEMS/6 STEMS）を縦に積み、その下にステム行（スウォッチ・名前・
+// ミニメーター・M/S）。固定幅なのでタブ切替で波形のレイアウトが一切動かない。
+// ORIGINAL選択中は直近グループの行をディム表示で残す（何が分離済みかは見え続ける）。
 // 競合規則（Solo集合＋Mute優先）の計算は shared/StemMix.h、ここは表示と操作だけ
 class StemPanel : public juce::Component
 {
 public:
+    static constexpr int preferredWidth = 200; // 右カラムの固定幅
+
     StemPanel();
 
     // マニフェスト反映（グループタブ＋行を再構築）。無効なら clear と同じ
@@ -26,9 +29,6 @@ public:
     // 選択中グループのM/S結果（StemMix::audible）。オリジナル時は空
     std::vector<bool> audibleStems() const;
     const StemCache::Group* currentGroup() const;
-
-    // レイアウト計算用（0 = 非表示）
-    int preferredHeight() const;
 
     // Timerから流し込むステム別ピーク（リニア振幅・ポストゲイン）
     void updatePeaks (const std::function<float (int)>& peakForIndex);
@@ -49,7 +49,8 @@ private:
 
     std::vector<StemCache::Group> groups;
     std::vector<GroupState> states;
-    int groupIndex = -1; // -1 = オリジナル
+    int groupIndex = -1;      // -1 = オリジナル
+    int lastActiveGroup = 0;  // ORIGINAL中にディム表示する直近グループ
 
     std::vector<float> displayLevels; // 減衰込みの表示値
     std::vector<juce::Rectangle<int>> tabRects, muteRects, soloRects, meterRects, rowRects;

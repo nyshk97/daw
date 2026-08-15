@@ -7,9 +7,9 @@ namespace
 juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
 
 // アイコン基準パレット（アクセント=レーベルのオレンジ。M/Sの機能色はLogic準拠のまま）
-const juce::Colour panelBg { 0xff242328 };
+const juce::Colour panelBg { 0xff1c1b20 };
 const juce::Colour rowBg { 0xff201f24 };
-const juce::Colour border { 0xff34323a };
+const juce::Colour border { 0xff2a2930 };
 const juce::Colour textColour { 0xffe8e0d2 };
 const juce::Colour textSilent { 0xff5f5b55 };
 const juce::Colour accent { 0xffff7a2e };
@@ -32,9 +32,11 @@ const juce::Colour swatches[] = {
     juce::Colour (0xff5bb8c4), // piano = シアン
 };
 
-constexpr int tabsHeight = 26;
-constexpr int rowHeight = 24;
-constexpr int rowGap = 3;
+constexpr int pad = 10;      // カラム内余白
+constexpr int tabHeight = 24;
+constexpr int tabGap = 4;
+constexpr int rowHeight = 30;
+constexpr int rowGap = 6;
 
 float meterNorm (float level)
 {
@@ -72,6 +74,8 @@ void StemPanel::selectGroup (int index)
     if (index < -1 || index >= (int) groups.size() || index == groupIndex)
         return;
     groupIndex = index;
+    if (index >= 0)
+        lastActiveGroup = index;
     displayLevels.assign (displayLevels.size(), 0.0f);
     resized();
     repaint();
@@ -92,14 +96,6 @@ const StemCache::Group* StemPanel::currentGroup() const
     if (groupIndex < 0 || groupIndex >= (int) groups.size())
         return nullptr;
     return &groups[(size_t) groupIndex];
-}
-
-int StemPanel::preferredHeight() const
-{
-    if (groups.empty())
-        return 0;
-    const int rows = groupIndex >= 0 ? (int) groups[(size_t) groupIndex].stems.size() : 0;
-    return tabsHeight + 8 + (rows > 0 ? rows * (rowHeight + rowGap) + 5 : 0);
 }
 
 void StemPanel::updatePeaks (const std::function<float (int)>& peakForIndex)
@@ -123,19 +119,18 @@ void StemPanel::paint (juce::Graphics& g)
 {
     g.fillAll (panelBg);
     g.setColour (border);
-    g.fillRect (getLocalBounds().removeFromTop (1));
+    g.fillRect (getLocalBounds().removeFromLeft (1)); // 波形との境界（左辺）
 
     if (groups.empty())
         return;
 
-    // グループタブ（1群しかなくても「オリジナル⇄ステム」の切替は必要なので表示。
-    // 群が1つならその群のタブだけ＝モデルラボの結果と矛盾しない）
+    // グループタブ（縦積み。1群しかなくても「オリジナル⇄ステム」の切替は必要なので表示）
     g.setFont (juce::FontOptions (12.0f));
     for (size_t t = 0; t < tabRects.size(); ++t)
     {
         const bool on = (int) t - 1 == groupIndex;
         g.setColour (on ? accent : rowBg);
-        g.fillRoundedRectangle (tabRects[t].toFloat(), 5.0f);
+        g.fillRoundedRectangle (tabRects[t].toFloat(), 6.0f);
         g.setColour (on ? juce::Colour (0xff2b1507) : msOffText); // オレンジ地には暗色文字
         // ラベルはステム本数から導出（manifestのname="4ステム"等は使わない。
         // 旧キャッシュも再分離なしで新表記になる）
@@ -144,54 +139,62 @@ void StemPanel::paint (juce::Graphics& g)
         g.drawText (label, tabRects[t], juce::Justification::centred);
     }
 
-    // ステム行（縦リスト: スウォッチ・名前・メーター・M/S）
-    const auto audible = audibleStems();
-    if (const auto* group = currentGroup())
+    // ステム行。ORIGINAL選択中も直近グループの行をディム表示で残す
+    //（何が分離済みか見え続け、タブ切替でレイアウトが動かない）
+    const bool dimmed = groupIndex < 0;
+    const int displayIdx = dimmed ? lastActiveGroup : groupIndex;
+    if (displayIdx < 0 || displayIdx >= (int) groups.size())
+        return;
+    const auto& group = groups[(size_t) displayIdx];
+    const auto& st = states[(size_t) displayIdx];
+    const auto audible = audibleStems(); // ORIGINAL時は空
+    const float alpha = dimmed ? 0.35f : 1.0f;
+
+    for (size_t i = 0; i < group.stems.size() && i < rowRects.size(); ++i)
     {
-        for (size_t i = 0; i < group->stems.size(); ++i)
+        const bool silent = i < audible.size() && ! audible[i];
+        g.setColour (rowBg.withMultipliedAlpha (alpha));
+        g.fillRoundedRectangle (rowRects[i].toFloat(), 7.0f);
+
+        // rectはrebuildButtonsが組んだものを使う（描画とヒットテストの座標を揃える）
+        auto row = rowRects[i].reduced (8, 5);
+        g.setColour (swatches[i % std::size (swatches)].withMultipliedAlpha (alpha));
+        g.fillRoundedRectangle (row.removeFromLeft (3).toFloat().withSizeKeepingCentre (3.0f, 14.0f), 2.0f);
+        row.removeFromLeft (7);
+        row.setRight (meterRects[i].getX() - 6); // 残りが名前欄
+
+        g.setColour ((silent ? textSilent : textColour).withMultipliedAlpha (alpha));
+        g.setFont (juce::FontOptions (11.5f));
+        g.drawText (group.stems[i].name, row, juce::Justification::centredLeft, true);
+
+        // ミニメーター（-60〜0dBFS固定スケール。ディム中は空）
+        const auto meter = meterRects[i];
+        g.setColour (meterBg.withMultipliedAlpha (alpha));
+        g.fillRoundedRectangle (meter.toFloat(), 2.0f);
+        const float level = (! dimmed && i < displayLevels.size()) ? displayLevels[i] : 0.0f;
+        const float w = meterNorm (level) * (float) meter.getWidth();
+        if (w > 0.0f)
         {
-            const bool silent = i < audible.size() && ! audible[i];
-            g.setColour (rowBg);
-            g.fillRoundedRectangle (rowRects[i].toFloat(), 5.0f);
-
-            auto row = rowRects[i].reduced (8, 4);
-            g.setColour (swatches[i % std::size (swatches)]);
-            g.fillRoundedRectangle (row.removeFromLeft (4).toFloat(), 2.0f);
-            row.removeFromLeft (8);
-
-            g.setColour (silent ? textSilent : textColour);
-            g.setFont (juce::FontOptions (12.0f));
-            g.drawText (group->stems[i].name, row.removeFromLeft (64), juce::Justification::centredLeft);
-
-            // メーター（-60〜0dBFS固定スケール）
-            const auto meter = meterRects[i];
-            g.setColour (meterBg);
-            g.fillRoundedRectangle (meter.toFloat(), 2.5f);
-            const float level = i < displayLevels.size() ? displayLevels[i] : 0.0f;
-            const float w = meterNorm (level) * (float) meter.getWidth();
-            if (w > 0.0f)
-            {
-                juce::ColourGradient grad (meterGreen, meter.toFloat().getTopLeft(),
-                                           meterRed, meter.toFloat().getTopRight(), false);
-                grad.addColour (0.75, meterGreen);
-                grad.addColour (0.85, meterYellow);
-                g.setGradientFill (grad);
-                g.fillRoundedRectangle (meter.toFloat().withWidth (w), 2.5f);
-            }
-
-            // M/Sボタン
-            const auto& st = states[(size_t) groupIndex];
-            auto drawMs = [&g] (juce::Rectangle<int> r, const char* label, bool on, juce::Colour onColour, juce::Colour onText)
-            {
-                g.setColour (on ? onColour : msOffBg);
-                g.fillRoundedRectangle (r.toFloat(), 4.0f);
-                g.setColour (on ? onText : msOffText);
-                g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
-                g.drawText (label, r, juce::Justification::centred);
-            };
-            drawMs (muteRects[i], "M", st.mute[i], muteOn, juce::Colours::white);
-            drawMs (soloRects[i], "S", st.solo[i], soloOn, juce::Colour (0xff222226));
+            juce::ColourGradient grad (meterGreen, meter.toFloat().getTopLeft(),
+                                       meterRed, meter.toFloat().getTopRight(), false);
+            grad.addColour (0.75, meterGreen);
+            grad.addColour (0.85, meterYellow);
+            g.setGradientFill (grad);
+            g.fillRoundedRectangle (meter.toFloat().withWidth (w), 2.0f);
         }
+
+        // M/Sボタン
+        auto drawMs = [&g, alpha] (juce::Rectangle<int> r, const char* label, bool on,
+                                   juce::Colour onColour, juce::Colour onText)
+        {
+            g.setColour ((on ? onColour : msOffBg).withMultipliedAlpha (alpha));
+            g.fillRoundedRectangle (r.toFloat(), 4.0f);
+            g.setColour ((on ? onText : msOffText).withMultipliedAlpha (alpha));
+            g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+            g.drawText (label, r, juce::Justification::centred);
+        };
+        drawMs (muteRects[i], "M", st.mute[i], muteOn, juce::Colours::white);
+        drawMs (soloRects[i], "S", st.solo[i], soloOn, juce::Colour (0xff222226));
     }
 }
 
@@ -210,34 +213,32 @@ void StemPanel::rebuildButtons()
     if (groups.empty())
         return;
 
-    auto area = getLocalBounds().reduced (10, 0);
-    auto tabs = area.removeFromTop (tabsHeight + 6).withTrimmedTop (6);
-    tabRects.push_back (tabs.removeFromLeft (86));
-    tabs.removeFromLeft (4);
+    auto area = getLocalBounds().reduced (pad, pad);
+
+    // タブ（縦積み・全幅）
+    tabRects.push_back (area.removeFromTop (tabHeight));
     for (size_t i = 0; i < groups.size(); ++i)
     {
-        tabRects.push_back (tabs.removeFromLeft (76));
-        tabs.removeFromLeft (4);
+        area.removeFromTop (tabGap);
+        tabRects.push_back (area.removeFromTop (tabHeight));
     }
+    area.removeFromTop (pad);
 
-    if (const auto* group = currentGroup())
+    // 行はORIGINAL中もディム表示するため、表示グループ（直近選択）で組む
+    const int displayIdx = groupIndex >= 0 ? groupIndex : lastActiveGroup;
+    if (displayIdx < 0 || displayIdx >= (int) groups.size())
+        return;
+    for (size_t i = 0; i < groups[(size_t) displayIdx].stems.size(); ++i)
     {
-        area.removeFromTop (2);
-        for (size_t i = 0; i < group->stems.size(); ++i)
-        {
-            auto row = area.removeFromTop (rowHeight);
-            area.removeFromTop (rowGap);
-            rowRects.push_back (row);
-            auto inner = row.reduced (8, 3);
-            auto s = inner.removeFromRight (26);
-            inner.removeFromRight (4);
-            auto m = inner.removeFromRight (26);
-            inner.removeFromRight (10);
-            soloRects.push_back (s);
-            muteRects.push_back (m);
-            inner.removeFromLeft (4 + 8 + 64 + 8);
-            meterRects.push_back (inner.withSizeKeepingCentre (inner.getWidth(), 7));
-        }
+        auto row = area.removeFromTop (rowHeight);
+        area.removeFromTop (rowGap);
+        rowRects.push_back (row);
+        auto inner = row.reduced (8, 5);
+        soloRects.push_back (inner.removeFromRight (22).withSizeKeepingCentre (22, 20));
+        inner.removeFromRight (4);
+        muteRects.push_back (inner.removeFromRight (22).withSizeKeepingCentre (22, 20));
+        inner.removeFromRight (6);
+        meterRects.push_back (inner.removeFromRight (34).withSizeKeepingCentre (34, 4));
     }
 }
 
@@ -253,6 +254,8 @@ void StemPanel::mouseUp (const juce::MouseEvent& e)
             if (newIndex == groupIndex)
                 return;
             groupIndex = newIndex;
+            if (newIndex >= 0)
+                lastActiveGroup = newIndex;
             displayLevels.assign (displayLevels.size(), 0.0f);
             resized();
             repaint();

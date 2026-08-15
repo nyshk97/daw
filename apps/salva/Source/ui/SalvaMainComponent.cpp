@@ -1324,10 +1324,12 @@ void SalvaMainComponent::resized()
                      (juce::Component*) &recordModeButton })
         c->setVisible (! emptyState);
 
-    // ステムM/Sパネル（案B: 縦リスト。グループ未選択時はタブだけの高さ）
-    const int stemHeight = (! recordMode && engine.hasFile()) ? stemPanel.preferredHeight() : 0;
-    stemPanel.setBounds (area.removeFromBottom (stemHeight));
-    stemPanel.setVisible (stemHeight > 0);
+    // ステムM/Sパネルは波形右の固定幅カラム（2026-08-15確定モック案B）。
+    // タブ切替（ORIGINAL/4/6）で波形のレイアウトが一切動かない。未分離ならカラムなし
+    const int stemWidth = (! recordMode && engine.hasFile() && stemPanel.hasStems())
+                              ? StemPanel::preferredWidth : 0;
+    stemPanel.setBounds (area.removeFromRight (stemWidth));
+    stemPanel.setVisible (stemWidth > 0);
 
     emptyStateArea = area;
     waveform.setBounds (area);
