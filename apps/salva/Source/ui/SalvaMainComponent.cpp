@@ -886,6 +886,13 @@ void SalvaMainComponent::paint (juce::Graphics& g)
 {
     g.fillAll (windowBg);
 
+    // ファイル未オープン時: フルブリードの空状態（ヘッダー・フッターは描かない）
+    if (! engine.hasFile() && ! recordMode)
+    {
+        paintEmptyState (g, emptyStateArea);
+        return;
+    }
+
     // ヘッダー
     auto header = getLocalBounds().removeFromTop (headerHeight);
     g.setColour (headerBg);
@@ -911,10 +918,6 @@ void SalvaMainComponent::paint (juce::Graphics& g)
         g.drawText (infoText, 80, 0, juce::jmax (100, getWidth() - 400), headerHeight,
                     juce::Justification::centredLeft, true);
     }
-
-    // ファイル未オープン時: 波形エリアに空状態（ドロップ案内＋最近のファイル）
-    if (! engine.hasFile() && ! recordMode)
-        paintEmptyState (g, emptyStateArea);
 }
 
 void SalvaMainComponent::refreshShownRecentFiles()
@@ -1185,20 +1188,26 @@ void SalvaMainComponent::resized()
     auto area = getLocalBounds();
     const bool emptyState = ! engine.hasFile() && ! recordMode;
 
+    // 空状態はヘッダー・トランスポート・フッターを丸ごと隠す（載っているものが全部
+    // 死んでいるか空状態のボタンと重複のため）。フルブリードの選択画面にする
     // ヘッダー右側: [分離中…] [ステム分離] [キャッシュ x GB ▾]
-    auto header = area.removeFromTop (headerHeight).reduced (10, 8);
+    auto header = emptyState ? juce::Rectangle<int>()
+                             : area.removeFromTop (headerHeight).reduced (10, 8);
     cacheSizeLabel.setBounds (header.removeFromRight (130));
     header.removeFromRight (8);
     separateButton.setBounds (header.removeFromRight (90));
     header.removeFromRight (8);
     separateProgressLabel.setBounds (header.removeFromRight (60));
 
-    auto bottom = area.removeFromBottom (bottomHeight).reduced (10, 6);
-    // 空状態は死んだトランスポート（▶・0:00.0）を隠し、その高さをドロップ領域に使う
+    auto bottom = emptyState ? juce::Rectangle<int>()
+                             : area.removeFromBottom (bottomHeight).reduced (10, 6);
     auto transport = emptyState ? juce::Rectangle<int>()
                                 : area.removeFromBottom (transportHeight).reduced (10, 7);
-    playButton.setVisible (! emptyState);
-    timeLabel.setVisible (! emptyState);
+    for (auto* c : { (juce::Component*) &playButton, (juce::Component*) &timeLabel,
+                     (juce::Component*) &separateButton, (juce::Component*) &cacheSizeLabel,
+                     (juce::Component*) &outputLabel, (juce::Component*) &outputDeviceBox,
+                     (juce::Component*) &recordModeButton })
+        c->setVisible (! emptyState);
 
     // ステムM/Sパネル（案B: 縦リスト。グループ未選択時はタブだけの高さ）
     const int stemHeight = (! recordMode && engine.hasFile()) ? stemPanel.preferredHeight() : 0;
@@ -1241,5 +1250,5 @@ void SalvaMainComponent::resized()
     recordModeButton.setBounds (bottom.removeFromRight (120));
 
     toastLabel.setBounds (getLocalBounds().withSizeKeepingCentre (juce::jmin (520, getWidth() - 40), 28)
-                              .withY (getHeight() - bottomHeight - (emptyState ? 0 : transportHeight) - 40));
+                              .withY (getHeight() - (emptyState ? 0 : bottomHeight + transportHeight) - 40));
 }
