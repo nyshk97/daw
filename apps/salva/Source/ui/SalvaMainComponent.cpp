@@ -125,7 +125,7 @@ SalvaMainComponent::SalvaMainComponent()
     };
 
     addAndMakeVisible (recordModeButton);
-    recordModeButton.setButtonText (jp (u8"● 録音モード"));
+    recordModeButton.setButtonText (jp (u8"● 新規録音")); // 実態は常に新規テイク（パンチインではない）
     recordModeButton.getProperties().set ("fontSize", 12.5);
     recordModeButton.setColour (juce::TextButton::textColourOffId, recordTextColour);
     recordModeButton.onClick = [this] { toggleRecordMode(); };
@@ -140,7 +140,7 @@ SalvaMainComponent::SalvaMainComponent()
     openFileButton.onClick = [this] { openFileChooser(); };
 
     addChildComponent (recordEntryButton);
-    recordEntryButton.setButtonText (jp (u8"● 録音モードへ"));
+    recordEntryButton.setButtonText (jp (u8"● 新規録音"));
     recordEntryButton.setColour (juce::TextButton::buttonColourId, emptyBg);
     recordEntryButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xffb6afa4));
     recordEntryButton.setMouseCursor (juce::MouseCursor::PointingHandCursor);
@@ -553,6 +553,8 @@ void SalvaMainComponent::toggleRecordMode()
         Log::info ("record.mode.exit");
     }
 
+    // モード中は「終了」の役割（もう一度押すと抜ける）なので文言も切り替える
+    recordModeButton.setButtonText (recordMode ? jp (u8"録音モードを終了") : jp (u8"● 新規録音"));
     recordModeButton.setColour (juce::TextButton::buttonColourId,
                                 recordMode ? juce::Colour (0xff8e2a26) : buttonBg);
     recordModeButton.setColour (juce::TextButton::textColourOffId,
@@ -1355,7 +1357,7 @@ void SalvaMainComponent::resized()
 
     outputLabel.setBounds (bottom.removeFromLeft (44));
     outputDeviceBox.setBounds (bottom.removeFromLeft (260));
-    recordModeButton.setBounds (bottom.removeFromRight (120));
+    recordModeButton.setBounds (bottom.removeFromRight (132)); // 「録音モードを終了」が収まる幅
 
     toastLabel.setBounds (getLocalBounds().withSizeKeepingCentre (juce::jmin (520, getWidth() - 40), 28)
                               .withY (getHeight() - (emptyState ? 0 : bottomHeight + transportHeight) - 40));
