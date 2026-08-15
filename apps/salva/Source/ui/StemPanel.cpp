@@ -137,7 +137,10 @@ void StemPanel::paint (juce::Graphics& g)
         g.setColour (on ? accent : rowBg);
         g.fillRoundedRectangle (tabRects[t].toFloat(), 5.0f);
         g.setColour (on ? juce::Colour (0xff2b1507) : msOffText); // オレンジ地には暗色文字
-        const auto label = t == 0 ? jp (u8"オリジナル") : groups[t - 1].displayName;
+        // ラベルはステム本数から導出（manifestのname="4ステム"等は使わない。
+        // 旧キャッシュも再分離なしで新表記になる）
+        const auto label = t == 0 ? juce::String ("ORIGINAL")
+                                  : juce::String (groups[t - 1].stems.size()) + " STEMS";
         g.drawText (label, tabRects[t], juce::Justification::centred);
     }
 

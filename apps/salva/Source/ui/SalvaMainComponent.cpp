@@ -83,6 +83,7 @@ SalvaMainComponent::SalvaMainComponent()
     timeLabel.setText ("0:00.0", juce::dontSendNotification);
 
     addAndMakeVisible (barsButton);
+    barsButton.getProperties().set ("fontSize", 12.5);
     barsButton.onClick = [this]
     {
         if (! waveform.hasSelection())
@@ -197,6 +198,7 @@ SalvaMainComponent::SalvaMainComponent()
 
     addAndMakeVisible (exportButton);
     exportButton.setButtonText (jp (u8"書き出し"));
+    exportButton.getProperties().set ("fontSize", 12.5);
     exportButton.onClick = [this] { startExport(); };
     exportButton.setVisible (false);
 

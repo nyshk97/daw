@@ -68,8 +68,8 @@ def resample(data, from_sr, to_sr):
 
 
 groups = [
-    ("htdemucs", "4ステム", ["drums", "bass", "other", "vocals"]),
-    ("htdemucs_6s", "6ステム", ["drums", "bass", "other", "vocals", "guitar", "piano"]),
+    ("htdemucs", "4 STEMS", ["drums", "bass", "other", "vocals"]),
+    ("htdemucs_6s", "6 STEMS", ["drums", "bass", "other", "vocals", "guitar", "piano"]),
 ]
 manifest_groups = []
 for model, display, stems in groups:

@@ -59,7 +59,7 @@ struct StemInfo
 struct Group
 {
     juce::String id;          // htdemucs / htdemucs_6s
-    juce::String displayName; // 4ステム / 6ステム
+    juce::String displayName; // manifestのname（表示はStemPanelがステム本数から導出するため未使用）
     std::vector<StemInfo> stems;
 };
 
