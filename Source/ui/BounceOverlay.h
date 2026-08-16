@@ -38,9 +38,11 @@ public:
         repaint();
     }
 
-    void showDone()
+    // detail = 完了表示の2行目（例: "-9.8 LUFS / -0.8 dBTP"。空なら1行のまま）
+    void showDone (const juce::String& detail = {})
     {
         doneMode = true;
+        doneDetail = detail;
         setInterceptsMouseClicks (false, false); // 完了表示は情報のみ。操作は塞がない
         setVisible (true);
         repaint();
@@ -72,7 +74,17 @@ public:
                     juce::Justification::centred);
 
         if (doneMode)
+        {
+            if (doneDetail.isNotEmpty())
+            {
+                g.setColour (juce::Colours::white.withAlpha (0.7f));
+                g.setFont (Fonts::body());
+                g.drawText (doneDetail,
+                            panel.withTrimmedTop (padY + titleHeight).withTrimmedBottom (padY),
+                            juce::Justification::centred);
+            }
             return;
+        }
 
         // 進捗バー
         const auto bar = progressBarBounds().toFloat();
@@ -123,7 +135,9 @@ private:
 
     juce::Rectangle<int> panelBounds() const
     {
-        const int h = doneMode ? padY * 2 + titleHeight : panelHeight;
+        // 完了表示は1行（＋detailがあれば2行目のぶん高く）
+        const int doneHeight = padY * 2 + titleHeight + (doneDetail.isNotEmpty() ? 22 : 0);
+        const int h = doneMode ? doneHeight : panelHeight;
         return juce::Rectangle<int> (panelWidth, h).withCentre (getLocalBounds().getCentre());
     }
 
@@ -144,6 +158,7 @@ private:
     float progress = 0.0f;
     juce::String busyText { juce::String::fromUTF8 (u8"書き出し中…") };
     juce::String doneText { juce::String::fromUTF8 (u8"書き出しが完了しました") };
+    juce::String doneDetail; // 完了表示の2行目（LUFS/TPの計測結果）
     bool doneMode = false;
     bool cancelHovered = false;
 

@@ -107,7 +107,8 @@ struct MeterFeed
 {
     StereoPeak peak { 0.0f, 0.0f };
     float maxSincePlay = 0.0f;
-    float compGrDb = 0.0f; // Compのブロック最大GR（正の減衰量dB）。SlotPillのミニGRバー用
+    float compGrDb = 0.0f;    // Compのブロック最大GR（正の減衰量dB）。SlotPillのミニGRバー用
+    float limiterGrDb = 0.0f; // Master LimiterのGR（同上。masterFeedのみ使用）
 };
 
 // 縦型のL/R 2レーンメーター（Logicのチャンネルストリップのメーター相当）。

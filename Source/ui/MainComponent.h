@@ -11,6 +11,7 @@
 #include "FxEditorView.h"
 #include "CompEditorView.h"
 #include "EqEditorView.h"
+#include "LimiterEditorView.h"
 #include "InstrumentDetailView.h"
 #include "IconButton.h"
 #include "MixerWindow.h"
@@ -88,6 +89,7 @@ public:
     // 検証フック（dev版限定・Main.cppの --eq-editor / --play から）。実機能と同一経路で操作する
     void debugOpenEqDetail();
     void debugOpenCompDetail();
+    void debugOpenLimiterDetail(); // FXパネル＋Master Limiterエディタを開く
     // 検証用: 選択トラックのCompを設定する（--comp-editor と組み合わせて書き出し検証に使う）
     void debugSetCompParams (bool enabled, const Comp::Values& values);
     // 検証用: FileChooserを迂回して書き出しを開始する（--bounce <path>）
@@ -310,6 +312,7 @@ private:
     UndoStack undoStack; // 構造編集のundo/redo（メッセージスレッド専用）
     PreviewFifo previewFifo;
     AnalyzerTap analyzerTap; // EQエディタのスペクトラム用タップ（engineより先に構築・後に破棄）
+    MasterMeterRing masterMeterRing; // Masterメーターの十分統計量リング（engineより先に構築・後に破棄）
     AudioFilePreview filePreview;
     PlaybackEngine engine { transport, snapshots, previewFifo };
 
@@ -322,6 +325,7 @@ private:
     InstrumentDetailView instrumentDetail;
     EqEditorView eqDetail; // トラックEQのエディタ（EQスロットクリックで載る）
     CompEditorView compDetail; // トラックCompのエディタ（Compスロットクリックで載る）
+    LimiterEditorView limiterDetail; // Master Limiter＋マスターメーター群（Masterの[Limiter]クリックで載る）
     int fxDetailSlot = -1;        // 詳細が表示中のスロット（FXパネルの並びに対応）
     juce::String fxDetailKey;     // 詳細が対象にしているチャンネル（fxEditor.targetKey()と比較して追従判定）
 
@@ -426,6 +430,10 @@ private:
     MeterFeed busFeeds[numSendBuses];
     MeterFeed masterFeed;
     bool meterWasPlaying = false;
+
+    // Masterメーターの集約（LUFS/相関/TP）。リングの読み手はこのtimerCallbackの一箇所のみで、
+    // ビュー（Limiterエディタ等）は集約済みfeedを受け取って描くだけ（plan「リングの消費契約」）
+    Loudness::MasterMeterAggregator masterMeterAggregator;
 
     // 再生中の ,/. シークは一時停止し、キーが離れて少し経ってから自動再開する（timerCallbackで判定）。
     // 押下継続の判定は文字でなくkeyPressedで受けたキーコードで行う（非US配列で<>に化けても追跡できるように）。

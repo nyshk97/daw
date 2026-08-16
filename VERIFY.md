@@ -511,6 +511,21 @@ osascript -e 'tell application "System Events" to tell process "LaLa-dev" to cli
 - 成果物検証: `afinfo <出力.wav>` で 2ch/24bit/プロジェクトSR・長さ（=endSample＋テール）を確認。**~/Desktop はTCCでsandboxから読めない**（afinfoが `AudioFileOpenURL failed` になる）→ Finder経由でコピーしてから検証する:
   `osascript -e 'tell application "Finder" to duplicate file (POSIX file "/Users/.../out.wav") to folder (POSIX file "/tmp/dir") with replacing'`
 - 一時ファイル（出力先ディレクトリの `.<name>.wav.f32.tmp` / `.<name>.wav.tmp`）が完了・キャンセル後に残っていないこと
+- v17以降: `bounce.done` に `lufs=` / `tpDb=`（出来上がったファイルのIntegrated LUFS / トゥルーピーク）が載り、完了オーバーレイの2行目にも同じ値が出る
+
+## Master Limiter・マスターメーター（LUFS/相関/TP）の確認
+
+DSP・計測の正しさはCTest（`MasterLimiter *` / `loudness meter standard` / `master meter pipeline` 等）が担う。アプリ統合の確認:
+
+```sh
+# dev版フックでLimiterエディタ（マスターメーター群）を開いてスナップショット
+open -g build/daw_artefacts/Debug/LaLa-dev.app --args \
+  --open "$HOME/Music/daw/<プロジェクト>" --limiter-editor --play --snapshot /tmp/limiter-ui.png
+```
+
+- スナップショットで確認: ノブ3（GAIN/CEILING/RELEASE）・GR縦バー・LUFS横バー（-14/-9ライン・integrated▲マーカー）・相関バー・数値3つ（SHORT TERM / INTEGRATED / TRUE PEAK）が再生に追従して埋まる
+- LUFS/TPの数値照合は `scripts/check-loudness.sh [wav...]`（ffmpeg ebur128と突き合わせ。引数なしは合成信号2本）。**クリック列のような単発インパルス素材はTPが0.5dB超割れることがある**（帯域制限補間のフィルタ長依存。スクリプト冒頭の注記参照）
+- レンダー回帰は `scripts/check-render-hashes.sh compare`（Limiter導入後の基準: bounce系は素材が天井以下なら不変・engine系は2ms遅延込み）
 
 ## キー操作の確認（要ユーザー操作）
 

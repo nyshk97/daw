@@ -372,7 +372,9 @@ public:
     // v16: トラックCompのパラメータ（fx.comp.threshold/ratio/attack/release/makeup/detectorHpf）。
     //      v15以前の fx.comp.enabled はDSPが無かった頃の値で無意味なため、読込時に一律OFFへ
     //      リセットする（既定もOFF: コンプに保証された中立設定が無く、ピルが真のバイパスを担う）
-    static constexpr int currentVersion = 16;
+    // v17: Master Limiter（master.limiter.gain/ceiling/release。欠損＝既定値 Gain 0 /
+    //      Ceiling -1.0 / Release 60ms。常在なので enabled は持たない）
+    static constexpr int currentVersion = 17;
 
     juce::File directory;
     double bpm = 120.0;

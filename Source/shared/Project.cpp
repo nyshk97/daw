@@ -722,6 +722,15 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
 
     auto* masterObj = new juce::DynamicObject();
     masterObj->setProperty ("gain", (double) masterParams->gain.load());
+    {
+        // Master Limiter（v17）
+        const auto limiter = Limiter::load (masterParams->limiter);
+        auto* limiterObj = new juce::DynamicObject();
+        limiterObj->setProperty ("gain", (double) limiter.gainDb);
+        limiterObj->setProperty ("ceiling", (double) limiter.ceilingDb);
+        limiterObj->setProperty ("release", (double) limiter.releaseMs);
+        masterObj->setProperty ("limiter", juce::var (limiterObj));
+    }
     root->setProperty ("master", juce::var (masterObj));
 
     const auto jsonFile = directory.getChildFile ("project.json");
@@ -1159,8 +1168,20 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
         }
     }
     if (const auto masterVar = parsed.getProperty ("master", {}); masterVar.isObject())
+    {
         project->masterParams->gain.store (juce::jlimit (0.0f, 1.0f,
                                                          (float) (double) masterVar.getProperty ("gain", 1.0)));
+
+        // Master Limiter（v17。欠損キーは既定値＝normalizedが非有限も既定値化する）
+        Limiter::Values limiter;
+        if (const auto limiterVar = masterVar.getProperty ("limiter", {}); limiterVar.isObject())
+        {
+            limiter.gainDb = (float) (double) limiterVar.getProperty ("gain", (double) limiter.gainDb);
+            limiter.ceilingDb = (float) (double) limiterVar.getProperty ("ceiling", (double) limiter.ceilingDb);
+            limiter.releaseMs = (float) (double) limiterVar.getProperty ("release", (double) limiter.releaseMs);
+        }
+        Limiter::store (project->masterParams->limiter, Limiter::normalized (limiter));
+    }
 
     project->ensureUniqueIds();
     return project;

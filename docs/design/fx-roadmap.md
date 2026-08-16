@@ -30,10 +30,10 @@
   - EQサムネイル（StripParts.h）を実カーブ描画へ（計算は `Source/ui/EqCurve.h` でエディタと共有）
   - **やらないこと**: FxBase（DSP共通状態機械）の抽象化はここではやらない。3例目=サチュレーションの実物を見てから切る（抽象化のしすぎ注意）
   - 検証: `scripts/check-render-hashes.sh`（Debug/Release・FX ON全経路のビット一致）＋既存テスト全green
-- [ ] **バッチ2: メーター＋Master Limiter（マスターセクション完成）** — 耳ほぼゼロ
+- [x] **バッチ2: メーター＋Master Limiter（マスターセクション完成）** — 耳ほぼゼロ（2026-08-16 完了・人間の操作感確認済み。plan: docs/plans/2026-08-16-1523-fx-batch2-meters-limiter.md）
   - LUFSメーター（short-term＋integrated。ピークatomic方式では作れない＝積分の器が要る）
   - 相関（位相）メーター
-  - 基盤工事: `MeterScale` の一般化（現状 -60〜0dBFS 決め打ち）・AnalyzerTap の複数消費者対応
+  - 基盤工事: ~~`MeterScale` の一般化・AnalyzerTap の複数消費者対応~~ → 実装時に両方不要と判明（2026-08-16）: LUFS/相関バーは別スケールの独自描画で `Meters::norm` を触らず、計測はAnalyzerTap（欠落許容の表示用FIFO）でなく専用の十分統計量リング（`MasterMeterStats.h`）で行う
   - Master Limiter（Master 1本のみ＝トラックFXの多経路問題がなく統合が軽い。LUFSと並べて意味を持つ道具）
   - **digすべき論点**: ①メーターの表示場所（ミキサーのMasterストリップか下部詳細ビューか。ui-principles の「常設dB数値はミキサー/FXパネルのみ」と整合させる）②トゥルーピーク対応の要否（配信基準は -1dBTP だが、サンプルピークで足りるかの割り切り）
   - 検証: ffmpeg loudnorm 等との数値照合・出力天井テスト

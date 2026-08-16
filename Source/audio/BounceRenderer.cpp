@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "../shared/ClipFade.h"
+#include "../shared/LoudnessMeter.h"
 #include "../shared/Pan.h"
 #include "../shared/Ppq.h"
 #include "../shared/Project.h"
@@ -193,6 +194,11 @@ BounceRenderer::Status BounceRenderer::renderAndWrite()
         return Status::failed;
     }
 
+    // 出来上がったファイルの Integrated LUFS / TP を計測してResultに載せる（完了表示用）。
+    // メッセージスレッド（pollBounce）で数分のWAVを読んで4x TP計測するとUIが止まるため、
+    // 必ずここ＝ワーカースレッドで行う
+    result.loudnessMeasured = Loudness::measureFile (target, result.integratedLufs, result.truePeakDb);
+
     progressValue.store (1.0f);
     return Status::success;
 }
@@ -221,6 +227,13 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
         track.eq.snapTo (sr, track.eqEnabled, track.eqBands);
         track.compDsp.snapTo (sr, track.compEnabled, track.comp);
     }
+
+    // Master Limiterも平滑を挟まず即確定（同上）。遅延契約: 先頭Lサンプル（ディレイ充填の
+    // 無音）を破棄し、レンダリング終了後にLサンプルの無音でflushする＝出力の長さ・頭出しは
+    // Limiter導入前と変わらない
+    request.limiter = Limiter::normalized (request.limiter);
+    masterLimiter.snapTo (sr, request.limiter);
+    limiterHeadRemaining = masterLimiter.lookaheadSamples();
 
     cursors.assign (request.tracks.size(), {});
     // 範囲開始より前のノートの読み飛ばし（サイクル範囲書き出しで rangeStart > 0 になる。
@@ -263,12 +276,15 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
 
         int n = (int) juce::jmin ((juce::int64) renderBlockSize, rangeEnd - pos);
 
-        // 曲末フェードの境界で切り、ブロックが「フェード前／区間内／終端以後」の
-        // いずれかに完全に収まるようにする（RTと同じ条件式。「現在位置より厳密に後ろ」の
-        // 境界だけ採用する＝境界ちょうどで n=0 になって進まなくなるのを防ぐ）
+        // 曲末フェードの境界で切る（RTと同じ条件式。「現在位置より厳密に後ろ」の境界だけ
+        // 採用する＝境界ちょうどで n=0 になって進まなくなるのを防ぐ）。
+        // フェードはLimiter後・遅延後の位置（absPos - L）で評価するため、境界は +L 側で切る
+        // （mixBusesAndMaster参照。ランプが折れ点をまたがないようにする）
         if (request.hasFadeOut())
         {
-            for (const auto boundary : { request.fadeStartSample(), request.fadeEndSample() })
+            const auto lookahead = (juce::int64) masterLimiter.lookaheadSamples();
+            for (const auto boundary : { request.fadeStartSample() + lookahead,
+                                         request.fadeEndSample() + lookahead })
                 if (pos < boundary && boundary < pos + n)
                     n = (int) (boundary - pos);
         }
@@ -391,19 +407,15 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
         for (int ch = 0; ch < 2; ++ch)
             runningPeak = juce::jmax (runningPeak, mix.getMagnitude (ch, 0, n));
 
-        if (! writer.writeFromAudioSampleBuffer (mix, 0, n))
-        {
-            result.errorMessage = jp (u8"一時ファイルへの書き込みに失敗しました（ディスク容量を確認してください）。");
-            renderFailed = true;
+        if (! writeMixDroppingHead (writer, mix, n))
             return false;
-        }
-        samplesWritten += n;
 
         progressValue.store (0.85f * (float) ((double) (pos + n - rangeStart) / (double) (rangeEnd - rangeStart)));
         pos += n;
     }
 
     // ---- テール: 範囲終端で鳴り残ったノートを止め、余韻が減衰しきるまで延長 ----
+    juce::int64 flushPos = rangeEnd; // Limiter flushブロックの絶対位置（テールの続き）
     if (request.wantTail)
     {
         const auto maxTailSamples = (juce::int64) (sr * 5.0);
@@ -490,22 +502,51 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
                 magnitude = juce::jmax (magnitude, mix.getMagnitude (ch, 0, renderBlockSize));
             runningPeak = juce::jmax (runningPeak, magnitude);
 
-            if (! writer.writeFromAudioSampleBuffer (mix, 0, renderBlockSize))
-            {
-                result.errorMessage = jp (u8"一時ファイルへの書き込みに失敗しました（ディスク容量を確認してください）。");
-                renderFailed = true;
+            if (! writeMixDroppingHead (writer, mix, renderBlockSize))
                 return false;
-            }
-            samplesWritten += renderBlockSize;
             tailRendered += renderBlockSize;
             progressValue.store (0.85f + 0.05f * (float) ((double) tailRendered / (double) maxTailSamples));
 
             if (magnitude < silenceThreshold)
                 break; // -60dBを下回ったら余韻は減衰しきったとみなす
         }
+        flushPos = rangeEnd + tailRendered;
+    }
+
+    // ---- Limiterのflush: ディレイ内に残った末尾Lサンプルを無音入力で押し出して書く ----
+    // （遅延契約の末尾側。先頭L破棄と対で、出力の長さ・頭出しが従来と一致する）
+    {
+        const int flushLen = masterLimiter.lookaheadSamples();
+        mix.clear();
+        for (auto& bus : busMix)
+            bus.clear();
+        mixBusesAndMaster (mix, busMix, flushLen, flushPos);
+        for (int ch = 0; ch < 2; ++ch)
+            runningPeak = juce::jmax (runningPeak, mix.getMagnitude (ch, 0, flushLen));
+        if (! writeMixDroppingHead (writer, mix, flushLen))
+            return false;
     }
 
     progressValue.store (0.9f);
+    return true;
+}
+
+bool BounceRenderer::writeMixDroppingHead (juce::AudioFormatWriter& writer,
+                                           const juce::AudioBuffer<float>& mix, int numSamples)
+{
+    // 先頭 limiterHeadRemaining サンプル（Limiterのディレイ充填＝無音）を捨ててから書く
+    const int skip = juce::jmin (limiterHeadRemaining, numSamples);
+    limiterHeadRemaining -= skip;
+    const int toWrite = numSamples - skip;
+    if (toWrite <= 0)
+        return true;
+    if (! writer.writeFromAudioSampleBuffer (mix, skip, toWrite))
+    {
+        result.errorMessage = jp (u8"一時ファイルへの書き込みに失敗しました（ディスク容量を確認してください）。");
+        renderFailed = true;
+        return false;
+    }
+    samplesWritten += toWrite;
     return true;
 }
 
@@ -697,30 +738,45 @@ void BounceRenderer::mixBusesAndMaster (juce::AudioBuffer<float>& mix,
             mix.addFrom (ch, 0, busMix[(size_t) b], ch, 0, numSamples, request.busGain[b]);
     }
 
-    // 曲末フェード。呼び出し側が境界でブロックを切っているので、このブロックは
+    // ---- Masterゲイン → Limiter → 曲末フェード（RTのprocessSegmentと同じ順序）----
+    // フェードはLimiterの**後**（region-settings.md）。Limiter出力は入力よりLサンプル
+    // 遅れるため、フェードゲインは遅延後の音声位置（absPos - L）で評価する。
+    // masterGain==1.0 のガードは演算の省略のみ（掛けても x*1.0f==x でビット不変）
+
+    // 遅延契約: フェード終端以降のLimiter入力は無音（RTと同じ。実音声を入れると
+    // ディレイに残り、テールGRの掛かり方がRTと食い違う）
+    if (request.hasFadeOut() && absPos + numSamples > request.fadeEndSample())
+    {
+        const int from = (int) juce::jmax ((juce::int64) 0, request.fadeEndSample() - absPos);
+        for (int ch = 0; ch < 2; ++ch)
+            mix.clear (ch, from, numSamples - from);
+    }
+
+    if (request.masterGain != 1.0f)
+        mix.applyGain (0, numSamples, request.masterGain);
+
+    masterLimiter.process (mix.getWritePointer (0), mix.getWritePointer (1), numSamples,
+                           request.sampleRate, request.limiter);
+
+    // 呼び出し側が +L 側の境界でブロックを切っているので、遅延後の位置で見た1ブロックは
     // 「フェード前」「区間内」「終端以後」のいずれかに完全に収まる（RTと同じ規則）
     if (request.hasFadeOut())
     {
         const auto fadeStart = request.fadeStartSample();
         const auto fadeEnd = request.fadeEndSample();
-        if (absPos >= fadeEnd)
+        const auto audioPos = absPos - (juce::int64) masterLimiter.lookaheadSamples();
+        if (audioPos >= fadeEnd)
         {
-            mix.clear(); // 終端以後は厳密に無音
+            mix.clear(); // 終端以後は厳密に無音（Limiterの状態連続性は上のprocessで維持済み）
             return;
         }
-        if (absPos >= fadeStart)
+        if (audioPos + numSamples > fadeStart)
         {
             // endGain は区間の排他端で評価する（GOTCHAS.md）。毎ブロック絶対位置から
             // 計算し直すので誤差はブロック長で頭打ちになる
-            const float g0 = request.masterGain * SongFade::gainAt (absPos, fadeStart, fadeEnd);
-            const float g1 = request.masterGain * SongFade::gainAt (absPos + numSamples, fadeStart, fadeEnd);
+            const float g0 = SongFade::gainAt (audioPos, fadeStart, fadeEnd);
+            const float g1 = SongFade::gainAt (audioPos + numSamples, fadeStart, fadeEnd);
             mix.applyGainRamp (0, numSamples, g0, g1);
-            return;
         }
     }
-
-    // フェード前・未設定は既存の演算順序をそのまま通す（順序が変わると出力が微小に変わり、
-    // フェードを使っていない既存プロジェクトの書き出しまで変わってしまう）
-    if (request.masterGain != 1.0f)
-        mix.applyGain (0, numSamples, request.masterGain);
 }

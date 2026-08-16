@@ -278,10 +278,12 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     eqDetail.getSampleRate = [this] { return transport.sampleRate.load(); };
     eqDetail.setAnalyzerTap (&analyzerTap);
     engine.setAnalyzerTap (&analyzerTap);
+    engine.setMasterMeterRing (&masterMeterRing);
 
     // 下部詳細に載せる Comp エディタ。値の書き込みはビュー側（atomic直書き・undo対象外＝EQと
     // 同じ扱い）。dirty化だけ受ける。GR・検波レベルはメータータイマーが pushLevels で配布する
     compDetail.onEdited = [this] { setDirty (true); };
+    limiterDetail.onEdited = [this] { setDirty (true); };
 
     instrumentDetail.onPreview = [this] (int pitch)
     {
@@ -762,7 +764,13 @@ void MainComponent::timerCallback()
                              project->masterParams->peakR.exchange (0.0f) };
         masterFeed.peak = p;
         masterFeed.maxSincePlay = juce::jmax (masterFeed.maxSincePlay, p[0], p[1]);
+        // LimiterのGRもここで一元消費（compGrDbと同じ流儀。SlotPillとLimiterエディタで奪い合わない）
+        masterFeed.limiterGrDb = project->masterParams->limiterGrDb.exchange (0.0f);
     }
+    // Masterメーター（LUFS/相関/TP）の集約。リングの読み手はここ一箇所のみ・計測は常時稼働で、
+    // ビューの表示有無に関わらず取り込む（途中でビューを開いても再生開始からの値が出る）
+    masterMeterAggregator.consume (masterMeterRing);
+    limiterDetail.pushMeters (masterMeterAggregator.feed(), masterFeed.limiterGrDb);
     headers.updateMeters (meterPeaks);
     mixerWindow.content().updateMeters (meterFeeds, busFeeds, masterFeed);
     fxEditor.updateMeters (meterFeeds, busFeeds, masterFeed);
@@ -1499,6 +1507,13 @@ void MainComponent::debugOpenCompDetail()
     toggleFxDetailSlot (1); // 1 = Comp
 }
 
+void MainComponent::debugOpenLimiterDetail()
+{
+    openFxEditor();
+    fxEditor.showMaster();
+    toggleFxDetailSlot (0); // Masterはslot0 = Limiter
+}
+
 void MainComponent::debugSetCompParams (bool enabled, const Comp::Values& values)
 {
     if (selectedTrack < 0 || selectedTrack >= (int) project->tracks.size())
@@ -1552,6 +1567,7 @@ void MainComponent::closeFxDetail()
     instrumentDetail.setTrack (nullptr);
     eqDetail.setTrack (nullptr);
     compDetail.setTrack (nullptr);
+    limiterDetail.setMaster (nullptr);
     fxDetailSlot = -1;
     fxDetailKey.clear();
     fxEditor.setActiveSlot (-1);
@@ -1610,7 +1626,19 @@ void MainComponent::updateFxDetailBody()
         instrumentDetail.setTrack (&project->tracks[(size_t) index]);
         eqDetail.setTrack (nullptr);
         compDetail.setTrack (nullptr);
+        limiterDetail.setMaster (nullptr);
         fxDetail.setBody (&instrumentDetail);
+        return;
+    }
+
+    // Masterの [Limiter] スロット（Limiter操作＋LUFS/相関/TPのマスターメーター群を1画面で）
+    if (fxEditor.slotName (fxDetailSlot) == "Limiter" && fxEditor.targetKey() == "master")
+    {
+        instrumentDetail.setTrack (nullptr);
+        eqDetail.setTrack (nullptr);
+        compDetail.setTrack (nullptr);
+        limiterDetail.setMaster (project->masterParams.get());
+        fxDetail.setBody (&limiterDetail);
         return;
     }
 
@@ -1630,6 +1658,7 @@ void MainComponent::updateFxDetailBody()
         instrumentDetail.setTrack (nullptr);
         eqDetail.setTrack (slot == "EQ" ? trackPtr : nullptr);
         compDetail.setTrack (slot == "Comp" ? trackPtr : nullptr);
+        limiterDetail.setMaster (nullptr);
         fxDetail.setBody (slot == "EQ" ? (juce::Component*) &eqDetail
                                        : (juce::Component*) &compDetail);
         return;
@@ -1638,6 +1667,7 @@ void MainComponent::updateFxDetailBody()
     instrumentDetail.setTrack (nullptr);
     eqDetail.setTrack (nullptr);
     compDetail.setTrack (nullptr);
+    limiterDetail.setMaster (nullptr);
     fxDetail.setBody (nullptr);
 }
 
@@ -2076,6 +2106,7 @@ void MainComponent::beginBounce (const juce::File& target)
         request.busMute[b] = project->busParams[b]->mute.load();
     }
     request.masterGain = project->masterParams->gain.load();
+    request.limiter = Limiter::load (project->masterParams->limiter);
 
     // 開始時点のmute/solo/gainをプレーン値へ固定する（共有atomicのTrackParamsはワーカーへ渡さない。
     // 保存ダイアログ表示中に変えられた値もここで確定する）
@@ -2330,6 +2361,7 @@ void MainComponent::beginRegionBounce (const juce::File& target, int trackIndex,
         request.busMute[b] = project->busParams[b]->mute.load();
     }
     request.masterGain = project->masterParams->gain.load();
+    request.limiter = Limiter::load (project->masterParams->limiter);
 
     BounceRenderer::TrackRender trackRender;
     if (! BounceRenderer::buildItemRender (track, itemIndex, request.bpm, sr,
@@ -2385,9 +2417,17 @@ void MainComponent::pollBounce()
         case BounceRenderer::Status::success:
             Log::info ("bounce.done", "samples=" + juce::String (result.writtenSamples)
                                           + " peak=" + juce::String (result.peak, 3)
-                                          + " scaled=" + juce::String ((int) result.scaled));
-            bounceOverlay.showDone();
-            bounceDoneTicks = 40; // 30Hz × 40 ≈ 1.3秒表示して自動で消える
+                                          + " scaled=" + juce::String ((int) result.scaled)
+                                          + (result.loudnessMeasured
+                                                 ? " lufs=" + juce::String (result.integratedLufs, 2)
+                                                       + " tpDb=" + juce::String (result.truePeakDb, 2)
+                                                 : juce::String()));
+            // 配信前の最終チェック（「この曲は -9.8 LUFS / -0.8 dBTP」）を完了表示に添える
+            bounceOverlay.showDone (result.loudnessMeasured
+                                        ? juce::String (result.integratedLufs, 1) + " LUFS  /  "
+                                              + juce::String (result.truePeakDb, 1) + " dBTP"
+                                        : juce::String());
+            bounceDoneTicks = 90; // 30Hz × 90 ≈ 3秒（数値を読み取れる長さにする）
             break;
 
         case BounceRenderer::Status::cancelled:

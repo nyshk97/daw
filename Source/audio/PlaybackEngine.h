@@ -2,6 +2,8 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
+#include "MasterLimiter.h"
+#include "MasterMeterSource.h"
 #include "Recorder.h"
 #include "../shared/TransportState.h"
 #include "../shared/PlaybackSnapshot.h"
@@ -27,6 +29,8 @@ public:
     void setFilePreview (AudioFilePreview* previewToUse) { filePreview = previewToUse; }
     // アナライザタップ（EQエディタのスペクトラム表示）。オーディオ開始前にセットすること
     void setAnalyzerTap (AnalyzerTap* tapToUse) { analyzerTap = tapToUse; }
+    // Masterメーターのリング（LUFS/相関/TPの十分統計量）。オーディオ開始前にセットすること
+    void setMasterMeterRing (MasterMeterRing* ringToUse) { masterMeter.setRing (ringToUse); }
 
     // ---- メッセージスレッド専用 ----
     void play();
@@ -66,12 +70,18 @@ private:
     // 境界でセグメントを切るので、1セグメントは「フェード前／区間内／終端以後」のどれかに収まる
     // timelineJumped: シーク・再生開始・サイクルラップ等の時間不連続（EQのIIR履歴リセットに使う。
     // snapshotChanged は含めない — リージョンゲイン調整等の差し替えは時間が連続している）
+    // limiterReset: Master Limiterのディレイ/GR包絡リセット（再生開始・明示シークのみ。
+    // **サイクルラップを含めない** — timelineJumpedと違い、ラップでリセットすると
+    // 毎ループ先頭にlookahead分の無音が入る。ラップは連続ストリームとして扱う）
+    // meterPlayEdge: Masterメーターの世代切替（再生開始エッジのみ。シーク・ラップは含めない＝
+    // integratedは「再生開始から」の平均）。meterStopEdge: 停止エッジ（部分統計の確定＋TP flush）
     void processSegment (juce::AudioBuffer<float>& buffer, int outOffset, int segLen, juce::int64 segPos,
                          bool playing, bool armed, juce::int64 punchIn,
                          PlaybackSnapshot* snapshot, bool anySolo, bool canProcess, float masterGain,
                          juce::int64 fadeStartSample, juce::int64 fadeEndSample,
                          double sr, double bpm, double beatLen,
-                         bool silenceTransport, bool silenceAll, bool resound, bool timelineJumped);
+                         bool silenceTransport, bool silenceAll, bool resound, bool timelineJumped,
+                         bool limiterReset, bool meterPlayEdge, bool meterStopEdge);
 
     TransportState& transport;
     SnapshotExchange& snapshots;
@@ -96,6 +106,14 @@ private:
     // Master処理を1箇所に集めるため
     juce::AudioBuffer<float> mixScratch;                 // 2ch
     juce::AudioBuffer<float> busScratch[numSendBuses];   // 各2ch。sendの蓄積先（毎ブロックclear）
+
+    // Master Limiter（RT用の実行状態。Master 1本＝エンジン全体で1個なのでここに住む。
+    // バウンスは BounceRenderer が独立インスタンスを持つ）。停止中もプレビューがMaster経路を
+    // 通るため常時処理する。パラメータはスナップショットの masterParams->limiter を毎セグメント読む
+    MasterLimiter masterLimiter;
+
+    // Masterメーターの計測DSP（Limiter・フェード後の最終出力を測る。再生中は常時稼働）
+    MasterMeterSource masterMeter;
 
     // ---- 以下はオーディオスレッド専用の状態 ----
 

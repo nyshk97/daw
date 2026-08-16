@@ -109,6 +109,7 @@ public:
     //   --open <projectDir>  選択画面を迂回してプロジェクトを開く
     //   --eq-editor          FXパネル＋EQ詳細エディタを開く（選択トラック）
     //   --comp-editor        FXパネル＋Comp詳細エディタを開く（選択トラック）
+    //   --limiter-editor     FXパネル＋Master Limiterエディタ（マスターメーター群）を開く
     //   --comp-demo          選択トラックにデモ設定のCompを掛ける（-30dB/8:1/5ms/80ms・ON。
     //                        GR表示・書き出し検証用）
     //   --bounce <path>      FileChooserを迂回して書き出しを開始する（ログ bounce.start）
@@ -120,6 +121,7 @@ public:
         bool eqEditor = false;
         bool compEditor = false;
         bool compDemo = false;
+        bool limiterEditor = false;
         bool autoplay = false; // --play: 開いた後に再生を開始（アナライザ等の動作確認用）
         for (int i = 0; i < args.size(); ++i)
         {
@@ -133,6 +135,8 @@ public:
                 compEditor = true;
             else if (args[i] == "--comp-demo")
                 compDemo = true;
+            else if (args[i] == "--limiter-editor")
+                limiterEditor = true;
             else if (args[i] == "--bounce" && i + 1 < args.size())
                 bounceFile = juce::File (args[i + 1]);
             else if (args[i] == "--play")
@@ -169,6 +173,14 @@ public:
                     if (compEditor)
                         component->debugOpenCompDetail();
                 }
+            });
+
+        if (limiterEditor)
+            juce::Timer::callAfterDelay (500, [this]
+            {
+                if (mainWindow != nullptr)
+                    if (auto* component = mainWindow->currentMainComponent())
+                        component->debugOpenLimiterDetail();
             });
 
         if (autoplay)

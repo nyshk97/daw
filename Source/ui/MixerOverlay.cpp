@@ -160,6 +160,8 @@ void MixerStrip::updateMeter (const MeterFeed& feed)
     meter.update (feed.peak);
     if (kind == Kind::track)
         slotPills[FxSlots::grSlot].setGainReductionDb (feed.compGrDb); // Compピルのミニ GRバー
+    if (kind == Kind::master)
+        slotPills[0].setGainReductionDb (feed.limiterGrDb); // LimiterピルのミニGRバー
     if (! juce::approximatelyEqual (feed.maxSincePlay, peakMaxDisplay))
     {
         peakMaxDisplay = feed.maxSincePlay;

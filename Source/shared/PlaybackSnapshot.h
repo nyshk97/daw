@@ -14,6 +14,7 @@
 #include "../audio/TrackEq.h"
 #include "CompParams.h"
 #include "EqParams.h"
+#include "LimiterParams.h"
 
 // send用固定バスの本数（Reverb A / Reverb B / Delay）。本数・並びは固定で、
 // UI・保存形式・エンジンすべてこの順序を前提にする（バスの作成・削除UIは作らない）
@@ -47,6 +48,12 @@ struct TrackParams
     // Comp::normalized() を通した値を Comp::store() すること。バス・Masterでは未使用のまま
     Comp::Params comp;
 
+    // Master Limiterのパラメータ（v17。shared/LimiterParams.h）。**Masterのみ使用**
+    // （トラック・バスでは既定値のまま触らない）。書き込みは必ず Limiter::normalized() を
+    // 通した値を Limiter::store() すること。DSPの実行状態はスナップショットを跨いで
+    // 持続させるため PlaybackEngine が持つ（Master 1本＝エンジン全体で1個のため）
+    Limiter::Params limiter;
+
     // ---- 以下はオーディオスレッド専用（peakL/peakR・SynthInstance::activeNotes と同じ流儀）----
     // EQ/CompのDSP実行状態（biquad履歴・平滑・GRエンベロープ）。スナップショット再構築を
     // 跨いで持続させるためここに住む。
@@ -68,6 +75,10 @@ struct TrackParams
     // 検波入力ピークの**線形振幅**（dBを入れると負値になり exchange(0) のmax更新と両立しない）
     std::atomic<float> compGrDb { 0.0f };
     std::atomic<float> compDetectorPeak { 0.0f };
+
+    // Master LimiterのブロックGR（正の減衰量dB。compGrDbと同じCAS max→UI exchange(0)の流儀。
+    // Masterのみ使用）
+    std::atomic<float> limiterGrDb { 0.0f };
 
     static_assert (std::atomic<float>::is_always_lock_free);
     static_assert (std::atomic<bool>::is_always_lock_free);

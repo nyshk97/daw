@@ -4,6 +4,34 @@
 
 #include <unistd.h> // getpid（TempDirSweep の現PIDケース）
 
+#include <cstdlib>
+#include <new>
+
+// ---- RT確保ゼロ検証用のグローバル operator new/delete 差し替え ----
+// 呼び出しスレッドごとの確保回数を数える（他スレッド（Timer等）の確保でflakyにならないよう
+// thread_local）。注意: 過整列型のaligned new経路は数えない＝カウント0は「通常のnew経由の
+// 確保が無い」ことの検証（vector成長・std::function確保などの典型バグはこれで捕まる）
+thread_local long long testAllocationCount = 0;
+
+void* operator new (std::size_t size)
+{
+    ++testAllocationCount;
+    if (auto* p = std::malloc (size > 0 ? size : 1))
+        return p;
+    throw std::bad_alloc();
+}
+void* operator new[] (std::size_t size)
+{
+    ++testAllocationCount;
+    if (auto* p = std::malloc (size > 0 ? size : 1))
+        return p;
+    throw std::bad_alloc();
+}
+void operator delete (void* p) noexcept { std::free (p); }
+void operator delete[] (void* p) noexcept { std::free (p); }
+void operator delete (void* p, std::size_t) noexcept { std::free (p); }
+void operator delete[] (void* p, std::size_t) noexcept { std::free (p); }
+
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_dsp/juce_dsp.h> // EQの解析応答（getMagnitudeForFrequency）との照合用
@@ -11,6 +39,7 @@
 #include "audio/AudioImporter.h"
 #include "audio/AudioFilePreview.h"
 #include "audio/BounceRenderer.h"
+#include "audio/MasterLimiter.h"
 #include "audio/PlaybackEngine.h"
 #include "audio/SamplerEngine.h"
 #include "audio/TrackFxChain.h"
@@ -35,6 +64,10 @@
 #include "shared/TempDirSweep.h"
 #include "shared/AnalyzeProgress.h"
 #include "shared/AnalyzerTap.h"
+#include "shared/LoudnessMeter.h"
+#include "shared/MasterMeterStats.h"
+#include "shared/TruePeakDetector.h"
+#include "audio/MasterMeterSource.h"
 #include "shared/SpectrumAnalyzer.h"
 #include "shared/YtDlpOutput.h"
 #include "ui/AppLookAndFeel.h"
@@ -74,6 +107,12 @@ juce::File makeTempDir()
     dir.createDirectory();
     return dir;
 }
+
+// Master Limiterのlookahead遅延（2ms相当）。エンジン（RT経路）の出力はタイムラインより
+// これだけ遅れて出る（遅延契約: docs/plans/2026-08-16-1523-fx-batch2-meters-limiter.md。
+// バウンスは先頭破棄＋末尾flushで整列済み）。エンジン出力をタイムラインやバウンスと
+// 比較するテストは、エンジン側を +latency で読む（余分に1ブロック回して末尾を確保する）
+int engineLimiterLatency (double sr) { return MasterLimiter::lookaheadForRate (sr); }
 
 // テスト用の小さなモノラルWAVを書く
 bool writeTestWav (const juce::File& file, int numSamples)
@@ -1772,10 +1811,11 @@ void testEngineReadsClipOffsets()
     PlaybackEngine engine (transport, snapshots, previewFifo);
     engine.prepareToPlay (blockSize, sr);
 
-    // ソース: サンプル値 = 位置に比例するランプ波（読み出し位置のズレを1サンプル単位で検出できる）
+    // ソース: サンプル値 = 位置に比例するランプ波（読み出し位置のズレを1サンプル単位で検出できる）。
+    // 振幅は0.5止まり（1.0までのランプはMaster Limiterの天井-1dB≈0.891に叩かれて一致しなくなる）
     auto source = std::make_shared<juce::AudioBuffer<float>> (1, totalSamples);
     for (int i = 0; i < totalSamples; ++i)
-        source->setSample (0, i, (float) i / (float) totalSamples);
+        source->setSample (0, i, 0.5f * (float) i / (float) totalSamples);
 
     Project project;
     Track track;
@@ -1796,19 +1836,21 @@ void testEngineReadsClipOffsets()
     project.tracks.push_back (std::move (track));
     snapshots.push (project.buildSnapshot());
 
-    juce::AudioBuffer<float> buffer (2, blockSize);
+    // 出力はMaster Limiterのlookahead分遅れるので、余分に1ブロック回して +latency で照合する
+    const int latency = engineLimiterLatency (sr);
+    juce::AudioBuffer<float> out (2, blockSize * 5);
+    out.clear();
     engine.play();
-    int mismatches = 0;
-    for (int block = 0; block < 4; ++block)
+    for (int block = 0; block < 5; ++block)
     {
-        buffer.clear();
-        juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+        juce::AudioSourceChannelInfo info (&out, block * blockSize, blockSize);
         engine.process (info);
-        for (int i = 0; i < blockSize; ++i)
-            if (std::abs (buffer.getSample (0, i) - source->getSample (0, block * blockSize + i)) > 1.0e-6f)
-                ++mismatches;
     }
     engine.stop();
+    int mismatches = 0;
+    for (int i = 0; i < totalSamples; ++i)
+        if (std::abs (out.getSample (0, i + latency) - source->getSample (0, i)) > 1.0e-6f)
+            ++mismatches;
 
     expect (mismatches == 0, "分割された左右クリップの出力が元音源と全サンプル一致すること");
     snapshots.deleteRetired();
@@ -2768,13 +2810,22 @@ void testTrackLevelMeter()
     expect (peak0 > 1.15f && peak0 < 1.25f, "合算後ピークが約1.2であること");
     expect (peak1 > 0.25f && peak1 < 0.35f, "他トラックの音が混入しないこと（clear漏れ検知）");
 
-    // 出力自体も従来どおり両トラック合算で鳴っていること（スクラッチ経由への置き換えで無音化していない）
-    buffer.clear();
+    // 出力自体も従来どおり両トラック合算で鳴っていること（スクラッチ経由への置き換えで無音化していない）。
+    // Master Limiter（常在・ceiling -1dB）で1.5は叩かれてしまうため、トラックゲインを0.5に
+    // 落として合算0.75（天井未満＝素通し）で確認する。出力はlookahead分遅れるので2ブロック目で測る
+    project.tracks[0].params->gain.store (0.5f);
+    project.tracks[1].params->gain.store (0.5f);
+    transport.seekRequest.store (0); // シークでLimiterをリセット（直前の1.5×4ブロックで掛かったGRのリリース中に測らない）
     engine.play();
-    juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
-    engine.process (info);
+    for (int i = 0; i < 2; ++i)
+    {
+        buffer.clear();
+        juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+        engine.process (info);
+    }
     engine.stop();
-    expect (buffer.getMagnitude (0, 0, blockSize) > 1.4f, "出力は全トラック合算（1.2+0.3）で鳴ること");
+    expect (buffer.getMagnitude (0, 0, blockSize) > 0.7f,
+            "出力は全トラック合算（(1.2+0.3)×0.5）で鳴ること");
 
     snapshots.deleteRetired();
 }
@@ -2897,17 +2948,24 @@ void testAudioValuesOnlySnapshot()
         project.tracks.push_back (std::move (track));
         snapshots.push (project.buildSnapshot());
 
-        juce::AudioBuffer<float> buffer (2, blockSize);
+        // 出力はMaster Limiterのlookahead分遅れるので、2ブロック回して
+        // [latency, latency+blockSize) を読む（＝従来の1ブロック目の内容）
+        const int latency = MasterLimiter::lookaheadForRate (sr);
+        juce::AudioBuffer<float> buffer (2, blockSize * 2);
         const auto measure = [&]
         {
             transport.seekRequest.store (0);
             engine.play();
             buffer.clear();
-            juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
-            engine.process (info);
-            const auto magnitude = buffer.getMagnitude (0, 0, blockSize);
+            for (int b = 0; b < 2; ++b)
+            {
+                juce::AudioSourceChannelInfo info (&buffer, b * blockSize, blockSize);
+                engine.process (info);
+            }
+            const auto magnitude = buffer.getMagnitude (0, latency, blockSize);
             engine.stop();
             buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
             engine.process (info);
             return magnitude;
         };
@@ -3995,14 +4053,16 @@ void testBounceRendererBasic()
     dir.deleteRecursively();
 }
 
-// ---- バウンス: ピーク>1.0のときだけ全体スケールダウン（オーバーロード保護）----
+// ---- バウンス: 過大ミックスは Master Limiter（常在・ceiling既定-1dB）が天井で抑えること ----
+// かつての「ピーク>1.0で全体スケール」保護はLimiterが天井を保証するため実質発動しなくなった
+// （コードはバックストップとして残存）。ここではLimiter経由の新契約を検証する
 void testBounceRendererClippingProtection()
 {
     beginTest ("BounceRenderer clipping protection");
     const auto dir = makeTempDir();
     const auto target = dir.getChildFile ("bounce.wav");
 
-    // 0.8のクリップを同位置に2枚重ねて加算1.6 → 0.999/1.6にスケールされる
+    // 0.8のクリップを同位置に2枚重ねて加算1.6（+4.1dB）→ Limiterがceiling(-1dB)へ抑える
     auto audio = std::make_shared<juce::AudioBuffer<float>> (1, 500);
     for (int i = 0; i < 500; ++i)
         audio->setSample (0, i, 0.8f);
@@ -4021,9 +4081,17 @@ void testBounceRendererClippingProtection()
     expect (renderer.start (std::move (request)), "startできること");
     expect (waitForBounce (renderer), "タイムアウトせず完了すること");
     const auto result = renderer.takeResult();
+    const float ceiling = juce::Decibels::decibelsToGain (-1.0f);
     expect (result.status == BounceRenderer::Status::success, "successで終わること");
-    expect (result.scaled, "ピーク>1.0でスケールされること");
-    expect (std::abs (result.peak - 1.6f) < 0.001f, "スケール前ピークが記録されること");
+    expect (! result.scaled, "Limiterが天井を守るためスケールは発動しないこと");
+    expect (result.peak <= ceiling + 1.0e-4f, "記録ピークがceiling以下であること");
+    expect (result.writtenSamples == 500, "Limiterの遅延が出力長に漏れないこと（先頭破棄＋flush）");
+    // 完了時の自動計測（ワーカー内 measureFile）。DC矩形の立ち上がりエッジはギブス現象で
+    // サンプル間オーバーシュートが出る（96タップカーネルの実測 ≈ +1.05dB）ため、
+    // TPはceiling(-1dB)以上〜+0.5dBTP未満に収まる（連続音楽ではこの現象は出ない）
+    expect (result.loudnessMeasured, "完了時にLUFS/TPが計測されること");
+    expect (result.truePeakDb > -1.05 && result.truePeakDb < 0.5,
+            "計測TPがceiling(-1dB)〜+0.5dBTPの範囲（矩形エッジのISP込み）であること");
 
     juce::WavAudioFormat wav;
     std::unique_ptr<juce::AudioFormatReader> reader (
@@ -4031,11 +4099,12 @@ void testBounceRendererClippingProtection()
     expect (reader != nullptr, "書き出したWAVを読めること");
     if (reader != nullptr)
     {
+        expect (reader->lengthInSamples == 500, "WAVの長さが範囲どおりであること");
         juce::AudioBuffer<float> readBack (2, 500);
         reader->read (&readBack, 0, 500, 0, true, true);
         const float peak = readBack.getMagnitude (0, 500);
-        expect (peak <= 1.0f, "出力ピークが1.0以下に収まること");
-        expect (std::abs (peak - 0.999f) < 0.005f, "0.999へ正規化されること");
+        expect (peak <= ceiling + 1.0e-3f, "出力ピークがceiling(-1dB)以下に収まること");
+        expect (peak > ceiling - 0.02f, "出力が天井近くまで出ていること（過剰に潰していない）");
     }
     dir.deleteRecursively();
 }
@@ -4337,11 +4406,13 @@ void testBounceSampler()
         expect (snapshot->tracks[0].synth != nullptr, "再生用サンプラーが生成されること");
         snapshots.push (std::move (snapshot));
 
-        juce::AudioBuffer<float> engineOut (2, totalSamples);
+        // Limiterの遅延ぶん余分に1ブロック回す（比較はエンジン側を +latency で読む）
+        const int latency = engineLimiterLatency (sr);
+        juce::AudioBuffer<float> engineOut (2, totalSamples + blockSize);
         engineOut.clear();
         engine.play();
         juce::AudioBuffer<float> buffer (2, blockSize);
-        for (int block = 0; block < totalSamples / blockSize; ++block)
+        for (int block = 0; block < totalSamples / blockSize + 1; ++block)
         {
             buffer.clear();
             juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
@@ -4363,7 +4434,7 @@ void testBounceSampler()
             float maxDiff = 0.0f;
             for (int ch = 0; ch < 2; ++ch)
                 for (int i = 0; i < totalSamples; ++i)
-                    maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (ch, i)
+                    maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (ch, i + latency)
                                                              - bounceOut.getSample (ch, i)));
             expect (maxDiff < 1.0e-4f, "再生とバウンスのサンプル値が一致（24bit量子化誤差内）すること");
         }
@@ -5171,7 +5242,9 @@ void testBounceEqTail()
     }
 
     // RT: 範囲終端を越えて処理を続け、リングアウトを採取する
-    juce::AudioBuffer<float> engineOut (2, totalSamples + tailCompare);
+    //（Limiterの遅延ぶん余分に1ブロック回し、比較はエンジン側を +latency で読む）
+    const int latency = engineLimiterLatency (sr);
+    juce::AudioBuffer<float> engineOut (2, totalSamples + tailCompare + blockSize);
     {
         TransportState transport;
         SnapshotExchange snapshots;
@@ -5182,7 +5255,7 @@ void testBounceEqTail()
         transport.seekRequest.store (0);
         engine.play();
         juce::AudioBuffer<float> buffer (2, blockSize);
-        for (int blockIndex = 0; blockIndex < numBlocks + tailCompare / blockSize; ++blockIndex)
+        for (int blockIndex = 0; blockIndex < numBlocks + tailCompare / blockSize + 1; ++blockIndex)
         {
             buffer.clear();
             juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
@@ -5240,7 +5313,7 @@ void testBounceEqTail()
         {
             tailPeak = juce::jmax (tailPeak, std::abs (bounceOut.getSample (0, i)));
             for (int ch = 0; ch < 2; ++ch)
-                maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (ch, i)
+                maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (ch, i + latency)
                                                          - bounceOut.getSample (ch, i)));
         }
         expect (tailPeak > 1.0e-3f, "終端直後にリングアウトが実在すること");
@@ -5319,7 +5392,7 @@ void testEngineEqBounceConsistency()
         transport.seekRequest.store (0);
         engine.play();
         juce::AudioBuffer<float> buffer (2, blockSize);
-        for (int blockIndex = 0; blockIndex < numBlocks; ++blockIndex)
+        for (int blockIndex = 0; blockIndex * blockSize < out.getNumSamples(); ++blockIndex)
         {
             buffer.clear();
             juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
@@ -5331,7 +5404,9 @@ void testEngineEqBounceConsistency()
         snapshots.deleteRetired();
     };
 
-    juce::AudioBuffer<float> engineOut (2, totalSamples);
+    // Limiterの遅延ぶん余分に1ブロック回す（比較はエンジン側を +latency で読む）
+    const int latency = engineLimiterLatency (sr);
+    juce::AudioBuffer<float> engineOut (2, totalSamples + blockSize);
     renderEngine (engineOut);
 
     // EQが実際に効いていること（中立との差がある）を先に確認する
@@ -5396,7 +5471,7 @@ void testEngineEqBounceConsistency()
         float maxDiff = 0.0f;
         for (int ch = 0; ch < 2; ++ch)
             for (int i = compareFrom; i < totalSamples; ++i)
-                maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (ch, i)
+                maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (ch, i + latency)
                                                          - bounceOut.getSample (ch, i)));
         // 24bit量子化＋浮動小数点の積和順序差ぶんの許容誤差（フェードイン区間は除外済み）
         expect (maxDiff < 1.0e-4f, "EQ有効時もエンジンとバウンスが許容誤差内で一致すること");
@@ -5439,7 +5514,7 @@ void testCompParamsRoundtrip()
         expect (project.save (error), "保存できること");
     }
     const auto parsed = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
-    expect ((int) parsed.getProperty ("version", 0) == 16, "v16で保存されること");
+    expect ((int) parsed.getProperty ("version", 0) == 17, "v17で保存されること");
 
     auto reloaded = Project::load (dir, warnings, error);
     expect (reloaded != nullptr && reloaded->tracks.size() == 1, "再読込できること");
@@ -5859,7 +5934,7 @@ void testEngineCompBounceConsistency()
         transport.seekRequest.store (0);
         engine.play();
         juce::AudioBuffer<float> buffer (2, blockSize);
-        for (int blockIndex = 0; blockIndex < numBlocks; ++blockIndex)
+        for (int blockIndex = 0; blockIndex * blockSize < out.getNumSamples(); ++blockIndex)
         {
             buffer.clear();
             juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
@@ -5871,7 +5946,9 @@ void testEngineCompBounceConsistency()
         snapshots.deleteRetired();
     };
 
-    juce::AudioBuffer<float> engineOut (2, totalSamples);
+    // Limiterの遅延ぶん余分に1ブロック回す（比較はエンジン側を +latency で読む）
+    const int latency = engineLimiterLatency (sr);
+    juce::AudioBuffer<float> engineOut (2, totalSamples + blockSize);
     renderEngine (engineOut);
 
     // Compが実際に効いていること（OFFとの差がある）を先に確認する — 空一致の防止
@@ -5934,7 +6011,7 @@ void testEngineCompBounceConsistency()
         float maxDiff = 0.0f;
         for (int ch = 0; ch < 2; ++ch)
             for (int i = compareFrom; i < totalSamples; ++i)
-                maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (ch, i)
+                maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (ch, i + latency)
                                                          - bounceOut.getSample (ch, i)));
         // 24bit量子化＋浮動小数点の積和順序差ぶんの許容誤差
         expect (maxDiff < 1.0e-4f, "Comp有効時もエンジンとバウンスが許容誤差内で一致すること");
@@ -5989,7 +6066,7 @@ void testEngineCompPrePanDetection()
         transport.seekRequest.store (0);
         engine.play();
         juce::AudioBuffer<float> buffer (2, blockSize);
-        for (int blockIndex = 0; blockIndex < numBlocks; ++blockIndex)
+        for (int blockIndex = 0; blockIndex * blockSize < out.getNumSamples(); ++blockIndex)
         {
             buffer.clear();
             juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
@@ -6009,7 +6086,9 @@ void testEngineCompPrePanDetection()
         return std::sqrt (sum / (totalSamples - measureFrom));
     };
 
-    juce::AudioBuffer<float> onOut (2, totalSamples), offOut (2, totalSamples);
+    // Limiterの遅延ぶん onOut は余分に1ブロック確保（バウンス比較で +latency 読みするため）
+    const int latency = engineLimiterLatency (sr);
+    juce::AudioBuffer<float> onOut (2, totalSamples + blockSize), offOut (2, totalSamples);
     renderEngine (onOut);
     project.tracks[0].params->compEnabled.store (false);
     renderEngine (offOut);
@@ -6056,7 +6135,7 @@ void testEngineCompPrePanDetection()
         float maxDiff = 0.0f;
         for (int ch = 0; ch < 2; ++ch)
             for (int i = 0; i < totalSamples; ++i) // 音声は再生開始で即時スナップ＝先頭から比較できる
-                maxDiff = juce::jmax (maxDiff, std::abs (onOut.getSample (ch, i)
+                maxDiff = juce::jmax (maxDiff, std::abs (onOut.getSample (ch, i + latency)
                                                          - bounceOut.getSample (ch, i)));
         expect (maxDiff < 1.0e-4f, "ハード右pan＋Compでもエンジンとバウンスが一致すること");
     }
@@ -6065,6 +6144,670 @@ void testEngineCompPrePanDetection()
 }
 
 // ---- エンジン: pan法則・post-fader send（素通しバス）・busGain/mute・Masterゲイン・メーター ----
+// ---- LoudnessMeter: ITU-R BS.1770-5 / EBU Tech 3341 v4 準拠の絶対照合 ----
+void testLoudnessMeterStandard()
+{
+    beginTest ("loudness meter standard");
+
+    const auto makeSine = [] (double sr, double freq, float amplitude, int numSamples)
+    {
+        juce::AudioBuffer<float> buffer (2, numSamples);
+        for (int i = 0; i < numSamples; ++i)
+        {
+            const float v = amplitude
+                            * (float) std::sin (juce::MathConstants<double>::twoPi * freq * i / sr);
+            buffer.setSample (0, i, v);
+            buffer.setSample (1, i, v); // ステレオ同相
+        }
+        return buffer;
+    };
+
+    // Test 1: 1000Hz・ステレオ同相・各chピーク-23dBFS・20秒 → -23.0 ±0.1 LUFS（44.1k/48k両方）
+    for (const double sr : { 48000.0, 44100.0 })
+    {
+        const float amp = juce::Decibels::decibelsToGain (-23.0f);
+        const auto signal = makeSine (sr, 1000.0, amp, (int) (sr * 20.0));
+        const auto dir = makeTempDir();
+        const auto file = dir.getChildFile ("test1.wav");
+        expect (writeBufferWav (file, signal, sr), "テスト信号を書けること");
+        double lufs = 0.0, tpDb = 0.0;
+        expect (Loudness::measureFile (file, lufs, tpDb), "計測できること");
+        expect (std::abs (lufs - (-23.0)) < 0.1, "Test 1: integrated -23.0 ±0.1 LUFS");
+        expect (std::abs (tpDb - (-23.0)) < 0.2, "正弦波のTPはサンプルピークとほぼ一致（-23dBTP）");
+        dir.deleteRecursively();
+    }
+
+    // Test 3相当（相対ゲート）: -36dBFS 10秒 → -23dBFS 20秒 → -36dBFS 10秒。
+    // 相対ゲート（仮平均-10LU）が前後の静かな区間を除外し、integratedは-23.0のまま
+    {
+        const double sr = 48000.0;
+        const auto loud = makeSine (sr, 1000.0, juce::Decibels::decibelsToGain (-23.0f), (int) (sr * 20.0));
+        const auto quiet = makeSine (sr, 1000.0, juce::Decibels::decibelsToGain (-36.0f), (int) (sr * 10.0));
+        juce::AudioBuffer<float> combined (2, quiet.getNumSamples() * 2 + loud.getNumSamples());
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            combined.copyFrom (ch, 0, quiet, ch, 0, quiet.getNumSamples());
+            combined.copyFrom (ch, quiet.getNumSamples(), loud, ch, 0, loud.getNumSamples());
+            combined.copyFrom (ch, quiet.getNumSamples() + loud.getNumSamples(),
+                               quiet, ch, 0, quiet.getNumSamples());
+        }
+        const auto dir = makeTempDir();
+        const auto file = dir.getChildFile ("test3.wav");
+        expect (writeBufferWav (file, combined, sr), "テスト信号を書けること");
+        double lufs = 0.0, tpDb = 0.0;
+        expect (Loudness::measureFile (file, lufs, tpDb), "計測できること");
+        expect (std::abs (lufs - (-23.0)) < 0.1, "Test 3: 相対ゲートが静かな区間を除外して-23.0 ±0.1");
+        dir.deleteRecursively();
+    }
+}
+
+// ---- TruePeakDetector: サンプル間ピークの検出（fs/4正弦・位相π/4）とDCユニティ ----
+void testTruePeakDetector()
+{
+    beginTest ("true peak detector");
+
+    // fs/4の正弦を位相π/4でサンプリング: サンプル値は全て±0.7071だが真のピークは1.0
+    {
+        TruePeakDetector detector;
+        detector.reset();
+        float samplePeak = 0.0f, truePeak = 0.0f;
+        for (int i = 0; i < 4096; ++i)
+        {
+            const float x = (float) std::sin (juce::MathConstants<double>::pi * 0.5 * i
+                                              + juce::MathConstants<double>::pi / 4.0);
+            const float tp = detector.processSample (0, x);
+            if (i >= 64) // カーネル充填後から測る
+            {
+                samplePeak = juce::jmax (samplePeak, std::abs (x));
+                truePeak = juce::jmax (truePeak, tp);
+            }
+        }
+        expect (std::abs (samplePeak - 0.70711f) < 1.0e-4f, "サンプルピークは0.707（前提確認）");
+        expect (std::abs (truePeak - 1.0f) < 0.02f, "サンプル間の真のピーク1.0を検出すること");
+    }
+
+    // DC（定常値）: 各相の係数和=1に正規化してあるのでTP=サンプル値
+    {
+        TruePeakDetector detector;
+        detector.reset();
+        float truePeak = 0.0f;
+        for (int i = 0; i < 256; ++i)
+        {
+            const float tp = detector.processSample (0, 0.5f);
+            if (i >= 64)
+                truePeak = juce::jmax (truePeak, tp);
+        }
+        expect (std::abs (truePeak - 0.5f) < 0.005f, "定常信号のTPはサンプルピークと一致（ユニティ）");
+    }
+}
+
+// ---- MasterMeterSource → リング → Aggregator のパイプライン＋計測契約の回帰 ----
+// （100ms未満で停止しても最大TPを保持・旧世代Entryを混ぜない・リングoverflowで計測無効）
+void testMasterMeterPipeline()
+{
+    beginTest ("master meter pipeline");
+
+    const double sr = 48000.0;
+    const auto fillSine = [&] (std::vector<float>& out, float amplitude)
+    {
+        for (size_t i = 0; i < out.size(); ++i)
+            out[i] = amplitude
+                     * (float) std::sin (juce::MathConstants<double>::twoPi * 1000.0 * (double) i / sr);
+    };
+    const auto feedSource = [&] (MasterMeterSource& source, const std::vector<float>& left,
+                                 const std::vector<float>& right, bool startEdge)
+    {
+        constexpr int block = 480;
+        for (size_t pos = 0; pos < left.size(); pos += block)
+        {
+            const int n = (int) juce::jmin ((size_t) block, left.size() - pos);
+            source.process (left.data() + pos, right.data() + pos, n, sr,
+                            true, startEdge && pos == 0, false);
+        }
+    };
+
+    MasterMeterRing ring (1 << 10);
+    MasterMeterSource source;
+    source.setRing (&ring);
+    Loudness::MasterMeterAggregator aggregator;
+
+    // 5秒の1kHz同相 -23dBFS → short-term/integrated/相関/TPが揃う
+    std::vector<float> left (48000 * 5), right;
+    fillSine (left, juce::Decibels::decibelsToGain (-23.0f));
+    right = left;
+    feedSource (source, left, right, true);
+    aggregator.consume (ring);
+    {
+        const auto& feed = aggregator.feed();
+        expect (feed.measurementValid, "計測が有効であること");
+        expect (feed.hasIntegrated && std::abs (feed.integratedLufs - (-23.0f)) < 0.15f,
+                "パイプライン経由のintegratedが-23.0付近");
+        expect (feed.hasShortTerm && std::abs (feed.shortTermLufs - (-23.0f)) < 0.15f,
+                "short-termも-23.0付近");
+        expect (feed.hasCorrelation && feed.correlation > 0.99f, "同相の相関は+1付近");
+        expect (feed.hasTruePeak && std::abs (feed.maxTruePeakDb - (-23.0f)) < 0.3f,
+                "TPは-23dBTP付近");
+    }
+
+    // 新しい再生セッション（世代切替）: -33dBFSの5秒。旧世代（-23）が混ざると-33にならない
+    std::vector<float> quietL (48000 * 5), quietR;
+    fillSine (quietL, juce::Decibels::decibelsToGain (-33.0f));
+    quietR = quietL;
+    feedSource (source, quietL, quietR, true);
+    aggregator.consume (ring);
+    expect (aggregator.feed().hasIntegrated
+                && std::abs (aggregator.feed().integratedLufs - (-33.0f)) < 0.15f,
+            "世代切替で旧セッションのEntryを集計に混ぜないこと");
+
+    // 逆相: 相関は-1付近
+    std::vector<float> invR (quietL.size());
+    for (size_t i = 0; i < invR.size(); ++i)
+        invR[i] = -quietL[i];
+    feedSource (source, quietL, invR, true);
+    aggregator.consume (ring);
+    expect (aggregator.feed().hasCorrelation && aggregator.feed().correlation < -0.99f,
+            "逆相の相関は-1付近");
+
+    // 停止エッジの部分統計: 静音1.2秒（12ブロック）＋100サンプル（うち1サンプルだけ1.0の
+    // スパイク）で停止 → 100ms未満の部分ブロックでも最大TPが保持されること
+    {
+        std::vector<float> tail (48000 + 9600 + 100, 0.0f);
+        fillSine (tail, juce::Decibels::decibelsToGain (-40.0f));
+        tail[tail.size() - 50] = 1.0f; // 最後の部分ブロック内のスパイク
+        std::vector<float> tailR = tail;
+        feedSource (source, tail, tailR, true);
+        source.process (nullptr, nullptr, 0, sr, false, false, true); // 停止エッジ
+        aggregator.consume (ring);
+        expect (aggregator.feed().hasTruePeak && aggregator.feed().maxTruePeakDb > -0.5f,
+                "100ms未満で停止しても最後の部分ブロックの最大TPを保持すること");
+    }
+
+    // short-termは3秒窓（完全な100msブロック×30）が揃うまで出さない
+    //（揃う前に出すとMomentaryに近い短窓の値をshort-termとして誤読させる）
+    {
+        MasterMeterRing shortRing (1 << 10);
+        MasterMeterSource shortSource;
+        shortSource.setRing (&shortRing);
+        shortSource.prepare (sr);
+        Loudness::MasterMeterAggregator shortAggregator;
+
+        std::vector<float> one (48000), oneR; // 1秒 = 10ブロック < 30
+        fillSine (one, juce::Decibels::decibelsToGain (-23.0f));
+        oneR = one;
+        feedSource (shortSource, one, oneR, true);
+        shortAggregator.consume (shortRing);
+        expect (! shortAggregator.feed().hasShortTerm, "3秒未満はshort-termを出さないこと");
+        expect (shortAggregator.feed().hasTruePeak, "TPは最初のブロックから出ること");
+
+        std::vector<float> more (48000 * 3), moreR; // 追加3秒 → 計4秒で揃う
+        fillSine (more, juce::Decibels::decibelsToGain (-23.0f));
+        moreR = more;
+        feedSource (shortSource, more, moreR, false);
+        shortAggregator.consume (shortRing);
+        expect (shortAggregator.feed().hasShortTerm
+                    && std::abs (shortAggregator.feed().shortTermLufs - (-23.0f)) < 0.15f,
+                "3秒揃ったらshort-termが出ること");
+
+        // 停止時の部分ブロックが混ざっても、short-termは完全30個の3秒窓のまま
+        //（部分を窓に入れると「完全29＋部分1」の3秒未満窓になる回帰）
+        std::vector<float> stub (50), stubR;
+        fillSine (stub, juce::Decibels::decibelsToGain (-23.0f));
+        stubR = stub;
+        feedSource (shortSource, stub, stubR, false);
+        shortSource.process (nullptr, nullptr, 0, sr, false, false, true); // 停止エッジ
+        shortAggregator.consume (shortRing);
+        expect (shortAggregator.feed().hasShortTerm
+                    && std::abs (shortAggregator.feed().shortTermLufs - (-23.0f)) < 0.15f,
+                "部分ブロック混入後もshort-termは3秒窓のまま有効であること");
+    }
+
+    // リングoverflow: 容量8の小さいリングを読まずに溢れさせる → 計測無効（黙って継続しない）。
+    // 次の再生セッション（世代切替）で回復する
+    {
+        MasterMeterRing tinyRing (8);
+        MasterMeterSource tinySource;
+        tinySource.setRing (&tinyRing);
+        Loudness::MasterMeterAggregator tinyAggregator;
+
+        std::vector<float> two (48000 * 2), twoR;
+        fillSine (two, juce::Decibels::decibelsToGain (-23.0f));
+        twoR = two;
+        feedSource (tinySource, two, twoR, true); // 20ブロック > 容量8
+        tinyAggregator.consume (tinyRing);
+        expect (! tinyAggregator.feed().measurementValid, "リングoverflowで計測無効になること");
+
+        std::vector<float> half (4800 * 4), halfR; // 新セッションは容量内（4ブロック）
+        fillSine (half, juce::Decibels::decibelsToGain (-23.0f));
+        halfR = half;
+        feedSource (tinySource, half, halfR, true);
+        tinyAggregator.consume (tinyRing);
+        expect (tinyAggregator.feed().measurementValid, "次の再生セッションで計測有効へ回復すること");
+    }
+
+    // 複数世代がリング満杯中にまとめて破棄されたケース: リングに残った**古い世代**を
+    // 有効表示しない（汚染世代は最後=最大の世代しか残らないため「以前は全部無効」で解釈する）
+    {
+        MasterMeterRing staleRing (8);
+        MasterMeterSource staleSource;
+        staleSource.setRing (&staleRing);
+        staleSource.prepare (sr);
+        Loudness::MasterMeterAggregator staleAggregator;
+
+        std::vector<float> two (48000 * 2), twoR;
+        fillSine (two, juce::Decibels::decibelsToGain (-23.0f));
+        twoR = two;
+        feedSource (staleSource, two, twoR, true); // gen1: 8件格納＋12件破棄
+        feedSource (staleSource, two, twoR, true); // gen2: 満杯のまま全破棄（taint=gen2）
+        staleAggregator.consume (staleRing);       // リングにはgen1のみ残っている
+        expect (! staleAggregator.feed().measurementValid,
+                "破棄された新世代より古い世代を有効表示しないこと");
+
+        std::vector<float> next (4800 * 4), nextR; // gen3は空いたリングに収まる → 回復
+        fillSine (next, juce::Decibels::decibelsToGain (-23.0f));
+        nextR = next;
+        feedSource (staleSource, next, nextR, true);
+        staleAggregator.consume (staleRing);
+        expect (staleAggregator.feed().measurementValid,
+                "汚染世代より後のセッションで回復すること");
+    }
+}
+
+// ---- RT安全性: Limiter＋常時計測（4x TP FIR含む）が192kHz・小ブロックでヒープ確保ゼロ ----
+// 処理時間はRelease専用ベンチマークとして実測値を報告するだけ（Debug/CI負荷で不安定になるため
+// 合否には入れない）
+void testRtNoAllocation()
+{
+    beginTest ("rt no allocation (limiter + meter)");
+
+    const double sr = 192000.0;
+    constexpr int block = 64;
+
+    MasterLimiter limiter;
+    Limiter::Values values;
+    values.gainDb = 6.0f;
+    limiter.snapTo (sr, values);
+
+    MasterMeterRing ring;
+    MasterMeterSource source;
+    source.setRing (&ring);
+
+    std::vector<float> left (block), right (block);
+    for (int i = 0; i < block; ++i)
+        left[i] = right[i] = (float) std::sin (0.3 * i);
+
+    // 事前準備は本番と同じ経路（prepareToPlay相当＝非RTスレッドで重い係数計算を済ませる）。
+    // **再生開始エッジ（beginSession）はカウント対象に含める** — RT上で走る経路だから
+    source.prepare (sr);
+    limiter.snapTo (sr, values);
+
+    const int blocksPerSecond = (int) (sr / block);
+    testAllocationCount = 0;
+    const auto startMs = juce::Time::getMillisecondCounterHiRes();
+    for (int i = 0; i < blocksPerSecond; ++i)
+    {
+        limiter.process (left.data(), right.data(), block, sr, values);
+        source.process (left.data(), right.data(), block, sr, true, i == 0, false);
+    }
+    const auto elapsedMs = juce::Time::getMillisecondCounterHiRes() - startMs;
+    expect (testAllocationCount == 0, "1秒分（192kHz・64サンプルブロック）でヒープ確保ゼロ");
+
+#if ! JUCE_DEBUG
+    // Release専用ベンチマーク（報告のみ）: 実時間1秒分の処理に掛かった時間と実時間比
+    std::cout << "[bench] limiter+meter 192kHz/64: " << elapsedMs << " ms per 1s of audio ("
+              << (elapsedMs / 10.0) << "% realtime)" << std::endl;
+#else
+    juce::ignoreUnused (elapsedMs);
+#endif
+}
+
+// MasterLimiter: 出力天井の絶対保証（インパルス列・矩形・フルスケール正弦＋
+// Gain/Ceilingのブロック途中急変）とステレオリンク（クランプ後もL/R比率維持）
+void testMasterLimiterBrickwall()
+{
+    beginTest ("MasterLimiter brickwall ceiling");
+
+    const double sr = 48000.0;
+    MasterLimiter limiter;
+    Limiter::Values values;
+    values.gainDb = 12.0f;
+    values.ceilingDb = -1.0f;
+    values.releaseMs = 60.0f;
+    limiter.snapTo (sr, values);
+    const int lookahead = limiter.lookaheadSamples();
+    expect (lookahead == 96, "lookahead is 2ms at 48kHz (96 samples)");
+
+    // 信号: インパルス列 → 0dBFS矩形 → フルスケール正弦（Rは常にLの半分＝リンク検証用）
+    const int total = 48000;
+    std::vector<float> left (total), right (total);
+    for (int i = 0; i < total; ++i)
+    {
+        float x = 0.0f;
+        if (i < 16000)
+            x = (i % 1200 == 0) ? 1.0f : 0.0f;
+        else if (i < 32000)
+            x = ((i / 240) % 2 == 0) ? 1.0f : -1.0f;
+        else
+            x = std::sin (juce::MathConstants<float>::twoPi * 997.0f * (float) i / (float) sr);
+        left[i] = x;
+        right[i] = x * 0.5f;
+    }
+
+    // ブロック処理（端数サイズ）＋途中でCeilingを-1→-6へ急変させる（Gainも12→6）
+    const int switchAt = 24000;
+    int pos = 0;
+    while (pos < total)
+    {
+        const int n = juce::jmin (333, total - pos);
+        auto v = values;
+        if (pos >= switchAt)
+        {
+            v.ceilingDb = -6.0f;
+            v.gainDb = 6.0f;
+        }
+        limiter.process (left.data() + pos, right.data() + pos, n, sr, v);
+        pos += n;
+    }
+
+    const float eps = 1.0e-5f;
+    const float ceil1 = juce::Decibels::decibelsToGain (-1.0f);
+    const float ceil6 = juce::Decibels::decibelsToGain (-6.0f);
+    // Ceiling実効値はLサンプル整列＋10msランプ平滑で、切替はブロック境界（最大333サンプル
+    // 遅れ）から始まる。switchAt + ブロック粒度 + ランプ(10ms=480) + L ＋余裕の後に完成する
+    const int settled = switchAt + 333 + 480 + lookahead + 200;
+    bool ceilingOk = true, tightOk = true, linkOk = true;
+    for (int i = 0; i < total; ++i)
+    {
+        const float peak = juce::jmax (std::fabs (left[i]), std::fabs (right[i]));
+        if (peak > ceil1 + eps)
+            ceilingOk = false;
+        if (i >= settled && peak > ceil6 + eps)
+            tightOk = false;
+        if (std::fabs (left[i]) > 1.0e-3f
+            && std::fabs (right[i] - 0.5f * left[i]) > 1.0e-6f * juce::jmax (1.0f, std::fabs (left[i])))
+            linkOk = false;
+    }
+    expect (ceilingOk, "no sample ever exceeds the -1dB ceiling");
+    expect (tightOk, "after the mid-stream switch, output obeys the new -6dB ceiling");
+    expect (linkOk, "stereo link keeps the R/L ratio through limiting and clamping");
+}
+
+// MasterLimiter: 定常GRの実測一致・リリース時定数・素通しのビット一致（Lサンプル位置合わせ）・
+// リセット直後のディレイ充填
+void testMasterLimiterDynamics()
+{
+    beginTest ("MasterLimiter dynamics");
+
+    const double sr = 48000.0;
+    MasterLimiter limiter;
+    Limiter::Values values;
+    values.gainDb = 6.0f;
+    values.ceilingDb = -1.0f;
+    values.releaseMs = 100.0f;
+    limiter.snapTo (sr, values);
+    const int lookahead = limiter.lookaheadSamples();
+
+    // 定常正弦（0dBFS・+6dB gain）→ 収束後の出力ピークはceiling・GRは 6-(-1)=7dB
+    const int steady = 24000;
+    std::vector<float> left (steady), right (steady);
+    for (int i = 0; i < steady; ++i)
+        left[i] = right[i] =
+            std::sin (juce::MathConstants<float>::twoPi * 997.0f * (float) i / (float) sr);
+    limiter.process (left.data(), right.data(), steady, sr, values);
+
+    float tailPeak = 0.0f;
+    for (int i = steady - 4800; i < steady; ++i)
+        tailPeak = juce::jmax (tailPeak, std::fabs (left[i]));
+    const float tailPeakDb = juce::Decibels::gainToDecibels (tailPeak);
+    expect (std::fabs (tailPeakDb - (-1.0f)) < 0.1f, "steady-state output peak sits at the ceiling");
+    expect (std::fabs (limiter.currentGainReductionDb() - 7.0f) < 0.3f,
+            "steady-state GR matches gain-over-ceiling (7dB)");
+
+    // リリース時定数: 入力を無音にして τ=100ms 後のGRが約36.8%まで減衰する
+    std::vector<float> silence (4800, 0.0f), silenceR (4800, 0.0f);
+    // 窓（L+1）からピークが抜けきるまで流してから計測開始
+    limiter.process (silence.data(), silenceR.data(), 2 * lookahead, sr, values);
+    const float grStart = limiter.currentGainReductionDb();
+    const int tau = (int) std::lround (0.1 * sr);
+    int remaining = tau;
+    while (remaining > 0)
+    {
+        const int n = juce::jmin (remaining, 4800);
+        limiter.process (silence.data(), silenceR.data(), n, sr, values);
+        remaining -= n;
+    }
+    const float ratio = limiter.currentGainReductionDb() / grStart;
+    expect (grStart > 5.0f, "GR is still engaged when release measurement starts");
+    expect (std::fabs (ratio - std::exp (-1.0f)) < 0.05f,
+            "GR decays to ~36.8% after one release time constant");
+
+    // 素通し（Gain 0・ceiling未満）のビット一致: out[n] == in[n-L]
+    limiter.snapTo (sr, Limiter::Values {});
+    const int n = 9600;
+    std::vector<float> input (n);
+    for (int i = 0; i < n; ++i)
+        input[i] = 0.25f * std::sin (0.13f * (float) i) + 0.1f * std::sin (1.7f * (float) i);
+    std::vector<float> outL (input), outR (input);
+    // 複数ブロックに割って処理（ブロック境界の連続性も同時に確認する）
+    for (int pos = 0; pos < n; pos += 256)
+        limiter.process (outL.data() + pos, outR.data() + pos,
+                         juce::jmin (256, n - pos), sr, Limiter::Values {});
+    bool zeroFill = true, bitExact = true;
+    for (int i = 0; i < lookahead; ++i)
+        if (outL[i] != 0.0f)
+            zeroFill = false;
+    for (int i = lookahead; i < n; ++i)
+        if (outL[i] != input[(size_t) (i - lookahead)] || outR[i] != outL[i])
+            bitExact = false;
+    expect (zeroFill, "first L samples after reset are silent (delay fill)");
+    expect (bitExact, "neutral settings pass audio through bit-exactly (L-sample aligned)");
+}
+
+// ---- Master Limiterのリセット契約（エンジン統合）: 明示シークで旧位置のディレイ内容が
+// 漏れないこと（サイクルラップの「無音が入らない」側は testPlaybackEngineCycleLoop が担う）----
+void testEngineLimiterSeekReset()
+{
+    beginTest ("engine limiter seek reset");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+
+    TransportState transport;
+    SnapshotExchange snapshots;
+    PreviewFifo previewFifo;
+    PlaybackEngine engine (transport, snapshots, previewFifo);
+    engine.prepareToPlay (blockSize, sr);
+
+    // 大音量のDCクリップ（Limiterのディレイに必ず非ゼロが残る状態を作る）
+    Project project;
+    Track track;
+    track.id = 1;
+    track.params->gain.store (1.0f);
+    Clip clip;
+    clip.lengthSamples = blockSize * 4;
+    clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, blockSize * 4);
+    for (int i = 0; i < clip.audio->getNumSamples(); ++i)
+        clip.audio->setSample (0, i, 0.8f);
+    track.clips.push_back (std::move (clip));
+    project.tracks.push_back (std::move (track));
+    snapshots.push (project.buildSnapshot());
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    transport.seekRequest.store (0);
+    engine.play();
+    for (int i = 0; i < 2; ++i)
+    {
+        buffer.clear();
+        juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+        engine.process (info);
+    }
+    expect (buffer.getMagnitude (0, 0, blockSize) > 0.7f, "シーク前は大音量が出ていること");
+
+    // クリップの無い無音地帯へ明示シーク → リセット契約によりディレイが消去され、
+    // 直前の0.8のDCが最初のLサンプルに漏れない（漏れると先頭2msにDC断片が出る）
+    transport.seekRequest.store (blockSize * 32);
+    buffer.clear();
+    juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+    engine.process (info);
+    engine.stop();
+    expect (buffer.getMagnitude (0, 0, blockSize) == 0.0f
+                && buffer.getMagnitude (1, 0, blockSize) == 0.0f,
+            "明示シーク直後のブロックに旧位置のディレイ内容が漏れないこと");
+
+    snapshots.deleteRetired();
+}
+
+// ---- フェード×サイクル: フェード終端後もLimiterへ無音を流して状態を進めること ----
+// fadeEnd以降の入力は無音・fadeEnd+L以降は出力加算だけ止める。サイクルはLimiterを
+// リセットしない契約なので、ここを止めると凍結した古い2msが折り返し後の先頭へ漏れる
+void testEngineFadeCycleLimiterState()
+{
+    beginTest ("engine fade + cycle limiter state");
+
+    constexpr double sr = 48000.0;
+    constexpr int blockSize = 512;
+    constexpr double bpm = 50.0; // 1/16 = 14400サンプル
+    const int latency = engineLimiterLatency (sr);
+
+    TransportState transport;
+    transport.bpm.store (bpm);
+    SnapshotExchange snapshots;
+    PreviewFifo previewFifo;
+    PlaybackEngine engine (transport, snapshots, previewFifo);
+    engine.prepareToPlay (blockSize, sr);
+
+    Project project;
+    project.bpm = bpm;
+    project.fadeOutStartSixteenths = 1; // 14400
+    project.fadeOutEndSixteenths = 2;   // 28800
+    Track track;
+    track.id = 1;
+    track.params->gain.store (1.0f);
+    Clip clip;
+    clip.lengthSamples = 40000;
+    clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, 40000);
+    for (int i = 0; i < 40000; ++i)
+        clip.audio->setSample (0, i, 0.5f);
+    track.clips.push_back (std::move (clip));
+    project.tracks.push_back (std::move (track));
+    snapshots.push (project.buildSnapshot());
+
+    // サイクル終端はフェード終端+Lより後ろ（折り返し時点でディレイが無音で満たされている状況）
+    const int cycleEnd = 30000;
+    transport.cycleRange.store (TransportState::packCycle (0, cycleEnd));
+    transport.cycleEnabled.store (true);
+    transport.seekRequest.store (0);
+    engine.play();
+
+    juce::AudioBuffer<float> stream (2, cycleEnd + blockSize * 3);
+    stream.clear();
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    int written = 0;
+    while (written < stream.getNumSamples() - blockSize)
+    {
+        buffer.clear();
+        juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+        engine.process (info);
+        for (int ch = 0; ch < 2; ++ch)
+            stream.copyFrom (ch, written, buffer, ch, 0, blockSize);
+        written += blockSize;
+    }
+    engine.stop();
+    snapshots.deleteRetired();
+
+    const auto fadeEnd = SongFade::sixteenthsToSamples (2, bpm, sr);
+    expect (fadeEnd == 28800, "フェード終端の前提確認");
+
+    // フェード終端+L以降は厳密に無音
+    bool silentAfterFade = true;
+    for (int i = (int) fadeEnd + latency; i < cycleEnd; ++i)
+        if (stream.getSample (0, i) != 0.0f)
+            silentAfterFade = false;
+    expect (silentAfterFade, "フェード終端+L以降は厳密に無音であること");
+
+    // 折り返し直後の先頭Lサンプル: ディレイは無音入力で満たされている＝古い音が漏れない
+    bool cleanWrapHead = true;
+    for (int i = cycleEnd; i < cycleEnd + latency; ++i)
+        if (stream.getSample (0, i) != 0.0f)
+            cleanWrapHead = false;
+    expect (cleanWrapHead, "折り返し後の先頭Lサンプルに古いディレイ内容が漏れないこと");
+
+    // その後はDCがL遅延で素通しに戻る（ラップ後はフェード前区間＝ゲイン1.0）
+    expect (std::abs (stream.getSample (0, cycleEnd + latency + 50) - 0.5f) < 1.0e-6f,
+            "折り返し後はフェード前のゲイン1.0で音が戻ること");
+}
+
+// ---- Limiterパラメータ: 既定値・保存/復元（v17）・欠損キー・不正データの正規化 ----
+void testLimiterParamsRoundtrip()
+{
+    beginTest ("limiter params roundtrip");
+
+    // 新規TrackParamsの既定値（Gain 0 / Ceiling -1.0 / Release 60ms = 中立スタート）
+    TrackParams fresh;
+    {
+        const auto v = Limiter::load (fresh.limiter);
+        expect (juce::approximatelyEqual (v.gainDb, 0.0f)
+                    && juce::approximatelyEqual (v.ceilingDb, -1.0f)
+                    && juce::approximatelyEqual (v.releaseMs, 60.0f),
+                "既定値（Gain 0 / Ceiling -1.0 / Release 60ms）");
+    }
+
+    // 値を入れて保存 → 再読込で維持される
+    auto dir = makeTempDir();
+    juce::String error;
+    juce::StringArray warnings;
+    {
+        Project project;
+        project.directory = dir;
+        Limiter::store (project.masterParams->limiter,
+                        Limiter::normalized ({ 6.5f, -2.0f, 120.0f }));
+        expect (project.save (error), "保存できること");
+    }
+    auto reloaded = Project::load (dir, warnings, error);
+    expect (reloaded != nullptr, "再読込できること");
+    if (reloaded != nullptr)
+    {
+        const auto v = Limiter::load (reloaded->masterParams->limiter);
+        expect (juce::approximatelyEqual (v.gainDb, 6.5f)
+                    && juce::approximatelyEqual (v.ceilingDb, -2.0f)
+                    && juce::approximatelyEqual (v.releaseMs, 120.0f),
+                "Limiterパラメータ維持");
+    }
+    dir.deleteRecursively();
+
+    // 欠損（v16以前のproject.json＝master.limiterなし）は既定値
+    auto dirOld = makeTempDir();
+    dirOld.getChildFile ("project.json").replaceWithText (R"({
+        "version": 16, "bpm": 120.0, "sampleRate": 0.0, "nextId": 1,
+        "tracks": [], "master": { "gain": 1.0 }
+    })");
+    auto projectOld = Project::load (dirOld, warnings, error);
+    expect (projectOld != nullptr, "v16を読込めること");
+    if (projectOld != nullptr)
+        expect (juce::approximatelyEqual (Limiter::load (projectOld->masterParams->limiter).ceilingDb,
+                                          -1.0f),
+                "limiter欠損は既定値になること");
+    dirOld.deleteRecursively();
+
+    // 不正データの正規化: 範囲外値のクランプ（手編集JSON対策）
+    auto dirBad = makeTempDir();
+    dirBad.getChildFile ("project.json").replaceWithText (R"({
+        "version": 17, "bpm": 120.0, "sampleRate": 0.0, "nextId": 1,
+        "tracks": [],
+        "master": { "gain": 1.0, "limiter": { "gain": 99.0, "ceiling": 3.0, "release": -5.0 } }
+    })");
+    auto projectBad = Project::load (dirBad, warnings, error);
+    expect (projectBad != nullptr, "不正データを読込めること");
+    if (projectBad != nullptr)
+    {
+        const auto v = Limiter::load (projectBad->masterParams->limiter);
+        expect (juce::approximatelyEqual (v.gainDb, 12.0f)
+                    && juce::approximatelyEqual (v.ceilingDb, 0.0f)
+                    && juce::approximatelyEqual (v.releaseMs, 5.0f),
+                "範囲外値がクランプされること");
+    }
+    dirBad.deleteRecursively();
+}
+
 void testEnginePanSendsMaster()
 {
     beginTest ("engine pan/sends/master");
@@ -6078,7 +6821,8 @@ void testEnginePanSendsMaster()
     PlaybackEngine engine (transport, snapshots, previewFifo);
     engine.prepareToPlay (blockSize, sr);
 
-    // 定数振幅0.5のクリップ（レベル検証がしやすい）
+    // 定数振幅0.4のクリップ（レベル検証がしやすい。send二重加算の0.8がMaster Limiterの
+    // 天井-1dB=0.891を超えないレベル設計。0.5だと二重加算1.0が叩かれて検証にならない）
     Project project;
     Track track;
     track.id = 1;
@@ -6088,12 +6832,14 @@ void testEnginePanSendsMaster()
     clip.lengthSamples = blockSize * 64;
     clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, blockSize * 64);
     for (int i = 0; i < clip.audio->getNumSamples(); ++i)
-        clip.audio->setSample (0, i, 0.5f);
+        clip.audio->setSample (0, i, 0.4f);
     track.clips.push_back (std::move (clip));
     project.tracks.push_back (std::move (track));
     auto& params = *project.tracks[0].params;
     snapshots.push (project.buildSnapshot());
 
+    // 出力はLimiterのlookahead分遅れるが、DC信号なのでブロック内で定常値に達し
+    // getMagnitudeの読みは変わらない（先頭Lサンプルだけ無音）
     juce::AudioBuffer<float> buffer (2, blockSize);
     auto measure = [&] (float& left, float& right)
     {
@@ -6111,47 +6857,47 @@ void testEnginePanSendsMaster()
 
     float left = 0.0f, right = 0.0f;
 
-    // panセンター: 両ch 0.5（等パワー補正型はセンター0dB = 既存プロジェクトの音量を変えない）
+    // panセンター: 両ch 0.4（等パワー補正型はセンター0dB = 既存プロジェクトの音量を変えない）
     measure (left, right);
-    expect (std::abs (left - 0.5f) < 0.001f && std::abs (right - 0.5f) < 0.001f,
-            "panセンターは両ch等量（0.5）");
+    expect (std::abs (left - 0.4f) < 0.001f && std::abs (right - 0.4f) < 0.001f,
+            "panセンターは両ch等量（0.4）");
 
-    // pan右振り切り: 左ほぼ0・右は+3dB（0.5×√2≈0.707）
+    // pan右振り切り: 左ほぼ0・右は+3dB（0.4×√2≈0.566）
     params.peakL.exchange (0.0f); // センター測定の蓄積ピーク（CAS max）をリセット
     params.peakR.exchange (0.0f);
     params.pan.store (1.0f);
     measure (left, right);
     expect (left < 0.001f, "pan右振り切りで左chは無音");
-    expect (std::abs (right - 0.7071f) < 0.005f, "pan右振り切りで右chは+3dB（約0.707）");
-    expect (params.peakR.exchange (0.0f) > 0.7f, "Rメーターはpost-panピーク（約0.707）");
+    expect (std::abs (right - 0.5657f) < 0.005f, "pan右振り切りで右chは+3dB（約0.566）");
+    expect (params.peakR.exchange (0.0f) > 0.55f, "Rメーターはpost-panピーク（約0.566）");
     expect (params.peakL.exchange (0.0f) < 0.001f, "pan右振り切りでLメーターは振れないこと");
 
-    // send（素通しバス）: pan中央・send100% → 原音と二重加算で1.0
+    // send（素通しバス）: pan中央・send100% → 原音と二重加算で0.8
     params.pan.store (0.0f);
     params.sends[0].store (1.0f);
     measure (left, right);
-    expect (std::abs (left - 1.0f) < 0.002f, "send100%は素通しバスで二重加算（1.0）");
-    expect (project.busParams[0]->peakL.exchange (0.0f) > 0.45f, "バスメーターが振れること");
+    expect (std::abs (left - 0.8f) < 0.002f, "send100%は素通しバスで二重加算（0.8）");
+    expect (project.busParams[0]->peakL.exchange (0.0f) > 0.35f, "バスメーターが振れること");
 
     // バスミュートでsend分が消える
     project.busParams[0]->mute.store (true);
     measure (left, right);
-    expect (std::abs (left - 0.5f) < 0.002f, "バスMでsend分が消えること");
+    expect (std::abs (left - 0.4f) < 0.002f, "バスMでsend分が消えること");
     project.busParams[0]->mute.store (false);
 
-    // バスのリターン量（gain 0.5 → 0.5 + 0.25 = 0.75）
+    // バスのリターン量（gain 0.5 → 0.4 + 0.2 = 0.6）
     project.busParams[0]->gain.store (0.5f);
     measure (left, right);
-    expect (std::abs (left - 0.75f) < 0.002f, "バスgainがリターン量として効くこと");
+    expect (std::abs (left - 0.6f) < 0.002f, "バスgainがリターン量として効くこと");
     project.busParams[0]->gain.store (1.0f);
 
-    // Masterゲイン（全体 1.0 → 0.5）とMasterメーター
+    // Masterゲイン（全体 0.8 → 0.4）とMasterメーター
     project.masterParams->gain.store (0.5f);
     project.masterParams->peakL.exchange (0.0f); // 前シナリオの蓄積ピーク（CAS max）をリセット
     project.masterParams->peakR.exchange (0.0f);
     measure (left, right);
-    expect (std::abs (left - 0.5f) < 0.002f, "Masterゲインで全体が半減すること");
-    expect (std::abs (project.masterParams->peakL.exchange (0.0f) - 0.5f) < 0.01f,
+    expect (std::abs (left - 0.4f) < 0.002f, "Masterゲインで全体が半減すること");
+    expect (std::abs (project.masterParams->peakL.exchange (0.0f) - 0.4f) < 0.01f,
             "Masterメーターはpost-masterピーク");
 
     snapshots.deleteRetired();
@@ -6379,21 +7125,44 @@ void testPlaybackEngineCycleLoop()
     project.tracks.push_back (std::move (track));
     snapshots.push (project.buildSnapshot());
 
+    // 出力はMaster Limiterのlookahead分遅れる（遅延契約）。「Masterへ入る値の履歴」を組み立て、
+    // 出力が「履歴を latency 遅らせた列」と全サンプル一致するか検証する。
+    // **サイクルラップでは履歴が途切れず連結される**（＝ラップでLサンプルの無音が入らない、
+    // というLimiterリセット契約の回帰テストを兼ねる）
+    const int latency = engineLimiterLatency (sr);
     juce::AudioBuffer<float> buffer (2, blockSize);
+    std::vector<float> expectedInput; // Master入力の履歴（再生開始からの処理順）
+    int streamPos = 0;                // これまでに検証した出力サンプル総数
+    const auto beginStream = [&]
+    {
+        expectedInput.clear(); // 再生開始（play）でLimiterはリセットされる＝履歴も仕切り直す
+        streamPos = 0;
+    };
+    const auto pushRamp = [&] (int srcStart, int count)
+    {
+        for (int i = 0; i < count; ++i)
+            expectedInput.push_back (source->getSample (0, srcStart + i));
+    };
     const auto processBlock = [&]
     {
         buffer.clear();
         juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
         engine.process (info);
     };
-    const auto expectRamp = [&] (int bufOffset, int count, int srcStart, const char* description)
+    const auto verifyBlock = [&] (const char* description)
     {
         int mismatches = 0;
-        for (int i = 0; i < count; ++i)
-            if (std::abs (buffer.getSample (0, bufOffset + i)
-                          - source->getSample (0, srcStart + i)) > 1.0e-6f)
+        for (int i = 0; i < blockSize; ++i)
+        {
+            const int k = streamPos + i - latency; // 遅延を差し引いた入力履歴の位置
+            const float expected = (k >= 0 && k < (int) expectedInput.size())
+                                       ? expectedInput[(size_t) k]
+                                       : 0.0f;
+            if (std::abs (buffer.getSample (0, i) - expected) > 1.0e-6f)
                 ++mismatches;
+        }
         expect (mismatches == 0, description);
+        streamPos += blockSize;
     };
 
     // ---- ブロック途中でラップ: サイクル[200, 1000)・位置200から ----
@@ -6401,14 +7170,17 @@ void testPlaybackEngineCycleLoop()
     transport.cycleEnabled.store (true);
     transport.seekRequest.store (200);
     engine.play();
+    beginStream();
 
     processBlock(); // 200..712
-    expectRamp (0, blockSize, 200, "1ブロック目: 範囲内をそのまま再生");
+    pushRamp (200, blockSize);
+    verifyBlock ("1ブロック目: 範囲内をそのまま再生");
     expect (transport.playheadSamplePos.load() == 712, "1ブロック目の最終位置");
 
     processBlock(); // 712..1000（288）＋ラップして 200..424（224）
-    expectRamp (0, 288, 712, "境界前セグメントが正しい内容");
-    expectRamp (288, 224, 200, "ラップ後セグメントがバッファ後半の正しい位置に正しい内容");
+    pushRamp (712, 288);
+    pushRamp (200, 224);
+    verifyBlock ("境界前＋ラップ後セグメントが正しい内容（ラップで無音が入らない）");
     expect (transport.playheadSamplePos.load() == 424, "ラップ後の最終位置");
     engine.stop();
     processBlock(); // 停止エッジを消化
@@ -6417,11 +7189,14 @@ void testPlaybackEngineCycleLoop()
     transport.cycleRange.store (TransportState::packCycle (200, 712)); // 範囲長=blockSize
     transport.seekRequest.store (200);
     engine.play();
+    beginStream();
     processBlock(); // 200..712 = 終端ちょうど
-    expectRamp (0, blockSize, 200, "等号境界ブロックの内容");
+    pushRamp (200, blockSize);
+    verifyBlock ("等号境界ブロックの内容");
     expect (transport.playheadSamplePos.load() == 200, "終端ちょうどで終わっても範囲頭へ戻ること");
     processBlock();
-    expectRamp (0, blockSize, 200, "次ブロックは範囲頭から再生されること");
+    pushRamp (200, blockSize);
+    verifyBlock ("次ブロックは範囲頭から再生されること");
     engine.stop();
     processBlock();
 
@@ -6429,9 +7204,11 @@ void testPlaybackEngineCycleLoop()
     transport.cycleRange.store (TransportState::packCycle (0, 128));
     transport.seekRequest.store (0);
     engine.play();
+    beginStream();
     processBlock(); // 0..128 を4周
     for (int rep = 0; rep < 4; ++rep)
-        expectRamp (rep * 128, 128, 0, "範囲長<blockSize: 各セグメントが正しい位置・内容で書かれること");
+        pushRamp (0, 128);
+    verifyBlock ("範囲長<blockSize: 各セグメントが正しい位置・内容で書かれること");
     expect (transport.playheadSamplePos.load() == 0, "複数回ラップ後の最終位置が範囲頭に戻ること");
     engine.stop();
     processBlock();
@@ -6738,11 +7515,14 @@ void testEngineStereoPan()
     expect (std::abs (left - 0.75f) < 0.001f, "混在トラックのL=ステレオL+モノ（0.5+0.25）");
     expect (std::abs (right - 0.25f) < 0.001f, "混在トラックのR=モノのみ（0.25）");
 
-    // send: post-fader（gain・pan適用後）を素通しバス経由で二重加算
+    // send: post-fader（gain・pan適用後）を素通しバス経由で二重加算。
+    // 二重加算の1.5はMaster Limiterの天井（-1dB≈0.891）に当たるため、トラックゲインを
+    // 0.5へ落として合計を天井未満に収める（L=(0.5+0.25)×0.5×2=0.75, R=0.25×0.5×2=0.25）
+    params.gain.store (0.5f);
     params.sends[0].store (1.0f);
     measure (left, right);
-    expect (std::abs (left - 1.5f) < 0.002f, "send100%でLが二重加算（1.5）");
-    expect (std::abs (right - 0.5f) < 0.002f, "send100%でRが二重加算（0.5）");
+    expect (std::abs (left - 0.75f) < 0.002f, "send100%でLが二重加算（0.75）");
+    expect (std::abs (right - 0.25f) < 0.002f, "send100%でRが二重加算（0.25）");
 
     snapshots.deleteRetired();
 }
@@ -6925,11 +7705,16 @@ void testEngineClipFade()
     constexpr double sr = 48000.0;
     constexpr int totalSamples = 2048;
 
-    // 指定ブロックサイズで totalSamples ぶんレンダリングする（ブロック境界の影響を見るため可変）
+    // 指定ブロックサイズで totalSamples ぶんレンダリングする（ブロック境界の影響を見るため可変）。
+    // Master Limiterのlookahead遅延は「余分に1ブロック回して +latency から詰める」で吸収し、
+    // 呼び出し側はタイムライン位置＝インデックスのまま検証できる
     const auto render = [&] (Project& project, int blockSize)
     {
-        juce::AudioBuffer<float> out (2, totalSamples);
-        out.clear();
+        const int latency = engineLimiterLatency (sr);
+        // 予備は latency をブロック倍数へ切り上げた分（blockSize 64 < latency 96 でも足りるように）
+        const int extra = ((latency + blockSize - 1) / blockSize) * blockSize;
+        juce::AudioBuffer<float> raw (2, totalSamples + extra);
+        raw.clear();
         TransportState transport;
         SnapshotExchange snapshots;
         PreviewFifo previewFifo;
@@ -6940,17 +7725,21 @@ void testEngineClipFade()
         engine.play();
 
         juce::AudioBuffer<float> buffer (2, blockSize);
-        for (int pos = 0; pos < totalSamples; pos += blockSize)
+        for (int pos = 0; pos < raw.getNumSamples(); pos += blockSize)
         {
             buffer.clear();
             juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
             engine.process (info);
-            const int n = juce::jmin (blockSize, totalSamples - pos);
+            const int n = juce::jmin (blockSize, raw.getNumSamples() - pos);
             for (int ch = 0; ch < 2; ++ch)
-                out.copyFrom (ch, pos, buffer, ch, 0, n);
+                raw.copyFrom (ch, pos, buffer, ch, 0, n);
         }
         engine.stop();
         snapshots.deleteRetired();
+
+        juce::AudioBuffer<float> out (2, totalSamples);
+        for (int ch = 0; ch < 2; ++ch)
+            out.copyFrom (ch, 0, raw, ch, latency, totalSamples);
         return out;
     };
     const auto makeProject = [] (int channels, float value, juce::int64 fadeIn, juce::int64 fadeOut,
@@ -7135,8 +7924,9 @@ void testEngineBounceStereoConsistency()
     project.busParams[1]->gain.store (0.9f);
     project.masterParams->gain.store (0.85f);
 
-    // エンジン側レンダリング
-    juce::AudioBuffer<float> engineOut (2, totalSamples);
+    // エンジン側レンダリング（Limiterの遅延ぶん余分に1ブロック回し、比較は +latency で読む）
+    const int latency = engineLimiterLatency (sr);
+    juce::AudioBuffer<float> engineOut (2, totalSamples + blockSize);
     {
         TransportState transport;
         SnapshotExchange snapshots;
@@ -7148,7 +7938,7 @@ void testEngineBounceStereoConsistency()
         engine.play();
 
         juce::AudioBuffer<float> buffer (2, blockSize);
-        for (int blockIndex = 0; blockIndex < numBlocks; ++blockIndex)
+        for (int blockIndex = 0; blockIndex < numBlocks + 1; ++blockIndex)
         {
             buffer.clear();
             juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
@@ -7199,7 +7989,7 @@ void testEngineBounceStereoConsistency()
         float maxDiff = 0.0f;
         for (int ch = 0; ch < 2; ++ch)
             for (int i = 0; i < totalSamples; ++i)
-                maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (ch, i)
+                maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (ch, i + latency)
                                                          - bounceOut.getSample (ch, i)));
         // 24bit量子化＋浮動小数点の積和順序差ぶんの許容誤差
         expect (maxDiff < 1.0e-4f, "エンジンとバウンスのL/Rがサンプル一致（許容誤差内）すること");
@@ -7948,10 +8738,13 @@ void testEngineSongFade()
         return project;
     };
 
+    // Master Limiterのlookahead遅延は「余分に1ブロック回して +latency から詰める」で吸収
+    //（フェード終端以後の厳密0は、エンジン側が fadeEnd+L 以後の出力加算を止めることで保たれる）
     const auto render = [&] (Project& project, int blockSize, double bpm)
     {
-        juce::AudioBuffer<float> out (2, totalSamples);
-        out.clear();
+        const int latency = engineLimiterLatency (sr);
+        juce::AudioBuffer<float> raw (2, totalSamples + blockSize);
+        raw.clear();
         TransportState transport;
         transport.bpm.store (bpm);
         SnapshotExchange snapshots;
@@ -7963,17 +8756,21 @@ void testEngineSongFade()
         engine.play();
 
         juce::AudioBuffer<float> buffer (2, blockSize);
-        for (int pos = 0; pos < totalSamples; pos += blockSize)
+        for (int pos = 0; pos < raw.getNumSamples(); pos += blockSize)
         {
             buffer.clear();
             juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
             engine.process (info);
-            const int n = juce::jmin (blockSize, totalSamples - pos);
+            const int n = juce::jmin (blockSize, raw.getNumSamples() - pos);
             for (int ch = 0; ch < 2; ++ch)
-                out.copyFrom (ch, pos, buffer, ch, 0, n);
+                raw.copyFrom (ch, pos, buffer, ch, 0, n);
         }
         engine.stop();
         snapshots.deleteRetired();
+
+        juce::AudioBuffer<float> out (2, totalSamples);
+        for (int ch = 0; ch < 2; ++ch)
+            out.copyFrom (ch, 0, raw, ch, latency, totalSamples);
         return out;
     };
 
@@ -8159,16 +8956,18 @@ void testBounceSongFade()
         transport.seekRequest.store (0);
         engine.play();
 
-        juce::AudioBuffer<float> rt (2, 28800);
+        // Limiterの遅延ぶん余分に1ブロック回し、RT側を +latency で読んで比較する
+        const int latency = engineLimiterLatency (sr);
+        juce::AudioBuffer<float> rt (2, 28800 + 512);
         rt.clear();
         juce::AudioBuffer<float> buffer (2, 512);
-        for (int pos = 0; pos < 28800; pos += 512)
+        for (int pos = 0; pos < rt.getNumSamples(); pos += 512)
         {
             buffer.clear();
             juce::AudioSourceChannelInfo info (&buffer, 0, 512);
             engine.process (info);
             for (int ch = 0; ch < 2; ++ch)
-                rt.copyFrom (ch, pos, buffer, ch, 0, juce::jmin (512, 28800 - pos));
+                rt.copyFrom (ch, pos, buffer, ch, 0, juce::jmin (512, rt.getNumSamples() - pos));
         }
         engine.stop();
         snapshots.deleteRetired();
@@ -8179,7 +8978,8 @@ void testBounceSongFade()
             reader->read (&readBack, 0, 28800, 0, true, true);
             float maxDiff = 0.0f;
             for (int i = 0; i < 28800; ++i)
-                maxDiff = juce::jmax (maxDiff, std::abs (rt.getSample (0, i) - readBack.getSample (0, i)));
+                maxDiff = juce::jmax (maxDiff, std::abs (rt.getSample (0, i + latency)
+                                                         - readBack.getSample (0, i)));
             // RTは512、バウンスは renderBlockSize=1024 固定なので、S字の線形近似の刻みが違う。
             // 実測の最大差は 1.5e-3（level 0.5 に対し0.3%＝-56dB相当）。同じカーブを適用して
             // いることの確認が目的なので、この誤差は許容する
@@ -10975,9 +11775,24 @@ void testReferenceAlignWithKey()
 } // namespace
 
 
-int main()
+int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI juceInit; // MessageManager 初期化（AUインスタンス化に必要）
+
+    // scripts/check-loudness.sh 用の計測モード: WAVの integrated LUFS / TP を1行で出して終了
+    // （ffmpeg ebur128 との数値照合に使う。テストスイートは走らせない）
+    if (argc == 3 && juce::String (argv[1]) == "--measure-loudness")
+    {
+        double lufs = 0.0, tpDb = 0.0;
+        if (! Loudness::measureFile (juce::File (juce::String::fromUTF8 (argv[2])), lufs, tpDb))
+        {
+            std::cout << "ERROR: cannot measure " << argv[2] << std::endl;
+            return 1;
+        }
+        std::cout << "integrated=" << juce::String (lufs, 2)
+                  << " truePeakDb=" << juce::String (tpDb, 2) << std::endl;
+        return 0;
+    }
 
 
 
@@ -11056,6 +11871,15 @@ int main()
     testTrackCompDynamics();
     testEngineCompBounceConsistency();
     testEngineCompPrePanDetection();
+    testMasterLimiterBrickwall();
+    testMasterLimiterDynamics();
+    testEngineLimiterSeekReset();
+    testEngineFadeCycleLimiterState();
+    testLimiterParamsRoundtrip();
+    testLoudnessMeterStandard();
+    testTruePeakDetector();
+    testMasterMeterPipeline();
+    testRtNoAllocation();
     testSpectrumAnalyzer();
     testEngineAnalyzerPreFaderTap();
     testBounceEqTail();

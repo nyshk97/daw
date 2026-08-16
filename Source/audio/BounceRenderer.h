@@ -6,6 +6,7 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 
 #include "../shared/PlaybackSnapshot.h"
+#include "MasterLimiter.h"
 
 struct Track; // shared/Project.h（buildItemRenderの実装側でinclude）
 
@@ -67,6 +68,11 @@ public:
         bool busMute[numSendBuses] { false, false, false };
         float masterGain = 1.0f;
 
+        // Master Limiter（v17。開始時にプレーン値で固定。常在なので必ず通る。
+        // 出力の遅延はワーカーが先頭Lサンプル破棄＋末尾Lサンプル無音flushで吸収し、
+        // 書き出しファイルの長さ・頭出しは従来と変わらない）
+        Limiter::Values limiter;
+
         // 曲末フェードアウト（16分音符単位・無効は 0/0）。サンプル換算は RT と同じ SongFade を通す
         // （片方だけ別式にすると再生とバウンスの出力一致が崩れる）
         int fadeOutStartSixteenths = 0;
@@ -122,6 +128,11 @@ public:
         juce::int64 writtenSamples = 0; // 最終WAVの長さ（テール込み）
         float peak = 0.0f;              // スケール前のミックスピーク
         bool scaled = false;            // ピーク>1.0でスケールダウンしたか
+
+        // 出来上がったファイルの計測（完了表示用。ワーカーが書き出し直後に測って載せる）
+        bool loudnessMeasured = false;
+        double integratedLufs = 0.0;
+        double truePeakDb = 0.0;
     };
 
     BounceRenderer() : juce::Thread ("Bounce Renderer") {}
@@ -189,11 +200,17 @@ private:
     void renderSynthInto (juce::AudioBuffer<float>& mix, std::vector<juce::AudioBuffer<float>>& busMix,
                           TrackRender& track, int numSamples);
 
-    // 素通しバス（busGain/busMute適用）をmixへ合流 → Masterゲイン（RTのprocessと同じ順序）
-    // absPos = このブロックの絶対サンプル位置（曲末フェードの評価に必要）
+    // 素通しバス（busGain/busMute適用）をmixへ合流 → Masterゲイン → Limiter →
+    // 曲末フェード（RTのprocessと同じ順序。フェードはLimiter後・遅延後の位置 absPos-L で評価）
+    // absPos = このブロックの絶対サンプル位置
     void mixBusesAndMaster (juce::AudioBuffer<float>& mix,
                             std::vector<juce::AudioBuffer<float>>& busMix, int numSamples,
                             juce::int64 absPos);
+
+    // Limiterの遅延吸収付き書き込み: 先頭 limiterHeadRemaining サンプルを捨ててから書く。
+    // false = IO失敗（errorMessage・renderFailedは設定済み）
+    bool writeMixDroppingHead (juce::AudioFormatWriter& writer,
+                               const juce::AudioBuffer<float>& mix, int numSamples);
 
     Request request;
     Result result;
@@ -205,6 +222,8 @@ private:
     juce::AudioBuffer<float> synthScratch;
     juce::AudioBuffer<float> eqTrackScratch; // EQ有効トラックのクリップ合算用（EQをトラックgainの前に掛けるため）
     juce::uint64 eqBlockSerial = 0;          // TrackEq の連続性判定用（renderPassで0に戻しブロックごとに+1）
+    MasterLimiter masterLimiter;             // バウンス専用インスタンス（renderPass開始時にsnapTo）
+    int limiterHeadRemaining = 0;            // 未破棄のLimiter遅延分（renderPass開始時にLへ）
     std::unique_ptr<juce::AudioFormatReader> convertReader; // パス2で一時float WAVを読み戻す
     std::vector<SynthCursor> cursors;
     float runningPeak = 0.0f;

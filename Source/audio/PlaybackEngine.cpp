@@ -38,6 +38,9 @@ void PlaybackEngine::prepareToPlay (int samplesPerBlockExpected, double sampleRa
     // ノートオン上限（1024）＋オフ（activeNotes追跡により最大 SynthInstance::maxActiveNotes = 256 に有界）
     // ＋All Notes Off等。1イベントあたりの格納コストは数バイト＋ヘッダなので、1イベント16バイト換算で余裕を持って確保
     midiScratch.ensureSize ((size_t) (maxNoteOnsPerBlock * 2 + 512) * 16);
+
+    // Masterメーターの重い係数計算（K-weightingのtan/pow）をコールバック外で済ませる
+    masterMeter.prepare (sampleRate);
     if (filePreview != nullptr)
         filePreview->prepareToPlay (sampleRate);
 }
@@ -70,6 +73,9 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
     const bool playing = transport.isPlaying.load();
     const bool startedOrSeeked = seeked || (playing && ! prevPlaying);
     const bool stoppedNow = ! playing && prevPlaying;
+    // 再生開始エッジのみ（シークを含まない）: Masterメーターの世代切替用
+    //（integratedは「再生開始から」の平均。シーク・ラップでは仕切り直さない）
+    const bool playEdge = playing && ! prevPlaying;
     if (startedOrSeeked)
     {
         // 「1サンプル前の拍番号」にしておくと、ちょうど拍頭から始めたときだけ即クリックが鳴る
@@ -191,13 +197,18 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
         // 終端以後に非ゼロが残る（開始側は開始前から減衰する）。
         // ⚠️ サイクルのように jmin にしてはいけない: サイクルは segPos を範囲頭へ巻き戻すので
         // segLen が0にならないが、フェードは巻き戻さないので境界ちょうどで segLen=0 →
-        // done が進まず無限ループする。「現在位置より厳密に後ろ」の境界だけ採用する
+        // done が進まず無限ループする。「現在位置より厳密に後ろ」の境界だけ採用する。
+        // +L 側の境界はLimiter遅延後の位置で評価する出力側フェードの折れ点（processSegment参照）、
+        // 素の側は縮退経路（!canProcess）の定数評価用に残す
         if (fadeActive)
         {
-            if (segPos < fadeStartSample && fadeStartSample < segPos + segLen)
-                segLen = (int) (fadeStartSample - segPos);
-            if (segPos < fadeEndSample && fadeEndSample < segPos + segLen)
-                segLen = (int) (fadeEndSample - segPos);
+            const juce::int64 lookahead = MasterLimiter::lookaheadForRate (sr);
+            const juce::int64 boundaries[] = { fadeStartSample, fadeEndSample,
+                                               fadeStartSample + lookahead,
+                                               fadeEndSample + lookahead };
+            for (const auto boundary : boundaries)
+                if (segPos < boundary && boundary < segPos + segLen)
+                    segLen = (int) (boundary - segPos);
         }
 
         processSegment (buffer, startSample + done, segLen, segPos,
@@ -207,7 +218,10 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
                         (firstSegment && (startedOrSeeked || stoppedNow || snapshotChanged)) || wrapSeek,
                         (firstSegment && (startedOrSeeked || stoppedNow)) || wrapSeek,
                         (firstSegment && playing && (startedOrSeeked || snapshotChanged)) || wrapSeek,
-                        (firstSegment && startedOrSeeked) || wrapSeek);
+                        (firstSegment && startedOrSeeked) || wrapSeek,
+                        firstSegment && startedOrSeeked,
+                        firstSegment && playEdge,
+                        firstSegment && stoppedNow);
 
         segPos += segLen;
         done += segLen;
@@ -238,15 +252,15 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
                                      juce::int64 fadeStartSample, juce::int64 fadeEndSample,
                                      double sr, double bpm, double beatLen,
                                      bool silenceTransport, bool silenceAll, bool resound,
-                                     bool timelineJumped)
+                                     bool timelineJumped, bool limiterReset,
+                                     bool meterPlayEdge, bool meterStopEdge)
 {
     ++eqSerial; // TrackEq/TrackComp 共通の連続性判定用（セグメントごとに1回。トラックのスキップ＝再進入を検出する）
 
     // 曲末フェード。呼び出し側が境界でセグメントを切っているので、このセグメントは
     // 「フェード前」「区間内」「終端以後」のいずれかに完全に収まっている
     const bool fadeActive = fadeEndSample > fadeStartSample;
-    const bool afterFade = fadeActive && segPos >= fadeEndSample;
-    const bool inFade = fadeActive && ! afterFade && segPos >= fadeStartSample;
+    const bool afterFade = fadeActive && segPos >= fadeEndSample; // 縮退経路の定数評価用
 
     // canProcess == false（想定外の巨大ブロック）の縮退経路が使うMasterゲイン。
     // セグメント代表値の定数で済ませる（区間内は階段になるが、音を落とさないことを
@@ -531,45 +545,83 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
             mixScratch.addFrom (1, 0, busScratch[b], 1, 0, segLen, busGain);
         }
 
-        // 曲末フェードの終端以後は出力に足さない（＝厳密に無音。メーターも更新しない）。
-        // トラックの処理自体は止めない: サイクルで範囲頭へ戻ったときにMIDIの発音状態や
-        // クリップの位置追従が壊れないよう、「出力に足さないだけ」に留める
-        if (! afterFade)
+        // ---- Master区間: Masterゲイン → Limiter → 曲末フェード → 出力 ----
+        // フェードはLimiterの**後**（region-settings.md: 前に置くと突っ込み量が変わり
+        // フェード中に音色まで変わる）。Limiter出力は入力よりLサンプル遅れるため、
+        // フェードゲインは遅延後の音声位置（segPos - L）で評価する。
+        // **Limiterと計測はフェード終端後も止めない**: 入力を無音に差し替えて回し続け、
+        // ディレイ・GRの状態を常に最新へ進める（サイクルラップはリセットしない契約なので、
+        // ここで止めると凍結した古い2msが折り返し後の先頭へ漏れる）。フェード終端のLサンプル後
+        // 以降はランプが厳密に0倍するため出力はゼロ＝加算だけスキップする
+        const int lookahead = MasterLimiter::lookaheadForRate (sr);
         {
-            // フェード区間内だけ mixScratch へ masterGain×フェードのランプを適用してから
-            // ゲイン1.0で加算する。フェード前・未設定は既存の演算順序をそのまま通す
-            // （順序が変わると出力が微小に変わり、フェードを使っていないプロジェクトにも影響する）
-            float outGain = masterGain;
-            if (inFade)
+            // フェード終端以降の入力は無音（遅延契約: fadeEnd以降はLimiterへ無音を流してflush）
+            const bool inputSilent = fadeActive && segPos >= fadeEndSample;
+            if (inputSilent)
             {
-                // endGain は「最終サンプルの次に適用される値」＝区間の排他端で評価する（GOTCHAS.md）。
-                // 毎セグメント絶対位置から評価し直すので、誤差はランプ全長でなくセグメント長で頭打ち
-                const float g0 = masterGain * SongFade::gainAt (segPos, fadeStartSample, fadeEndSample);
-                const float g1 = masterGain * SongFade::gainAt (segPos + segLen, fadeStartSample, fadeEndSample);
+                mixScratch.clear (0, 0, segLen);
+                mixScratch.clear (1, 0, segLen);
+            }
+            else if (masterGain != 1.0f)
+            {
+                mixScratch.applyGain (0, 0, segLen, masterGain);
+                mixScratch.applyGain (1, 0, segLen, masterGain);
+            }
+
+            // Limiterは停止中も常時処理する（プレビューもこの経路を通る・ディレイの連続性を保つ）。
+            // リセットは再生開始・明示シークのみ（limiterReset。サイクルラップでは呼ばない＝
+            // 毎ループ先頭にLサンプルの無音が入るのを防ぐ）。SR変更はprocess内部で検知してリセット
+            const auto limiterValues = snapshot->masterParams != nullptr
+                                           ? Limiter::load (snapshot->masterParams->limiter)
+                                           : Limiter::Values {};
+            if (limiterReset)
+                masterLimiter.snapTo (sr, limiterValues);
+            masterLimiter.process (mixScratch.getWritePointer (0), mixScratch.getWritePointer (1),
+                                   segLen, sr, limiterValues);
+
+            if (fadeActive && segPos + segLen > fadeStartSample + lookahead)
+            {
+                // セグメントは fadeStart+L / fadeEnd+L でも切ってあるので、ランプが折れ点を
+                // またぐことはない。endGain は区間の排他端で評価（GOTCHAS.md）。fadeEnd+L以降は
+                // g0=g1=0 → 出力は厳密にゼロ。
+                // 注意: サイクルラップ直後のLサンプルはディレイ内にラップ前の音が残っており、
+                // 厳密なフェード位置は「ラップ前の位置-L」だが segPos-L で近似する
+                // （誤差は2ms分のゲイン差のみ。フェード×サイクル併用の稀なケース）
+                const float g0 = SongFade::gainAt (segPos - lookahead, fadeStartSample, fadeEndSample);
+                const float g1 = SongFade::gainAt (segPos + segLen - lookahead,
+                                                   fadeStartSample, fadeEndSample);
                 mixScratch.applyGainRamp (0, 0, segLen, g0, g1);
                 mixScratch.applyGainRamp (1, 0, segLen, g0, g1);
-                outGain = 1.0f;
             }
 
             if (snapshot->masterParams != nullptr)
             {
-                // フェード中は「実際に出る信号」から測る（フェード前のピークに代表係数を掛けると、
-                // ブロック内で音と係数の最大位置がずれて不正確になる）
-                storePeakMax (snapshot->masterParams->peakL,
-                              mixScratch.getMagnitude (0, 0, segLen) * outGain);
-                storePeakMax (snapshot->masterParams->peakR,
-                              mixScratch.getMagnitude (1, 0, segLen) * outGain);
+                // 実際に出る信号（Limiter・フェード後）から測る
+                storePeakMax (snapshot->masterParams->peakL, mixScratch.getMagnitude (0, 0, segLen));
+                storePeakMax (snapshot->masterParams->peakR, mixScratch.getMagnitude (1, 0, segLen));
+                storePeakMax (snapshot->masterParams->limiterGrDb,
+                              masterLimiter.blockMaxGainReductionDb());
             }
 
-            if (buffer.getNumChannels() >= 2)
+            // Masterメーター（LUFS/相関/TP）: 計測点も最終出力（クリック加算前）。
+            // 再生中のみ蓄積し、停止エッジで部分統計を確定する
+            masterMeter.process (mixScratch.getReadPointer (0), mixScratch.getReadPointer (1),
+                                 segLen, sr, playing, meterPlayEdge, meterStopEdge);
+
+            // フェード終端のLサンプル後以降は加算をスキップ（内容はゼロ。厳密無音の保証を
+            // 「クリアされたままのbuffer」で担保する）
+            if (! (fadeActive && segPos >= fadeEndSample + lookahead))
             {
-                buffer.addFrom (0, outOffset, mixScratch, 0, 0, segLen, outGain);
-                buffer.addFrom (1, outOffset, mixScratch, 1, 0, segLen, outGain);
-            }
-            else
-            {
-                buffer.addFrom (0, outOffset, mixScratch, 0, 0, segLen, 0.5f * outGain);
-                buffer.addFrom (0, outOffset, mixScratch, 1, 0, segLen, 0.5f * outGain);
+                if (buffer.getNumChannels() >= 2)
+                {
+                    buffer.addFrom (0, outOffset, mixScratch, 0, 0, segLen, 1.0f);
+                    buffer.addFrom (1, outOffset, mixScratch, 1, 0, segLen, 1.0f);
+                }
+                else
+                {
+                    buffer.addFrom (0, outOffset, mixScratch, 0, 0, segLen, 0.5f);
+                    buffer.addFrom (0, outOffset, mixScratch, 1, 0, segLen, 0.5f);
+                }
             }
         }
     }

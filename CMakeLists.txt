@@ -90,6 +90,7 @@ target_sources(daw PRIVATE
     Source/audio/AudioImporter.cpp
     Source/audio/AudioFilePreview.cpp
     Source/audio/BounceRenderer.cpp
+    Source/audio/MasterLimiter.cpp
     Source/audio/PlaybackEngine.cpp
     Source/audio/Recorder.cpp
     Source/audio/ReferenceAnalyzer.cpp
@@ -100,6 +101,7 @@ target_sources(daw PRIVATE
     Source/audio/UrlDownloader.cpp
     Source/shared/GachaSession.cpp
     Source/shared/Log.cpp
+    Source/shared/LoudnessMeter.cpp
     Source/shared/MidiImport.cpp
     Source/shared/Project.cpp
     Source/shared/ReferenceAlign.cpp
@@ -112,6 +114,7 @@ target_sources(daw PRIVATE
     Source/ui/FxEditorView.cpp
     Source/ui/GachaPanelView.cpp
     Source/ui/InstrumentDetailView.cpp
+    Source/ui/LimiterEditorView.cpp
     Source/ui/AudioFileBrowserView.cpp
     Source/ui/MainComponent.cpp
     Source/ui/MixerOverlay.cpp
@@ -234,6 +237,7 @@ target_sources(daw_tests PRIVATE
     Source/audio/AudioImporter.cpp
     Source/audio/AudioFilePreview.cpp
     Source/audio/BounceRenderer.cpp
+    Source/audio/MasterLimiter.cpp
     Source/audio/PlaybackEngine.cpp
     Source/audio/Recorder.cpp
     Source/audio/ReferenceAnalyzer.cpp
@@ -244,6 +248,7 @@ target_sources(daw_tests PRIVATE
     Source/audio/UrlDownloader.cpp
     Source/shared/GachaSession.cpp
     Source/shared/Log.cpp
+    Source/shared/LoudnessMeter.cpp
     Source/shared/MidiImport.cpp
     Source/shared/Project.cpp
     Source/shared/ReferenceAlign.cpp
