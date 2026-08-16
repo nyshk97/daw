@@ -23,7 +23,7 @@
 
 ## バッチ
 
-- [ ] **バッチ1: 基盤整備（音を変えないリファクタ）** — 耳ゼロ・dig不要（2026-08-16 実装・機械検証完了。**残: 人間の操作感確認**（plan の動作確認セクション）— 完了したらここをチェックする。plan: docs/plans/2026-08-16-1254-fx-batch1-foundation.md）
+- [x] **バッチ1: 基盤整備（音を変えないリファクタ）** — 耳ゼロ・dig不要（2026-08-16 完了・人間の操作感確認済み。plan: docs/plans/2026-08-16-1254-fx-batch1-foundation.md）
   - エンジンの6経路コピー（モノ/ステレオ/MIDI × RT/バウンス）のFXチェーンを `Source/audio/TrackFxChain.h`（evaluateActivity / process / producesTail）に集約。新FX追加時はこの3点を触れば全経路に効く
   - Biquad構造体の共通ヘッダ抽出（`Source/audio/BiquadFilter.h`）
   - スロット構成の一元化（`Source/ui/FxSlotLayout.h`。意味ID `FxSlots::Id` とsurface別投影）

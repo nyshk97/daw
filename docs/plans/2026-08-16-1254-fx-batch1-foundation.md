@@ -124,7 +124,7 @@ DSPに触る最初の変更（Phase 1 の Biquad 抽出）より**前**に基準
 - [x] [AI🤖] 全テスト green（RT/バウンス一致・pan前検波の仕様テスト含む）＋ Phase 0 のハッシュベースラインと全5ハッシュ一致（Debug/Release とも。`scripts/check-render-hashes.sh compare` exit 0）
 - [x] [AI🤖] 実プロジェクト相当の二重チェック: `hash-fx-project-bounce`（Project::save→load→バウンス）がベースライン一致（ハッシュテストに組み込み済み＝上と同時に確認）
 - [x] [AI🤖] dev版目視: EQ入りテストプロジェクトを検証フック（`--open --eq-editor --snapshot`）で起動し、FXパネルのサムネイル実カーブ（大カーブと同形）・スロット表示（EQ/Comp点灯・Extグレー）・EQエディタのカーブ描画をスクショで確認（ログ `project.open` / `fxdetail.open fx=EQ` / `debug.snapshot ok=1`）
-- [ ] [人間👨‍💻] dev版で普段の操作感（FXパネル遷移・サムネイル見た目・EQ編集中のサムネイル追従・ミキサーのサムネイル）に違和感がないか一巡
+- [x] [人間👨‍💻] dev版で普段の操作感を一巡し問題なし（2026-08-16。CompピルのGRバー点灯も実再生で確認）
 
 ### 仕上げ [AI🤖]
 
