@@ -374,7 +374,10 @@ public:
     //      リセットする（既定もOFF: コンプに保証された中立設定が無く、ピルが真のバイパスを担う）
     // v17: Master Limiter（master.limiter.gain/ceiling/release。欠損＝既定値 Gain 0 /
     //      Ceiling -1.0 / Release 60ms。常在なので enabled は持たない）
-    static constexpr int currentVersion = 17;
+    // v18: トラックSat（fx.sat.enabled/drive/mix。欠損＝既定値 enabled=ON・Drive0＝中立。
+    //      同planで後続のLo-fi（fx.lofi）も v18 に足す — 欠損は既定値で読むため、
+    //      Sat のみ保存された途中版のプロジェクトも壊れない）
+    static constexpr int currentVersion = 18;
 
     juce::File directory;
     double bpm = 120.0;

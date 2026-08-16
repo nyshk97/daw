@@ -1,13 +1,14 @@
 #pragma once
 
-#include <limits>
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include "../shared/EqParams.h"
 #include "BiquadFilter.h"
+#include "TrackFxBase.h"
 
 // トラックEQのDSP本体（biquad×4バンド×2ch・RBJ cookbook準拠）。
 // plan: docs/plans/2026-08-15-1506-track-eq.md
+// 状態機械（serial・リセット分岐・chainMix・snapTo骨格）は TrackFxBase に集約済み。
 //
 // 置き場所と寿命:
 // - リアルタイム再生用は TrackParams::rtEq（オーディオスレッド専用の実行状態。
@@ -23,7 +24,7 @@
 // - ON/OFF切替: eqEnabled はチェーン全体の dry/wet クロスフェード、HPの enabled は
 //   HPバンド位置だけの入力/HP出力クロスフェード（1本の wet/dry だと、ベル+6dB中に
 //   HPだけOFFしたときフェード中にベルまで一時的に外れる）
-class TrackEq
+class TrackEq : public TrackFxBase<TrackEq>
 {
 public:
     // 高速パス（既存経路の完全素通し）でよいか。false のあいだは呼び出し側が
@@ -52,22 +53,22 @@ public:
     void snapTo (double sampleRate, bool eqEnabled, const Eq::Values& targets);
 
 private:
-    void resetSmootherRates (double sampleRate);
-    void snapAllToTargets (bool eqEnabled, const Eq::Values& targets);
-    void resetFilterStates();
+    friend class TrackFxBase<TrackEq>;
+
+    // FxBaseフック
+    void fxResetSmootherRates (double sampleRate);
+    void fxSnapToTargets (const Eq::Values& targets);
+    void fxResetHistory();
+    void fxSampleRateChanged() {} // fs依存の再計算マーキングなし（係数はlast*の変化検知で更新）
+
     void updateBandCoefficients (int band, float freqHz, float gainDbValue, float qValue);
 
     juce::SmoothedValue<float> freq[Eq::numBands], gainDb[Eq::numBands], q[Eq::numBands];
-    juce::SmoothedValue<float> chainMix, hpMix; // 0..1（dry→wet / HP入力→HP出力）
+    juce::SmoothedValue<float> hpMix; // 0..1（HP入力→HP出力）
     Biquad filters[Eq::numBands];
 
     // 係数の再計算判定用（平滑値が動いた帯域だけ計算し直す）。-1 = 未計算
     float lastFreq[Eq::numBands] { -1.0f, -1.0f, -1.0f, -1.0f };
     float lastGain[Eq::numBands] { -1.0f, -1.0f, -1.0f, -1.0f };
     float lastQ[Eq::numBands] { -1.0f, -1.0f, -1.0f, -1.0f };
-
-    double preparedRate = 0.0;
-    // 番兵: どんな serial が最初に来ても「連続」と誤判定しない値（+1 が実現不可能な領域）
-    juce::uint64 lastSerial = std::numeric_limits<juce::uint64>::max() - 1;
-    bool settled = true; // 「出力がdry相当＆平滑進行なし」＝高速パスへ移ってよい状態か
 };

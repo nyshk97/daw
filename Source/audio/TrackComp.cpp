@@ -5,31 +5,36 @@
 
 namespace
 {
-// パラメータ（Threshold/Ratio/Make Up）とON/OFFクロスフェードの平滑化時間。
+// パラメータ（Threshold/Ratio/Make Up）の平滑化時間。
 // 手動ノブ操作には即応と感じる速さで、Make Upのゲイン段差を十分短く均せる長さ
+//（ON/OFFクロスフェードの chainMix は TrackFxBase 側の同値定数を使う）
 constexpr double rampSeconds = 0.01;
 } // namespace
 
-void TrackComp::resetSmootherRates (double sampleRate)
+void TrackComp::fxResetSmootherRates (double sampleRate)
 {
     thresholdDb.reset (sampleRate, rampSeconds);
     ratio.reset (sampleRate, rampSeconds);
     makeupDb.reset (sampleRate, rampSeconds);
-    chainMix.reset (sampleRate, rampSeconds);
 }
 
-void TrackComp::snapAllToTargets (bool compEnabled, const Comp::Values& targets)
+void TrackComp::fxSnapToTargets (const Comp::Values& targets)
 {
     thresholdDb.setCurrentAndTargetValue (targets.thresholdDb);
     ratio.setCurrentAndTargetValue (targets.ratio);
     makeupDb.setCurrentAndTargetValue (targets.makeupDb);
-    chainMix.setCurrentAndTargetValue (compEnabled ? 1.0f : 0.0f);
 }
 
-void TrackComp::resetDynamicsState()
+void TrackComp::fxResetHistory()
 {
     grEnvDb = 0.0f;
     hpf.resetState();
+}
+
+void TrackComp::fxSampleRateChanged()
+{
+    updateHpfCoefficients();
+    lastAttackMs = lastReleaseMs = -1.0f; // αはfsに依存する
 }
 
 void TrackComp::updateHpfCoefficients()
@@ -55,14 +60,8 @@ void TrackComp::updateAlphas (const Comp::Values& targets)
 
 void TrackComp::snapTo (double sampleRate, bool compEnabled, const Comp::Values& targets)
 {
-    preparedRate = sampleRate;
-    resetSmootherRates (sampleRate);
-    snapAllToTargets (compEnabled, targets);
-    resetDynamicsState();
-    updateHpfCoefficients();
-    lastAttackMs = lastReleaseMs = -1.0f; // 次のprocessで必ずαを計算する
+    snapToBase (sampleRate, compEnabled, targets);
     lastHpfOn = targets.detectorHpf;
-    lastSerial = 0; // 呼び出し側は serial=1 から連番で渡す
     settled = ! compEnabled;
 }
 
@@ -70,39 +69,10 @@ void TrackComp::process (float* left, float* right, int numSamples, double sampl
                          juce::uint64 serial, bool timelineJumped,
                          bool compEnabled, const Comp::Values& targets)
 {
-    if (left == nullptr || numSamples <= 0 || sampleRate <= 0.0)
-        return;
-
     juce::ScopedNoDenormals noDenormals;
 
-    const bool firstCall = preparedRate <= 0.0;
-    const bool srChanged = sampleRate != preparedRate;
-    if (srChanged)
-    {
-        preparedRate = sampleRate;
-        resetSmootherRates (sampleRate);
-        updateHpfCoefficients();
-        lastAttackMs = lastReleaseMs = -1.0f; // αはfsに依存する
-    }
-    const bool reentry = serial != lastSerial + 1;
-    lastSerial = serial;
-
-    if (timelineJumped || (srChanged && ! firstCall))
-    {
-        // 時間不連続（シーク・SR変更）: 音自体が不連続なのでフェード不要。全て目標へスナップ
-        resetDynamicsState();
-        snapAllToTargets (compEnabled, targets);
-    }
-    else if (reentry || firstCall)
-    {
-        // 再進入（高速パス・ミュート・停止から復帰）: バイパス中の出力＝dryなので、
-        // dry(0) からのフェードインで連続にする。平滑化GR・検波HPF履歴は凍結された
-        // 古い値のままなので必ずリセットする（強いGR中にOFF→時間経過→ONの操作列で
-        // 古いGRからwet信号が復帰する事故を防ぐ）
-        resetDynamicsState();
-        snapAllToTargets (compEnabled, targets);
-        chainMix.setCurrentAndTargetValue (0.0f);
-    }
+    if (! beginBlock (left, numSamples, sampleRate, serial, timelineJumped, compEnabled, targets))
+        return;
 
     // 検波HPFトグルのfalse→true: OFF中に凍結した古いIIR履歴を復活させない。
     // 検波信号だけの不連続で、GR目標の跳びはattack/release平滑化を通るためフェード不要
@@ -112,11 +82,10 @@ void TrackComp::process (float* left, float* right, int numSamples, double sampl
 
     updateAlphas (targets);
 
-    // 目標値の更新（同値なら SmoothedValue 側で no-op）
+    // 目標値の更新（同値なら SmoothedValue 側で no-op。chainMix は beginBlock が更新済み）
     thresholdDb.setTargetValue (targets.thresholdDb);
     ratio.setTargetValue (targets.ratio);
     makeupDb.setTargetValue (targets.makeupDb);
-    chainMix.setTargetValue (compEnabled ? 1.0f : 0.0f);
 
     const bool hpfOn = targets.detectorHpf;
     blockMaxGr = 0.0f;

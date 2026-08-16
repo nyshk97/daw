@@ -312,6 +312,7 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
             const auto fxSettings = TrackFx::loadSettings (*track.params);
             auto fxActivity = TrackFx::evaluateActivity (TrackFx::Policy::realtime,
                                                          track.params->rtEq, track.params->rtComp,
+                                                         track.params->rtSat, track.params->rtLofi,
                                                          fxSettings, tapThis);
             if (! canProcess)
                 fxActivity = {};
@@ -388,7 +389,8 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
                     fxContext.trackId = track.trackId;
                     fxContext.compGrDb = &track.params->compGrDb;
                     fxContext.compDetectorPeak = &track.params->compDetectorPeak;
-                    TrackFx::process (track.params->rtEq, track.params->rtComp, fxActivity,
+                    TrackFx::process (track.params->rtEq, track.params->rtComp,
+                                      track.params->rtSat, track.params->rtLofi, fxActivity,
                                       fxSettings, trackScratch.getWritePointer (0), nullptr,
                                       segLen, sr, eqSerial, timelineJumped, fxContext);
 
@@ -490,7 +492,8 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
                     fxContext.trackId = track.trackId;
                     fxContext.compGrDb = &track.params->compGrDb;
                     fxContext.compDetectorPeak = &track.params->compDetectorPeak;
-                    TrackFx::process (track.params->rtEq, track.params->rtComp, fxActivity,
+                    TrackFx::process (track.params->rtEq, track.params->rtComp,
+                                      track.params->rtSat, track.params->rtLofi, fxActivity,
                                       fxSettings, trackScratch.getWritePointer (0),
                                       trackScratch.getWritePointer (1),
                                       segLen, sr, eqSerial, timelineJumped, fxContext);
@@ -886,13 +889,16 @@ void PlaybackEngine::renderMidiTracks (PlaybackSnapshot& snapshot, int numSample
             const auto fxActivity = TrackFx::evaluateActivity (TrackFx::Policy::realtime,
                                                                track.params->rtEq,
                                                                track.params->rtComp,
+                                                               track.params->rtSat,
+                                                               track.params->rtLofi,
                                                                fxSettings, tapThis);
             TrackFx::Context fxContext;
             fxContext.analyzerTap = tapThis ? analyzerTap : nullptr; // EQ直後・Comp前・gain/pan前
             fxContext.trackId = track.trackId;
             fxContext.compGrDb = &track.params->compGrDb;
             fxContext.compDetectorPeak = &track.params->compDetectorPeak;
-            TrackFx::process (track.params->rtEq, track.params->rtComp, fxActivity, fxSettings,
+            TrackFx::process (track.params->rtEq, track.params->rtComp, track.params->rtSat,
+                              track.params->rtLofi, fxActivity, fxSettings,
                               block.getWritePointer (0),
                               srcR != 0 ? block.getWritePointer (srcR) : nullptr,
                               numSamples, sr, eqSerial, false, fxContext);

@@ -6,10 +6,9 @@
 namespace
 {
 constexpr double paramRampSeconds = 0.02; // 周波数・ゲイン・Qの平滑（ドラッグのジッパーノイズ対策）
-constexpr double mixRampSeconds = 0.01;   // ON/OFFクロスフェード（boolの瞬時切替のクリック対策）
 } // namespace
 
-void TrackEq::resetSmootherRates (double sampleRate)
+void TrackEq::fxResetSmootherRates (double sampleRate)
 {
     for (int i = 0; i < Eq::numBands; ++i)
     {
@@ -17,11 +16,10 @@ void TrackEq::resetSmootherRates (double sampleRate)
         gainDb[i].reset (sampleRate, paramRampSeconds);
         q[i].reset (sampleRate, paramRampSeconds);
     }
-    chainMix.reset (sampleRate, mixRampSeconds);
-    hpMix.reset (sampleRate, mixRampSeconds);
+    hpMix.reset (sampleRate, chainMixRampSeconds);
 }
 
-void TrackEq::snapAllToTargets (bool eqEnabled, const Eq::Values& targets)
+void TrackEq::fxSnapToTargets (const Eq::Values& targets)
 {
     for (int i = 0; i < Eq::numBands; ++i)
     {
@@ -30,10 +28,9 @@ void TrackEq::snapAllToTargets (bool eqEnabled, const Eq::Values& targets)
         q[i].setCurrentAndTargetValue (targets[(size_t) i].q);
     }
     hpMix.setCurrentAndTargetValue (targets[Eq::highpass].enabled ? 1.0f : 0.0f);
-    chainMix.setCurrentAndTargetValue (eqEnabled ? 1.0f : 0.0f);
 }
 
-void TrackEq::resetFilterStates()
+void TrackEq::fxResetHistory()
 {
     for (auto& filter : filters)
         filter.resetState();
@@ -62,13 +59,9 @@ void TrackEq::updateBandCoefficients (int band, float freqHz, float gainDbValue,
 
 void TrackEq::snapTo (double sampleRate, bool eqEnabled, const Eq::Values& targets)
 {
-    preparedRate = sampleRate;
-    resetSmootherRates (sampleRate);
-    snapAllToTargets (eqEnabled, targets);
-    resetFilterStates();
+    snapToBase (sampleRate, eqEnabled, targets);
     for (int i = 0; i < Eq::numBands; ++i)
         lastFreq[i] = lastGain[i] = lastQ[i] = -1.0f; // 次のprocessで必ず係数を計算する
-    lastSerial = 0; // 呼び出し側は serial=1 から連番で渡す（最初のブロックを再進入扱いにしない）
     settled = ! (eqEnabled && ! Eq::isNeutral (targets));
 }
 
@@ -76,38 +69,12 @@ void TrackEq::process (float* left, float* right, int numSamples, double sampleR
                        juce::uint64 serial, bool timelineJumped,
                        bool eqEnabled, const Eq::Values& targets)
 {
-    if (left == nullptr || numSamples <= 0 || sampleRate <= 0.0)
-        return;
-
     juce::ScopedNoDenormals noDenormals;
 
-    const bool firstCall = preparedRate <= 0.0;
-    const bool srChanged = sampleRate != preparedRate;
-    if (srChanged)
-    {
-        preparedRate = sampleRate;
-        resetSmootherRates (sampleRate); // reset は現在値を目標へスナップする（下の分岐でさらに整える）
-    }
-    const bool reentry = serial != lastSerial + 1;
-    lastSerial = serial;
+    if (! beginBlock (left, numSamples, sampleRate, serial, timelineJumped, eqEnabled, targets))
+        return;
 
-    if (timelineJumped || (srChanged && ! firstCall))
-    {
-        // 時間不連続（シーク・SR変更）: 音自体が不連続なのでフェード不要。全て目標へスナップ
-        resetFilterStates();
-        snapAllToTargets (eqEnabled, targets);
-    }
-    else if (reentry || firstCall)
-    {
-        // 再進入（高速パス・ミュート・停止から復帰）: バイパス中の出力＝dryなので、
-        // チェーンだけ dry(0) からフェードインして連続にする。バンド・HPは聴こえていなかったので
-        // 掃引せず目標へスナップ（古い値から周波数が滑って聴こえる方が不自然）
-        resetFilterStates();
-        snapAllToTargets (eqEnabled, targets);
-        chainMix.setCurrentAndTargetValue (0.0f);
-    }
-
-    // 目標値の更新（同値なら SmoothedValue 側で no-op）
+    // 目標値の更新（同値なら SmoothedValue 側で no-op。chainMix は beginBlock が更新済み）
     for (int i = 0; i < Eq::numBands; ++i)
     {
         freq[i].setTargetValue (targets[(size_t) i].freqHz);
@@ -115,7 +82,6 @@ void TrackEq::process (float* left, float* right, int numSamples, double sampleR
         q[i].setTargetValue (targets[(size_t) i].q);
     }
     hpMix.setTargetValue (targets[Eq::highpass].enabled ? 1.0f : 0.0f);
-    chainMix.setTargetValue (eqEnabled ? 1.0f : 0.0f);
 
     // クロスフェードはセグメント内を直線ランプで進める（セグメント単位の段差にするとクリックになる）
     const float chain0 = chainMix.getCurrentValue();

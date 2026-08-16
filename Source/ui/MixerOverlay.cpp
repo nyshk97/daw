@@ -20,11 +20,17 @@ MixerStrip::MixerStrip (Kind kindToUse, juce::String fxSlotNameToUse)
 {
     const bool isTrack = kind == Kind::track;
 
-    // スロットピル（トラック=3・バス/Master=1。中身の構成はbindで行う）
-    for (int i = 0; i < (isTrack ? 3 : 1); ++i)
+    // スロットピル（トラック=5・バス/Master=1。中身の構成はbindで行う）。
+    // 配列index=表示位置。クリックが運ぶスロット番号は意味ID（表示位置ではない）＝
+    // mixerOrder で変換する。位置を直接渡すと位置2以降で別スロットのエディタが開く
+    for (int i = 0; i < (isTrack ? FxSlots::mixerSlots : 1); ++i)
     {
         addAndMakeVisible (slotPills[i]);
-        slotPills[i].onOpenEditor = [this, i] { if (onOpenSlot) onOpenSlot (i); };
+        slotPills[i].onOpenEditor = [this, i]
+        {
+            if (onOpenSlot)
+                onOpenSlot (kind == Kind::track ? (int) FxSlots::mixerOrder[i] : 0);
+        };
         slotPills[i].onPowerToggled = [this]
         {
             repaintEqThumbnail(); // eqEnabledはサムネイルの実カーブ/フラット切替にも効く
@@ -141,13 +147,15 @@ void MixerStrip::bind (const juce::String& name, std::shared_ptr<TrackParams> pa
     }
 
     // スロットピルの構成（定義はFxSlotLayoutが単一の真実の源。ミキサーはInstrumentを除いた
-    // 3枠の投影＝trackBaseLayout。enabled atomicの実体はTrackが所有するTrackParams）
+    // 5枠の投影＝trackBaseLayout × mixerOrder。enabled atomicの実体はTrackが所有するTrackParams）
     if (kind == Kind::track)
     {
         const auto layout = FxSlots::trackBaseLayout (params.get());
         for (int i = 0; i < FxSlots::mixerSlots; ++i)
-            slotPills[i].configure (layout.slots[i].name, layout.slots[i].enabled,
-                                    layout.slots[i].placeholder);
+        {
+            const auto& slot = layout.slots[FxSlots::mixerOrder[i]];
+            slotPills[i].configure (slot.name, slot.enabled, slot.placeholder);
+        }
     }
     else
         slotPills[0].configure (fxSlotName, nullptr, false);
@@ -159,7 +167,8 @@ void MixerStrip::updateMeter (const MeterFeed& feed)
 {
     meter.update (feed.peak);
     if (kind == Kind::track)
-        slotPills[FxSlots::grSlot].setGainReductionDb (feed.compGrDb); // Compピルのミニ GRバー
+        slotPills[FxSlots::mixerPositionOf (FxSlots::grSlot)]
+            .setGainReductionDb (feed.compGrDb); // Compピルのミニ GRバー（表示位置へ逆引き）
     if (kind == Kind::master)
         slotPills[0].setGainReductionDb (feed.limiterGrDb); // LimiterピルのミニGRバー
     if (! juce::approximatelyEqual (feed.maxSincePlay, peakMaxDisplay))

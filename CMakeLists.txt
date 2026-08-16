@@ -98,6 +98,8 @@ target_sources(daw PRIVATE
     Source/audio/SamplerEngine.cpp
     Source/audio/TrackComp.cpp
     Source/audio/TrackEq.cpp
+    Source/audio/TrackLofi.cpp
+    Source/audio/TrackSaturator.cpp
     Source/audio/UrlDownloader.cpp
     Source/shared/GachaSession.cpp
     Source/shared/Log.cpp
@@ -115,6 +117,8 @@ target_sources(daw PRIVATE
     Source/ui/GachaPanelView.cpp
     Source/ui/InstrumentDetailView.cpp
     Source/ui/LimiterEditorView.cpp
+    Source/ui/LofiEditorView.cpp
+    Source/ui/SatEditorView.cpp
     Source/ui/AudioFileBrowserView.cpp
     Source/ui/MainComponent.cpp
     Source/ui/MixerOverlay.cpp
@@ -245,6 +249,8 @@ target_sources(daw_tests PRIVATE
     Source/audio/SamplerEngine.cpp
     Source/audio/TrackComp.cpp
     Source/audio/TrackEq.cpp
+    Source/audio/TrackLofi.cpp
+    Source/audio/TrackSaturator.cpp
     Source/audio/UrlDownloader.cpp
     Source/shared/GachaSession.cpp
     Source/shared/Log.cpp

@@ -43,7 +43,10 @@ void operator delete[] (void* p, std::size_t) noexcept { std::free (p); }
 #include "audio/PlaybackEngine.h"
 #include "audio/SamplerEngine.h"
 #include "audio/TrackFxChain.h"
+#include "audio/TrackLofi.h"
+#include "audio/TrackSaturator.h"
 #include "audio/UrlDownloader.h"
+#include "ui/FxSlotLayout.h"
 #include "audio/ReferenceReportGenerator.h"
 #include "shared/Project.h"
 #include "shared/SynthBank.h"
@@ -5281,8 +5284,7 @@ void testBounceEqTail()
         {
             BounceRenderer::TrackRender render;
             render.gain = track.params->gain.load();
-            render.eqEnabled = track.params->eqEnabled.load();
-            render.eqBands = Eq::loadAll (track.params->eqBands);
+            render.loadFxFrom (*track.params);
             for (auto& clip : track.clips)
                 appendClipPlaybacks (clip, render.clips);
             request.tracks.push_back (std::move (render));
@@ -5448,8 +5450,7 @@ void testEngineEqBounceConsistency()
             render.pan = track.params->pan.load();
             for (int busIndex = 0; busIndex < numSendBuses; ++busIndex)
                 render.sends[busIndex] = track.params->sends[busIndex].load();
-            render.eqEnabled = track.params->eqEnabled.load();
-            render.eqBands = Eq::loadAll (track.params->eqBands);
+            render.loadFxFrom (*track.params);
             for (auto& clip : track.clips)
                 appendClipPlaybacks (clip, render.clips);
             request.tracks.push_back (std::move (render));
@@ -5514,7 +5515,7 @@ void testCompParamsRoundtrip()
         expect (project.save (error), "保存できること");
     }
     const auto parsed = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
-    expect ((int) parsed.getProperty ("version", 0) == 17, "v17で保存されること");
+    expect ((int) parsed.getProperty ("version", 0) == Project::currentVersion, "現行版数で保存されること");
 
     auto reloaded = Project::load (dir, warnings, error);
     expect (reloaded != nullptr && reloaded->tracks.size() == 1, "再読込できること");
@@ -5986,10 +5987,7 @@ void testEngineCompBounceConsistency()
             render.pan = track.params->pan.load();
             for (int busIndex = 0; busIndex < numSendBuses; ++busIndex)
                 render.sends[busIndex] = track.params->sends[busIndex].load();
-            render.eqEnabled = track.params->eqEnabled.load();
-            render.eqBands = Eq::loadAll (track.params->eqBands);
-            render.compEnabled = track.params->compEnabled.load();
-            render.comp = Comp::load (track.params->comp);
+            render.loadFxFrom (*track.params);
             for (auto& clip : track.clips)
                 appendClipPlaybacks (clip, render.clips);
             request.tracks.push_back (std::move (render));
@@ -9279,7 +9277,9 @@ void testTrackFxRegressionHash()
     //   1: モノクリップ（RTモノ／バウンスmonoFx。リージョンゲイン・フェード込み）
     //   2: ステレオクリップ（RTステレオ／バウンスprePanFx）
     //   3: サンプラーMIDI（RT MIDI／バウンスMIDI）
-    // EQはオーディオ2トラックとも非中立＝バウンスのEQテール経路にも入る
+    // EQはオーディオ2トラックとも非中立＝バウンスのEQテール経路にも入る。
+    // バッチ3で Sat/Lo-fi を追加（3トラックに成分を配分し全経路で新FXも回す。
+    // フィクスチャ拡張時はベースライン再captureが必要）
     auto fillProject = [&] (Project& project)
     {
         project.bpm = 120.0;
@@ -9295,6 +9295,8 @@ void testTrackFxRegressionHash()
             track.params->compEnabled.store (true);
             Comp::store (track.params->comp,
                          Comp::normalized ({ -24.0f, 4.0f, 5.0f, 80.0f, 3.0f, false }));
+            Sat::store (track.params->sat, Sat::normalized ({ 0.5f, 0.8f }));
+            Lofi::store (track.params->lofi, Lofi::normalized ({ 0.3f, 0.0f, 0.0f, 0.4f }));
             Clip clip;
             clip.fileName = "clip-001.wav";
             clip.audio = makeAudio (1, totalSamples, 0.8f, 3);
@@ -9318,6 +9320,8 @@ void testTrackFxRegressionHash()
             track.params->compEnabled.store (true);
             Comp::store (track.params->comp,
                          Comp::normalized ({ -30.0f, 8.0f, 1.0f, 50.0f, 0.0f, true }));
+            Sat::store (track.params->sat, Sat::normalized ({ 0.7f, 1.0f }));
+            Lofi::store (track.params->lofi, Lofi::normalized ({ 0.0f, 0.5f, 0.4f, 0.0f }));
             Clip clip;
             clip.fileName = "clip-002.wav";
             clip.audio = makeAudio (2, totalSamples, 1.0f, 5);
@@ -9342,6 +9346,8 @@ void testTrackFxRegressionHash()
             track.params->compEnabled.store (true);
             Comp::store (track.params->comp,
                          Comp::normalized ({ -20.0f, 3.0f, 10.0f, 120.0f, 2.0f, false }));
+            Sat::store (track.params->sat, Sat::normalized ({ 0.3f, 1.0f }));
+            Lofi::store (track.params->lofi, Lofi::normalized ({ 0.0f, 0.3f, 0.0f, 0.5f }));
             MidiRegion region;
             region.id = 30;
             region.startPpq = 0;
@@ -9450,10 +9456,7 @@ void testTrackFxRegressionHash()
             render.pan = track.params->pan.load();
             for (int b = 0; b < numSendBuses; ++b)
                 render.sends[b] = track.params->sends[b].load();
-            render.eqEnabled = track.params->eqEnabled.load();
-            render.eqBands = Eq::loadAll (track.params->eqBands);
-            render.compEnabled = track.params->compEnabled.load();
-            render.comp = Comp::load (track.params->comp);
+            render.loadFxFrom (*track.params);
             render.clips = snap->tracks[i].clips;
             render.notes = snap->tracks[i].notes;
             if (track.type == TrackType::midi)
@@ -11772,6 +11775,1147 @@ void testReferenceAlignWithKey()
     dir.deleteRecursively();
 }
 
+// ---- TrackSaturator: 倍音・自動補償・ADAAエイリアス・遷移 ----
+// plan: docs/plans/2026-08-16-2058-fx-batch3-saturation-lofi.md Phase 2
+// 閾値・信号条件は plan の「検証方針」で事前固定（実測後に動かさない）
+
+// 一定周波数の正弦を通して出力列を返す（snapTo済み・serial連番・モノ）
+std::vector<float> renderSaturator (float driveValue, float mixValue, double amp, double freqHz,
+                                    double sr, int totalSamples)
+{
+    TrackSaturator sat;
+    const Sat::Values values { driveValue, mixValue };
+    sat.snapTo (sr, true, values);
+    constexpr int blockSize = 512;
+    std::vector<float> out;
+    out.reserve ((size_t) totalSamples + blockSize);
+    juce::uint64 serial = 0;
+    double phase = 0.0;
+    const double inc = juce::MathConstants<double>::twoPi * freqHz / sr;
+    float block[blockSize];
+    int done = 0;
+    while (done < totalSamples)
+    {
+        for (int i = 0; i < blockSize; ++i)
+        {
+            block[i] = (float) (amp * std::sin (phase));
+            phase += inc;
+        }
+        sat.process (block, nullptr, blockSize, sr, ++serial, false, true, values);
+        out.insert (out.end(), block, block + blockSize);
+        done += blockSize;
+    }
+    out.resize ((size_t) totalSamples);
+    return out;
+}
+
+// start以降のnサンプルから周波数freqHzの振幅を測る（相関法。nは整数周期で切ること）
+double satBinAmp (const std::vector<float>& y, size_t start, size_t n, double freqHz, double sr)
+{
+    double re = 0.0, im = 0.0;
+    for (size_t i = 0; i < n; ++i)
+    {
+        const double ph = juce::MathConstants<double>::twoPi * freqHz * (double) i / sr;
+        re += (double) y[start + i] * std::cos (ph);
+        im += (double) y[start + i] * std::sin (ph);
+    }
+    return 2.0 * std::hypot (re, im) / (double) n;
+}
+
+// start以降nサンプルのAC RMS（平均を引く＝DC成分を除いた実効値）
+double satAcRms (const std::vector<float>& y, size_t start, size_t n)
+{
+    double sum = 0.0, sumSq = 0.0;
+    for (size_t i = start; i < start + n; ++i)
+    {
+        sum += (double) y[i];
+        sumSq += (double) y[i] * (double) y[i];
+    }
+    const double mean = sum / (double) n;
+    return std::sqrt (juce::jmax (0.0, sumSq / (double) n - mean * mean));
+}
+
+void testTrackSaturatorHarmonics()
+{
+    beginTest ("track saturator harmonics & compensation");
+    constexpr double sr = 48000.0;
+    const double amp18 = std::pow (10.0, -18.0 / 20.0);
+    constexpr size_t discard = 24000, n = 48000; // 0.5s捨て（DCブロッカ整定）＋1s計測
+    constexpr int total = (int) (discard + n);
+
+    // ---- knob50%: 偶数倍音（H2）が存在し、H3より優勢（非対称カーブの証明）----
+    {
+        const auto y = renderSaturator (0.5f, 1.0f, amp18, 1000.0, sr, total);
+        const double h1 = satBinAmp (y, discard, n, 1000.0, sr);
+        const double h2 = satBinAmp (y, discard, n, 2000.0, sr);
+        const double h3 = satBinAmp (y, discard, n, 3000.0, sr);
+        expect (20.0 * std::log10 (h2 / h1) > -35.0, "H2が存在（偶数倍音＝非対称の証明。設計値≈-25dBc）");
+        expect (h2 > h3, "H2がH3より優勢（暖かい方向の性格）");
+    }
+
+    // ---- THD（基本波比）がDriveで単調増加 ----
+    {
+        double lastThd = -1.0;
+        for (const float d : { 0.25f, 0.5f, 0.75f, 1.0f })
+        {
+            const auto y = renderSaturator (d, 1.0f, amp18, 1000.0, sr, total);
+            const double h1 = satBinAmp (y, discard, n, 1000.0, sr);
+            double harmPower = 0.0;
+            for (int h = 2; h <= 6; ++h)
+            {
+                const double a = satBinAmp (y, discard, n, 1000.0 * h, sr);
+                harmPower += a * a;
+            }
+            const double thd = std::sqrt (harmPower) / h1;
+            expect (thd > lastThd, "THD（基本波比）がDriveで単調増加");
+            lastThd = thd;
+        }
+    }
+
+    // ---- 自動補償: 定義信号（-18dBFS正弦）でDrive全域±0.1dB ----
+    for (int k = 0; k <= 10; ++k)
+    {
+        const auto y = renderSaturator ((float) k / 10.0f, 1.0f, amp18, 1000.0, sr, total);
+        const double errDb = juce::Decibels::gainToDecibels (
+            satAcRms (y, discard, n) / (amp18 / std::sqrt (2.0)));
+        expect (std::abs (errDb) < 0.1, "-18dBFS基準でDrive全域±0.1dB");
+    }
+
+    // ---- 別レベル（-6dBFS）: NaN/infなし・隣接Drive点で不連続なし・|誤差|≤6dB ----
+    // 基準入力だけを補償する仕様上、絶対値保証・改善保証はできない（planの検証方針）
+    {
+        const double amp6 = std::pow (10.0, -6.0 / 20.0);
+        double prevErr = 0.0;
+        bool finite = true;
+        for (int k = 0; k <= 20; ++k)
+        {
+            const auto y = renderSaturator ((float) k / 20.0f, 1.0f, amp6, 1000.0, sr, total);
+            for (size_t i = discard; i < discard + n; ++i)
+                finite = finite && std::isfinite (y[i]);
+            const double errDb = juce::Decibels::gainToDecibels (
+                satAcRms (y, discard, n) / (amp6 / std::sqrt (2.0)));
+            expect (std::abs (errDb) <= 6.0, "-6dBFSの誤差が6dB以内");
+            if (k > 0)
+                expect (std::abs (errDb - prevErr) < 1.0, "-6dBFSのDrive掃引で隣接点に不連続なし");
+            prevErr = errDb;
+        }
+        expect (finite, "-6dBFS掃引でNaN/Infなし");
+    }
+
+    // ---- DC残留: 0dBFS・100Hz・最大Drive。整定1秒後の1秒間の出力平均が-80dBFS以下 ----
+    {
+        const auto y = renderSaturator (1.0f, 1.0f, 1.0, 100.0, sr, 96000);
+        double sum = 0.0;
+        for (size_t i = 48000; i < 96000; ++i)
+            sum += (double) y[i];
+        const double meanDb = 20.0 * std::log10 (juce::jmax (std::abs (sum / 48000.0), 1.0e-12));
+        expect (meanDb < -80.0, "DC残留が-80dBFS以下（DCブロッカ）");
+    }
+
+    // ---- 中立判定と高速パス ----
+    {
+        TrackSaturator sat;
+        expect (! sat.needsActivePath (true, { 0.0f, 1.0f }), "drive=0は高速パス（中立）");
+        expect (! sat.needsActivePath (true, { 0.5f, 0.0f }), "mix=0は高速パス（中立）");
+        expect (sat.needsActivePath (true, { 0.5f, 1.0f }), "非中立＋ONはactive");
+        expect (! sat.needsActivePath (false, { 0.5f, 1.0f }), "OFFは高速パス");
+    }
+}
+
+void testTrackSaturatorAliasing()
+{
+    beginTest ("track saturator ADAA aliasing");
+    // planの検証方針で固定した代表点: f0=5kHz・-6dBFS @48kHz・Driveノブ50%。
+    // 折り返し周波数 |k·f0 − m·fs| は1kHz格子に乗るため、直接倍音（5/10/15/20kHz）以外の
+    // 1kHz格子ビンが全てエイリアス。素朴実装（カーブ直評価）と比較する
+    constexpr double sr = 48000.0;
+    const double amp = std::pow (10.0, -6.0 / 20.0);
+    constexpr size_t discard = 24000, n = 9600; // 1kHz格子の整数周期
+    constexpr int total = (int) (discard + n);
+
+    const auto adaa = renderSaturator (0.5f, 1.0f, amp, 5000.0, sr, total);
+
+    std::vector<float> naive ((size_t) total);
+    const auto curve = Sat::Curve::fromDrive (0.5f);
+    double phase = 0.0;
+    const double inc = juce::MathConstants<double>::twoPi * 5000.0 / sr;
+    for (int i = 0; i < total; ++i)
+    {
+        naive[(size_t) i] = Sat::transfer (curve, (float) (amp * std::sin (phase)));
+        phase += inc;
+    }
+
+    // 補償ゲイン・DCブロッカのスケール差を打ち消すため基本波比（dBc相当）で比較する
+    const double fundAdaa = satBinAmp (adaa, discard, n, 5000.0, sr);
+    const double fundNaive = satBinAmp (naive, discard, n, 5000.0, sr);
+    double aliasPowerAdaa = 0.0, aliasPowerNaive = 0.0;
+    bool majorNotWorse = true;
+    for (int kHz = 1; kHz <= 23; ++kHz)
+    {
+        if (kHz % 5 == 0)
+            continue; // 直接倍音を除外
+        const double a = satBinAmp (adaa, discard, n, kHz * 1000.0, sr) / fundAdaa;
+        const double b = satBinAmp (naive, discard, n, kHz * 1000.0, sr) / fundNaive;
+        aliasPowerAdaa += a * a;
+        aliasPowerNaive += b * b;
+        // 主要折り返しビン＝素朴実装で-80dBc超のビン。5%（≈0.4dB）は相関法の測定余裕
+        if (20.0 * std::log10 (juce::jmax (b, 1.0e-12)) > -80.0)
+            majorNotWorse = majorNotWorse && (a <= b * 1.05);
+    }
+    expect (majorNotWorse, "主要折り返しビンが悪化しない");
+    const double improveDb = 10.0 * std::log10 (aliasPowerNaive / aliasPowerAdaa);
+    expect (improveDb >= 5.0, "合算エイリアス電力が5dB以上改善（事前評価≈6.9dB）");
+}
+
+void testTrackSaturatorTransitions()
+{
+    beginTest ("track saturator transitions");
+    constexpr double sr = 48000.0;
+    constexpr int blockSize = 512;
+    const Sat::Values hot { 0.8f, 1.0f };
+
+    // ---- ON/OFF切替を繰り返してもNaN/Inf・不連続なサンプル跳躍が出ないこと ----
+    {
+        TrackSaturator sat;
+        sat.snapTo (sr, true, hot);
+        juce::uint64 serial = 0;
+        double phase = 0.0;
+        const double inc = juce::MathConstants<double>::twoPi * 1000.0 / sr;
+        float previous = 0.0f, maxJump = 0.0f;
+        bool allFinite = true;
+        for (int b = 0; b < 40; ++b)
+        {
+            const bool on = (b / 4) % 2 == 0; // 4ブロックごとにON/OFF
+            float block[blockSize];
+            for (int i = 0; i < blockSize; ++i)
+            {
+                block[i] = (float) std::sin (phase) * 0.5f;
+                phase += inc;
+            }
+            sat.process (block, nullptr, blockSize, sr, ++serial, false, on, hot);
+            for (int i = 0; i < blockSize; ++i)
+            {
+                allFinite = allFinite && std::isfinite (block[i]);
+                maxJump = juce::jmax (maxJump, std::abs (block[i] - previous));
+                previous = block[i];
+            }
+        }
+        expect (allFinite, "ON/OFF切替中にNaN/Infが出ないこと");
+        expect (maxJump < 0.5f, "ON/OFF切替がクロスフェードされ跳躍しないこと");
+    }
+
+    // ---- Drive/Mixの急変（1ブロックで0→最大）でも跳躍しないこと（SmoothedValue平滑）----
+    {
+        TrackSaturator sat;
+        sat.snapTo (sr, true, { 0.0f, 1.0f });
+        juce::uint64 serial = 0;
+        double phase = 0.0;
+        const double inc = juce::MathConstants<double>::twoPi * 1000.0 / sr;
+        float previous = 0.0f, maxJump = 0.0f;
+        for (int b = 0; b < 20; ++b)
+        {
+            const Sat::Values targets { b < 10 ? (b % 2 == 0 ? 0.0f : 1.0f) : 0.8f,
+                                        b < 10 ? 1.0f : (b % 2 == 0 ? 0.0f : 1.0f) };
+            float block[blockSize];
+            for (int i = 0; i < blockSize; ++i)
+            {
+                block[i] = (float) std::sin (phase) * 0.5f;
+                phase += inc;
+            }
+            sat.process (block, nullptr, blockSize, sr, ++serial, false, true, targets);
+            for (int i = 0; i < blockSize; ++i)
+            {
+                maxJump = juce::jmax (maxJump, std::abs (block[i] - previous));
+                previous = block[i];
+            }
+        }
+        expect (maxJump < 0.5f, "Drive/Mix急変でも跳躍しないこと");
+    }
+
+    // ---- timelineJumped後の出力が「初期化直後」と決定的に一致すること（旧履歴の混入なし）----
+    {
+        TrackSaturator warmed, fresh;
+        warmed.snapTo (sr, true, hot);
+        fresh.snapTo (sr, true, hot);
+        juce::uint64 serial = 0;
+        float noise[blockSize];
+        juce::Random random (42);
+        for (int b = 0; b < 8; ++b) // warmedにだけ履歴を溜める
+        {
+            for (int i = 0; i < blockSize; ++i)
+                noise[i] = random.nextFloat() - 0.5f;
+            warmed.process (noise, nullptr, blockSize, sr, ++serial, false, true, hot);
+        }
+        float a[blockSize], bBuf[blockSize];
+        for (int i = 0; i < blockSize; ++i)
+            a[i] = bBuf[i] = (float) std::sin ((double) i * 0.13) * 0.4f;
+        warmed.process (a, nullptr, blockSize, sr, ++serial, true, true, hot); // ジャンプ
+        fresh.process (bBuf, nullptr, blockSize, sr, 1, false, true, hot);
+        bool identical = true;
+        for (int i = 0; i < blockSize; ++i)
+            identical = identical && juce::exactlyEqual (a[i], bBuf[i]);
+        expect (identical, "ジャンプ後は初期化直後とビット一致（旧履歴が混入しない）");
+    }
+
+    // ---- Drive→0 の中立整定: 高速パス切替が不連続にならない（中立フェードの回帰）----
+    // DC/低域を含む素材（定数+正弦）で drive を 0 へ落とし、settled 後の出力が入力と
+    // ビット一致することを確認する。フェードが無いと「DCブロッカを通った出力」から
+    // 「raw入力」への切替瞬間にポップが出る
+    {
+        TrackSaturator sat;
+        sat.snapTo (sr, true, hot);
+        juce::uint64 serial = 0;
+        double phase = 0.0;
+        const double inc = juce::MathConstants<double>::twoPi * 1000.0 / sr;
+        const Sat::Values neutral { 0.0f, 1.0f };
+        bool identical = true;
+        bool reachedFastPath = false;
+        float maxJump = 0.0f;
+        float previous = 0.0f;
+        for (int b = 0; b < 60 && ! reachedFastPath; ++b)
+        {
+            const auto& targets = b < 5 ? hot : neutral; // 5ブロック目でDriveを0へ
+            float block[blockSize], input[blockSize];
+            for (int i = 0; i < blockSize; ++i)
+            {
+                input[i] = block[i] = 0.3f + (float) std::sin (phase) * 0.4f; // DC入り
+                phase += inc;
+            }
+            sat.process (block, nullptr, blockSize, sr, ++serial, false, true, targets);
+            for (int i = 0; i < blockSize; ++i)
+            {
+                maxJump = juce::jmax (maxJump, std::abs (block[i] - previous));
+                previous = block[i];
+            }
+            if (b >= 5 && ! sat.needsActivePath (true, neutral))
+            {
+                // 整定＝フェード完了はこのブロック内。末尾サンプルはビット一致していること
+                identical = juce::exactlyEqual (block[blockSize - 1], input[blockSize - 1]);
+                // 高速パス移行を模擬: 次ブロックはraw入力。境界の跳躍もmaxJumpに含める
+                const float firstRaw = 0.3f + (float) std::sin (phase) * 0.4f;
+                maxJump = juce::jmax (maxJump, std::abs (firstRaw - previous));
+                reachedFastPath = true;
+            }
+        }
+        expect (reachedFastPath, "Drive=0で高速パスへ整定すること");
+        expect (identical, "フェード完了後の出力が入力とビット一致（高速パス切替が連続）");
+        expect (maxJump < 0.5f, "Drive→0の遷移〜高速パス境界で跳躍しないこと");
+    }
+
+    // ---- RT確保ゼロ（192kHz・64サンプルブロックで1秒分）----
+    {
+        constexpr double rtSr = 192000.0;
+        constexpr int block = 64;
+        TrackSaturator sat;
+        sat.snapTo (rtSr, true, hot);
+        float l[block], r[block];
+        juce::uint64 serial = 0;
+        const int blocks = (int) (rtSr / block);
+        testAllocationCount = 0;
+        for (int b = 0; b < blocks; ++b)
+        {
+            for (int i = 0; i < block; ++i)
+                l[i] = r[i] = (float) std::sin (0.3 * (b * block + i)) * 0.5f;
+            sat.process (l, r, block, rtSr, ++serial, false, true, hot);
+        }
+        expect (testAllocationCount == 0, "1秒分（192kHz・64サンプルブロック）でヒープ確保ゼロ");
+    }
+}
+
+// ---- FxSlots: ミキサー/パネルの表示位置→意味ID投影（5枠化の回帰） ----
+// ミキサーは以前、表示位置iをそのままIDとして使っていた（0..2が偶然一致）。
+// Sat=4/Lo-fi=5 の追加でIDが非連続になったため、投影のズレ＝誤ったエディタが開く事故を固定する
+void testFxSlotProjection()
+{
+    beginTest ("fx slot projection (mixer/panel order)");
+
+    expect (FxSlots::mixerOrder[0] == FxSlots::eq && FxSlots::mixerOrder[1] == FxSlots::comp
+                && FxSlots::mixerOrder[2] == FxSlots::sat && FxSlots::mixerOrder[3] == FxSlots::lofi
+                && FxSlots::mixerOrder[4] == FxSlots::ext,
+            "ミキサー表示順 EQ,Comp,Sat,Lo-fi,Ext と既存IDの対応");
+    expect (FxSlots::mixerPositionOf (FxSlots::grSlot) == 1, "GRミニバーの逆引き＝Comp位置(1)");
+
+    TrackParams params;
+    const auto layout = FxSlots::trackBaseLayout (&params);
+    expect (layout.slots[FxSlots::eq].enabled == &params.eqEnabled
+                && layout.slots[FxSlots::comp].enabled == &params.compEnabled
+                && layout.slots[FxSlots::sat].enabled == &params.satEnabled
+                && layout.slots[FxSlots::lofi].enabled == &params.lofiEnabled,
+            "電源トグルが各FXの正しいatomicを指す");
+    expect (layout.slots[FxSlots::ext].placeholder
+                && layout.slots[FxSlots::ext].enabled == nullptr,
+            "Extは空き表示・トグルなし");
+    expect (! layout.slots[FxSlots::instrument].used, "ベース構成にInstrumentは無い");
+
+    Track audioTrack;
+    int order[FxSlots::maxSlots];
+    int n = FxSlots::panelOrder (FxSlots::trackPanelLayout (audioTrack), order);
+    expect (n == 5 && order[0] == FxSlots::eq && order[1] == FxSlots::comp
+                && order[2] == FxSlots::sat && order[3] == FxSlots::lofi
+                && order[4] == FxSlots::ext,
+            "オーディオトラックのFXパネル表示順");
+
+    Track midiTrack;
+    midiTrack.type = TrackType::midi;
+    n = FxSlots::panelOrder (FxSlots::trackPanelLayout (midiTrack), order);
+    expect (n == 6 && order[0] == FxSlots::instrument && order[1] == FxSlots::eq
+                && order[5] == FxSlots::ext,
+            "MIDIトラックはInstrumentが先頭・以降は同順");
+}
+
+// ---- TrackLofi: Crush折り返し/量子化・Wow偏差・Noise追従・中立・決定性 ----
+// plan: docs/plans/2026-08-16-2058-fx-batch3-saturation-lofi.md Phase 5
+// 閾値・信号条件は plan の「検証方針」で事前固定（実測後に動かさない）
+
+// 一定周波数の正弦（freqHz=0 なら定数 amp）を通して出力列を返す（snapTo済み・serial連番・モノ）
+std::vector<float> renderLofi (const Lofi::Values& values, double amp, double freqHz,
+                               double sr, int totalSamples)
+{
+    TrackLofi lofi;
+    lofi.snapTo (sr, true, values);
+    constexpr int blockSize = 512;
+    std::vector<float> out;
+    out.reserve ((size_t) totalSamples + blockSize);
+    juce::uint64 serial = 0;
+    double phase = 0.0;
+    const double inc = juce::MathConstants<double>::twoPi * freqHz / sr;
+    float block[blockSize];
+    int done = 0;
+    while (done < totalSamples)
+    {
+        for (int i = 0; i < blockSize; ++i)
+        {
+            block[i] = freqHz > 0.0 ? (float) (amp * std::sin (phase)) : (float) amp;
+            phase += inc;
+        }
+        lofi.process (block, nullptr, blockSize, sr, ++serial, false, true, values);
+        out.insert (out.end(), block, block + blockSize);
+        done += blockSize;
+    }
+    out.resize ((size_t) totalSamples);
+    return out;
+}
+
+void testTrackLofiComponents()
+{
+    beginTest ("track lofi components");
+    constexpr double sr = 48000.0;
+
+    // ---- Crush: 折り返し線が理論周波数（S&Hイメージ n·R ± f0）に立つ ----
+    // 内部レート R = 16kHz（ratio=1/3）になるノブ値を逆算し、1kHz正弦のイメージ R−f0=15kHz を
+    // Goertzel で直接測る。中立レンダリングには同じ周波数に何も立たない
+    {
+        const float knob = std::pow (std::log (3.0f) / std::log (8.0f),
+                                     1.0f / Lofi::crushRatioExponent);
+        Lofi::Values values;
+        values.crush = knob;
+        constexpr size_t discard = 24000, n = 48000;
+        const auto y = renderLofi (values, 0.4, 1000.0, sr, (int) (discard + n));
+        const auto neutral = renderLofi ({}, 0.4, 1000.0, sr, (int) (discard + n));
+        const double fund = satBinAmp (y, discard, n, 1000.0, sr);
+        const double image = satBinAmp (y, discard, n, 15000.0, sr);
+        const double imageNeutral = satBinAmp (neutral, discard, n, 15000.0, sr);
+        expect (20.0 * std::log10 (image / fund) > -40.0,
+                "S&Hの折り返し線が理論周波数 R−f0=15kHz に立つ");
+        expect (20.0 * std::log10 (juce::jmax (imageNeutral, 1.0e-12) / fund) < -80.0,
+                "中立では同じ周波数に何も立たない");
+    }
+
+    // ---- Crush: 量子化ステップの実測一致（定数入力 → held値がヘッダの quantize と一致）----
+    {
+        Lofi::Values values;
+        values.crush = 0.5f;
+        const auto y = renderLofi (values, 0.35, 0.0, sr, 9600);
+        const float expected = Lofi::quantize (0.35f, Lofi::crushBits (0.5f));
+        expect (std::abs (y.back() - expected) < 1.0e-6f, "量子化値がヘッダの式と一致");
+    }
+
+    // ---- Wow: 瞬時周波数偏差が理論値±10%（補間ゼロ交差で周期の最小/最大を測る）----
+    {
+        Lofi::Values values;
+        values.wow = 1.0f; // 偏差 p = maxWowDepth = 1.5%
+        const int total = (int) (3.5 * sr);
+        const auto y = renderLofi (values, 0.4, 1000.0, sr, total);
+        const size_t discard = 48000; // 1s捨て（LFO・平滑の整定）
+        std::vector<double> crossings;
+        for (size_t i = discard + 1; i < y.size(); ++i)
+            if (y[i - 1] <= 0.0f && y[i] > 0.0f)
+                crossings.push_back ((double) i - (double) y[i] / ((double) y[i] - (double) y[i - 1]));
+        double minPeriod = 1.0e9, maxPeriod = 0.0;
+        // 1周期ずつだと補間誤差が乗るので8周期窓の平均周期で評価する
+        for (size_t i = 8; i < crossings.size(); ++i)
+        {
+            const double period = (crossings[i] - crossings[i - 8]) / 8.0;
+            minPeriod = juce::jmin (minPeriod, period);
+            maxPeriod = juce::jmax (maxPeriod, period);
+        }
+        const double deviation = (maxPeriod - minPeriod) / (maxPeriod + minPeriod);
+        expect (std::abs (deviation - (double) Lofi::maxWowDepth) < 0.1 * Lofi::maxWowDepth,
+                "Wowのピッチ偏差が A=p/(2πf) 換算の設定値±10%以内");
+    }
+
+    // ---- Wow: L/R同一の揺れ（同一入力ならビット一致）----
+    {
+        TrackLofi lofi;
+        Lofi::Values values;
+        values.wow = 1.0f;
+        lofi.snapTo (sr, true, values);
+        constexpr int blockSize = 512;
+        float l[blockSize], r[blockSize];
+        bool identical = true;
+        juce::uint64 serial = 0;
+        double phase = 0.0;
+        for (int b = 0; b < 40; ++b)
+        {
+            for (int i = 0; i < blockSize; ++i)
+            {
+                l[i] = r[i] = (float) std::sin (phase) * 0.4f;
+                phase += juce::MathConstants<double>::twoPi * 1000.0 / sr;
+            }
+            lofi.process (l, r, blockSize, sr, ++serial, false, true, values);
+            for (int i = 0; i < blockSize; ++i)
+                identical = identical && juce::exactlyEqual (l[i], r[i]);
+        }
+        expect (identical, "L/Rが同一の揺れ（別々に揺れて広がらない）");
+    }
+
+    // ---- Noise: 入力追従（入力ありで鳴る・無音1秒以内に-60dBFS以下へ減衰）----
+    {
+        TrackLofi lofi;
+        Lofi::Values values;
+        values.noise = 1.0f;
+        lofi.snapTo (sr, true, values);
+        constexpr int blockSize = 512;
+        juce::uint64 serial = 0;
+        double phase = 0.0;
+        double sumSqActive = 0.0;
+        int activeCount = 0;
+        const int activeBlocks = (int) (sr / blockSize);
+        for (int b = 0; b < activeBlocks; ++b) // 1秒: 入力あり
+        {
+            float block[blockSize];
+            for (int i = 0; i < blockSize; ++i)
+            {
+                block[i] = (float) std::sin (phase) * 0.5f;
+                phase += juce::MathConstants<double>::twoPi * 1000.0 / sr;
+            }
+            lofi.process (block, nullptr, blockSize, sr, ++serial, false, true, values);
+            if (b > activeBlocks / 2) // 後半のみ集計（エンベロープ立ち上がり後）
+                for (int i = 0; i < blockSize; ++i)
+                {
+                    // ノイズ成分＝出力−入力（入力は素通しに加算される設計）
+                    const float noiseOnly = block[i] - (float) std::sin (phase
+                                                - juce::MathConstants<double>::twoPi * 1000.0 / sr
+                                                      * (double) (blockSize - i)) * 0.5f;
+                    sumSqActive += (double) noiseOnly * noiseOnly;
+                    ++activeCount;
+                }
+        }
+        expect (std::sqrt (sumSqActive / juce::jmax (1, activeCount)) > 1.0e-4,
+                "入力がある間はノイズが鳴る");
+        // 無音を1.2秒流し、1.0〜1.1秒窓の最大絶対値が-60dBFS以下
+        float maxAfter = 0.0f;
+        const int silentBlocks = (int) (1.2 * sr / blockSize);
+        for (int b = 0; b < silentBlocks; ++b)
+        {
+            float block[blockSize] {};
+            lofi.process (block, nullptr, blockSize, sr, ++serial, false, true, values);
+            const double t0 = (double) b * blockSize / sr;
+            if (t0 >= 1.0 && t0 < 1.1)
+                for (int i = 0; i < blockSize; ++i)
+                    maxAfter = juce::jmax (maxAfter, std::abs (block[i]));
+        }
+        expect (maxAfter < 1.0e-3f, "無音1秒後のノイズが-60dBFS以下（入力追従）");
+    }
+
+    // ---- 全ノブ0のビット一致素通し ----
+    {
+        TrackLofi lofi;
+        lofi.snapTo (sr, true, {});
+        constexpr int blockSize = 512;
+        float block[blockSize], input[blockSize];
+        juce::Random random (7);
+        bool identical = true;
+        juce::uint64 serial = 0;
+        for (int b = 0; b < 8; ++b)
+        {
+            for (int i = 0; i < blockSize; ++i)
+                input[i] = block[i] = random.nextFloat() - 0.5f;
+            lofi.process (block, nullptr, blockSize, sr, ++serial, false, true, {});
+            for (int i = 0; i < blockSize; ++i)
+                identical = identical && juce::exactlyEqual (block[i], input[i]);
+        }
+        expect (identical, "全ノブ0はビット一致の素通し");
+    }
+
+    // ---- 中立判定と高速パス ----
+    {
+        TrackLofi lofi;
+        expect (! lofi.needsActivePath (true, {}), "全ノブ0は高速パス（中立）");
+        Lofi::Values wowOnly;
+        wowOnly.wow = 0.3f;
+        expect (lofi.needsActivePath (true, wowOnly), "非中立＋ONはactive");
+        expect (! lofi.needsActivePath (false, wowOnly), "OFFは高速パス");
+    }
+}
+
+void testTrackLofiTransitions()
+{
+    beginTest ("track lofi transitions");
+    constexpr double sr = 48000.0;
+    constexpr int blockSize = 512;
+
+    // ---- Depth急変（0→最大を1ブロックで）: 隣接サンプル差がDepth固定時の1.5倍以下 ----
+    {
+        auto maxDelta = [] (const std::vector<float>& y, size_t from)
+        {
+            float d = 0.0f;
+            for (size_t i = juce::jmax (from, (size_t) 1); i < y.size(); ++i)
+                d = juce::jmax (d, std::abs (y[i] - y[i - 1]));
+            return d;
+        };
+        Lofi::Values full;
+        full.wow = 1.0f;
+        const auto steady = renderLofi (full, 0.5, 1000.0, sr, 96000);
+        const float steadyDelta = maxDelta (steady, 24000);
+
+        TrackLofi lofi;
+        lofi.snapTo (sr, true, {}); // Depth 0 から開始
+        std::vector<float> out;
+        juce::uint64 serial = 0;
+        double phase = 0.0;
+        for (int b = 0; b < 96000 / blockSize; ++b)
+        {
+            const Lofi::Values values = b < 10 ? Lofi::Values {} : full; // 10ブロック目で急変
+            float block[blockSize];
+            for (int i = 0; i < blockSize; ++i)
+            {
+                block[i] = (float) std::sin (phase) * 0.5f;
+                phase += juce::MathConstants<double>::twoPi * 1000.0 / sr;
+            }
+            lofi.process (block, nullptr, blockSize, sr, ++serial, false, true, values);
+            out.insert (out.end(), block, block + blockSize);
+        }
+        expect (maxDelta (out, 1) <= steadyDelta * 1.5f,
+                "Depth急変の隣接サンプル差がDepth固定時の1.5倍以下（クリックなし）");
+    }
+
+    // ---- リセット契約の決定性: 同一seed・同一入力で2回レンダリングがビット一致 ----
+    {
+        Lofi::Values values { 0.5f, 0.3f, 0.7f, 0.4f };
+        const auto a = renderLofi (values, 0.4, 500.0, sr, 24000);
+        const auto b = renderLofi (values, 0.4, 500.0, sr, 24000);
+        bool identical = a.size() == b.size();
+        for (size_t i = 0; identical && i < a.size(); ++i)
+            identical = juce::exactlyEqual (a[i], b[i]);
+        expect (identical, "同一条件の2回レンダリングがビット一致（seed/位相のリセット契約）");
+    }
+
+    // ---- ON/OFF切替でNaN/Inf・跳躍が出ないこと ----
+    {
+        TrackLofi lofi;
+        Lofi::Values values { 0.6f, 0.5f, 0.5f, 0.5f };
+        lofi.snapTo (sr, true, values);
+        juce::uint64 serial = 0;
+        double phase = 0.0;
+        float previous = 0.0f, maxJump = 0.0f;
+        bool allFinite = true;
+        for (int b = 0; b < 40; ++b)
+        {
+            const bool on = (b / 4) % 2 == 0;
+            float block[blockSize];
+            for (int i = 0; i < blockSize; ++i)
+            {
+                block[i] = (float) std::sin (phase) * 0.5f;
+                phase += juce::MathConstants<double>::twoPi * 1000.0 / sr;
+            }
+            lofi.process (block, nullptr, blockSize, sr, ++serial, false, on, values);
+            for (int i = 0; i < blockSize; ++i)
+            {
+                allFinite = allFinite && std::isfinite (block[i]);
+                maxJump = juce::jmax (maxJump, std::abs (block[i] - previous));
+                previous = block[i];
+            }
+        }
+        expect (allFinite, "ON/OFF切替中にNaN/Infが出ないこと");
+        expect (maxJump < 0.6f, "ON/OFF切替がクロスフェードされ跳躍しないこと");
+    }
+
+    // ---- timelineJumped後は初期化直後とビット一致（旧履歴・乱数状態の混入なし）----
+    {
+        TrackLofi warmed, fresh;
+        Lofi::Values values { 0.5f, 0.0f, 0.5f, 0.5f };
+        warmed.snapTo (sr, true, values);
+        fresh.snapTo (sr, true, values);
+        juce::uint64 serial = 0;
+        float noise[blockSize];
+        juce::Random random (42);
+        for (int b = 0; b < 8; ++b)
+        {
+            for (int i = 0; i < blockSize; ++i)
+                noise[i] = random.nextFloat() - 0.5f;
+            warmed.process (noise, nullptr, blockSize, sr, ++serial, false, true, values);
+        }
+        float a[blockSize], bBuf[blockSize];
+        for (int i = 0; i < blockSize; ++i)
+            a[i] = bBuf[i] = (float) std::sin ((double) i * 0.13) * 0.4f;
+        warmed.process (a, nullptr, blockSize, sr, ++serial, true, true, values);
+        fresh.process (bBuf, nullptr, blockSize, sr, 1, false, true, values);
+        bool identical = true;
+        for (int i = 0; i < blockSize; ++i)
+            identical = identical && juce::exactlyEqual (a[i], bBuf[i]);
+        expect (identical, "ジャンプ後は初期化直後とビット一致");
+    }
+
+    // ---- Tone 0境界: 出入りで跳躍せず、0へ整定後は素通しとビット一致（クロスフェードの回帰）----
+    // 開放側の20kHz LPFは恒等ではないため、即時切替だと高域の段差・クリックになる
+    {
+        TrackLofi lofi;
+        lofi.snapTo (sr, true, {});
+        juce::uint64 serial = 0;
+        double phase = 0.0;
+        const double inc = juce::MathConstants<double>::twoPi * 6000.0 / sr; // 高域寄り＝段差が出やすい
+        Lofi::Values toneOn;
+        toneOn.tone = 0.6f;
+        bool identical = true;
+        bool settledToNeutral = false;
+        float maxJump = 0.0f;
+        float previous = 0.0f;
+        for (int b = 0; b < 80 && ! settledToNeutral; ++b)
+        {
+            const auto& targets = (b >= 10 && b < 30) ? toneOn : Lofi::Values {}; // 0→0.6→0
+            float block[blockSize], input[blockSize];
+            for (int i = 0; i < blockSize; ++i)
+            {
+                input[i] = block[i] = (float) std::sin (phase) * 0.5f;
+                phase += inc;
+            }
+            lofi.process (block, nullptr, blockSize, sr, ++serial, false, true, targets);
+            for (int i = 0; i < blockSize; ++i)
+            {
+                maxJump = juce::jmax (maxJump, std::abs (block[i] - previous));
+                previous = block[i];
+            }
+            if (b >= 30 && ! lofi.needsActivePath (true, {}))
+            {
+                // 整定＝クロスフェード完了はこのブロック内。末尾サンプルはビット一致していること
+                identical = juce::exactlyEqual (block[blockSize - 1], input[blockSize - 1]);
+                // 高速パス移行を模擬: 次ブロックはraw入力。境界の跳躍もmaxJumpに含める
+                const float firstRaw = (float) std::sin (phase) * 0.5f;
+                maxJump = juce::jmax (maxJump, std::abs (firstRaw - previous));
+                settledToNeutral = true;
+            }
+        }
+        expect (settledToNeutral, "Tone=0で高速パスへ整定すること");
+        expect (identical, "クロスフェード完了後の出力が入力とビット一致（素通しへの復帰が連続）");
+        // 6kHz正弦（振幅0.5）自体の最大傾斜は約0.35。即時切替の段差はこれを超えて現れる
+        expect (maxJump < 0.5f, "Toneの出入りで跳躍しないこと");
+    }
+
+    // ---- RT確保ゼロ（192kHz・64サンプルブロックで1秒分・全成分ON）----
+    {
+        constexpr double rtSr = 192000.0;
+        constexpr int block = 64;
+        TrackLofi lofi;
+        const Lofi::Values values { 0.8f, 0.5f, 0.8f, 0.5f };
+        lofi.snapTo (rtSr, true, values);
+        float l[block], r[block];
+        juce::uint64 serial = 0;
+        const int blocks = (int) (rtSr / block);
+        testAllocationCount = 0;
+        for (int b = 0; b < blocks; ++b)
+        {
+            for (int i = 0; i < block; ++i)
+                l[i] = r[i] = (float) std::sin (0.3 * (b * block + i)) * 0.5f;
+            lofi.process (l, r, block, rtSr, ++serial, false, true, values);
+        }
+        expect (testAllocationCount == 0, "1秒分（192kHz・64サンプルブロック）でヒープ確保ゼロ");
+    }
+}
+
+// ---- Sat: 保存/読込のroundtripと旧版数の既定値補完（v18） ----
+void testSatParamsRoundtrip()
+{
+    beginTest ("sat params roundtrip");
+
+    // 新規TrackParamsの既定値（ON・中立スタート: Drive 0 / Mix 100%。EQと同じ「ONでも音を
+    // 変えない」型 — Compと違い保証された中立設定があるためピルは既定ON）
+    TrackParams fresh;
+    expect (fresh.satEnabled.load(), "既定: SatはON（Drive0が中立を保証）");
+    {
+        const auto v = Sat::load (fresh.sat);
+        expect (juce::approximatelyEqual (v.drive, 0.0f) && juce::approximatelyEqual (v.mix, 1.0f),
+                "既定値（中立スタート）");
+        expect (Sat::isNeutral (v), "既定値は中立（高速パス対象）");
+    }
+
+    // 値を入れて保存 → 再読込で維持される
+    auto dir = makeTempDir();
+    juce::String error;
+    juce::StringArray warnings;
+    {
+        Project project;
+        project.directory = dir;
+        Track track;
+        track.id = project.allocateId();
+        project.tracks.push_back (std::move (track));
+        auto& params = *project.tracks[0].params;
+        params.satEnabled.store (false);
+        Sat::store (params.sat, Sat::normalized ({ 0.65f, 0.4f }));
+        expect (project.save (error), "保存できること");
+    }
+    const auto parsed = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
+    expect ((int) parsed.getProperty ("version", 0) == 18, "v18で保存されること");
+
+    auto reloaded = Project::load (dir, warnings, error);
+    expect (reloaded != nullptr && reloaded->tracks.size() == 1, "再読込できること");
+    if (reloaded != nullptr && ! reloaded->tracks.empty())
+    {
+        auto& p = *reloaded->tracks[0].params;
+        const auto v = Sat::load (p.sat);
+        expect (! p.satEnabled.load(), "enabled維持（OFF）");
+        expect (juce::approximatelyEqual (v.drive, 0.65f) && juce::approximatelyEqual (v.mix, 0.4f),
+                "Satパラメータ維持");
+    }
+    dir.deleteRecursively();
+
+    // v17形式（satブロックなし）→ 既定値（ON・中立）で補完。範囲外・NaNはnormalizedが直す
+    auto dirV17 = makeTempDir();
+    dirV17.getChildFile ("project.json").replaceWithText (R"({
+        "version": 17, "bpm": 120.0, "sampleRate": 0.0, "nextId": 2,
+        "tracks": [ { "id": 1, "type": "audio", "name": "t",
+                      "mute": false, "solo": false, "volume": 0.5,
+                      "fx": { "eq": { "enabled": true } },
+                      "clips": [] } ]
+    })");
+    auto v17 = Project::load (dirV17, warnings, error);
+    expect (v17 != nullptr && v17->tracks.size() == 1, "v17を読めること");
+    if (v17 != nullptr && ! v17->tracks.empty())
+    {
+        auto& p = *v17->tracks[0].params;
+        const auto v = Sat::load (p.sat);
+        expect (p.satEnabled.load() && Sat::isNeutral (v), "sat欠損は既定値（ON・中立）で補完");
+    }
+    dirV17.deleteRecursively();
+
+    expect (juce::approximatelyEqual (Sat::normalized ({ 2.0f, -1.0f }).drive, 1.0f)
+                && juce::approximatelyEqual (Sat::normalized ({ 2.0f, -1.0f }).mix, 0.0f),
+            "normalizedが範囲へクランプ");
+    const auto nan = Sat::normalized ({ std::numeric_limits<float>::quiet_NaN(), 0.5f });
+    expect (juce::approximatelyEqual (nan.drive, Sat::defaults.drive), "NaNは既定値へ");
+}
+
+// ---- Lo-fi: 保存/読込のroundtripと旧版数の既定値補完（v18） ----
+void testLofiParamsRoundtrip()
+{
+    beginTest ("lofi params roundtrip");
+
+    TrackParams fresh;
+    expect (fresh.lofiEnabled.load(), "既定: Lo-fiはON（全ノブ0が中立を保証）");
+    expect (Lofi::isNeutral (Lofi::load (fresh.lofi)), "既定値は中立（高速パス対象）");
+
+    auto dir = makeTempDir();
+    juce::String error;
+    juce::StringArray warnings;
+    {
+        Project project;
+        project.directory = dir;
+        Track track;
+        track.id = project.allocateId();
+        project.tracks.push_back (std::move (track));
+        auto& params = *project.tracks[0].params;
+        params.lofiEnabled.store (false);
+        Lofi::store (params.lofi, Lofi::normalized ({ 0.1f, 0.2f, 0.3f, 0.4f }));
+        expect (project.save (error), "保存できること");
+    }
+    auto reloaded = Project::load (dir, warnings, error);
+    expect (reloaded != nullptr && reloaded->tracks.size() == 1, "再読込できること");
+    if (reloaded != nullptr && ! reloaded->tracks.empty())
+    {
+        auto& p = *reloaded->tracks[0].params;
+        const auto v = Lofi::load (p.lofi);
+        expect (! p.lofiEnabled.load(), "enabled維持（OFF）");
+        expect (juce::approximatelyEqual (v.wow, 0.1f) && juce::approximatelyEqual (v.tone, 0.2f)
+                    && juce::approximatelyEqual (v.noise, 0.3f)
+                    && juce::approximatelyEqual (v.crush, 0.4f),
+                "Lo-fiパラメータ維持");
+    }
+    dir.deleteRecursively();
+
+    // 欠損（v17以前相当）は既定値（ON・中立）。範囲外・NaNはnormalizedが直す
+    const auto clamped = Lofi::normalized ({ 2.0f, -1.0f,
+                                            std::numeric_limits<float>::quiet_NaN(), 0.5f });
+    expect (juce::approximatelyEqual (clamped.wow, 1.0f) && juce::approximatelyEqual (clamped.tone, 0.0f)
+                && juce::approximatelyEqual (clamped.noise, Lofi::defaults.noise)
+                && juce::approximatelyEqual (clamped.crush, 0.5f),
+            "normalizedがクランプ・NaN既定値化");
+}
+
+// ---- Lo-fi: 成分単独でもテールが回収され、RT再生とバウンスが一致すること ----
+// producesTail の漏れ（Tone単独・Crush単独で範囲終端の余韻が切れる）の回帰テスト
+void testBounceLofiTail()
+{
+    beginTest ("bounce lofi ring-out tail per component");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+    constexpr int numBlocks = 8;
+    constexpr int totalSamples = blockSize * numBlocks;
+    constexpr int tailCompare = 2048;
+
+    struct Case
+    {
+        const char* name;
+        Lofi::Values values;
+        bool expectAudibleTail; // wow/noiseは確実に鳴る。tone/crushは数サンプル規模で
+                                // 位相依存になり得るため「切れずにRTと一致」だけを要求する
+    };
+    const Case cases[] = {
+        { "wow", { 1.0f, 0.0f, 0.0f, 0.0f }, true },
+        { "tone", { 0.0f, 1.0f, 0.0f, 0.0f }, false },
+        { "noise", { 0.0f, 0.0f, 1.0f, 0.0f }, true },
+        { "crush", { 0.0f, 0.0f, 0.0f, 0.7f }, false },
+    };
+
+    for (const auto& testCase : cases)
+    {
+        Project project;
+        {
+            Track track;
+            track.id = 1;
+            track.params->gain.store (1.0f);
+            Lofi::store (track.params->lofi, Lofi::normalized (testCase.values));
+            Clip clip;
+            clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, totalSamples);
+            const double inc = juce::MathConstants<double>::twoPi * 220.0 / sr;
+            for (int i = 0; i < totalSamples; ++i)
+                clip.audio->setSample (0, i, (float) std::sin (inc * i) * 0.4f);
+            clip.lengthSamples = totalSamples;
+            track.clips.push_back (std::move (clip));
+            project.tracks.push_back (std::move (track));
+        }
+
+        const int latency = engineLimiterLatency (sr);
+        juce::AudioBuffer<float> engineOut (2, totalSamples + tailCompare + blockSize);
+        {
+            TransportState transport;
+            SnapshotExchange snapshots;
+            PreviewFifo previewFifo;
+            PlaybackEngine engine (transport, snapshots, previewFifo);
+            engine.prepareToPlay (blockSize, sr);
+            snapshots.push (project.buildSnapshot());
+            transport.seekRequest.store (0);
+            engine.play();
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            for (int blockIndex = 0; blockIndex < numBlocks + tailCompare / blockSize + 1;
+                 ++blockIndex)
+            {
+                buffer.clear();
+                juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+                engine.process (info);
+                for (int ch = 0; ch < 2; ++ch)
+                    engineOut.copyFrom (ch, blockIndex * blockSize, buffer, ch, 0, blockSize);
+            }
+            engine.stop();
+            snapshots.deleteRetired();
+        }
+
+        const auto dir = makeTempDir();
+        const auto target = dir.getChildFile ("bounce-lofi-tail.wav");
+        juce::int64 writtenSamples = 0;
+        {
+            BounceRenderer::Request request;
+            request.sampleRate = sr;
+            request.bpm = 120.0;
+            request.endSample = totalSamples;
+            request.targetFile = target;
+            for (auto& track : project.tracks)
+            {
+                BounceRenderer::TrackRender render;
+                render.gain = track.params->gain.load();
+                render.loadFxFrom (*track.params);
+                for (auto& clip : track.clips)
+                    appendClipPlaybacks (clip, render.clips);
+                request.tracks.push_back (std::move (render));
+            }
+            // 本番と同じ入口判定を通す＝producesTailの配線そのものを検証する
+            request.resolveWantTail();
+            expect (request.wantTail, "成分単独でもwantTailが立つ（producesTail配線）");
+            BounceRenderer renderer;
+            expect (renderer.start (std::move (request)), "startできること");
+            expect (waitForBounce (renderer), "タイムアウトせず完了すること");
+            const auto result = renderer.takeResult();
+            expect (result.status == BounceRenderer::Status::success, "successで終わること");
+            writtenSamples = result.writtenSamples;
+        }
+        expect (writtenSamples > totalSamples, "テールが書き出されること");
+
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatReader> reader (
+            wav.createReaderFor (new juce::FileInputStream (target), true));
+        const int compareLen =
+            (int) juce::jmin ((juce::int64) tailCompare, writtenSamples - totalSamples);
+        expect (reader != nullptr && reader->lengthInSamples >= totalSamples + compareLen,
+                "テール込みの長さで読めること");
+        if (reader != nullptr && reader->lengthInSamples >= totalSamples + compareLen)
+        {
+            juce::AudioBuffer<float> bounceOut (2, totalSamples + compareLen);
+            reader->read (&bounceOut, 0, totalSamples + compareLen, 0, true, true);
+            float tailPeak = 0.0f;
+            float maxDiff = 0.0f;
+            for (int i = totalSamples; i < totalSamples + compareLen; ++i)
+            {
+                tailPeak = juce::jmax (tailPeak, std::abs (bounceOut.getSample (0, i)));
+                for (int ch = 0; ch < 2; ++ch)
+                    maxDiff = juce::jmax (maxDiff,
+                                          std::abs (engineOut.getSample (ch, i + latency)
+                                                    - bounceOut.getSample (ch, i)));
+            }
+            if (testCase.expectAudibleTail)
+                expect (tailPeak > 1.0e-3f, "終端直後にリングアウトが実在すること");
+            expect (maxDiff < 1.0e-4f, "テールがRT再生と一致すること");
+        }
+        reader.reset();
+        dir.deleteRecursively();
+    }
+}
+
+// ---- Sat有効時にエンジン（RT）とバウンスが一致すること（EQ/Compの整合テストと同型） ----
+void testEngineSatBounceConsistency()
+{
+    beginTest ("engine vs bounce with active sat");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+    constexpr int numBlocks = 16;
+    constexpr int totalSamples = blockSize * numBlocks;
+    constexpr int compareFrom = 0; // 再生開始のシークで timelineJumped=true ＝先頭から比較できる
+
+    auto makeAudio = [] (int channels, int len, float scale)
+    {
+        auto buffer = std::make_shared<juce::AudioBuffer<float>> (channels, len);
+        juce::Random random (23);
+        for (int ch = 0; ch < channels; ++ch)
+            for (int i = 0; i < len; ++i)
+                buffer->setSample (ch, i,
+                                   (std::sin ((float) i * 0.07f + (float) ch) * 0.3f
+                                    + (random.nextFloat() - 0.5f) * 0.2f) * scale);
+        return buffer;
+    };
+
+    Project project;
+    {
+        Track track; // ステレオクリップ＋Sat（深め・full wet）
+        track.id = 1;
+        track.params->gain.store (0.8f);
+        track.params->pan.store (0.3f);
+        Sat::store (track.params->sat, Sat::normalized ({ 0.8f, 1.0f }));
+        Clip clip;
+        clip.audio = makeAudio (2, totalSamples, 1.0f);
+        clip.lengthSamples = totalSamples;
+        track.clips.push_back (std::move (clip));
+        project.tracks.push_back (std::move (track));
+    }
+    {
+        Track track; // モノクリップ＋Sat（浅め・Mix 50%）
+        track.id = 2;
+        track.params->gain.store (0.7f);
+        track.params->pan.store (-0.5f);
+        Sat::store (track.params->sat, Sat::normalized ({ 0.4f, 0.5f }));
+        Clip clip;
+        clip.audio = makeAudio (1, totalSamples, 0.8f);
+        clip.lengthSamples = totalSamples;
+        track.clips.push_back (std::move (clip));
+        project.tracks.push_back (std::move (track));
+    }
+    project.masterParams->gain.store (0.85f);
+
+    auto renderEngine = [&] (juce::AudioBuffer<float>& out)
+    {
+        TransportState transport;
+        SnapshotExchange snapshots;
+        PreviewFifo previewFifo;
+        PlaybackEngine engine (transport, snapshots, previewFifo);
+        engine.prepareToPlay (blockSize, sr);
+        snapshots.push (project.buildSnapshot());
+        transport.seekRequest.store (0);
+        engine.play();
+        juce::AudioBuffer<float> buffer (2, blockSize);
+        for (int blockIndex = 0; blockIndex * blockSize < out.getNumSamples(); ++blockIndex)
+        {
+            buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+            engine.process (info);
+            for (int ch = 0; ch < 2; ++ch)
+                out.copyFrom (ch, blockIndex * blockSize, buffer, ch, 0, blockSize);
+        }
+        engine.stop();
+        snapshots.deleteRetired();
+    };
+
+    const int latency = engineLimiterLatency (sr);
+    juce::AudioBuffer<float> engineOut (2, totalSamples + blockSize);
+    renderEngine (engineOut);
+
+    // Satが実際に効いていること（OFFとの差がある）を先に確認する — 空一致の防止
+    {
+        project.tracks[0].params->satEnabled.store (false);
+        project.tracks[1].params->satEnabled.store (false);
+        juce::AudioBuffer<float> bypassOut (2, totalSamples + blockSize);
+        renderEngine (bypassOut);
+        float maxDiff = 0.0f;
+        for (int i = compareFrom; i < totalSamples; ++i)
+            maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (0, i)
+                                                     - bypassOut.getSample (0, i)));
+        expect (maxDiff > 1.0e-3f, "SatありはOFFと出力が異なること（Satが実際に効いている）");
+        project.tracks[0].params->satEnabled.store (true);
+        project.tracks[1].params->satEnabled.store (true);
+    }
+
+    const auto dir = makeTempDir();
+    const auto target = dir.getChildFile ("bounce-sat.wav");
+    {
+        BounceRenderer::Request request;
+        request.sampleRate = sr;
+        request.bpm = 120.0;
+        request.endSample = totalSamples;
+        request.targetFile = target;
+        request.masterGain = 0.85f;
+        for (auto& track : project.tracks)
+        {
+            BounceRenderer::TrackRender render;
+            render.gain = track.params->gain.load();
+            render.pan = track.params->pan.load();
+            render.loadFxFrom (*track.params);
+            for (auto& clip : track.clips)
+                appendClipPlaybacks (clip, render.clips);
+            request.tracks.push_back (std::move (render));
+        }
+        BounceRenderer renderer;
+        expect (renderer.start (std::move (request)), "startできること");
+        expect (waitForBounce (renderer), "タイムアウトせず完了すること");
+        expect (renderer.takeResult().status == BounceRenderer::Status::success, "successで終わること");
+    }
+
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatReader> reader (
+        wav.createReaderFor (new juce::FileInputStream (target), true));
+    expect (reader != nullptr && reader->lengthInSamples == totalSamples, "バウンス出力を読めること");
+    if (reader != nullptr && reader->lengthInSamples == totalSamples)
+    {
+        juce::AudioBuffer<float> bounceOut (2, totalSamples);
+        reader->read (&bounceOut, 0, totalSamples, 0, true, true);
+        float maxDiff = 0.0f;
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = compareFrom; i < totalSamples; ++i)
+                maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (ch, i + latency)
+                                                         - bounceOut.getSample (ch, i)));
+        expect (maxDiff < 1.0e-4f, "Sat有効時もエンジンとバウンスが許容誤差内で一致すること");
+    }
+    reader.reset();
+    dir.deleteRecursively();
+}
+
 } // namespace
 
 
@@ -11871,6 +13015,16 @@ int main (int argc, char** argv)
     testTrackCompDynamics();
     testEngineCompBounceConsistency();
     testEngineCompPrePanDetection();
+    testTrackSaturatorHarmonics();
+    testTrackSaturatorAliasing();
+    testTrackSaturatorTransitions();
+    testSatParamsRoundtrip();
+    testEngineSatBounceConsistency();
+    testTrackLofiComponents();
+    testTrackLofiTransitions();
+    testLofiParamsRoundtrip();
+    testBounceLofiTail();
+    testFxSlotProjection();
     testMasterLimiterBrickwall();
     testMasterLimiterDynamics();
     testEngineLimiterSeekReset();

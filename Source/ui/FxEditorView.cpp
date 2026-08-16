@@ -186,7 +186,7 @@ void FxEditorView::updateMeters (const std::vector<MeterFeed>& trackFeeds,
 
 juce::String FxEditorView::slotName (int slot) const
 {
-    if (slot >= 0 && slot < slotCount)
+    if (slot >= 0 && slot < maxSlots)
         return slotNames[slot];
     return {};
 }
@@ -248,21 +248,25 @@ void FxEditorView::rebind()
     }
 
     // スロット構成（定義はFxSlotLayoutが単一の真実の源。enabled atomicの実体はTrackが所有する
-    // TrackParams）。表示順もそちらの投影規則（panelOrder。Instrument=音源が一番上）に従う
-    slotCount = 0;
+    // TrackParams）。表示順もそちらの投影規則（panelOrder。Instrument=音源が一番上）に従う。
+    // 配列index=スロット番号（意味ID）・存在は used。未使用スロットは名前を空にする
+    //（isValidSlot＝履歴復元の判定材料）
     numOrderedSlots = 0;
+    for (auto& name : slotNames)
+        name = {};
     if (isTrack || params != nullptr)
     {
         const auto layout = isTrack ? FxSlots::trackPanelLayout (project->tracks[(size_t) targetTrack])
                             : target == Target::master ? FxSlots::masterLayout()
                                                        : FxSlots::busLayout (targetBus);
-        for (int i = 0; i < layout.count; ++i)
+        for (int i = 0; i < maxSlots; ++i)
         {
+            if (! layout.slots[i].used)
+                continue;
             slotNames[i] = layout.slots[i].name;
             slotPills[i].configure (layout.slots[i].name, layout.slots[i].enabled,
                                     layout.slots[i].placeholder);
         }
-        slotCount = layout.count;
         numOrderedSlots = isTrack ? FxSlots::panelOrder (layout, slotOrder)
                                   : (slotOrder[0] = 0, 1);
     }

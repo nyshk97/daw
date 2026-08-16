@@ -12,9 +12,13 @@
 #include "../audio/SamplerEngine.h"
 #include "../audio/TrackComp.h"
 #include "../audio/TrackEq.h"
+#include "../audio/TrackLofi.h"
+#include "../audio/TrackSaturator.h"
 #include "CompParams.h"
 #include "EqParams.h"
 #include "LimiterParams.h"
+#include "LofiParams.h"
+#include "SatParams.h"
 
 // send用固定バスの本数（Reverb A / Reverb B / Delay）。本数・並びは固定で、
 // UI・保存形式・エンジンすべてこの順序を前提にする（バスの作成・削除UIは作らない）
@@ -36,9 +40,11 @@ struct TrackParams
 
     // 固定ストリップFXのON/OFF。EQは既定ON（バンドが中立なら音を変えない）。
     // Compは既定OFF（v16でDSP結線。コンプに「保証された中立設定」が無いため、
-    // ピルが真のバイパスを担う）
+    // ピルが真のバイパスを担う）。Satは既定ON（Drive=0が中立＝音を変えない。EQと同じ理屈）
     std::atomic<bool> eqEnabled { true };
     std::atomic<bool> compEnabled { false };
+    std::atomic<bool> satEnabled { true };
+    std::atomic<bool> lofiEnabled { true }; // Satと同じ理屈（全ノブ0が中立を保証）で既定ON
 
     // トラックEQの4バンド（v15。並び・不変条件は shared/EqParams.h）。書き込みは必ず
     // Eq::normalized() を通した値を Eq::store() すること。バス・Masterでは未使用のまま
@@ -47,6 +53,14 @@ struct TrackParams
     // トラックCompのパラメータ（v16。shared/CompParams.h）。書き込みは必ず
     // Comp::normalized() を通した値を Comp::store() すること。バス・Masterでは未使用のまま
     Comp::Params comp;
+
+    // トラックSatのパラメータ（v18。shared/SatParams.h）。書き込みは必ず
+    // Sat::normalized() を通した値を Sat::store() すること。バス・Masterでは未使用のまま
+    Sat::Params sat;
+
+    // トラックLo-fiのパラメータ（v18。shared/LofiParams.h）。書き込みは必ず
+    // Lofi::normalized() を通した値を Lofi::store() すること。バス・Masterでは未使用のまま
+    Lofi::Params lofi;
 
     // Master Limiterのパラメータ（v17。shared/LimiterParams.h）。**Masterのみ使用**
     // （トラック・バスでは既定値のまま触らない）。書き込みは必ず Limiter::normalized() を
@@ -60,6 +74,8 @@ struct TrackParams
     // **リアルタイム再生専用**: バウンスは BounceRenderer::TrackRender の独立インスタンスを使う
     TrackEq rtEq;
     TrackComp rtComp;
+    TrackSaturator rtSat;
+    TrackLofi rtLofi;
 
     TrackParams() { Eq::applyDefaults (eqBands); }
 

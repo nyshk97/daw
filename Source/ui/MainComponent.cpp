@@ -223,6 +223,8 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         mixerWindow.content().refreshValues(); // ミキサーのスロットピルもeqEnabled/compEnabledを表示する（非表示時はno-op）
         eqDetail.refreshFromModel();  // eqEnabledはEQエディタのカーブ表示（バイパスで沈める）にも効く
         compDetail.refreshFromModel(); // compEnabledもCompエディタのカーブ表示に効く
+        satDetail.refreshFromModel();  // satEnabledもカーブ・倍音バーの沈み表示に効く
+        lofiDetail.refreshFromModel(); // lofiEnabledもToneカーブの沈み表示に効く
     };
     fxEditor.onVolumeChanged = [this]
     {
@@ -284,6 +286,9 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     // 同じ扱い）。dirty化だけ受ける。GR・検波レベルはメータータイマーが pushLevels で配布する
     compDetail.onEdited = [this] { setDirty (true); };
     limiterDetail.onEdited = [this] { setDirty (true); };
+    satDetail.onEdited = [this] { setDirty (true); };
+    lofiDetail.onEdited = [this] { setDirty (true); };
+    lofiDetail.getSampleRate = [this] { return transport.sampleRate.load(); };
 
     instrumentDetail.onPreview = [this] (int pitch)
     {
@@ -1514,6 +1519,18 @@ void MainComponent::debugOpenLimiterDetail()
     toggleFxDetailSlot (0); // Masterはslot0 = Limiter
 }
 
+void MainComponent::debugOpenSatDetail()
+{
+    openFxEditor();
+    toggleFxDetailSlot (FxSlots::sat);
+}
+
+void MainComponent::debugOpenLofiDetail()
+{
+    openFxEditor();
+    toggleFxDetailSlot (FxSlots::lofi);
+}
+
 void MainComponent::debugSetCompParams (bool enabled, const Comp::Values& values)
 {
     if (selectedTrack < 0 || selectedTrack >= (int) project->tracks.size())
@@ -1568,6 +1585,8 @@ void MainComponent::closeFxDetail()
     eqDetail.setTrack (nullptr);
     compDetail.setTrack (nullptr);
     limiterDetail.setMaster (nullptr);
+    satDetail.setTrack (nullptr);
+    lofiDetail.setTrack (nullptr);
     fxDetailSlot = -1;
     fxDetailKey.clear();
     fxEditor.setActiveSlot (-1);
@@ -1583,7 +1602,7 @@ void MainComponent::syncFxDetail()
     // トラック⇄バス等はチェーン構成が変わるので閉じる
     const auto key = fxEditor.targetKey();
     const bool followable = (key == "track" && fxDetailKey == "track") || key == fxDetailKey;
-    if (followable && fxDetailSlot >= 0 && fxDetailSlot < fxEditor.numSlots())
+    if (followable && fxEditor.isValidSlot (fxDetailSlot))
     {
         fxDetailKey = key;
         fxDetail.show (fxEditor.slotName (fxDetailSlot), fxEditor.channelName());
@@ -1627,6 +1646,8 @@ void MainComponent::updateFxDetailBody()
         eqDetail.setTrack (nullptr);
         compDetail.setTrack (nullptr);
         limiterDetail.setMaster (nullptr);
+        satDetail.setTrack (nullptr);
+        lofiDetail.setTrack (nullptr);
         fxDetail.setBody (&instrumentDetail);
         return;
     }
@@ -1637,20 +1658,25 @@ void MainComponent::updateFxDetailBody()
         instrumentDetail.setTrack (nullptr);
         eqDetail.setTrack (nullptr);
         compDetail.setTrack (nullptr);
+        satDetail.setTrack (nullptr);
+        lofiDetail.setTrack (nullptr);
         limiterDetail.setMaster (project->masterParams.get());
         fxDetail.setBody (&limiterDetail);
         return;
     }
 
-    // トラックのEQ/Compスロット（スロット名"EQ"/"Comp"はトラックのみ。バス/Masterのslot0はReverb等）
+    // トラックのEQ/Comp/Sat/Lo-fiスロット（これらのスロット名はトラックのみ。
+    // バス/Masterのslot0はReverb等）
     const auto slot = fxEditor.slotName (fxDetailSlot);
-    if (slot == "EQ" || slot == "Comp")
+    if (slot == "EQ" || slot == "Comp" || slot == "Sat" || slot == "Lo-fi")
     {
         const int index = fxEditor.shownTrack();
         if (index < 0 || index >= (int) project->tracks.size())
         {
             eqDetail.setTrack (nullptr);
             compDetail.setTrack (nullptr);
+            satDetail.setTrack (nullptr);
+            lofiDetail.setTrack (nullptr);
             closeFxDetail();
             return;
         }
@@ -1658,9 +1684,13 @@ void MainComponent::updateFxDetailBody()
         instrumentDetail.setTrack (nullptr);
         eqDetail.setTrack (slot == "EQ" ? trackPtr : nullptr);
         compDetail.setTrack (slot == "Comp" ? trackPtr : nullptr);
+        satDetail.setTrack (slot == "Sat" ? trackPtr : nullptr);
+        lofiDetail.setTrack (slot == "Lo-fi" ? trackPtr : nullptr);
         limiterDetail.setMaster (nullptr);
         fxDetail.setBody (slot == "EQ" ? (juce::Component*) &eqDetail
-                                       : (juce::Component*) &compDetail);
+                          : slot == "Comp" ? (juce::Component*) &compDetail
+                          : slot == "Sat" ? (juce::Component*) &satDetail
+                                          : (juce::Component*) &lofiDetail);
         return;
     }
 
@@ -1668,6 +1698,8 @@ void MainComponent::updateFxDetailBody()
     eqDetail.setTrack (nullptr);
     compDetail.setTrack (nullptr);
     limiterDetail.setMaster (nullptr);
+    satDetail.setTrack (nullptr);
+    lofiDetail.setTrack (nullptr);
     fxDetail.setBody (nullptr);
 }
 
@@ -1776,7 +1808,7 @@ bool MainComponent::restoreBottomEntry (const BottomPanelHistory::Entry& entry)
     else
         fxEditor.showMaster();
 
-    if (entry.slot >= fxEditor.numSlots())
+    if (! fxEditor.isValidSlot (entry.slot))
         return false; // そのチャンネルには無いスロット（構成が変わった場合の保険）
 
     // すでに同じチャンネル・同じスロットを表示中なら呼ばない（同上のトグル対策）
@@ -2135,10 +2167,7 @@ void MainComponent::beginBounce (const juce::File& target)
         trackRender.pan = params.pan.load();
         for (int b = 0; b < numSendBuses; ++b)
             trackRender.sends[b] = params.sends[b].load();
-        trackRender.eqEnabled = params.eqEnabled.load();
-        trackRender.eqBands = Eq::loadAll (params.eqBands);
-        trackRender.compEnabled = params.compEnabled.load();
-        trackRender.comp = Comp::load (params.comp);
+        trackRender.loadFxFrom (params); // EQ/Comp/Sat/Lo-fi（個別コピーは漏れ事故のため禁止）
         trackRender.clips = std::move (snapshot->tracks[i].clips);
         trackRender.notes = std::move (snapshot->tracks[i].notes);
 

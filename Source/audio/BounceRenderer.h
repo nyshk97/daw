@@ -39,16 +39,28 @@ public:
         float pan = 0.0f;                     // -1..+1（モノクリップは等パワー補正型・ステレオクリップとシンセはバランス型。RTと同じ法則）
         float sends[numSendBuses] { 0.0f, 0.0f, 0.0f }; // post-fader send量
 
-        // トラックEQ・Comp（開始時にプレーン値で固定。共有atomicの TrackParams は参照しない）。
-        // eq / compDsp はバウンス専用の独立DSPインスタンス — RT再生用の TrackParams::rtEq /
-        // rtComp と履歴を共有すると両スレッドが同時更新してしまうため、renderPass 開始時に
-        // snapTo で初期化する
+        // トラックEQ・Comp・Sat（開始時にプレーン値で固定。共有atomicの TrackParams は
+        // 参照しない）。eq / compDsp / satDsp はバウンス専用の独立DSPインスタンス —
+        // RT再生用の TrackParams::rtEq 等と履歴を共有すると両スレッドが同時更新してしまうため、
+        // renderPass 開始時に snapTo で初期化する
         bool eqEnabled = true;
         Eq::Values eqBands = Eq::defaultValues();
         TrackEq eq;
         bool compEnabled = false;
         Comp::Values comp;
         TrackComp compDsp;
+        bool satEnabled = true;
+        Sat::Values sat;
+        TrackSaturator satDsp;
+        bool lofiEnabled = true;
+        Lofi::Values lofi;
+        TrackLofi lofiDsp;
+
+        // FX設定（EQ/Comp/Sat/Lo-fi の enabled＋プレーン値）を TrackParams からまとめて固定する。
+        // 個別コピーの手書きは新FX追加時の漏れ事故になる（実際にテスト側で Sat/Lo-fi が
+        // 落ちていた）ため、本番（buildItemRender / MainComponent::startBounce）も
+        // テストも必ずこれを通す
+        void loadFxFrom (const TrackParams& params);
     };
 
     struct Request

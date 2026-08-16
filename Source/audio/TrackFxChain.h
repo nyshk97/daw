@@ -6,11 +6,16 @@
 #include "../shared/CompParams.h"
 #include "../shared/EqParams.h"
 #include "../shared/PlaybackSnapshot.h" // TrackParams（loadSettings が atomic から読む）
+#include "../shared/LofiParams.h"
+#include "../shared/SatParams.h"
 #include "TrackComp.h"
 #include "TrackEq.h"
+#include "TrackLofi.h"
+#include "TrackSaturator.h"
 
-// トラックFXチェーン（EQ→アナライザタップ→Comp）の共通適用。
+// トラックFXチェーン（EQ→アナライザタップ→Comp→Sat→Lo-fi）の共通適用。
 // plan: docs/plans/2026-08-16-1254-fx-batch1-foundation.md Phase 4
+//（Sat追加: docs/plans/2026-08-16-2058-fx-batch3-saturation-lofi.md Phase 3）
 //
 // 以前は6経路（モノ/ステレオ/MIDI × RT/バウンス）が同じ処理列を別々に手書きしており、
 // 新FXを足すたび全経路へのコピーと事故リスク（GOTCHAS.md の掛け算位置ズレ）が増えていた。
@@ -31,19 +36,27 @@ struct Settings
     Eq::Values eqTargets;
     bool compOn = false;
     Comp::Values compTargets;
+    bool satOn = false;
+    Sat::Values satTargets;
+    bool lofiOn = false;
+    Lofi::Values lofiTargets;
 };
 
 inline Settings loadSettings (const TrackParams& params) noexcept
 {
     return { params.eqEnabled.load(), Eq::loadAll (params.eqBands),
-             params.compEnabled.load(), Comp::load (params.comp) };
+             params.compEnabled.load(), Comp::load (params.comp),
+             params.satEnabled.load(), Sat::load (params.sat),
+             params.lofiEnabled.load(), Lofi::load (params.lofi) };
 }
 
 struct Activity
 {
     bool eq = false;
     bool comp = false;
-    bool any() const noexcept { return eq || comp; }
+    bool sat = false;
+    bool lofi = false;
+    bool any() const noexcept { return eq || comp || sat || lofi; }
 };
 
 // active経路判定のpolicy:
@@ -53,6 +66,7 @@ struct Activity
 enum class Policy { realtime, offline };
 
 inline Activity evaluateActivity (Policy policy, const TrackEq& eq, const TrackComp& comp,
+                                  const TrackSaturator& sat, const TrackLofi& lofi,
                                   const Settings& settings, bool analyzerTapActive) noexcept
 {
     Activity activity;
@@ -60,11 +74,15 @@ inline Activity evaluateActivity (Policy policy, const TrackEq& eq, const TrackC
     {
         activity.eq = eq.needsActivePath (settings.eqOn, settings.eqTargets, analyzerTapActive);
         activity.comp = comp.needsActivePath (settings.compOn);
+        activity.sat = sat.needsActivePath (settings.satOn, settings.satTargets);
+        activity.lofi = lofi.needsActivePath (settings.lofiOn, settings.lofiTargets);
     }
     else
     {
         activity.eq = settings.eqOn && ! Eq::isNeutral (settings.eqTargets);
         activity.comp = settings.compOn;
+        activity.sat = settings.satOn && ! Sat::isNeutral (settings.satTargets);
+        activity.lofi = settings.lofiOn && ! Lofi::isNeutral (settings.lofiTargets);
     }
     return activity;
 }
@@ -90,11 +108,16 @@ inline bool isStereoOnlyClipTrack (const std::vector<ClipPlayback>& clips) noexc
 }
 
 // バウンスのテール（リングアウト）を生むか: 「無音入力から出力を生み続けるFX」だけが対象。
-// 現在は EQ のみ true（IIRフィルタ履歴の減衰）。Comp は無音入力から音を生成しないので対象外。
-// 将来の stateful FX（Lo-fi の変調ディレイ等）を足すときはここに条件を追加する
+// EQ = IIRフィルタ履歴の減衰、Sat = DC除去HPFのIIR履歴（同族）。
+// Lo-fi は wow=ディレイライン・noise=エンベロープ減衰に加え、Tone の biquad は IIR 履歴・
+// Crush の S&H は最後の保持値を持つため、どの成分が単独で有効でもテール対象
+//（＝ !isNeutral がそのまま条件。漏れると範囲終端で余韻が切れる）。
+// Comp は無音入力から音を生成しないので対象外
 inline bool producesTail (const Settings& settings) noexcept
 {
-    return settings.eqOn && ! Eq::isNeutral (settings.eqTargets);
+    return (settings.eqOn && ! Eq::isNeutral (settings.eqTargets))
+           || (settings.satOn && ! Sat::isNeutral (settings.satTargets))
+           || (settings.lofiOn && ! Lofi::isNeutral (settings.lofiTargets));
 }
 
 // メーター用ピークのCAS max更新（UI側の exchange(0) と組。TrackParams::peakL/peakR のコメント参照）
@@ -116,9 +139,12 @@ struct Context
 };
 
 // FXチェーンをインプレース適用する（left 必須・right は nullptr でモノ）。
-// 処理順は全経路共通の契約: EQ → アナライザタップ → Comp（＋GR書き戻し）。
-// gain/pan の掛け場所（EQ→Comp→gain/pan の後段移動）は呼び出し側の責任
-inline void process (TrackEq& eq, TrackComp& comp, const Activity& activity,
+// 処理順は全経路共通の契約: EQ → アナライザタップ → Comp（＋GR書き戻し）→ Sat → Lo-fi。
+// Comp後にSatを置くのは「レベルが揃った後に歪ませるとドライブ量が読める」ため、
+// Lo-fi 最後尾は「仕上げの質感・ノイズをコンプに持ち上げさせない」ため（plan バッチ3）。
+// gain/pan の掛け場所（FX→gain/pan の後段移動）は呼び出し側の責任
+inline void process (TrackEq& eq, TrackComp& comp, TrackSaturator& sat, TrackLofi& lofi,
+                     const Activity& activity,
                      const Settings& settings, float* left, float* right, int numSamples,
                      double sampleRate, juce::uint64 serial, bool timelineJumped,
                      const Context& context) noexcept
@@ -137,5 +163,11 @@ inline void process (TrackEq& eq, TrackComp& comp, const Activity& activity,
         if (context.compDetectorPeak != nullptr)
             storePeakMax (*context.compDetectorPeak, comp.blockMaxDetectorPeak());
     }
+    if (activity.sat)
+        sat.process (left, right, numSamples, sampleRate, serial, timelineJumped,
+                     settings.satOn, settings.satTargets);
+    if (activity.lofi)
+        lofi.process (left, right, numSamples, sampleRate, serial, timelineJumped,
+                      settings.lofiOn, settings.lofiTargets);
 }
 } // namespace TrackFx

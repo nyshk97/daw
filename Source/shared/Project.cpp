@@ -600,9 +600,29 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
             compObj->setProperty ("makeup", (double) comp.makeupDb);
             compObj->setProperty ("detectorHpf", comp.detectorHpf);
         }
+        auto* satObj = new juce::DynamicObject();
+        satObj->setProperty ("enabled", track.params->satEnabled.load());
+        // Satパラメータ（v18。shared/SatParams.h）
+        {
+            const auto sat = Sat::load (track.params->sat);
+            satObj->setProperty ("drive", (double) sat.drive);
+            satObj->setProperty ("mix", (double) sat.mix);
+        }
+        auto* lofiObj = new juce::DynamicObject();
+        lofiObj->setProperty ("enabled", track.params->lofiEnabled.load());
+        // Lo-fiパラメータ（v18。shared/LofiParams.h）
+        {
+            const auto lofi = Lofi::load (track.params->lofi);
+            lofiObj->setProperty ("wow", (double) lofi.wow);
+            lofiObj->setProperty ("tone", (double) lofi.tone);
+            lofiObj->setProperty ("noise", (double) lofi.noise);
+            lofiObj->setProperty ("crush", (double) lofi.crush);
+        }
         auto* fxObj = new juce::DynamicObject();
         fxObj->setProperty ("eq", juce::var (eqObj));
         fxObj->setProperty ("comp", juce::var (compObj));
+        fxObj->setProperty ("sat", juce::var (satObj));
+        fxObj->setProperty ("lofi", juce::var (lofiObj));
         trackObj->setProperty ("fx", juce::var (fxObj));
 
         if (track.type == TrackType::audio)
@@ -919,6 +939,29 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
                     comp.detectorHpf = (bool) compVar.getProperty ("detectorHpf", comp.detectorHpf);
                 }
                 Comp::store (track.params->comp, Comp::normalized (comp));
+            }
+
+            // Sat（v18）。欠損＝旧形式は既定値（enabled=ON・Drive0＝中立。EQと同じ理屈で
+            // ONでも音を変えない。Compと違い保証された中立設定があるため一律OFFは不要）
+            {
+                const auto satVar = fxVar.getProperty ("sat", {});
+                track.params->satEnabled.store ((bool) satVar.getProperty ("enabled", true));
+                auto sat = Sat::defaults;
+                sat.drive = (float) (double) satVar.getProperty ("drive", (double) sat.drive);
+                sat.mix = (float) (double) satVar.getProperty ("mix", (double) sat.mix);
+                Sat::store (track.params->sat, Sat::normalized (sat));
+            }
+
+            // Lo-fi（v18）。欠損＝旧形式は既定値（enabled=ON・全ノブ0＝中立。Satと同じ理屈）
+            {
+                const auto lofiVar = fxVar.getProperty ("lofi", {});
+                track.params->lofiEnabled.store ((bool) lofiVar.getProperty ("enabled", true));
+                auto lofi = Lofi::defaults;
+                lofi.wow = (float) (double) lofiVar.getProperty ("wow", (double) lofi.wow);
+                lofi.tone = (float) (double) lofiVar.getProperty ("tone", (double) lofi.tone);
+                lofi.noise = (float) (double) lofiVar.getProperty ("noise", (double) lofi.noise);
+                lofi.crush = (float) (double) lofiVar.getProperty ("crush", (double) lofi.crush);
+                Lofi::store (track.params->lofi, Lofi::normalized (lofi));
             }
 
             // EQバンド（v14以前は無い → 既定値）。バンド種別ごとの不変条件（enabled/Q固定等）を

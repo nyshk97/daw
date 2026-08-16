@@ -1,13 +1,14 @@
 #pragma once
 
-#include <limits>
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include "../shared/CompParams.h"
 #include "BiquadFilter.h"
+#include "TrackFxBase.h"
 
 // トラックCompのDSP本体（透明コンプ・2ch）。
 // plan: docs/plans/2026-08-15-1650-track-comp.md
+// 状態機械（serial・リセット分岐・chainMix・snapTo骨格）は TrackFxBase に集約済み。
 //
 // 定式化は Giannoulis, Massberg & Reiss (JAES 2012): feedforward・dBドメイン検波・
 // ゲイン計算後のGRをdB単位で平滑化。平滑化器は smooth branching（attack/release時定数の
@@ -27,7 +28,7 @@
 // getNextValue()（skip方式はブロックサイズで掛かり方が変わる）。
 // ON/OFF切替は Comp段全体の dry/wet クロスフェード。検波HPFのトグルは検波信号だけの
 // 不連続で、GR目標の跳びはattack/release平滑化を通るためクロスフェード不要
-class TrackComp
+class TrackComp : public TrackFxBase<TrackComp>
 {
 public:
     // 高速パス（既存経路の完全素通し）でよいか。コンプには「保証された中立設定」が
@@ -59,14 +60,18 @@ public:
     float currentGainReductionDb() const { return grEnvDb; }
 
 private:
-    void resetSmootherRates (double sampleRate);
-    void snapAllToTargets (bool compEnabled, const Comp::Values& targets);
-    void resetDynamicsState(); // 平滑化GR＋検波HPF履歴
+    friend class TrackFxBase<TrackComp>;
+
+    // FxBaseフック
+    void fxResetSmootherRates (double sampleRate);
+    void fxSnapToTargets (const Comp::Values& targets);
+    void fxResetHistory(); // 平滑化GR＋検波HPF履歴
+    void fxSampleRateChanged();
+
     void updateHpfCoefficients();
     void updateAlphas (const Comp::Values& targets);
 
     juce::SmoothedValue<float> thresholdDb, ratio, makeupDb;
-    juce::SmoothedValue<float> chainMix; // 0..1（dry→wet。ON/OFFクロスフェード）
 
     float grEnvDb = 0.0f; // 平滑化済みGR（正のdB）
     Biquad hpf; // 検波HPF用（主信号には掛けない）
@@ -75,9 +80,4 @@ private:
     bool lastHpfOn = false;
 
     float blockMaxGr = 0.0f, blockMaxDetector = 0.0f;
-
-    double preparedRate = 0.0;
-    // 番兵: どんな serial が最初に来ても「連続」と誤判定しない値（+1 が実現不可能な領域）
-    juce::uint64 lastSerial = std::numeric_limits<juce::uint64>::max() - 1;
-    bool settled = true; // 「出力がdry相当＆平滑進行なし」＝高速パスへ移ってよい状態か
 };

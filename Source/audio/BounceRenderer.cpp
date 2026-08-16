@@ -21,6 +21,18 @@ constexpr float silenceThreshold = 0.001f; // -60dB。テールの無音判定
 constexpr int maxScratchChannels = 8;      // DLSは4ch（2バス）。これを超える音源は想定しない
 }
 
+void BounceRenderer::TrackRender::loadFxFrom (const TrackParams& params)
+{
+    eqEnabled = params.eqEnabled.load();
+    eqBands = Eq::loadAll (params.eqBands);
+    compEnabled = params.compEnabled.load();
+    comp = Comp::load (params.comp);
+    satEnabled = params.satEnabled.load();
+    sat = Sat::load (params.sat);
+    lofiEnabled = params.lofiEnabled.load();
+    lofi = Lofi::load (params.lofi);
+}
+
 bool BounceRenderer::buildItemRender (const Track& track, int itemIndex, double bpm, double sampleRate,
                                       TrackRender& out, juce::int64& rangeStart, juce::int64& rangeEnd)
 {
@@ -29,10 +41,7 @@ bool BounceRenderer::buildItemRender (const Track& track, int itemIndex, double 
     out.pan = track.params->pan.load();
     for (int b = 0; b < numSendBuses; ++b)
         out.sends[b] = track.params->sends[b].load();
-    out.eqEnabled = track.params->eqEnabled.load();
-    out.eqBands = Eq::loadAll (track.params->eqBands);
-    out.compEnabled = track.params->compEnabled.load();
-    out.comp = Comp::load (track.params->comp);
+    out.loadFxFrom (*track.params);
 
     if (track.type == TrackType::audio)
     {
@@ -226,6 +235,8 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
     {
         track.eq.snapTo (sr, track.eqEnabled, track.eqBands);
         track.compDsp.snapTo (sr, track.compEnabled, track.comp);
+        track.satDsp.snapTo (sr, track.satEnabled, track.sat);
+        track.lofiDsp.snapTo (sr, track.lofiEnabled, track.lofi);
     }
 
     // Master Limiterも平滑を挟まず即確定（同上）。遅延契約: 先頭Lサンプル（ディレイ充填の
@@ -303,9 +314,12 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
             // 「クリップgainまで合算 → EQ → Comp → トラックgain → send/mix」。FXが働くときだけ
             // 専用スクラッチを経由し、バイパス時は既存の直接ミックスを**完全に**通す（ビット一致契約）
             const TrackFx::Settings fxSettings { track.eqEnabled, track.eqBands,
-                                                 track.compEnabled, track.comp };
+                                                 track.compEnabled, track.comp,
+                                                 track.satEnabled, track.sat,
+                                                 track.lofiEnabled, track.lofi };
             auto fxActivity = TrackFx::evaluateActivity (TrackFx::Policy::offline,
-                                                         track.eq, track.compDsp, fxSettings, false);
+                                                         track.eq, track.compDsp, track.satDsp,
+                                                         track.lofiDsp, fxSettings, false);
             if (track.synth != nullptr) // MIDIトラックのFXはシンセ出力側（renderSynthInto）で掛ける
                 fxActivity = {};
             const bool activeFx = fxActivity.any();
@@ -377,7 +391,8 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
                 // クリップの重なりがないブロックも処理する（RTと同じ: リングアウトを切らない・連番の連続性）
                 float* fxL = eqTrackScratch.getWritePointer (0);
                 float* fxR = monoFx ? nullptr : eqTrackScratch.getWritePointer (1);
-                TrackFx::process (track.eq, track.compDsp, fxActivity, fxSettings,
+                TrackFx::process (track.eq, track.compDsp, track.satDsp, track.lofiDsp,
+                                  fxActivity, fxSettings,
                                   fxL, fxR, n, sr, eqBlockSerial, false, {});
                 for (int ch = 0; ch < 2; ++ch)
                 {
@@ -440,7 +455,9 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
                 // テールに入る条件は TrackFx::producesTail（現在はEQのみ＝無音入力から出力を生む
                 // FXがあるか）。Comp有効ならリングアウトにも掛ける（RTと同じ処理順）
                 const TrackFx::Settings fxSettings { track.eqEnabled, track.eqBands,
-                                                     track.compEnabled, track.comp };
+                                                     track.compEnabled, track.comp,
+                                                     track.satEnabled, track.sat,
+                                                     track.lofiEnabled, track.lofi };
                 if (track.synth == nullptr && TrackFx::producesTail (fxSettings))
                 {
                     // 本編と同じ経路構成（monoFx＝モノ処理→pan分配 / prePanFx＝FX後バランスpan）を
@@ -457,8 +474,10 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
                     float* fxR = monoFx ? nullptr : eqTrackScratch.getWritePointer (1);
                     const auto fxActivity = TrackFx::evaluateActivity (TrackFx::Policy::offline,
                                                                        track.eq, track.compDsp,
+                                                                       track.satDsp, track.lofiDsp,
                                                                        fxSettings, false);
-                    TrackFx::process (track.eq, track.compDsp, fxActivity, fxSettings,
+                    TrackFx::process (track.eq, track.compDsp, track.satDsp, track.lofiDsp,
+                                      fxActivity, fxSettings,
                                       fxL, fxR, renderBlockSize,
                                       request.sampleRate, eqBlockSerial, false, {});
                     for (int ch = 0; ch < 2; ++ch)
@@ -664,11 +683,15 @@ void BounceRenderer::renderSynthInto (juce::AudioBuffer<float>& mix,
     // 判定・適用はTrackFxChainに集約）
     {
         const TrackFx::Settings fxSettings { track.eqEnabled, track.eqBands,
-                                             track.compEnabled, track.comp };
+                                             track.compEnabled, track.comp,
+                                             track.satEnabled, track.sat,
+                                             track.lofiEnabled, track.lofi };
         const auto fxActivity = TrackFx::evaluateActivity (TrackFx::Policy::offline,
-                                                           track.eq, track.compDsp, fxSettings, false);
+                                                           track.eq, track.compDsp, track.satDsp,
+                                                           track.lofiDsp, fxSettings, false);
         const int fxSrcR = juce::jmin (1, total - 1);
-        TrackFx::process (track.eq, track.compDsp, fxActivity, fxSettings,
+        TrackFx::process (track.eq, track.compDsp, track.satDsp, track.lofiDsp,
+                          fxActivity, fxSettings,
                           block.getWritePointer (0),
                           fxSrcR != 0 ? block.getWritePointer (fxSrcR) : nullptr,
                           numSamples, request.sampleRate, eqBlockSerial, false, {});
@@ -703,7 +726,9 @@ bool BounceRenderer::trackWantsTail (const TrackRender& track)
     if (track.synth != nullptr)
         return true;
     return TrackFx::producesTail ({ track.eqEnabled, track.eqBands,
-                                    track.compEnabled, track.comp });
+                                    track.compEnabled, track.comp,
+                                    track.satEnabled, track.sat,
+                                    track.lofiEnabled, track.lofi });
 }
 
 void BounceRenderer::Request::resolveWantTail()

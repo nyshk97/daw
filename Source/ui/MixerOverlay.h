@@ -58,7 +58,8 @@ private:
     juce::Rectangle<int> eqThumbArea;             // EQサムネイル（トラックのみ。クリック=EQエディタを開く）
     juce::Rectangle<int> readoutArea;             // dB数値ボックスのペア（設定値・ピーク）
 
-    // トラック=EQ/Comp/Extの3枠（FxSlots::trackBaseLayout の投影）、バス/Master=[0]のみ。
+    // トラック=EQ/Comp/Sat/Lo-fi/Extの5枠（FxSlots::trackBaseLayout × mixerOrder の投影）、
+    // バス/Master=[0]のみ。配列index=表示位置（意味IDへの変換は mixerOrder 経由）。
     // 部品・スロット番号の意味はFXパネルと共有（FxSlotLayout.h）
     SlotPill slotPills[FxSlots::mixerSlots];
 

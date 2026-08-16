@@ -53,8 +53,10 @@ public:
     static constexpr int maxSlots = FxSlots::maxSlots;
     static constexpr int instrumentSlot = FxSlots::instrument;
 
-    int numSlots() const { return slotCount; }
-    juce::String slotName (int slot) const;   // "EQ" / "Comp" / "Reverb" 等（範囲外は空）
+    // スロット番号が現在の表示対象で有効か（IDは非連続なので個数の上限比較では判定できない。
+    // BottomPanelHistory の復元・詳細ビューの追従が使う）
+    bool isValidSlot (int slot) const { return slotName (slot).isNotEmpty(); }
+    juce::String slotName (int slot) const;   // "EQ" / "Comp" / "Reverb" 等（範囲外・未使用は空）
     // Instrumentスロットか（下部エディタに載せる中身を切り替えるためMainComponentが見る）。
     // 「いま表示しているチャンネル」基準の判定なので、バス/Master表示中は常にfalse
     bool isInstrumentSlot (int slot) const { return target == Target::track && slot == instrumentSlot; }
@@ -109,9 +111,8 @@ private:
     // 配列index = スロット番号（意味は FxSlots::Id）。画面上の並びは slotOrder が決める
     //（FxSlots::panelOrder の投影規則。Instrumentは音源なので一番上）
     SlotPill slotPills[maxSlots];
-    juce::String slotNames[maxSlots];
-    int slotCount = 0;
-    int slotOrder[maxSlots] { 0, 1, 2, 3 }; // 上から並べる配列indexの順
+    juce::String slotNames[maxSlots]; // 未使用スロットは空（isValidSlot の判定材料）
+    int slotOrder[maxSlots] {}; // 上から並べる配列indexの順
     int numOrderedSlots = 0;
     juce::Rectangle<int> eqThumbArea;       // EQサムネイル（トラックのみ。クリック=EQスロットのエディタを開く）
     juce::Rectangle<int> sendsArea;         // Sends区画（見出し＋行。トラックのみ）

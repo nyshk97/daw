@@ -12,6 +12,8 @@
 #include "CompEditorView.h"
 #include "EqEditorView.h"
 #include "LimiterEditorView.h"
+#include "LofiEditorView.h"
+#include "SatEditorView.h"
 #include "InstrumentDetailView.h"
 #include "IconButton.h"
 #include "MixerWindow.h"
@@ -90,6 +92,8 @@ public:
     void debugOpenEqDetail();
     void debugOpenCompDetail();
     void debugOpenLimiterDetail(); // FXパネル＋Master Limiterエディタを開く
+    void debugOpenSatDetail();     // FXパネル＋Satエディタを開く（選択トラック）
+    void debugOpenLofiDetail();    // FXパネル＋Lo-fiエディタを開く（選択トラック）
     // 検証用: 選択トラックのCompを設定する（--comp-editor と組み合わせて書き出し検証に使う）
     void debugSetCompParams (bool enabled, const Comp::Values& values);
     // 検証用: FileChooserを迂回して書き出しを開始する（--bounce <path>）
@@ -326,6 +330,8 @@ private:
     EqEditorView eqDetail; // トラックEQのエディタ（EQスロットクリックで載る）
     CompEditorView compDetail; // トラックCompのエディタ（Compスロットクリックで載る）
     LimiterEditorView limiterDetail; // Master Limiter＋マスターメーター群（Masterの[Limiter]クリックで載る）
+    SatEditorView satDetail;   // トラックSatのエディタ（Satスロットクリックで載る）
+    LofiEditorView lofiDetail; // トラックLo-fiのエディタ（Lo-fiスロットクリックで載る）
     int fxDetailSlot = -1;        // 詳細が表示中のスロット（FXパネルの並びに対応）
     juce::String fxDetailKey;     // 詳細が対象にしているチャンネル（fxEditor.targetKey()と比較して追従判定）
 

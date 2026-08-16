@@ -525,7 +525,15 @@ EQ（線形）はゲイン・panと可換なので、pan焼き込み後に掛け
 
 注意: **RT/バウンス一致テストは両側が同じ誤った順序だと通る**。一致テストが検出するのは経路差だけで、仕様適合（pan前に掛かっているか）は「panを振っても圧縮量が変わらない」ことを直接主張するテストで別途固定する（`testEngineCompPrePanDetection` の形: pan後検波なら効かない条件を作り、効くことを主張する）。
 
-2026-08-16 のバッチ1リファクタで、FXチェーンの「active判定・適用順（EQ→タップ→Comp）・テール対象」は `Source/audio/TrackFxChain.h` に集約された。新FXの追加は evaluateActivity / process / producesTail の3点を触れば全6経路に効く＝「経路ごとに突き合わせる」作業は掛け算の位置（gain/panの後段移動・monoFx/prePanFx）の確認だけに減った。ただし上記の仕様テスト（pan前検波の直接主張）は集約後も残すこと — 集約自体が仕様の順序を保証するわけではない。変更時のビット一致確認は `scripts/check-render-hashes.sh`（VERIFY.md 参照）。
+2026-08-16 のバッチ1リファクタで、FXチェーンの「active判定・適用順（EQ→タップ→Comp。バッチ3で →Sat→Lo-fi）・テール対象」は `Source/audio/TrackFxChain.h` に集約された。新FXの追加は evaluateActivity / process / producesTail の3点を触れば全6経路に効く＝「経路ごとに突き合わせる」作業は掛け算の位置（gain/panの後段移動・monoFx/prePanFx）の確認だけに減った。ただし上記の仕様テスト（pan前検波の直接主張）は集約後も残すこと — 集約自体が仕様の順序を保証するわけではない。変更時のビット一致確認は `scripts/check-render-hashes.sh`（VERIFY.md 参照）。
+
+補足（バッチ3）: 集約後も残っていたコピー箇所が **バウンスの `TrackRender` へのFX設定詰め**で、テスト側の手書きコピーが Sat/Lo-fi を落としてハッシュが「不変＝未検出」のまま通っていた実例あり（FXなし系と値が同じなので見た目で気づけない）。FX設定の固定は `TrackRender::loadFxFrom()` に一元化したので、**新FX追加時はこの関数に足し、個別コピーを書かない**。状態機械（serial・リセット3分岐・ON/OFFクロスフェード・settled・snapTo骨格）も `TrackFxBase`（CRTP）に集約済み — 新FXは4フック（fxResetSmootherRates / fxSnapToTargets / fxResetHistory / fxSampleRateChanged）を実装する。
+
+### 波形整形（ADAA・伝達関数）の内部計算は float だと桁落ちで巨大スパイクが出る
+
+1次ADAAは不定積分の差分商 `(F(x)−F(x0))/(x−x0)` を使うが、`F` に含まれる `logcosh(z) = |z| + log1p(exp(−2|z|)) − log2` は z が小さいとき「≈0.693 同士の引き算」になり、float では絶対誤差 ~1e-7 が残る。小さいドライブ g では正規化係数 `1/(g·sech²b)` が最大 1/ε 倍（LaLaでは1e4）に誤差を増幅し、**Drive が 0 付近を平滑通過する瞬間に ±100 超のスパイク**が出た（Drive急変テストで検出。定常状態では出ないので聴感スイープだけでは見つけにくい）。伝達関数 f と不定積分 F の内部は double で計算し、float へ落とすのは差分商を取った後にする。
+
+もう1つ: **線形カーブ（g→0）への1次ADAAは恒等でなく中点平均 `(x+x0)/2`＝半サンプルLPFになる**。高速パス（完全素通し）と切り替わる境界に高域差が残るため、線形域は明示的に `wet = x` へ分岐する。
 
 ### レイテンシを持つDSP（lookahead等）をエンジンに挿すときの波及は4系統ある
 
