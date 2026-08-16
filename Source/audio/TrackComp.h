@@ -4,6 +4,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include "../shared/CompParams.h"
+#include "BiquadFilter.h"
 
 // トラックCompのDSP本体（透明コンプ・2ch）。
 // plan: docs/plans/2026-08-15-1650-track-comp.md
@@ -58,23 +59,6 @@ public:
     float currentGainReductionDb() const { return grEnvDb; }
 
 private:
-    // 検波HPF用 Direct Form II transposed（TrackEqと同じ形。主信号には掛けない）
-    struct Biquad
-    {
-        float b0 = 1.0f, b1 = 0.0f, b2 = 0.0f, a1 = 0.0f, a2 = 0.0f;
-        float s1[2] {}, s2[2] {};
-
-        float processSample (int ch, float x) noexcept
-        {
-            const float y = b0 * x + s1[ch];
-            s1[ch] = b1 * x - a1 * y + s2[ch];
-            s2[ch] = b2 * x - a2 * y;
-            return y;
-        }
-
-        void resetState() noexcept { s1[0] = s1[1] = s2[0] = s2[1] = 0.0f; }
-    };
-
     void resetSmootherRates (double sampleRate);
     void snapAllToTargets (bool compEnabled, const Comp::Values& targets);
     void resetDynamicsState(); // 平滑化GR＋検波HPF履歴
@@ -85,7 +69,7 @@ private:
     juce::SmoothedValue<float> chainMix; // 0..1（dry→wet。ON/OFFクロスフェード）
 
     float grEnvDb = 0.0f; // 平滑化済みGR（正のdB）
-    Biquad hpf;
+    Biquad hpf; // 検波HPF用（主信号には掛けない）
     float alphaAttack = 0.0f, alphaRelease = 0.0f;
     float lastAttackMs = -1.0f, lastReleaseMs = -1.0f; // α再計算判定（-1 = 未計算）
     bool lastHpfOn = false;

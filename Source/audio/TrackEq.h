@@ -4,6 +4,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include "../shared/EqParams.h"
+#include "BiquadFilter.h"
 
 // トラックEQのDSP本体（biquad×4バンド×2ch・RBJ cookbook準拠）。
 // plan: docs/plans/2026-08-15-1506-track-eq.md
@@ -51,23 +52,6 @@ public:
     void snapTo (double sampleRate, bool eqEnabled, const Eq::Values& targets);
 
 private:
-    // Direct Form II transposed。係数は a0 正規化済み
-    struct Biquad
-    {
-        float b0 = 1.0f, b1 = 0.0f, b2 = 0.0f, a1 = 0.0f, a2 = 0.0f;
-        float s1[2] {}, s2[2] {};
-
-        float processSample (int ch, float x) noexcept
-        {
-            const float y = b0 * x + s1[ch];
-            s1[ch] = b1 * x - a1 * y + s2[ch];
-            s2[ch] = b2 * x - a2 * y;
-            return y;
-        }
-
-        void resetState() noexcept { s1[0] = s1[1] = s2[0] = s2[1] = 0.0f; }
-    };
-
     void resetSmootherRates (double sampleRate);
     void snapAllToTargets (bool eqEnabled, const Eq::Values& targets);
     void resetFilterStates();

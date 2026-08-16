@@ -13,6 +13,7 @@
 #include "audio/BounceRenderer.h"
 #include "audio/PlaybackEngine.h"
 #include "audio/SamplerEngine.h"
+#include "audio/TrackFxChain.h"
 #include "audio/UrlDownloader.h"
 #include "audio/ReferenceReportGenerator.h"
 #include "shared/Project.h"
@@ -8423,6 +8424,295 @@ void testMonoRenderRegressionHash()
     }
 }
 
+// ---- 回帰ハッシュ（FX ON・全経路）----
+// testMonoRenderRegressionHash は FX 中立＝高速パスの回帰のみを固定する。こちらは
+// EQ・Comp を有効にして active経路の6経路（RTモノ / RTステレオ / RT MIDI（サンプラー）/
+// バウンス本編 / バウンスMIDI / バウンスEQテール）を全て通し、エンジン集約リファクタの
+// 前後で出力がビット一致で不変であることをハッシュの比較で確認する。
+// 期待値はハードコードしない（浮動小数点の積和順序はコンパイラ・環境で変わりうるため、
+// 同一環境での変更前後比較にのみ使う。採取・比較は scripts/check-render-hashes.sh）。
+// MIDIはGM（DLSMusicDevice）でなく内蔵サンプラーを使う（外部AUは環境・状態依存の揺れがありうる）
+void testTrackFxRegressionHash()
+{
+    beginTest ("track fx regression hash");
+
+    // FNV-1a 64bit（testMonoRenderRegressionHash と同じ流儀）
+    auto fnv1a = [] (const void* data, size_t size)
+    {
+        const auto* bytes = static_cast<const juce::uint8*> (data);
+        juce::uint64 hash = 0xcbf29ce484222325ULL;
+        for (size_t i = 0; i < size; ++i)
+            hash = (hash ^ bytes[i]) * 0x100000001b3ULL;
+        return juce::String::toHexString ((juce::int64) hash);
+    };
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+    constexpr int numBlocks = 32;
+    constexpr int totalSamples = blockSize * numBlocks;
+
+    auto makeAudio = [] (int channels, int len, float scale, int seed)
+    {
+        auto buffer = std::make_shared<juce::AudioBuffer<float>> (channels, len);
+        juce::Random random (seed);
+        for (int ch = 0; ch < channels; ++ch)
+            for (int i = 0; i < len; ++i)
+                buffer->setSample (ch, i,
+                                   (std::sin ((float) i * 0.07f + (float) ch) * 0.3f
+                                    + (random.nextFloat() - 0.5f) * 0.15f) * scale);
+        return buffer;
+    };
+
+    // 減衰するサンプラー素材（1秒。バウンス範囲＝0.37秒の後もテールで鳴り続ける長さ）
+    auto makeSamplerAudio = [] (int len)
+    {
+        auto buffer = std::make_shared<juce::AudioBuffer<float>> (1, len);
+        for (int i = 0; i < len; ++i)
+        {
+            const float env = 1.0f - (float) i / (float) len;
+            buffer->setSample (0, i, std::sin ((float) i * 0.09f) * 0.4f * env * env);
+        }
+        return buffer;
+    };
+
+    // 3トラックで6経路を全て active FX で通す:
+    //   1: モノクリップ（RTモノ／バウンスmonoFx。リージョンゲイン・フェード込み）
+    //   2: ステレオクリップ（RTステレオ／バウンスprePanFx）
+    //   3: サンプラーMIDI（RT MIDI／バウンスMIDI）
+    // EQはオーディオ2トラックとも非中立＝バウンスのEQテール経路にも入る
+    auto fillProject = [&] (Project& project)
+    {
+        project.bpm = 120.0;
+        project.sampleRate = sr;
+        {
+            Track track;
+            track.id = 1;
+            track.params->gain.store (0.7f);
+            track.params->pan.store (-0.3f);
+            track.params->sends[0].store (0.5f);
+            Eq::store (track.params->eqBands[Eq::bell1],
+                       Eq::normalized (Eq::bell1, { true, 500.0f, 5.0f, 1.2f }));
+            track.params->compEnabled.store (true);
+            Comp::store (track.params->comp,
+                         Comp::normalized ({ -24.0f, 4.0f, 5.0f, 80.0f, 3.0f, false }));
+            Clip clip;
+            clip.fileName = "clip-001.wav";
+            clip.audio = makeAudio (1, totalSamples, 0.8f, 3);
+            clip.lengthSamples = totalSamples;
+            clip.gain = 1.2f;
+            clip.fadeInSamples = 2000;
+            clip.fadeOutSamples = 3000;
+            track.clips.push_back (std::move (clip));
+            project.tracks.push_back (std::move (track));
+        }
+        {
+            Track track;
+            track.id = 2;
+            track.params->gain.store (0.8f);
+            track.params->pan.store (0.4f);
+            track.params->sends[1].store (0.3f);
+            Eq::store (track.params->eqBands[Eq::highpass],
+                       Eq::normalized (Eq::highpass, { true, 150.0f, 0.0f, 0.0f }));
+            Eq::store (track.params->eqBands[Eq::highShelf],
+                       Eq::normalized (Eq::highShelf, { true, 8000.0f, 3.0f, 0.0f }));
+            track.params->compEnabled.store (true);
+            Comp::store (track.params->comp,
+                         Comp::normalized ({ -30.0f, 8.0f, 1.0f, 50.0f, 0.0f, true }));
+            Clip clip;
+            clip.fileName = "clip-002.wav";
+            clip.audio = makeAudio (2, totalSamples, 1.0f, 5);
+            clip.lengthSamples = totalSamples;
+            track.clips.push_back (std::move (clip));
+            project.tracks.push_back (std::move (track));
+        }
+        {
+            Track track;
+            track.id = 3;
+            track.type = TrackType::midi;
+            track.instrument = InstrumentKind::sample;
+            track.sampleFile = "instr-001.wav";
+            track.sampleName = "fx-hash";
+            track.sampleAudio = makeSamplerAudio ((int) sr);
+            track.sampleSourceRate = sr;
+            track.params->gain.store (0.9f);
+            track.params->pan.store (0.2f);
+            track.params->sends[2].store (0.25f);
+            Eq::store (track.params->eqBands[Eq::bell2],
+                       Eq::normalized (Eq::bell2, { true, 2000.0f, -4.0f, 1.0f }));
+            track.params->compEnabled.store (true);
+            Comp::store (track.params->comp,
+                         Comp::normalized ({ -20.0f, 3.0f, 10.0f, 120.0f, 2.0f, false }));
+            MidiRegion region;
+            region.id = 30;
+            region.startPpq = 0;
+            region.lengthPpq = Ppq::ticksPerBar;
+            region.notes.push_back ({ 31, 60, 0, Ppq::ticksPerQuarter / 4, 110 });
+            region.notes.push_back ({ 32, 64, Ppq::ticksPerQuarter / 2, Ppq::ticksPerQuarter / 4, 90 });
+            track.midiRegions.push_back (std::move (region));
+            project.tracks.push_back (std::move (track));
+        }
+        project.busParams[0]->gain.store (0.8f);
+        project.busParams[1]->gain.store (0.9f);
+        project.busParams[2]->gain.store (0.7f);
+        project.masterParams->gain.store (0.85f);
+    };
+
+    auto renderEngine = [&] (Project& proj, juce::AudioBuffer<float>& out)
+    {
+        SynthBank synthBank;
+        synthBank.sync (proj, sr, blockSize);
+        TransportState transport;
+        SnapshotExchange snapshots;
+        PreviewFifo previewFifo;
+        PlaybackEngine engine (transport, snapshots, previewFifo);
+        engine.prepareToPlay (blockSize, sr);
+        auto snapshot = proj.buildSnapshot();
+        for (size_t i = 0; i < proj.tracks.size(); ++i)
+            if (proj.tracks[i].type == TrackType::midi)
+                snapshot->tracks[i].synth = synthBank.get (proj.tracks[i].id);
+        snapshots.push (std::move (snapshot));
+        transport.seekRequest.store (0);
+        engine.play();
+        juce::AudioBuffer<float> buffer (2, blockSize);
+        for (int blockIndex = 0; blockIndex < numBlocks; ++blockIndex)
+        {
+            buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+            engine.process (info);
+            for (int ch = 0; ch < 2; ++ch)
+                out.copyFrom (ch, blockIndex * blockSize, buffer, ch, 0, blockSize);
+        }
+        engine.stop();
+        snapshots.deleteRetired();
+    };
+
+    Project project;
+    fillProject (project);
+    juce::AudioBuffer<float> engineOut (2, totalSamples);
+    renderEngine (project, engineOut);
+
+    // 各トラックのFXが実際に効いていること（そのトラックだけ中立にすると出力が変わる）。
+    // フィールド名変更などでFXが黙って外れ、「全経路が素通しのままハッシュ一致」で
+    // リファクタの破壊を見逃す空回りを防ぐ
+    {
+        const char* messages[] = { u8"トラック1（モノ）のFXが実際に効いていること",
+                                   u8"トラック2（ステレオ）のFXが実際に効いていること",
+                                   u8"トラック3（サンプラー）のFXが実際に効いていること" };
+        for (size_t i = 0; i < 3; ++i)
+        {
+            Project neutral;
+            fillProject (neutral);
+            Eq::applyDefaults (neutral.tracks[i].params->eqBands);
+            neutral.tracks[i].params->compEnabled.store (false);
+            juce::AudioBuffer<float> neutralOut (2, totalSamples);
+            renderEngine (neutral, neutralOut);
+            float maxDiff = 0.0f;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int s = 0; s < totalSamples; ++s)
+                    maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (ch, s)
+                                                             - neutralOut.getSample (ch, s)));
+            expect (maxDiff > 1.0e-3f, messages[i]);
+        }
+    }
+
+    {
+        juce::MemoryBlock rendered;
+        for (int ch = 0; ch < 2; ++ch)
+            rendered.append (engineOut.getReadPointer (ch), sizeof (float) * (size_t) totalSamples);
+        std::cout << "hash-fx-engine: " << fnv1a (rendered.getData(), rendered.getSize()) << std::endl;
+    }
+
+    // バウンス。クリップ・ノートは buildSnapshot から流用する（ループ展開・ノートの
+    // フラット化を本番と同じヘルパーに任せる）。wantTail も本番（MainComponent::startBounce）
+    // と同じ共通判定 resolveWantTail で立てる（この fixture では true になり、EQテール経路
+    // ＝経路#6とサンプラーの鳴り残しを通す。判定をハードコードや再実装で済ませると、
+    // 本番入口のテール判定の欠落を検出できない）
+    auto runBounce = [&] (Project& proj, const juce::File& target) -> juce::String
+    {
+        SynthBank bounceBank;
+        auto snap = proj.buildSnapshot (Project::SnapshotChange::offlineRender);
+        BounceRenderer::Request request;
+        request.sampleRate = sr;
+        request.bpm = proj.bpm;
+        request.endSample = totalSamples;
+        request.targetFile = target;
+        for (int b = 0; b < numSendBuses; ++b)
+        {
+            request.busGain[b] = proj.busParams[b]->gain.load();
+            request.busMute[b] = proj.busParams[b]->mute.load();
+        }
+        request.masterGain = proj.masterParams->gain.load();
+        for (size_t i = 0; i < proj.tracks.size(); ++i)
+        {
+            auto& track = proj.tracks[i];
+            BounceRenderer::TrackRender render;
+            render.gain = track.params->gain.load();
+            render.pan = track.params->pan.load();
+            for (int b = 0; b < numSendBuses; ++b)
+                render.sends[b] = track.params->sends[b].load();
+            render.eqEnabled = track.params->eqEnabled.load();
+            render.eqBands = Eq::loadAll (track.params->eqBands);
+            render.compEnabled = track.params->compEnabled.load();
+            render.comp = Comp::load (track.params->comp);
+            render.clips = snap->tracks[i].clips;
+            render.notes = snap->tracks[i].notes;
+            if (track.type == TrackType::midi)
+            {
+                render.synth = bounceBank.createIndependent (track, sr, BounceRenderer::renderBlockSize);
+                expect (render.synth != nullptr, u8"バウンス専用サンプラーを作れること");
+            }
+            request.tracks.push_back (std::move (render));
+        }
+        request.resolveWantTail();
+        expect (request.wantTail, u8"このfixtureでは共通判定がテールを要求すること（テール経路を通す前提）");
+        BounceRenderer renderer;
+        expect (renderer.start (std::move (request)), "startできること");
+        expect (waitForBounce (renderer), u8"タイムアウトせず完了すること");
+        const auto result = renderer.takeResult();
+        expect (result.status == BounceRenderer::Status::success, "successで終わること");
+        expect (result.writtenSamples > totalSamples,
+                u8"テールが書かれること（EQリングアウト経路を通る）");
+        juce::MemoryBlock fileData;
+        expect (target.loadFileAsData (fileData), u8"書き出したWAVを読めること");
+        return fnv1a (fileData.getData(), fileData.getSize());
+    };
+
+    {
+        const auto dir = makeTempDir();
+        std::cout << "hash-fx-bounce: "
+                  << runBounce (project, dir.getChildFile ("bounce-fx.wav")) << std::endl;
+        dir.deleteRecursively();
+    }
+
+    // ---- project.json 経由（保存→読込→バウンス）----
+    // 実プロジェクト相当の経路（Project::save/load を通す。クリップWAVの24bit量子化を
+    // 含むため上とは別ハッシュになる）。fixture自体が冪等なseeder＝再生成可能
+    {
+        const auto projDir = makeTempDir();
+        Project src;
+        fillProject (src);
+        src.directory = projDir;
+        for (auto& track : src.tracks)
+            for (auto& clip : track.clips)
+                expect (writeBufferWav (projDir.getChildFile (clip.fileName), *clip.audio, sr),
+                        u8"クリップWAVを書けること");
+        expect (writeBufferWav (projDir.getChildFile ("instr-001.wav"),
+                                *src.tracks[2].sampleAudio, sr),
+                u8"サンプルWAVを書けること");
+        juce::String error;
+        expect (src.save (error), u8"保存できること");
+
+        juce::StringArray warnings;
+        auto loaded = Project::load (projDir, warnings, error);
+        expect (loaded != nullptr && loaded->tracks.size() == 3, u8"読み込めること");
+        if (loaded != nullptr && loaded->tracks.size() == 3)
+            std::cout << "hash-fx-project-bounce: "
+                      << runBounce (*loaded, projDir.getChildFile ("bounce-roundtrip.wav"))
+                      << std::endl;
+        projDir.deleteRecursively();
+    }
+}
+
 // analyze.py の進捗集約行のパース。書式は analyze.py の announce() と対
 void testAnalyzeProgress()
 {
@@ -10800,6 +11090,7 @@ int main()
     testTempDirSweep();
     testUrlDownloaderLive(); // LALA_VERIFY_URL が無ければ何もしない
     testMonoRenderRegressionHash();
+    testTrackFxRegressionHash();
 
 
     if (failureCount > 0)

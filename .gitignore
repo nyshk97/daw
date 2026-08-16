@@ -19,3 +19,4 @@ __pycache__/
 /tools/stemlab/*.log
 /tools/stemlab/*.txt
 /tools/stemlab/scratch/
+/.render-hash-baseline/

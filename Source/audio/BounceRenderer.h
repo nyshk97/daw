@@ -57,7 +57,9 @@ public:
         double bpm = 120.0;
         juce::int64 startSample = 0; // レンダリング範囲。通常は 0〜曲末、サイクルON時はその範囲
         juce::int64 endSample = 0;
-        bool wantTail = false;       // 可聴なMIDIトラックがあるときだけ余韻テールを付ける
+        bool wantTail = false;       // 余韻テールを付けるか（判定は resolveWantTail /
+                                     // trackWantsTail に一元化。サイクル・曲末フェード・
+                                     // ⌘Eの厳密長書き出しでは呼び出し側が false に落とす）
         juce::File targetFile;
 
         // 固定バス・Master（開始時に固定済み。RTのprocessと同じく素通しバス→Masterゲインの順）
@@ -81,7 +83,18 @@ public:
         //   合わせるだけでは末尾に無音が付いて固定終端にならない。フェード終端でゲインは
         //   厳密に0なので、鳴り残った余韻を捨てても聴こえ方は変わらない
         void applySongFadeToRange();
+
+        // tracks からテールの既定値を決める（トラックを詰め終えたら呼ぶ。サイクル・
+        // 曲末フェードの上書きより前）。判定の中身は trackWantsTail — 本番の組み立て
+        //（MainComponent::startBounce）とテストの両方がこれを使う（判定の再実装禁止）
+        void resolveWantTail();
     };
+
+    // このトラックは範囲終端後の余韻テールを必要とするか（Request::wantTail の入口判定）:
+    // - MIDIトラック（synthあり）= ノートのリリース余韻
+    // - オーディオトラック = TrackFx::producesTail なFX（現在はEQ）のリングアウト。
+    //   将来のstateful FXは producesTail に足せばテール経路と入口判定の両方へ同時に効く
+    static bool trackWantsTail (const TrackRender& track);
 
     // 選択された1アイテム（クリップ or MIDIリージョン）だけをレンダリング対象にした
     // TrackRender とレンダリング範囲を組み立てる（⌘Eのリージョン書き出し用。純粋なモデル→Request変換で

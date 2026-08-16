@@ -155,6 +155,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         importMidiFile (file, playheadBarStartPpq());
     };
     mixerWindow.content().setProject (project.get());
+    mixerWindow.content().getSampleRate = [this] { return (double) transport.sampleRate.load(); };
     mixerWindow.content().onSelectTrack = [this] (int index) { selectTrackFromUser (index); };
     mixerWindow.content().onChanged = [this]
     {
@@ -208,6 +209,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     };
 
     fxEditor.setProject (project.get());
+    fxEditor.getSampleRate = [this] { return (double) transport.sampleRate.load(); };
     fxEditor.onCloseRequested = [this] { closeFxEditor(); };
     fxEditor.onSlotClicked = [this] (int slot) { toggleFxDetailSlot (slot); };
     fxEditor.onSendOrPanChanged = [this]
@@ -264,7 +266,15 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     // 下部詳細に載せる EQ エディタ。値の書き込みはビュー側（atomic直書き・undo対象外＝フェーダーと
     // 同じ扱い）。dirty化だけ受ける。カーブ計算のSRはデバイス追従（未確定は48kで描く: 形はSR依存が
     // ほぼ無く、確定後のrepaintで正しくなる）
-    eqDetail.onEdited = [this] { setDirty (true); };
+    eqDetail.onEdited = [this]
+    {
+        setDirty (true);
+        // EQサムネイル（FXパネル・ミキサーの該当ストリップ）を編集へ追従させる。
+        // 編集対象はfxDetailが表示中のチャンネル＝fxEditorの表示対象（バス/Master表示なら
+        // shownTrack()=-1でどちらもno-op）
+        fxEditor.repaintEqThumbnail();
+        mixerWindow.content().repaintTrackEqThumbnail (fxEditor.shownTrack());
+    };
     eqDetail.getSampleRate = [this] { return transport.sampleRate.load(); };
     eqDetail.setAnalyzerTap (&analyzerTap);
     engine.setAnalyzerTap (&analyzerTap);
@@ -2137,18 +2147,15 @@ void MainComponent::beginBounce (const juce::File& target)
                                + errors.joinIntoString ("\n"));
                 return;
             }
-            request.wantTail = true; // 可聴なMIDIトラックがあるときだけ余韻テールを付ける
         }
-
-        // EQが働くオーディオトラックはフィルタのリングアウト（余韻）が曲末を越えて残るため、
-        // MIDIと同じテール（-60dB打ち切り）を付けてRT再生との一致を保つ。
-        // サイクル書き出し・曲末フェードは後段で wantTail=false に上書きされ厳密長のまま
-        if (model.type == TrackType::audio && trackRender.eqEnabled
-            && ! Eq::isNeutral (trackRender.eqBands))
-            request.wantTail = true;
 
         request.tracks.push_back (std::move (trackRender));
     }
+
+    // テール（MIDIの余韻・EQ等のリングアウトを-60dB打ち切りまで書く）の要否は Request 側の
+    // 共通判定に任せる（BounceRenderer::trackWantsTail。テストも同じ入口を通る）。
+    // サイクル書き出し・曲末フェードは後段で wantTail=false に上書きされ厳密長のまま
+    request.resolveWantTail();
 
     if (endSample <= 0)
     {

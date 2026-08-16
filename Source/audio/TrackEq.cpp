@@ -7,14 +7,6 @@ namespace
 {
 constexpr double paramRampSeconds = 0.02; // 周波数・ゲイン・Qの平滑（ドラッグのジッパーノイズ対策）
 constexpr double mixRampSeconds = 0.01;   // ON/OFFクロスフェード（boolの瞬時切替のクリック対策）
-
-// 状態変数のdenormal掃除（juce::dsp::util::snapToZero と同じ閾値の流儀）。
-// ScopedNoDenormals は処理中のFTZのみで、保存された微小状態が次回呼び出しまで残るため
-void snapToZero (float& value) noexcept
-{
-    if (! (std::fabs (value) > 1.0e-8f))
-        value = 0.0f;
-}
 } // namespace
 
 void TrackEq::resetSmootherRates (double sampleRate)
@@ -65,14 +57,7 @@ void TrackEq::updateBandCoefficients (int band, float freqHz, float gainDbValue,
         c = Coeffs::makePeakFilter (preparedRate, f, qValue,
                                     juce::Decibels::decibelsToGain (gainDbValue));
 
-    // {b0,b1,b2,a0,a1,a2} を a0 正規化して格納
-    auto& filter = filters[band];
-    const float inv = 1.0f / c[3];
-    filter.b0 = c[0] * inv;
-    filter.b1 = c[1] * inv;
-    filter.b2 = c[2] * inv;
-    filter.a1 = c[4] * inv;
-    filter.a2 = c[5] * inv;
+    filters[band].setCoefficients (c);
 }
 
 void TrackEq::snapTo (double sampleRate, bool eqEnabled, const Eq::Values& targets)
@@ -183,11 +168,7 @@ void TrackEq::process (float* left, float* right, int numSamples, double sampleR
     }
 
     for (auto& filter : filters)
-        for (int ch = 0; ch < 2; ++ch)
-        {
-            snapToZero (filter.s1[ch]);
-            snapToZero (filter.s2[ch]);
-        }
+        filter.snapStatesToZero();
 
     // 高速パスへ移れる条件: 目標がバイパス相当 かつ 平滑が全て完了
     // （中立の wet はほぼ dry なので、完了後の切替は不連続にならない）

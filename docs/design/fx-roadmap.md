@@ -23,13 +23,13 @@
 
 ## バッチ
 
-- [ ] **バッチ1: 基盤整備（音を変えないリファクタ）** — 耳ゼロ・dig不要
-  - エンジンの6経路コピー（モノ/ステレオ/MIDI × RT/バウンス）を `processTrackFx()` 1関数に集約
-  - Biquad構造体の共通ヘッダ抽出（TrackEq/TrackCompの完全重複を解消）
-  - スロット構成の二重定義（FxEditorView / MixerOverlay）の一元化
-  - 残タスク回収: EQサムネイル（StripParts.h）がプレースホルダのままなので実カーブ描画へ
+- [ ] **バッチ1: 基盤整備（音を変えないリファクタ）** — 耳ゼロ・dig不要（2026-08-16 実装・機械検証完了。**残: 人間の操作感確認**（plan の動作確認セクション）— 完了したらここをチェックする。plan: docs/plans/2026-08-16-1254-fx-batch1-foundation.md）
+  - エンジンの6経路コピー（モノ/ステレオ/MIDI × RT/バウンス）のFXチェーンを `Source/audio/TrackFxChain.h`（evaluateActivity / process / producesTail）に集約。新FX追加時はこの3点を触れば全経路に効く
+  - Biquad構造体の共通ヘッダ抽出（`Source/audio/BiquadFilter.h`）
+  - スロット構成の一元化（`Source/ui/FxSlotLayout.h`。意味ID `FxSlots::Id` とsurface別投影）
+  - EQサムネイル（StripParts.h）を実カーブ描画へ（計算は `Source/ui/EqCurve.h` でエディタと共有）
   - **やらないこと**: FxBase（DSP共通状態機械）の抽象化はここではやらない。3例目=サチュレーションの実物を見てから切る（抽象化のしすぎ注意）
-  - 検証: バウンス出力のビット一致＋既存テスト
+  - 検証: `scripts/check-render-hashes.sh`（Debug/Release・FX ON全経路のビット一致）＋既存テスト全green
 - [ ] **バッチ2: メーター＋Master Limiter（マスターセクション完成）** — 耳ほぼゼロ
   - LUFSメーター（short-term＋integrated。ピークatomic方式では作れない＝積分の器が要る）
   - 相関（位相）メーター

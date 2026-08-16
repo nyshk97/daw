@@ -8,14 +8,6 @@ namespace
 // パラメータ（Threshold/Ratio/Make Up）とON/OFFクロスフェードの平滑化時間。
 // 手動ノブ操作には即応と感じる速さで、Make Upのゲイン段差を十分短く均せる長さ
 constexpr double rampSeconds = 0.01;
-
-// 状態変数のdenormal掃除（TrackEqと同じ流儀）。ScopedNoDenormals は処理中のFTZのみで、
-// 保存された微小状態が次回呼び出しまで残るため
-void snapToZero (float& value) noexcept
-{
-    if (! (std::fabs (value) > 1.0e-8f))
-        value = 0.0f;
-}
 } // namespace
 
 void TrackComp::resetSmootherRates (double sampleRate)
@@ -46,12 +38,7 @@ void TrackComp::updateHpfCoefficients()
     // 内部で new するためコールバック内で使わない）
     const auto c = juce::dsp::IIR::ArrayCoefficients<float>::makeHighPass (
         preparedRate, Comp::detectorHpfHz, 0.70710678f);
-    const float inv = 1.0f / c[3];
-    hpf.b0 = c[0] * inv;
-    hpf.b1 = c[1] * inv;
-    hpf.b2 = c[2] * inv;
-    hpf.a1 = c[4] * inv;
-    hpf.a2 = c[5] * inv;
+    hpf.setCoefficients (c);
 }
 
 void TrackComp::updateAlphas (const Comp::Values& targets)
@@ -174,11 +161,7 @@ void TrackComp::process (float* left, float* right, int numSamples, double sampl
     }
 
     // denormal掃除: HPF状態と、release減衰で0に漸近するGR（1e-4dB≒ゲイン比0.99999は聴こえない）
-    for (int ch = 0; ch < 2; ++ch)
-    {
-        snapToZero (hpf.s1[ch]);
-        snapToZero (hpf.s2[ch]);
-    }
+    hpf.snapStatesToZero();
     if (grEnvDb < 1.0e-4f)
         grEnvDb = 0.0f;
 

@@ -189,11 +189,19 @@ LALA_VERIFY_URL='…' LALA_VERIFY_LONG_URL='<34分超の動画>' build/daw_tests
 ## エンジン/バウンスの数値回帰確認（ビット一致）
 
 ```sh
-# 変更前に: テスト追加だけの状態でハッシュを採取
-cmake --build build --target daw_tests && build/daw_tests_artefacts/Debug/daw_tests | grep hash-
-# → hash-engine / hash-bounce を控える。エンジン変更後に再実行して一致を確認
+# 変更前に基準を採取（Debug/Release両構成でビルド→全テスト実行→hash-行を保存）
+scripts/check-render-hashes.sh capture
+# エンジン変更後に比較（不一致なら diff を表示して非0終了。テスト失敗も検出する）
+scripts/check-render-hashes.sh compare
 ```
 
+- ベースラインは `.render-hash-baseline/`（gitignore済み。build/ 外なのでクリーンビルドでも消えない）
+- ハッシュは5本: `hash-engine` / `hash-bounce`（testMonoRenderRegressionHash＝FX中立の高速パス）と
+  `hash-fx-engine` / `hash-fx-bounce` / `hash-fx-project-bounce`（testTrackFxRegressionHash＝
+  EQ/Comp有効のactive経路を6経路すべて通す。project-bounce は Project::save→load 経由）
+- スクリプトはハッシュ行の本数・名前の完全一致も検査する（経路の出力漏れ検知）。テスト側で
+  hash- 行を増減させたらスクリプト冒頭の `expected_names` も更新する
+- `daw_tests | grep hash-` の直結は使わない（テストがハッシュ出力後に落ちても grep の 0 が失敗を隠す）
 - testMonoRenderRegressionHash が「重なりクリップ×pan×send×Master」の決定的レンダリングをFNV-1aで出力する
 - ハッシュの期待値はテストにハードコードしない（浮動小数点の積和順序がコンパイラ・環境依存。同一環境の変更前後比較にのみ使う）
 - 不一致＝モノのみトラック経路の演算順序が変わった兆候（PlaybackEngine/BounceRendererの2経路構造のコメント参照）

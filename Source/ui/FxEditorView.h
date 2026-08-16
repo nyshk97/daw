@@ -5,6 +5,7 @@
 #include <vector>
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "FxSlotLayout.h"
 #include "SendRow.h"
 #include "SlotPill.h"
 #include "StereoMeter.h"
@@ -47,11 +48,10 @@ public:
     void remapTrack (int newIndex);
 
     // ---- 下部詳細エディタとの連携（状態管理はMainComponent側）----
-    static constexpr int maxSlots = 4;
-    // 番号はミキサー側（0=EQ / 1=Comp / 2=Ext）と共有するため、Instrumentは末尾に置いて
-    // 既存の番号を動かさない（画面上の並びは Instrument が先頭。resized/rebind の slotOrder 参照）。
+    // スロット番号の意味と並びは FxSlotLayout.h（FxSlots）が単一の真実の源。
     // 下部エリアの履歴（BottomPanelHistory）が、表示対象を変えずにスロット種別を判定するために参照する
-    static constexpr int instrumentSlot = 3;
+    static constexpr int maxSlots = FxSlots::maxSlots;
+    static constexpr int instrumentSlot = FxSlots::instrument;
 
     int numSlots() const { return slotCount; }
     juce::String slotName (int slot) const;   // "EQ" / "Comp" / "Reverb" 等（範囲外は空）
@@ -66,6 +66,15 @@ public:
     // MainComponent が一元的に行う。表示対象（トラック/バス/Master）のぶんだけ使う
     void updateMeters (const std::vector<MeterFeed>& trackFeeds,
                        const MeterFeed (&busFeeds)[numSendBuses], const MeterFeed& masterFeed);
+
+    // EQサムネイルのカーブ計算に使うSR（デバイス追従。EqEditorViewと同じ流儀で未確定は48kで描く）
+    std::function<double()> getSampleRate;
+    // EQ編集（下部エディタのドラッグ等）にサムネイルを追従させる（呼び出し側=MainComponentが配線）
+    void repaintEqThumbnail()
+    {
+        if (! eqThumbArea.isEmpty())
+            repaint (eqThumbArea);
+    }
 
     std::function<void (int)> onSlotClicked;  // 空きスロット以外の「エディタを開く」操作（行クリック・EQサムネイル）
     std::function<void()> onCloseRequested;   // ✕ボタン
@@ -97,11 +106,8 @@ private:
     juce::String titleName;
 
     // スロット（対話込みの実体はSlotPill。名前はfxDetail連携用にここでも持つ。rebindで構成する）。
-    // 配列index = 外部（ミキサーのストリップ・EQサムネイル・fxDetailSlot）が指す番号:
-    //   トラック = 0:EQ / 1:Comp / 2:Ext / 3:Instrument（MIDIトラックのみ）
-    //   バス・Master = 0:Reverb|Delay|Limiter
-    // 画面上の並びは slotOrder が決める（Instrumentは音源なので一番上）。番号と並びを分離しているのは、
-    // ミキサー側の slot 番号（0=EQ固定）と互換を保ちながらInstrumentを追加するため
+    // 配列index = スロット番号（意味は FxSlots::Id）。画面上の並びは slotOrder が決める
+    //（FxSlots::panelOrder の投影規則。Instrumentは音源なので一番上）
     SlotPill slotPills[maxSlots];
     juce::String slotNames[maxSlots];
     int slotCount = 0;

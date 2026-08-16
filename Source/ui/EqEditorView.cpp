@@ -3,14 +3,15 @@
 #include <cmath>
 #include <juce_dsp/juce_dsp.h>
 
+#include "EqCurve.h"
 #include "Fonts.h"
 #include "Theme.h"
 #include "../shared/GainScale.h"
 
 namespace
 {
-constexpr float minFreqShown = 20.0f;
-constexpr float maxFreqShown = 20000.0f;
+constexpr float minFreqShown = EqCurve::minFreqShown;
+constexpr float maxFreqShown = EqCurve::maxFreqShown;
 constexpr float dbRange = Eq::maxGainDb; // 縦軸 ±24dB（カーブ=加工量。アナライザの実量とは目盛りが別）
 constexpr float pointRadius = 5.0f;
 constexpr float hitRadius = 12.0f;
@@ -251,46 +252,11 @@ void EqEditorView::paint (juce::Graphics& g)
         }
     }
 
-    // 合成カーブ。DSPと同じRBJ係数（Coefficients::make*）の周波数応答から描く。
-    // HPは有効なときだけ寄与（ベル/シェルフの0dBは元々素通しなので常に掛けてよい）
+    // 合成カーブ。DSPと同じRBJ係数の周波数応答から描く（計算はサムネイルと共有のEqCurve）
     const auto bands = Eq::loadAll (track->params->eqBands);
     const double sr = sampleRate();
-    std::vector<double> freqs ((size_t) curveResolution);
-    std::vector<double> totalMags ((size_t) curveResolution, 1.0);
-    std::vector<double> bandMags ((size_t) curveResolution);
-    for (int i = 0; i < curveResolution; ++i)
-        freqs[(size_t) i] = (double) minFreqShown
-                            * std::pow ((double) (maxFreqShown / minFreqShown),
-                                        (double) i / (curveResolution - 1));
-
-    for (int band = 0; band < Eq::numBands; ++band)
-    {
-        const auto& value = bands[(size_t) band];
-        juce::dsp::IIR::Coefficients<float>::Ptr coefficients;
-        if (band == Eq::highpass)
-        {
-            if (! value.enabled)
-                continue;
-            coefficients = juce::dsp::IIR::Coefficients<float>::makeHighPass (
-                sr, juce::jmin (value.freqHz, (float) (sr * 0.49)), Eq::fixedQ);
-        }
-        else if (band == Eq::highShelf)
-        {
-            coefficients = juce::dsp::IIR::Coefficients<float>::makeHighShelf (
-                sr, juce::jmin (value.freqHz, (float) (sr * 0.49)), Eq::fixedQ,
-                juce::Decibels::decibelsToGain (value.gainDb));
-        }
-        else
-        {
-            coefficients = juce::dsp::IIR::Coefficients<float>::makePeakFilter (
-                sr, juce::jmin (value.freqHz, (float) (sr * 0.49)), value.q,
-                juce::Decibels::decibelsToGain (value.gainDb));
-        }
-        coefficients->getMagnitudeForFrequencyArray (freqs.data(), bandMags.data(),
-                                                     (size_t) curveResolution, sr);
-        for (int i = 0; i < curveResolution; ++i)
-            totalMags[(size_t) i] *= bandMags[(size_t) i];
-    }
+    std::vector<double> freqs, totalMags;
+    EqCurve::response (bands, sr, curveResolution, freqs, totalMags);
 
     juce::Path curve;
     for (int i = 0; i < curveResolution; ++i)

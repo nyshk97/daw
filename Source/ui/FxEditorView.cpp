@@ -1,22 +1,12 @@
 #include "FxEditorView.h"
 
-#include "../shared/GmInstruments.h"
 #include "Fonts.h"
+#include "FxSlotLayout.h"
 #include "StripParts.h"
 #include "Theme.h"
 
 namespace
 {
-// 内蔵GM音源の表示名（ヘッダーの楽器プルダウンと同じ対応表。一致が無ければ先頭＝Piano）
-juce::String gmInstrumentName (const Track& track)
-{
-    for (int i = 0; i < numGmInstruments; ++i)
-        if (gmInstruments[i].program == track.gmProgram && gmInstruments[i].drums == track.drums
-            && gmInstruments[i].fixedPitch == track.drumPitch)
-            return gmInstruments[i].name;
-    return gmInstruments[0].name;
-}
-
 constexpr int titleHeight = 28;
 constexpr int pad = 14;
 constexpr int thumbHeight = 44;
@@ -40,7 +30,12 @@ FxEditorView::FxEditorView()
     {
         addChildComponent (slotPills[i]);
         slotPills[i].onOpenEditor = [this, i] { if (onSlotClicked) onSlotClicked (i); };
-        slotPills[i].onPowerToggled = [this] { if (onFxEnabledChanged) onFxEnabledChanged(); };
+        slotPills[i].onPowerToggled = [this]
+        {
+            repaintEqThumbnail(); // eqEnabledはサムネイルの実カーブ/フラット切替にも効く
+            if (onFxEnabledChanged)
+                onFxEnabledChanged();
+        };
     }
 
     // Sendsの行（バス名ピル＋小ノブ。部品はミキサーのストリップと共有）
@@ -150,6 +145,7 @@ void FxEditorView::refreshValues()
         row.refreshValue();
     for (auto& pill : slotPills)
         pill.repaint(); // EQ/CompのON/OFF（ミキサー側での電源トグル）を色に反映
+    repaintEqThumbnail(); // eqEnabledトグルはサムネイルにも効く
 
     if (auto params = targetParams())
     {
@@ -178,7 +174,7 @@ void FxEditorView::updateMeters (const std::vector<MeterFeed>& trackFeeds,
     }
     meter.update (feed->peak);
     if (target == Target::track)
-        slotPills[1].setGainReductionDb (feed->compGrDb); // Compピルのミニ GRバー
+        slotPills[FxSlots::grSlot].setGainReductionDb (feed->compGrDb); // Compピルのミニ GRバー
     if (! juce::approximatelyEqual (feed->maxSincePlay, peakMaxDisplay))
     {
         peakMaxDisplay = feed->maxSincePlay;
@@ -249,44 +245,24 @@ void FxEditorView::rebind()
         case Target::none:   titleName = {}; break;
     }
 
-    // スロット構成（ON/OFFを持つのはトラックのEQ・Compのみ。バス/MasterのFXは常在でバイパスなし。
-    // enabled atomicの実体はTrackが所有するTrackParams）
+    // スロット構成（定義はFxSlotLayoutが単一の真実の源。enabled atomicの実体はTrackが所有する
+    // TrackParams）。表示順もそちらの投影規則（panelOrder。Instrument=音源が一番上）に従う
     slotCount = 0;
     numOrderedSlots = 0;
-    if (isTrack)
+    if (isTrack || params != nullptr)
     {
-        slotNames[0] = "EQ";
-        slotNames[1] = "Comp";
-        slotNames[2] = "Ext";
-        slotPills[0].configure ("EQ", &params->eqEnabled, false);
-        slotPills[1].configure ("Comp", &params->compEnabled, false);
-        slotPills[2].configure ("Ext", nullptr, true); // スライス6まで操作不可（空きスロット表示）
-        slotCount = 3;
-
-        // Instrumentスロット（MIDIトラックのみ）。サンプル割当時だけ点灯してクリック可、
-        // 内蔵GM音源のときは Ext と同じグレー表示（音源の差し替えはヘッダーのプルダウンで行う）
-        const auto& track = project->tracks[(size_t) targetTrack];
-        if (track.type == TrackType::midi)
+        const auto layout = isTrack ? FxSlots::trackPanelLayout (project->tracks[(size_t) targetTrack])
+                            : target == Target::master ? FxSlots::masterLayout()
+                                                       : FxSlots::busLayout (targetBus);
+        for (int i = 0; i < layout.count; ++i)
         {
-            const bool sampler = track.usesSampler();
-            slotNames[instrumentSlot] = sampler
-                                            ? (track.sampleName.isNotEmpty() ? track.sampleName
-                                                                             : juce::String ("Sample"))
-                                            : gmInstrumentName (track);
-            slotPills[instrumentSlot].configure (slotNames[instrumentSlot], nullptr, ! sampler);
-            slotCount = maxSlots;
-            slotOrder[numOrderedSlots++] = instrumentSlot; // 音源は一番上
+            slotNames[i] = layout.slots[i].name;
+            slotPills[i].configure (layout.slots[i].name, layout.slots[i].enabled,
+                                    layout.slots[i].placeholder);
         }
-        for (int i = 0; i < 3; ++i)
-            slotOrder[numOrderedSlots++] = i;
-    }
-    else if (params != nullptr)
-    {
-        const bool isDelay = target == Target::bus && targetBus == 2;
-        slotNames[0] = target == Target::master ? "Limiter" : (isDelay ? "Delay" : "Reverb");
-        slotPills[0].configure (slotNames[0], nullptr, false);
-        slotCount = 1;
-        slotOrder[numOrderedSlots++] = 0;
+        slotCount = layout.count;
+        numOrderedSlots = isTrack ? FxSlots::panelOrder (layout, slotOrder)
+                                  : (slotOrder[0] = 0, 1);
     }
 
     for (auto& pill : slotPills)
@@ -404,7 +380,14 @@ void FxEditorView::paint (juce::Graphics& g)
     // EQサムネイル（描画はミキサーと共有のStripParts）
     if (! eqThumbArea.isEmpty())
     {
-        StripParts::drawEqThumbnail (g, eqThumbArea.toFloat());
+        if (auto params = targetParams())
+        {
+            const double sr = getSampleRate ? getSampleRate() : 0.0;
+            StripParts::drawEqThumbnail (g, eqThumbArea.toFloat(),
+                                         Eq::loadAll (params->eqBands),
+                                         params->eqEnabled.load(),
+                                         sr > 0.0 ? sr : 48000.0);
+        }
         if (hoverThumb)
         {
             g.setColour (Theme::accent.brighter (0.4f).withAlpha (0.7f));
@@ -430,7 +413,7 @@ void FxEditorView::mouseDown (const juce::MouseEvent& e)
 {
     if (! eqThumbArea.isEmpty() && eqThumbArea.contains (e.getPosition()))
         if (onSlotClicked)
-            onSlotClicked (0); // トラックのスロット0=EQ
+            onSlotClicked (FxSlots::eq); // サムネイル=EQエディタを開く
 }
 
 void FxEditorView::mouseMove (const juce::MouseEvent& e)

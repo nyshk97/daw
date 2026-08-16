@@ -5,6 +5,7 @@
 #include <vector>
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "FxSlotLayout.h"
 #include "SendRow.h"
 #include "SlotPill.h"
 #include "StereoMeter.h"
@@ -30,6 +31,14 @@ public:
     std::function<void()> onSelect;      // ストリップクリック
     std::function<void()> onChanged;     // 値変更（dirtyマーク用）
     std::function<void (int)> onOpenSlot; // スロットのエディタ側クリック・EQサムネイルクリック（引数=スロットindex）
+    std::function<double()> getSampleRate; // EQサムネイルのカーブ計算用（MixerOverlayが配る）
+
+    // EQ編集（下部エディタのドラッグ等）にサムネイルを追従させる
+    void repaintEqThumbnail()
+    {
+        if (! eqThumbArea.isEmpty())
+            repaint (eqThumbArea);
+    }
 
     void paint (juce::Graphics& g) override;
     void resized() override;
@@ -49,7 +58,9 @@ private:
     juce::Rectangle<int> eqThumbArea;             // EQサムネイル（トラックのみ。クリック=EQエディタを開く）
     juce::Rectangle<int> readoutArea;             // dB数値ボックスのペア（設定値・ピーク）
 
-    SlotPill slotPills[3];                        // トラック=EQ/Comp/Ext、バス/Master=[0]のみ（FXパネルと共有部品）
+    // トラック=EQ/Comp/Extの3枠（FxSlots::trackBaseLayout の投影）、バス/Master=[0]のみ。
+    // 部品・スロット番号の意味はFXパネルと共有（FxSlotLayout.h）
+    SlotPill slotPills[FxSlots::mixerSlots];
 
     SendRow sendRows[numSendBuses] { SendRow (0), SendRow (1), SendRow (2) }; // トラックのみ（FXパネルと共有部品）
     juce::Slider panKnob;                 // トラックのみ（Logic風ノブ描画はAppLookAndFeel::drawLogicPanKnob）
@@ -84,6 +95,13 @@ public:
     void updateMeters (const std::vector<MeterFeed>& trackFeeds,
                        const MeterFeed (&busFeeds)[numSendBuses], const MeterFeed& masterFeed);
 
+    // EQサムネイルのカーブ計算に使うSR（デバイス追従。MainComponentが配線し、各ストリップへ配る）
+    std::function<double()> getSampleRate;
+
+    // 指定トラックのストリップのEQサムネイルだけをrepaintする（EQ編集への追従。
+    // 全ストリップのsync()は最大50トラックで過剰なので該当だけ更新する）
+    void repaintTrackEqThumbnail (int trackIndex);
+
     std::function<void (int)> onSelectTrack;
     std::function<void (int)> onSelectBus; // バスストリップクリック（FXエディタの表示切替）
     std::function<void()> onSelectMaster;  // Masterストリップクリック（同上）
@@ -108,11 +126,11 @@ private:
     juce::Viewport viewport; // トラックストリップの横スクロール
     juce::Component stripRow;
     std::vector<std::unique_ptr<MixerStrip>> trackStrips;
-    // スロット名はFXパネルのスロット表記（Reverb/Delay/Limiter）と揃える
-    MixerStrip busStrips[numSendBuses] { MixerStrip (MixerStrip::Kind::bus, "Reverb"),
-                                         MixerStrip (MixerStrip::Kind::bus, "Reverb"),
-                                         MixerStrip (MixerStrip::Kind::bus, "Delay") };
-    MixerStrip masterStrip { MixerStrip::Kind::master, "Limiter" };
+    // スロット名はFXパネルと同じ命名規則（FxSlots::busFxName / masterFxName）から取る
+    MixerStrip busStrips[numSendBuses] { MixerStrip (MixerStrip::Kind::bus, FxSlots::busFxName (0)),
+                                         MixerStrip (MixerStrip::Kind::bus, FxSlots::busFxName (1)),
+                                         MixerStrip (MixerStrip::Kind::bus, FxSlots::busFxName (2)) };
+    MixerStrip masterStrip { MixerStrip::Kind::master, FxSlots::masterFxName() };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MixerOverlay)
 };

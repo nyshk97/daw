@@ -25,7 +25,12 @@ MixerStrip::MixerStrip (Kind kindToUse, juce::String fxSlotNameToUse)
     {
         addAndMakeVisible (slotPills[i]);
         slotPills[i].onOpenEditor = [this, i] { if (onOpenSlot) onOpenSlot (i); };
-        slotPills[i].onPowerToggled = [this] { if (onChanged) onChanged(); };
+        slotPills[i].onPowerToggled = [this]
+        {
+            repaintEqThumbnail(); // eqEnabledはサムネイルの実カーブ/フラット切替にも効く
+            if (onChanged)
+                onChanged();
+        };
     }
 
     if (isTrack)
@@ -135,12 +140,14 @@ void MixerStrip::bind (const juce::String& name, std::shared_ptr<TrackParams> pa
         }
     }
 
-    // スロットピルの構成（enabled atomicの実体はTrackが所有するTrackParams。bindのたびに差し替える）
+    // スロットピルの構成（定義はFxSlotLayoutが単一の真実の源。ミキサーはInstrumentを除いた
+    // 3枠の投影＝trackBaseLayout。enabled atomicの実体はTrackが所有するTrackParams）
     if (kind == Kind::track)
     {
-        slotPills[0].configure ("EQ", params != nullptr ? &params->eqEnabled : nullptr, false);
-        slotPills[1].configure ("Comp", params != nullptr ? &params->compEnabled : nullptr, false);
-        slotPills[2].configure ("Ext", nullptr, true);
+        const auto layout = FxSlots::trackBaseLayout (params.get());
+        for (int i = 0; i < FxSlots::mixerSlots; ++i)
+            slotPills[i].configure (layout.slots[i].name, layout.slots[i].enabled,
+                                    layout.slots[i].placeholder);
     }
     else
         slotPills[0].configure (fxSlotName, nullptr, false);
@@ -152,7 +159,7 @@ void MixerStrip::updateMeter (const MeterFeed& feed)
 {
     meter.update (feed.peak);
     if (kind == Kind::track)
-        slotPills[1].setGainReductionDb (feed.compGrDb); // Compピルのミニ GRバー
+        slotPills[FxSlots::grSlot].setGainReductionDb (feed.compGrDb); // Compピルのミニ GRバー
     if (! juce::approximatelyEqual (feed.maxSincePlay, peakMaxDisplay))
     {
         peakMaxDisplay = feed.maxSincePlay;
@@ -170,8 +177,12 @@ void MixerStrip::paint (juce::Graphics& g)
     }
 
     // EQサムネイル（スロットピルは子コンポーネントのSlotPillが描く）
-    if (! eqThumbArea.isEmpty())
-        StripParts::drawEqThumbnail (g, eqThumbArea.toFloat());
+    if (! eqThumbArea.isEmpty() && params != nullptr)
+    {
+        const double sr = getSampleRate ? getSampleRate() : 0.0;
+        StripParts::drawEqThumbnail (g, eqThumbArea.toFloat(), Eq::loadAll (params->eqBands),
+                                     params->eqEnabled.load(), sr > 0.0 ? sr : 48000.0);
+    }
 
     // dB数値（左=フェーダー設定値、右=再生開始からのピーク保持）
     if (params != nullptr && ! readoutArea.isEmpty())
@@ -255,7 +266,7 @@ void MixerStrip::mouseDown (const juce::MouseEvent& e)
     if (kind == Kind::track && ! eqThumbArea.isEmpty() && eqThumbArea.contains (e.getPosition()))
     {
         if (onOpenSlot)
-            onOpenSlot (0); // サムネイル=EQエディタを開く（FXパネルと同じショートカット）
+            onOpenSlot (FxSlots::eq); // サムネイル=EQエディタを開く（FXパネルと同じショートカット）
         return;
     }
     if (onSelect)
@@ -321,9 +332,18 @@ void MixerOverlay::rebuildTrackStrips()
         strip->onSelect = [this, i] { if (onSelectTrack) onSelectTrack (i); };
         strip->onChanged = [this] { if (onChanged) onChanged(); };
         strip->onOpenSlot = [this, i] (int slot) { if (onOpenTrackSlot) onOpenTrackSlot (i, slot); };
+        strip->getSampleRate = getSampleRate;
         stripRow.addAndMakeVisible (*strip);
         trackStrips.push_back (std::move (strip));
     }
+}
+
+void MixerOverlay::repaintTrackEqThumbnail (int trackIndex)
+{
+    if (! isShowing())
+        return;
+    if (trackIndex >= 0 && trackIndex < (int) trackStrips.size())
+        trackStrips[(size_t) trackIndex]->repaintEqThumbnail();
 }
 
 void MixerOverlay::updateMeters (const std::vector<MeterFeed>& trackFeeds,

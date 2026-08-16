@@ -269,6 +269,16 @@ description = 'daw_tests（C++回帰テスト）をビルドして実行する'
 depends = ['build']
 run = 'build/daw_tests_artefacts/Debug/daw_tests'
 
+[tasks."test:release"]
+description = 'daw_tests（Release版）をビルドして実行する（レンダリング回帰ハッシュのRelease採取に使う）'
+run = '''
+#!/usr/bin/env bash
+set -e
+[ -f build-release/CMakeCache.txt ] || cmake -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --target daw_tests
+build-release/daw_tests_artefacts/Release/daw_tests
+'''
+
 [tasks.start]
 description = 'dev版アプリ（LaLa-dev.app）を起動する'
 run = 'open build/daw_artefacts/Debug/LaLa-dev.app'
