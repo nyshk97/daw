@@ -79,6 +79,7 @@
 - [grid-resolution.md](docs/design/grid-resolution.md) — グリッド解像度の上限（タイムライン1/16・マーカーは拍・将来のピアノロールの要件）
 - [transport-playhead.md](docs/design/transport-playhead.md) — 再生ヘッド（今いる場所＝編集の基準）と再生開始位置（次に鳴る場所）の分離。停止・録音・シークで両者がどう動くか。**トランスポートや「止めた場所」に関わる機能を触る前に読む**
 - [mixer-fx.md](docs/design/mixer-fx.md) — Tier 2 ミキサー・FXの確定設計（画面構成・チャンネル構成・6スライス）
+- [fx-roadmap.md](docs/design/fx-roadmap.md) — EQ・Comp後の残りFX・メーター群の実装順（5バッチ格子・耳セッションの方針・削った候補）。**新しいFX/メーターに着手する前に読む**
 - [region-settings.md](docs/design/region-settings.md) — リージョン設定UIの割り当て方針
 - [reference-beat.md](docs/design/reference-beat.md) — リファレンス駆動ビートメイク（長期・2本柱: ガチャで作る＋レポートでわかる）。何を借りて何を借りないか・Python外部パイプライン＋LaLa内ガチャUIの分業・分析レポートとライブラリ蓄積・フェーズ表。実験記録は `docs/labs/reference-beat.md`（追記専用）。**上モノ素材の好みの境界（明るさ・コードの動きの目標帯）を含むので、ループ選び・推薦・上モノガチャを触る前に読む**
 - [corpus-comparison.md](docs/design/corpus-comparison.md) — 2つの集団を比べる分析の作法（1次元化にラベルを使わない・相関した軸へのomnibus検定・交差ペアでhaloを潰す・非対称の事前監査・検出力の下限を書く）。**コーパス比較や対照分析を始める前に必ず読む**
