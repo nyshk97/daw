@@ -2,6 +2,8 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
+#include "BusDelay.h"
+#include "BusReverb.h"
 #include "MasterLimiter.h"
 #include "MasterMeterSource.h"
 #include "Recorder.h"
@@ -111,6 +113,13 @@ private:
     // バウンスは BounceRenderer が独立インスタンスを持つ）。停止中もプレビューがMaster経路を
     // 通るため常時処理する。パラメータはスナップショットの masterParams->limiter を毎セグメント読む
     MasterLimiter masterLimiter;
+
+    // バスFX（RT用の実行状態。各バス1個＝エンジン全体で3個。バウンスは独立インスタンス）。
+    // バスMute/Gain 0 中も処理は止めない（状態凍結→解除時に古いエコーが復活するのを防ぐ。
+    // 出力の加算だけを止める）。リセットはLimiterと同じ limiterReset（再生開始・明示シークのみ。
+    // サイクルラップでは呼ばない＝エコー・残響はループを跨いで続く）
+    BusReverb busReverbs[2];
+    BusDelay busDelay;
 
     // Masterメーターの計測DSP（Limiter・フェード後の最終出力を測る。再生中は常時稼働）
     MasterMeterSource masterMeter;

@@ -41,6 +41,11 @@ void PlaybackEngine::prepareToPlay (int samplesPerBlockExpected, double sampleRa
 
     // Masterメーターの重い係数計算（K-weightingのtan/pow）をコールバック外で済ませる
     masterMeter.prepare (sampleRate);
+
+    // バスFX（ヒープ確保を伴うのでここで。SR変更もこの経路で再確保される）
+    for (auto& reverb : busReverbs)
+        reverb.prepare (sampleRate);
+    busDelay.prepare (sampleRate);
     if (filePreview != nullptr)
         filePreview->prepareToPlay (sampleRate);
 }
@@ -529,14 +534,38 @@ void PlaybackEngine::processSegment (juce::AudioBuffer<float>& buffer, int outOf
                           playing, silenceTransport, silenceAll, resound,
                           sr, bpm, anySolo);
 
-    // ---- sendバス（当面FXは無く素通し）→ ミックス、Masterゲイン → 出力バッファ ----
+    // ---- sendバス（Reverb A/B・Delayの常在FX）→ ミックス、Masterゲイン → 出力バッファ ----
     // 出力ルール: ch0/1にのみ書く。1chデバイスはL+R等分ダウンミックス、2ch超の余剰chはclearのまま無音
     if (canProcess && snapshot != nullptr)
     {
         for (int b = 0; b < numSendBuses; ++b)
         {
             auto* busParams = snapshot->busParams[b].get();
-            if (busParams == nullptr || busParams->mute.load())
+            if (busParams == nullptr)
+                continue;
+
+            // バスFXはMute/Gain 0 でも処理を止めない（凍結した古いエコーが解除時に復活するのを
+            // 防ぐ＝内部でテールが減衰し続ける。出力への加算だけを下で止める）。
+            // send全0の既存プロジェクトでは無音入力→無音出力＝加算結果はビット不変。
+            // リセットはLimiterと同じ契約（再生開始・明示シークのみ。サイクルラップは連続扱い）
+            if (b == 2)
+            {
+                const auto delayValues = Delay::load (busParams->delay);
+                if (limiterReset)
+                    busDelay.snapTo (delayValues, bpm);
+                busDelay.process (busScratch[b].getWritePointer (0),
+                                  busScratch[b].getWritePointer (1), segLen, bpm, delayValues);
+            }
+            else
+            {
+                const auto reverbValues = Reverb::load (busParams->reverb);
+                if (limiterReset)
+                    busReverbs[b].snapTo (reverbValues);
+                busReverbs[b].process (busScratch[b].getWritePointer (0),
+                                       busScratch[b].getWritePointer (1), segLen, reverbValues);
+            }
+
+            if (busParams->mute.load())
                 continue;
             const float busGain = busParams->gain.load();
             if (busGain <= 0.0f)

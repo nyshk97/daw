@@ -11,8 +11,10 @@
 #include "FxEditorView.h"
 #include "CompEditorView.h"
 #include "EqEditorView.h"
+#include "DelayEditorView.h"
 #include "LimiterEditorView.h"
 #include "LofiEditorView.h"
+#include "ReverbEditorView.h"
 #include "SatEditorView.h"
 #include "InstrumentDetailView.h"
 #include "IconButton.h"
@@ -93,6 +95,8 @@ public:
     void debugOpenCompDetail();
     void debugOpenLimiterDetail(); // FXパネル＋Master Limiterエディタを開く
     void debugOpenSatDetail();     // FXパネル＋Satエディタを開く（選択トラック）
+    void debugOpenReverbDetail (int busIndex); // FXパネル＋Reverbエディタ（バス0/1）
+    void debugOpenDelayDetail();   // FXパネル＋Delayエディタ（バス2）
     void debugOpenLofiDetail();    // FXパネル＋Lo-fiエディタを開く（選択トラック）
     // 検証用: 選択トラックのCompを設定する（--comp-editor と組み合わせて書き出し検証に使う）
     void debugSetCompParams (bool enabled, const Comp::Values& values);
@@ -332,6 +336,8 @@ private:
     LimiterEditorView limiterDetail; // Master Limiter＋マスターメーター群（Masterの[Limiter]クリックで載る）
     SatEditorView satDetail;   // トラックSatのエディタ（Satスロットクリックで載る）
     LofiEditorView lofiDetail; // トラックLo-fiのエディタ（Lo-fiスロットクリックで載る）
+    ReverbEditorView reverbDetail; // バスReverb A/Bのエディタ（バスの[Reverb]クリックで載る）
+    DelayEditorView delayDetail;   // バスDelayのエディタ（バスの[Delay]クリックで載る）
     int fxDetailSlot = -1;        // 詳細が表示中のスロット（FXパネルの並びに対応）
     juce::String fxDetailKey;     // 詳細が対象にしているチャンネル（fxEditor.targetKey()と比較して追従判定）
 

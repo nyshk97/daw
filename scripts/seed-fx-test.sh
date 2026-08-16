@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# FXバッチ3（Sat / Lo-fi）確認用テストプロジェクトのseeder（冪等・再実行可）。
-# plan: docs/plans/2026-08-16-2058-fx-batch3-saturation-lofi.md の動作確認用
+# FX確認用テストプロジェクトのseeder（冪等・再実行可）。
+# plan: docs/plans/2026-08-16-2058-fx-batch3-saturation-lofi.md（Sat/Lo-fi）と
+#       docs/plans/2026-08-16-2305-fx-batch4-delay-reverb.md（バスReverb/Delay）の動作確認用
 #
 #   scripts/seed-fx-test.sh          → ~/Music/daw/0-0-fx-test を生成（既存なら上書き）
 #
@@ -8,9 +9,11 @@
 #   1 Drums (モノ)   : キック明確なブーンバップ・Lo-fi軽めプリセット
 #                      → Lo-fiの質感・Wow最大時の打点遅れ・ノイズ追従の耳確認
 #   2 Bass  (モノ)   : サブベース・FX中立 → Wowの打点遅れとキックの噛み合わせ確認
-#   3 Keys  (ステレオ): 明るい倍音のコードスタブ・Satプリセット(Drive 35%)
-#                      → Satの質感・倍音バー表示・エイリアス聴感
-#   4 Pad   (ステレオ): 持続コード・FX中立 → Driveを上げて「音量ほぼ一定」のA/B確認
+#   3 Keys  (ステレオ): 明るい倍音のコードスタブ・Satプリセット(Drive 35%)＋Reverb A send
+#                      → Satの質感・倍音バー表示・エイリアス聴感・Room残響の居場所
+#   4 Pad   (ステレオ): 持続コード・FX中立・Reverb B send → 長い残響の奥行き確認
+#   5 Lead  (モノ)   : 拍頭だけ鳴る単音フレーズ（後半に空白）・Delay send＋Reverb A send
+#                      → エコーのTime/Feedback/Tone/Ping-pongとPre-delayの手前感の耳確認
 #
 # 素材は決定的に合成（固定seed）。BPM 90 / 48kHz / 8小節（約21秒）
 set -euo pipefail
@@ -172,8 +175,24 @@ for bar in range(BARS):
 
 write_wav("clip-004.wav", [pad_l, pad_r])
 
-# ---- project.json (v18) ----
-def track(tid, name, clip, volume, pan, sat=None, lofi=None):
+# ---- Lead: 拍頭の単音フレーズ（各小節の1・2拍だけ鳴る＝空白でエコーが聴こえる）----
+lead = [0.0] * TOTAL
+LEAD_NOTES = [440.0, 523.25, 659.26, 523.25]  # A4 C5 E5 C5（Aマイナーペンタ内）
+for bar in range(BARS):
+    for beat_index in range(2):
+        f = LEAD_NOTES[(bar * 2 + beat_index) % 4]
+        start = bar * BAR + beat_index * BEAT
+        n = int(0.7 * BEAT)
+        for i in range(n):
+            if start + i >= TOTAL:
+                break
+            e = env_exp(i, 0.18 * SR) * min(1.0, i / (0.004 * SR))
+            lead[start + i] += saw_partials(2 * math.pi * f * i / SR, harmonics=6) * e * 0.5
+
+write_wav("clip-005.wav", [lead])
+
+# ---- project.json (v19) ----
+def track(tid, name, clip, volume, pan, sat=None, lofi=None, sends=None):
     fx = {"eq": {"enabled": True}}
     if sat is not None:
         fx["sat"] = sat
@@ -182,18 +201,19 @@ def track(tid, name, clip, volume, pan, sat=None, lofi=None):
     return {
         "id": tid, "type": "audio", "name": name,
         "mute": False, "solo": False, "volume": volume, "pan": pan,
-        "sends": [0.0, 0.0, 0.0], "fx": fx,
+        "sends": sends or [0.0, 0.0, 0.0], "fx": fx,
         "clips": [{"file": clip, "startSample": 0, "offsetSamples": 0,
                    "lengthSamples": TOTAL, "muted": False}],
     }
 
 project = {
-    "version": 18,
-    "nextId": 5,
+    "version": 19,
+    "nextId": 6,
     "bpm": BPM,
     "sampleRate": float(SR),
-    "memo": "FXバッチ3確認用（seeder: scripts/seed-fx-test.sh）\n"
-            "Drums=Lo-fi軽めプリセット / Keys=Sat 35%プリセット / Bass・Padは中立",
+    "memo": "FX確認用（seeder: scripts/seed-fx-test.sh）\n"
+            "Drums=Lo-fi軽め / Keys=Sat 35%+RevA / Pad=RevB / Lead=Delay+RevA\n"
+            "バッチ4確認: LeadのエコーでTime/Feedback/Tone/Ping-pong、Keys/Padで残響の奥行き",
     "tracks": [
         # Lo-fi軽め: Wow浅め・ノイズ・Crush少し（「レコードに寄るか」の出発点）
         track(1, "Drums", "clip-001.wav", 0.8, 0.0,
@@ -201,18 +221,28 @@ project = {
         track(2, "Bass", "clip-002.wav", 0.75, 0.0),
         # Sat軽め: 倍音バー・質感の出発点（Driveを上げ下げして音量一定を確認）
         track(3, "Keys", "clip-003.wav", 0.7, 0.15,
-              sat={"enabled": True, "drive": 0.35, "mix": 1.0}),
-        track(4, "Pad", "clip-004.wav", 0.6, -0.1),
+              sat={"enabled": True, "drive": 0.35, "mix": 1.0}, sends=[0.3, 0.0, 0.0]),
+        # Reverb B send（長い残響の奥行き）
+        track(4, "Pad", "clip-004.wav", 0.6, -0.1, sends=[0.0, 0.4, 0.0]),
+        # Delay send主体＋Reverb A少し（hiphopボーカルの奥行きの定石を単音で確認）
+        track(5, "Lead", "clip-005.wav", 0.7, 0.05, sends=[0.2, 0.0, 0.45]),
     ],
     "markers": [],
     "cycle": {"start": 0, "end": BAR * 4, "enabled": False},
     "fadeOut": {"start": 0, "end": 0},
-    "buses": [{"gain": 1.0, "mute": False}] * 3,
+    "buses": [
+        {"gain": 1.0, "mute": False,
+         "reverb": {"size": 0.35, "damp": 0.55, "width": 1.0, "predelay": 20.0, "lowcut": 100.0}},
+        {"gain": 1.0, "mute": False,
+         "reverb": {"size": 0.85, "damp": 0.35, "width": 1.0, "predelay": 50.0, "lowcut": 100.0}},
+        {"gain": 1.0, "mute": False,
+         "delay": {"time": 2, "feedback": 0.45, "tone": 0.6, "pingpong": True}},
+    ],
     "master": {"gain": 0.9},
 }
 
 with open(f"{dest}/project.json", "w") as f:
     json.dump(project, f, ensure_ascii=False, indent=2)
 
-print(f"seeded: {dest} (BPM {BPM} / {SR}Hz / {BARS}小節 / 4トラック)")
+print(f"seeded: {dest} (BPM {BPM} / {SR}Hz / {BARS}小節 / 5トラック)")
 PYEOF

@@ -286,6 +286,10 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     // 同じ扱い）。dirty化だけ受ける。GR・検波レベルはメータータイマーが pushLevels で配布する
     compDetail.onEdited = [this] { setDirty (true); };
     limiterDetail.onEdited = [this] { setDirty (true); };
+    // バスFXエディタ（Reverb A/B・Delay）。値の書き込みはビュー側（atomic直書き・undo対象外＝
+    // EQ/Comp/Limiterと同じ扱い）。dirty化だけ受ける
+    reverbDetail.onEdited = [this] { setDirty (true); };
+    delayDetail.onEdited = [this] { setDirty (true); };
     satDetail.onEdited = [this] { setDirty (true); };
     lofiDetail.onEdited = [this] { setDirty (true); };
     lofiDetail.getSampleRate = [this] { return transport.sampleRate.load(); };
@@ -1525,6 +1529,20 @@ void MainComponent::debugOpenSatDetail()
     toggleFxDetailSlot (FxSlots::sat);
 }
 
+void MainComponent::debugOpenReverbDetail (int busIndex)
+{
+    openFxEditor();
+    fxEditor.showBus (juce::jlimit (0, 1, busIndex));
+    toggleFxDetailSlot (0); // バスはslot0 = Reverb/Delay
+}
+
+void MainComponent::debugOpenDelayDetail()
+{
+    openFxEditor();
+    fxEditor.showBus (2);
+    toggleFxDetailSlot (0);
+}
+
 void MainComponent::debugOpenLofiDetail()
 {
     openFxEditor();
@@ -1587,6 +1605,8 @@ void MainComponent::closeFxDetail()
     limiterDetail.setMaster (nullptr);
     satDetail.setTrack (nullptr);
     lofiDetail.setTrack (nullptr);
+    reverbDetail.setBus (nullptr, 0);
+    delayDetail.setBus (nullptr);
     fxDetailSlot = -1;
     fxDetailKey.clear();
     fxEditor.setActiveSlot (-1);
@@ -1648,6 +1668,8 @@ void MainComponent::updateFxDetailBody()
         limiterDetail.setMaster (nullptr);
         satDetail.setTrack (nullptr);
         lofiDetail.setTrack (nullptr);
+        reverbDetail.setBus (nullptr, 0);
+        delayDetail.setBus (nullptr);
         fxDetail.setBody (&instrumentDetail);
         return;
     }
@@ -1660,9 +1682,40 @@ void MainComponent::updateFxDetailBody()
         compDetail.setTrack (nullptr);
         satDetail.setTrack (nullptr);
         lofiDetail.setTrack (nullptr);
+        reverbDetail.setBus (nullptr, 0);
+        delayDetail.setBus (nullptr);
         limiterDetail.setMaster (project->masterParams.get());
         fxDetail.setBody (&limiterDetail);
         return;
+    }
+
+    // バスの [Reverb]/[Delay] スロット（v19。対象バスは fxEditor の表示対象で解決する）
+    if (const int busIndex = fxEditor.shownBus(); busIndex >= 0)
+    {
+        const auto busSlot = fxEditor.slotName (fxDetailSlot);
+        if (busSlot == "Reverb" || busSlot == "Delay")
+        {
+            instrumentDetail.setTrack (nullptr);
+            eqDetail.setTrack (nullptr);
+            compDetail.setTrack (nullptr);
+            satDetail.setTrack (nullptr);
+            lofiDetail.setTrack (nullptr);
+            limiterDetail.setMaster (nullptr);
+            if (busSlot == "Delay")
+            {
+                reverbDetail.setBus (nullptr, 0);
+                delayDetail.setBus (project->busParams[2].get());
+                fxDetail.setBody (&delayDetail);
+            }
+            else
+            {
+                delayDetail.setBus (nullptr);
+                reverbDetail.setBus (project->busParams[(size_t) juce::jlimit (0, 1, busIndex)].get(),
+                                     busIndex);
+                fxDetail.setBody (&reverbDetail);
+            }
+            return;
+        }
     }
 
     // トラックのEQ/Comp/Sat/Lo-fiスロット（これらのスロット名はトラックのみ。
@@ -1687,6 +1740,8 @@ void MainComponent::updateFxDetailBody()
         satDetail.setTrack (slot == "Sat" ? trackPtr : nullptr);
         lofiDetail.setTrack (slot == "Lo-fi" ? trackPtr : nullptr);
         limiterDetail.setMaster (nullptr);
+        reverbDetail.setBus (nullptr, 0);
+        delayDetail.setBus (nullptr);
         fxDetail.setBody (slot == "EQ" ? (juce::Component*) &eqDetail
                           : slot == "Comp" ? (juce::Component*) &compDetail
                           : slot == "Sat" ? (juce::Component*) &satDetail
@@ -1700,6 +1755,8 @@ void MainComponent::updateFxDetailBody()
     limiterDetail.setMaster (nullptr);
     satDetail.setTrack (nullptr);
     lofiDetail.setTrack (nullptr);
+    reverbDetail.setBus (nullptr, 0);
+    delayDetail.setBus (nullptr);
     fxDetail.setBody (nullptr);
 }
 
@@ -2137,6 +2194,9 @@ void MainComponent::beginBounce (const juce::File& target)
         request.busGain[b] = project->busParams[b]->gain.load();
         request.busMute[b] = project->busParams[b]->mute.load();
     }
+    request.busReverb[0] = Reverb::load (project->busParams[0]->reverb);
+    request.busReverb[1] = Reverb::load (project->busParams[1]->reverb);
+    request.busDelay = Delay::load (project->busParams[2]->delay);
     request.masterGain = project->masterParams->gain.load();
     request.limiter = Limiter::load (project->masterParams->limiter);
 
@@ -2389,6 +2449,9 @@ void MainComponent::beginRegionBounce (const juce::File& target, int trackIndex,
         request.busGain[b] = project->busParams[b]->gain.load();
         request.busMute[b] = project->busParams[b]->mute.load();
     }
+    request.busReverb[0] = Reverb::load (project->busParams[0]->reverb);
+    request.busReverb[1] = Reverb::load (project->busParams[1]->reverb);
+    request.busDelay = Delay::load (project->busParams[2]->delay);
     request.masterGain = project->masterParams->gain.load();
     request.limiter = Limiter::load (project->masterParams->limiter);
 

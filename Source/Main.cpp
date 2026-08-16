@@ -111,6 +111,8 @@ public:
     //   --comp-editor        FXパネル＋Comp詳細エディタを開く（選択トラック）
     //   --limiter-editor     FXパネル＋Master Limiterエディタ（マスターメーター群）を開く
     //   --sat-editor         FXパネル＋Satエディタを開く（選択トラック）
+    //   --reverb-editor <0|1>  FXパネル＋Reverbエディタを開く（バスA/B）
+    //   --delay-editor       FXパネル＋Delayエディタを開く
     //   --lofi-editor        FXパネル＋Lo-fiエディタを開く（選択トラック）
     //   --comp-demo          選択トラックにデモ設定のCompを掛ける（-30dB/8:1/5ms/80ms・ON。
     //                        GR表示・書き出し検証用）
@@ -126,6 +128,8 @@ public:
         bool limiterEditor = false;
         bool satEditor = false;
         bool lofiEditor = false;
+        int reverbEditorBus = -1; // --reverb-editor <0|1>（省略時0）
+        bool delayEditor = false;
         bool autoplay = false; // --play: 開いた後に再生を開始（アナライザ等の動作確認用）
         for (int i = 0; i < args.size(); ++i)
         {
@@ -145,6 +149,10 @@ public:
                 satEditor = true;
             else if (args[i] == "--lofi-editor")
                 lofiEditor = true;
+            else if (args[i] == "--reverb-editor")
+                reverbEditorBus = i + 1 < args.size() ? args[i + 1].getIntValue() : 0;
+            else if (args[i] == "--delay-editor")
+                delayEditor = true;
             else if (args[i] == "--bounce" && i + 1 < args.size())
                 bounceFile = juce::File (args[i + 1]);
             else if (args[i] == "--play")
@@ -205,6 +213,22 @@ public:
                 if (mainWindow != nullptr)
                     if (auto* component = mainWindow->currentMainComponent())
                         component->debugOpenLofiDetail();
+            });
+
+        if (reverbEditorBus >= 0)
+            juce::Timer::callAfterDelay (500, [this, reverbEditorBus]
+            {
+                if (mainWindow != nullptr)
+                    if (auto* component = mainWindow->currentMainComponent())
+                        component->debugOpenReverbDetail (reverbEditorBus);
+            });
+
+        if (delayEditor)
+            juce::Timer::callAfterDelay (500, [this]
+            {
+                if (mainWindow != nullptr)
+                    if (auto* component = mainWindow->currentMainComponent())
+                        component->debugOpenDelayDetail();
             });
 
         if (autoplay)

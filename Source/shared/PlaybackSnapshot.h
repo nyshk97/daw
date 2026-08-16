@@ -15,9 +15,11 @@
 #include "../audio/TrackLofi.h"
 #include "../audio/TrackSaturator.h"
 #include "CompParams.h"
+#include "DelayParams.h"
 #include "EqParams.h"
 #include "LimiterParams.h"
 #include "LofiParams.h"
+#include "ReverbParams.h"
 #include "SatParams.h"
 
 // send用固定バスの本数（Reverb A / Reverb B / Delay）。本数・並びは固定で、
@@ -67,6 +69,13 @@ struct TrackParams
     // 通した値を Limiter::store() すること。DSPの実行状態はスナップショットを跨いで
     // 持続させるため PlaybackEngine が持つ（Master 1本＝エンジン全体で1個のため）
     Limiter::Params limiter;
+
+    // バスFXのパラメータ（v19。shared/ReverbParams.h / DelayParams.h）。
+    // **バスのみ使用**（reverb は busParams[0/1]・delay は busParams[2]。トラック・Masterでは
+    // 既定値のまま触らない）。書き込みは必ず normalized() を通すこと。DSPの実行状態は
+    // Limiterと同じ理由で PlaybackEngine / BounceRenderer が持つ（各1インスタンスのため）
+    Reverb::Params reverb;
+    Delay::Params delay;
 
     // ---- 以下はオーディオスレッド専用（peakL/peakR・SynthInstance::activeNotes と同じ流儀）----
     // EQ/CompのDSP実行状態（biquad履歴・平滑・GRエンベロープ）。スナップショット再構築を

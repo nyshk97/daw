@@ -19,6 +19,14 @@ juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
 
 constexpr float silenceThreshold = 0.001f; // -60dB。テールの無音判定
 constexpr int maxScratchChannels = 8;      // DLSは4ch（2バス）。これを超える音源は想定しない
+
+// バスFXテールの上限と、上限到達時に畳むフェード長（plan確定値。テストはここから導出し、
+// DelayParams等の音決め定数には従属させない）
+constexpr double maxBusTailSeconds = 30.0;
+constexpr double busTailFadeCloseSeconds = 0.5;
+// Reverbの出だし待ち（無音窓の下限に足す）: juce::Reverbの最初の反射は最短コム
+// （約25ms・SR非依存のスケール設計）なので、その2倍を初期反射マージンとして見込む
+constexpr double reverbTailOnsetSeconds = 0.05;
 }
 
 void BounceRenderer::TrackRender::loadFxFrom (const TrackParams& params)
@@ -246,6 +254,17 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
     masterLimiter.snapTo (sr, request.limiter);
     limiterHeadRemaining = masterLimiter.lookaheadSamples();
 
+    // バスFXも独立インスタンスを即確定（prepareはワーカースレッド＝ヒープ確保してよい）
+    for (int r = 0; r < 2; ++r)
+    {
+        request.busReverb[r] = Reverb::normalized (request.busReverb[r], Reverb::defaultsForBus (r));
+        busReverbs[r].prepare (sr);
+        busReverbs[r].snapTo (request.busReverb[r]);
+    }
+    request.busDelay = Delay::normalized (request.busDelay);
+    busDelayDsp.prepare (sr);
+    busDelayDsp.snapTo (request.busDelay, request.bpm);
+
     cursors.assign (request.tracks.size(), {});
     // 範囲開始より前のノートの読み飛ばし（サイクル範囲書き出しで rangeStart > 0 になる。
     // startPpq昇順の並びなので先頭からの連続分だけ飛ばす）。
@@ -431,9 +450,37 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
 
     // ---- テール: 範囲終端で鳴り残ったノートを止め、余韻が減衰しきるまで延長 ----
     juce::int64 flushPos = rangeEnd; // Limiter flushブロックの絶対位置（テールの続き）
+    bool tailClosedAtCap = false;    // 上限到達でフェード終端まで畳んだか（flushのゼロ保証に使う）
     if (request.wantTail)
     {
-        const auto maxTailSamples = (juce::int64) (sr * 5.0);
+        // バスFXテール契約（plan）:
+        // - send有効なバスがあれば上限を5秒→30秒へ（fb90%の減衰は5秒に収まらない）。
+        //   上限に達したら末尾0.5秒のフェードで畳む（30BPM×fb90%のような極端設定では
+        //   減衰しきる前に閉じるのが仕様。警告UIは作らない）
+        // - 無音判定: Delayバスが有効なら「Delay1周期＋1ブロックの窓が連続で無音」まで
+        //   待つ（エコー間の無音ブロックで最初の反復前に打ち切らない。fb=0でも最初の
+        //   タップまで待てる）。Reverbバスが有効なら「Pre-delay＋初期反射マージン＋1ブロック」
+        //   まで待つ（曲末ぎりぎりの入力の残響は Pre-delay＋約25ms 後に始まるため、窓が
+        //   短いと最初のテールブロックの無音で打ち切られる）。バスFXなしは窓1サンプル＝
+        //   従来どおり最初の無音ブロックで終了（既存プロジェクトの出力とビット一致）
+        const bool busTail = request.busFxTailActive();
+        const auto maxTailSamples = (juce::int64) (sr * (busTail ? maxBusTailSeconds : 5.0));
+        juce::int64 silentWindow = 1;
+        if (request.busSendActive (2))
+            silentWindow = juce::jmax (silentWindow,
+                                       (juce::int64) std::ceil (
+                                           Delay::timeSeconds (request.bpm,
+                                                               request.busDelay.timeIndex) * sr)
+                                           + renderBlockSize);
+        for (int r = 0; r < 2; ++r)
+            if (request.busSendActive (r))
+                silentWindow = juce::jmax (
+                    silentWindow,
+                    (juce::int64) std::ceil (((double) request.busReverb[r].preDelayMs * 0.001
+                                              + reverbTailOnsetSeconds) * sr)
+                        + renderBlockSize);
+        const auto fadeCloseSamples = busTail ? (juce::int64) (sr * busTailFadeCloseSeconds) : 0;
+        juce::int64 silentRun = 0;
         juce::int64 tailRendered = 0;
         bool firstTailBlock = true;
 
@@ -515,7 +562,23 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
 
             mixBusesAndMaster (mix, busMix, renderBlockSize, rangeEnd + tailRendered);
 
-            // 無音判定はMaster適用後の最終出力で行う（聞こえる信号が-60dBを下回ったら終了）
+            // 上限到達で閉じる直前の区間はフェードで畳む（ぶつ切り・クリック回避）
+            if (fadeCloseSamples > 0
+                && tailRendered + renderBlockSize > maxTailSamples - fadeCloseSamples)
+            {
+                auto gainAt = [&] (juce::int64 t)
+                {
+                    return (float) juce::jlimit (0.0, 1.0,
+                                                 (double) (maxTailSamples - t)
+                                                     / (double) fadeCloseSamples);
+                };
+                for (int ch = 0; ch < 2; ++ch)
+                    mix.applyGainRamp (ch, 0, renderBlockSize, gainAt (tailRendered),
+                                       gainAt (tailRendered + renderBlockSize));
+            }
+
+            // 無音判定はMaster適用後の最終出力で行う（聞こえる信号が-60dBを下回ったら終了。
+            // 窓 silentWindow ぶん連続で無音になるまでは打ち切らない）
             float magnitude = 0.0f;
             for (int ch = 0; ch < 2; ++ch)
                 magnitude = juce::jmax (magnitude, mix.getMagnitude (ch, 0, renderBlockSize));
@@ -527,8 +590,17 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
             progressValue.store (0.85f + 0.05f * (float) ((double) tailRendered / (double) maxTailSamples));
 
             if (magnitude < silenceThreshold)
-                break; // -60dBを下回ったら余韻は減衰しきったとみなす
+            {
+                silentRun += renderBlockSize;
+                if (silentRun >= silentWindow)
+                    break; // 窓ぶん無音が続いた＝余韻は減衰しきったとみなす
+            }
+            else
+            {
+                silentRun = 0;
+            }
         }
+        tailClosedAtCap = fadeCloseSamples > 0 && tailRendered >= maxTailSamples;
         flushPos = rangeEnd + tailRendered;
     }
 
@@ -540,6 +612,11 @@ bool BounceRenderer::renderPass (juce::AudioFormatWriter& writer)
         for (auto& bus : busMix)
             bus.clear();
         mixBusesAndMaster (mix, busMix, flushLen, flushPos);
+        // 上限フェードでゼロまで畳んだ後は、flushもゼロを保証する（バスFXのリングに残った
+        // エコーとLimiterのlookahead分が未フェードで復活してクリックになるのを防ぐ。
+        // フェードの延長＝ゲイン0の続きなので、mixBusesAndMasterで状態だけ進めて出力は捨てる）
+        if (tailClosedAtCap)
+            mix.clear();
         for (int ch = 0; ch < 2; ++ch)
             runningPeak = juce::jmax (runningPeak, mix.getMagnitude (ch, 0, flushLen));
         if (! writeMixDroppingHead (writer, mix, flushLen))
@@ -740,6 +817,29 @@ void BounceRenderer::Request::resolveWantTail()
             wantTail = true;
             return;
         }
+    // バスFXテール（v19）: sendが有効ならDelayのエコー・Reverbの残響が範囲終端の後も続く。
+    // mute/soloの再判定はしない（呼び出し側が可聴トラックだけを tracks に焼き込む契約なので、
+    // Request内の send を見れば足りる）。busGain/busMute を先に詰めてから呼ぶこと
+    if (busFxTailActive())
+        wantTail = true;
+}
+
+bool BounceRenderer::Request::busFxTailActive() const
+{
+    for (int b = 0; b < numSendBuses; ++b)
+        if (busSendActive (b))
+            return true;
+    return false;
+}
+
+bool BounceRenderer::Request::busSendActive (int busIndex) const
+{
+    if (busMute[busIndex] || busGain[busIndex] <= 0.0f)
+        return false;
+    for (const auto& track : tracks)
+        if (track.sends[busIndex] > 0.0f)
+            return true;
+    return false;
 }
 
 void BounceRenderer::Request::applySongFadeToRange()
@@ -757,6 +857,17 @@ void BounceRenderer::mixBusesAndMaster (juce::AudioBuffer<float>& mix,
 {
     for (int b = 0; b < numSendBuses; ++b)
     {
+        // バスFXはMute/Gain 0 でも処理を止めない（RTと同じ契約: 状態凍結→解除時の
+        // 古いエコー復活を防ぐ。Limiter flushブロックでもテールが進み続ける）
+        if (b == 2)
+            busDelayDsp.process (busMix[(size_t) b].getWritePointer (0),
+                                 busMix[(size_t) b].getWritePointer (1), numSamples,
+                                 request.bpm, request.busDelay);
+        else
+            busReverbs[b].process (busMix[(size_t) b].getWritePointer (0),
+                                   busMix[(size_t) b].getWritePointer (1), numSamples,
+                                   request.busReverb[b]);
+
         if (request.busMute[b] || request.busGain[b] <= 0.0f)
             continue;
         for (int ch = 0; ch < 2; ++ch)

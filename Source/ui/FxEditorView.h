@@ -45,6 +45,8 @@ public:
     // トラック並び替え時のindex引き直し用。shownTrackは表示中のトラックindex（バス/Master表示は-1）、
     // remapTrackは表示対象のトラック自体を変えずにindexだけ差し替える（バス/Master表示はno-op）
     int shownTrack() const { return target == Target::track ? targetTrack : -1; }
+    // 表示中のバスindex（バス表示以外は-1）。下部詳細（Reverb/Delayエディタ）の対象解決用
+    int shownBus() const { return target == Target::bus ? targetBus : -1; }
     void remapTrack (int newIndex);
 
     // ---- 下部詳細エディタとの連携（状態管理はMainComponent側）----

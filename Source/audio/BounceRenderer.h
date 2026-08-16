@@ -6,6 +6,8 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 
 #include "../shared/PlaybackSnapshot.h"
+#include "BusDelay.h"
+#include "BusReverb.h"
 #include "MasterLimiter.h"
 
 struct Track; // shared/Project.h（buildItemRenderの実装側でinclude）
@@ -75,10 +77,14 @@ public:
                                      // ⌘Eの厳密長書き出しでは呼び出し側が false に落とす）
         juce::File targetFile;
 
-        // 固定バス・Master（開始時に固定済み。RTのprocessと同じく素通しバス→Masterゲインの順）
+        // 固定バス・Master（開始時に固定済み。RTのprocessと同じくバスFX→Masterゲインの順）
         float busGain[numSendBuses] { 1.0f, 1.0f, 1.0f };
         bool busMute[numSendBuses] { false, false, false };
         float masterGain = 1.0f;
+
+        // バスFX（v19。開始時にプレーン値で固定。常在なので必ず通る）
+        Reverb::Values busReverb[2] { Reverb::defaultsForBus (0), Reverb::defaultsForBus (1) };
+        Delay::Values busDelay;
 
         // Master Limiter（v17。開始時にプレーン値で固定。常在なので必ず通る。
         // 出力の遅延はワーカーが先頭Lサンプル破棄＋末尾Lサンプル無音flushで吸収し、
@@ -102,10 +108,17 @@ public:
         //   厳密に0なので、鳴り残った余韻を捨てても聴こえ方は変わらない
         void applySongFadeToRange();
 
-        // tracks からテールの既定値を決める（トラックを詰め終えたら呼ぶ。サイクル・
-        // 曲末フェードの上書きより前）。判定の中身は trackWantsTail — 本番の組み立て
+        // tracks からテールの既定値を決める（トラック・busGain/busMute を詰め終えたら呼ぶ。
+        // サイクル・曲末フェードの上書きより前）。判定は trackWantsTail ＋ バスFXテール
+        // （send > 0 のトラックがあり送り先バスが有効出力 — mute/soloの再判定は不要:
+        // 呼び出し側が可聴トラックだけを tracks に焼き込む契約）。本番の組み立て
         //（MainComponent::startBounce）とテストの両方がこれを使う（判定の再実装禁止）
         void resolveWantTail();
+
+        // バスFXテールが要るか（resolveWantTail の一部＝テールループの窓・上限の分岐にも使う）
+        bool busFxTailActive() const;
+        // このバスへ send > 0 のトラックがあり、かつバスが有効出力か（窓の計算が個別に見る）
+        bool busSendActive (int busIndex) const;
     };
 
     // このトラックは範囲終端後の余韻テールを必要とするか（Request::wantTail の入口判定）:
@@ -235,6 +248,8 @@ private:
     juce::AudioBuffer<float> eqTrackScratch; // EQ有効トラックのクリップ合算用（EQをトラックgainの前に掛けるため）
     juce::uint64 eqBlockSerial = 0;          // TrackEq の連続性判定用（renderPassで0に戻しブロックごとに+1）
     MasterLimiter masterLimiter;             // バウンス専用インスタンス（renderPass開始時にsnapTo）
+    BusReverb busReverbs[2];                 // バスFXのバウンス専用インスタンス（同上）
+    BusDelay busDelayDsp;
     int limiterHeadRemaining = 0;            // 未破棄のLimiter遅延分（renderPass開始時にLへ）
     std::unique_ptr<juce::AudioFormatReader> convertReader; // パス2で一時float WAVを読み戻す
     std::vector<SynthCursor> cursors;

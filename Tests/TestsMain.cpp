@@ -6870,30 +6870,53 @@ void testEnginePanSendsMaster()
     expect (params.peakR.exchange (0.0f) > 0.55f, "Rメーターはpost-panピーク（約0.566）");
     expect (params.peakL.exchange (0.0f) < 0.001f, "pan右振り切りでLメーターは振れないこと");
 
-    // send（素通しバス）: pan中央・send100% → 原音と二重加算で0.8
+    // send（v19: バスFXの full wet 返し）: 同一ブロックの素通し二重加算は無くなり、
+    // Delayバス（fb=0・tone=0 = 1タップの遅延コピー）ならエコー到達後に dry+wet=0.8 になる。
+    // 1/16音符 @120BPM = 0.125s = 5513サンプル → ブロック10以降にエコーが乗る
     params.pan.store (0.0f);
-    params.sends[0].store (1.0f);
+    params.sends[2].store (1.0f);
+    Delay::store (project.busParams[2]->delay, Delay::normalized ({ 0, 0.0f, 0.0f, false }));
+    const int echoBlocks = 20; // 5513/512 ≈ 10.8ブロック目から。20ブロック目は定常
+    auto measureAfter = [&] (float& outLeft, float& outRight)
+    {
+        transport.seekRequest.store (0);
+        engine.play();
+        juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+        for (int i = 0; i < echoBlocks; ++i)
+        {
+            buffer.clear();
+            engine.process (info);
+        }
+        outLeft = buffer.getMagnitude (0, 0, blockSize);
+        outRight = buffer.getMagnitude (1, 0, blockSize);
+        engine.stop();
+        buffer.clear();
+        engine.process (info); // 停止エッジの消化
+    };
     measure (left, right);
-    expect (std::abs (left - 0.8f) < 0.002f, "send100%は素通しバスで二重加算（0.8）");
-    expect (project.busParams[0]->peakL.exchange (0.0f) > 0.35f, "バスメーターが振れること");
+    expect (std::abs (left - 0.4f) < 0.002f,
+            "send100%でも同一ブロックは二重加算しない（full wetバス・エコーは後から）");
+    measureAfter (left, right);
+    expect (std::abs (left - 0.8f) < 0.002f, "エコー到達後は dry+wet で0.8");
+    expect (project.busParams[2]->peakL.exchange (0.0f) > 0.35f, "バスメーターが振れること");
 
-    // バスミュートでsend分が消える
-    project.busParams[0]->mute.store (true);
-    measure (left, right);
+    // バスミュートでsend分が消える（バスFXの処理自体は止まらない契約だが出力には乗らない）
+    project.busParams[2]->mute.store (true);
+    measureAfter (left, right);
     expect (std::abs (left - 0.4f) < 0.002f, "バスMでsend分が消えること");
-    project.busParams[0]->mute.store (false);
+    project.busParams[2]->mute.store (false);
 
     // バスのリターン量（gain 0.5 → 0.4 + 0.2 = 0.6）
-    project.busParams[0]->gain.store (0.5f);
-    measure (left, right);
+    project.busParams[2]->gain.store (0.5f);
+    measureAfter (left, right);
     expect (std::abs (left - 0.6f) < 0.002f, "バスgainがリターン量として効くこと");
-    project.busParams[0]->gain.store (1.0f);
+    project.busParams[2]->gain.store (1.0f);
 
     // Masterゲイン（全体 0.8 → 0.4）とMasterメーター
     project.masterParams->gain.store (0.5f);
     project.masterParams->peakL.exchange (0.0f); // 前シナリオの蓄積ピーク（CAS max）をリセット
     project.masterParams->peakR.exchange (0.0f);
-    measure (left, right);
+    measureAfter (left, right);
     expect (std::abs (left - 0.4f) < 0.002f, "Masterゲインで全体が半減すること");
     expect (std::abs (project.masterParams->peakL.exchange (0.0f) - 0.4f) < 0.01f,
             "Masterメーターはpost-masterピーク");
@@ -6940,9 +6963,11 @@ void testEngineOutputChannelRule()
         juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
         engine.process (info);
         engine.stop();
-        expect (buffer.getMagnitude (0, 0, blockSize) > 0.9f
-                    && buffer.getMagnitude (1, 0, blockSize) > 0.9f,
-                "4ch出力: ch0/1に音が出ること（クリップ＋バス＋クリック）");
+        // v19: バスはfull wet FX（Reverbのpre-delay分、最初のブロックにはwetが乗らない）。
+        // ここでの検証対象は「ch0/1に出る・ch2以降に漏れない」であって加算レベルではない
+        expect (buffer.getMagnitude (0, 0, blockSize) > 0.45f
+                    && buffer.getMagnitude (1, 0, blockSize) > 0.45f,
+                "4ch出力: ch0/1に音が出ること（クリップ＋クリック）");
         expect (buffer.getMagnitude (2, 0, blockSize) == 0.0f
                     && buffer.getMagnitude (3, 0, blockSize) == 0.0f,
                 "4ch出力: ch2以降は完全に無音（クリックも漏れない）");
@@ -7453,11 +7478,11 @@ void testEngineStereoPan()
     track.id = 1;
     track.params->gain.store (1.0f);
     Clip stereoClip;
-    stereoClip.audio = std::make_shared<juce::AudioBuffer<float>> (2, blockSize * 4);
+    stereoClip.audio = std::make_shared<juce::AudioBuffer<float>> (2, blockSize * 64);
     stereoClip.audio->clear();
     for (int i = 0; i < stereoClip.audio->getNumSamples(); ++i)
         stereoClip.audio->setSample (0, i, 0.5f);
-    stereoClip.lengthSamples = blockSize * 4;
+    stereoClip.lengthSamples = blockSize * 64;
     track.clips.push_back (std::move (stereoClip));
     project.tracks.push_back (std::move (track));
     auto& params = *project.tracks[0].params;
@@ -7502,10 +7527,10 @@ void testEngineStereoPan()
     params.pan.store (0.0f);
     {
         Clip monoClip;
-        monoClip.audio = std::make_shared<juce::AudioBuffer<float>> (1, blockSize * 4);
+        monoClip.audio = std::make_shared<juce::AudioBuffer<float>> (1, blockSize * 64);
         for (int i = 0; i < monoClip.audio->getNumSamples(); ++i)
             monoClip.audio->setSample (0, i, 0.25f);
-        monoClip.lengthSamples = blockSize * 4;
+        monoClip.lengthSamples = blockSize * 64;
         project.tracks[0].clips.push_back (std::move (monoClip));
     }
     snapshots.push (project.buildSnapshot());
@@ -7513,14 +7538,30 @@ void testEngineStereoPan()
     expect (std::abs (left - 0.75f) < 0.001f, "混在トラックのL=ステレオL+モノ（0.5+0.25）");
     expect (std::abs (right - 0.25f) < 0.001f, "混在トラックのR=モノのみ（0.25）");
 
-    // send: post-fader（gain・pan適用後）を素通しバス経由で二重加算。
-    // 二重加算の1.5はMaster Limiterの天井（-1dB≈0.891）に当たるため、トラックゲインを
-    // 0.5へ落として合計を天井未満に収める（L=(0.5+0.25)×0.5×2=0.75, R=0.25×0.5×2=0.25）
+    // send: post-fader（gain・pan適用後）のステレオコピーがバスへ渡ること（v19）。
+    // Delayバス（fb=0・tone=0・非ping-pong）はL/R独立の遅延コピー＝エコー到達後の定常値が
+    // 「dry+wet」になる（L=(0.5+0.25)×0.5×2=0.75, R=0.25×0.5×2=0.25。Limiter天井0.891未満）。
+    // 1/16音符 @120BPM = 5513サンプル → 20ブロック目は定常
     params.gain.store (0.5f);
-    params.sends[0].store (1.0f);
-    measure (left, right);
-    expect (std::abs (left - 0.75f) < 0.002f, "send100%でLが二重加算（0.75）");
-    expect (std::abs (right - 0.25f) < 0.002f, "send100%でRが二重加算（0.25）");
+    params.sends[2].store (1.0f);
+    Delay::store (project.busParams[2]->delay, Delay::normalized ({ 0, 0.0f, 0.0f, false }));
+    {
+        transport.seekRequest.store (0);
+        engine.play();
+        juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+        for (int i = 0; i < 20; ++i)
+        {
+            buffer.clear();
+            engine.process (info);
+        }
+        left = buffer.getMagnitude (0, 0, blockSize);
+        right = buffer.getMagnitude (1, 0, blockSize);
+        engine.stop();
+        buffer.clear();
+        engine.process (info);
+    }
+    expect (std::abs (left - 0.75f) < 0.002f, "sendのエコー到達後にLが dry+wet（0.75）");
+    expect (std::abs (right - 0.25f) < 0.002f, "sendのエコー到達後にRが dry+wet（0.25）");
 
     snapshots.deleteRetired();
 }
@@ -12565,7 +12606,7 @@ void testSatParamsRoundtrip()
         expect (project.save (error), "保存できること");
     }
     const auto parsed = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
-    expect ((int) parsed.getProperty ("version", 0) == 18, "v18で保存されること");
+    expect ((int) parsed.getProperty ("version", 0) == 19, "v19で保存されること");
 
     auto reloaded = Project::load (dir, warnings, error);
     expect (reloaded != nullptr && reloaded->tracks.size() == 1, "再読込できること");
@@ -12916,6 +12957,770 @@ void testEngineSatBounceConsistency()
     dir.deleteRecursively();
 }
 
+// ---- バスDelay: インパルス応答（タップ位置・fb減衰・Tone・Ping-pong・スイープ耐性）----
+void testBusDelayImpulse()
+{
+    beginTest ("bus delay impulse");
+
+    constexpr double sr = 48000.0;
+    constexpr int blockSize = 512;
+    const double bpm = 120.0;
+    // timeIndex 0 = 1/16音符 @120BPM = 0.125s
+    const int delaySamples = (int) std::lround (Delay::timeSeconds (bpm, 0) * sr);
+    expect (delaySamples == 6000, "1/16 @120BPM/48kHz = 6000サンプル");
+
+    auto render = [&] (const Delay::Values& values, int totalSamples,
+                       juce::AudioBuffer<float>& out, bool impulseBothChannels)
+    {
+        BusDelay delay;
+        delay.prepare (sr);
+        delay.snapTo (values, bpm);
+        out.setSize (2, totalSamples);
+        out.clear();
+        out.setSample (0, 0, 1.0f);
+        if (impulseBothChannels)
+            out.setSample (1, 0, 1.0f);
+        for (int pos = 0; pos < totalSamples; pos += blockSize)
+        {
+            const int n = juce::jmin (blockSize, totalSamples - pos);
+            delay.process (out.getWritePointer (0) + pos, out.getWritePointer (1) + pos,
+                           n, bpm, values);
+        }
+    };
+
+    // タップ窓の合計（ループ内LPはDCゲイン1なので、窓合計はタップ振幅そのものを表す）
+    auto windowSum = [] (const juce::AudioBuffer<float>& out, int ch, int center)
+    {
+        double sum = 0.0;
+        const int from = juce::jmax (0, center - 50);
+        const int to = juce::jmin (out.getNumSamples(), center + 800);
+        for (int i = from; i < to; ++i)
+            sum += (double) out.getSample (ch, i);
+        return sum;
+    };
+
+    // ストレート: タップ位置がぴったり・fb^n の減衰・full wet（dryは出力に残らない）
+    {
+        const Delay::Values values { 0, 0.5f, 0.0f, false };
+        juce::AudioBuffer<float> out;
+        render (values, delaySamples * 3 + 2000, out, true);
+        expect (std::abs (out.getSample (0, 0)) < 1.0e-6f, "full wet: dryのインパルスは出力に出ない");
+        // 第1タップの開始位置（最初に有意な振幅が出るサンプル）が delaySamples ちょうど
+        int firstIndex = -1;
+        for (int i = 0; i < out.getNumSamples(); ++i)
+            if (std::abs (out.getSample (0, i)) > 0.05f)
+            {
+                firstIndex = i;
+                break;
+            }
+        expect (firstIndex == delaySamples, "第1エコーの位置がディレイタイムと実測一致");
+        const auto tap1 = windowSum (out, 0, delaySamples);
+        const auto tap2 = windowSum (out, 0, delaySamples * 2);
+        const auto tap3 = windowSum (out, 0, delaySamples * 3);
+        expect (std::abs (tap1 - 1.0) < 0.02, "第1エコーの振幅（窓合計）が入力と一致");
+        expect (std::abs (tap2 / tap1 - 0.5) < 0.02, "第2/第1 = feedback（0.5）");
+        expect (std::abs (tap3 / tap2 - 0.5) < 0.02, "第3/第2 = feedback（0.5）");
+    }
+
+    // Tone: ループ内LPなのでタップのピークが鈍る（窓合計＝DC成分は変わらない）
+    {
+        juce::AudioBuffer<float> bright, dark;
+        render ({ 0, 0.0f, 0.0f, false }, delaySamples + 2000, bright, true);
+        render ({ 0, 0.0f, 1.0f, false }, delaySamples + 2000, dark, true);
+        const auto peakOf = [&] (const juce::AudioBuffer<float>& out)
+        { return out.getMagnitude (0, delaySamples - 10, 1500); };
+        expect (peakOf (dark) < peakOf (bright) * 0.5f,
+                "Tone=1でエコーのピークが鈍ること（高域が削れている）");
+        expect (std::abs (windowSum (dark, 0, delaySamples) - 1.0) < 0.02,
+                "ToneはDC成分を変えない（LPのDCゲイン=1）");
+    }
+
+    // Ping-pong: モノ化（0.5）でL→R交互・1タップごとの減衰がfb
+    {
+        const Delay::Values values { 0, 0.5f, 0.0f, true };
+        juce::AudioBuffer<float> out;
+        render (values, delaySamples * 2 + 2000, out, false); // Lのみのインパルス
+        const auto tap1L = windowSum (out, 0, delaySamples);
+        const auto tap1R = windowSum (out, 1, delaySamples);
+        const auto tap2L = windowSum (out, 0, delaySamples * 2);
+        const auto tap2R = windowSum (out, 1, delaySamples * 2);
+        expect (std::abs (tap1L - 0.5) < 0.02, "第1エコーはLに0.5（モノ化）");
+        expect (std::abs (tap1R) < 0.01, "第1エコーはRに出ない");
+        expect (std::abs (tap2R / tap1L - 0.5) < 0.02, "第2エコーはRにfb倍で出る（交互）");
+        expect (std::abs (tap2L) < 0.01, "第2エコーはLに出ない");
+    }
+
+    // 容量境界: BPM下限30・高SR（192k）の1/2音符（4秒 = 768000サンプル）が収まり、
+    // タップ位置が壊れない（DelayLineの容量契約「4秒＋マージン×prepare時SR」）
+    {
+        constexpr double highSr = 192000.0;
+        BusDelay delay;
+        delay.prepare (highSr);
+        const Delay::Values values { 3, 0.0f, 0.0f, false };
+        delay.snapTo (values, 30.0);
+        const int d = (int) std::lround (Delay::timeSeconds (30.0, 3) * highSr);
+        expect (d == 768000, "1/2 @30BPM/192kHz = 768000サンプル");
+        juce::AudioBuffer<float> out (2, d + 4000);
+        out.clear();
+        out.setSample (0, 0, 1.0f);
+        out.setSample (1, 0, 1.0f);
+        for (int pos = 0; pos < out.getNumSamples(); pos += blockSize)
+            delay.process (out.getWritePointer (0) + pos, out.getWritePointer (1) + pos,
+                           juce::jmin (blockSize, out.getNumSamples() - pos), 30.0, values);
+        int firstIndex = -1;
+        for (int i = 1; i < out.getNumSamples(); ++i)
+            if (std::abs (out.getSample (0, i)) > 0.05f)
+            {
+                firstIndex = i;
+                break;
+            }
+        expect (firstIndex == d, "容量境界（30BPM・192kHz）でもタップ位置が正確なこと");
+    }
+
+    // スイープ耐性: 再生中に全パラメータを端から端まで動かしても不連続・NaN・発散がない
+    {
+        BusDelay delay;
+        delay.prepare (sr);
+        delay.snapTo (Delay::defaults, bpm);
+        juce::AudioBuffer<float> block (2, blockSize);
+        float maxAbs = 0.0f;
+        float maxStep = 0.0f;
+        float prevSample[2] = { 0.0f, 0.0f };
+        bool allFinite = true;
+        for (int blockIndex = 0; blockIndex < 400; ++blockIndex)
+        {
+            for (int i = 0; i < blockSize; ++i)
+            {
+                const float x = 0.5f * std::sin (0.05f * (float) (blockIndex * blockSize + i));
+                block.setSample (0, i, x);
+                block.setSample (1, i, -x);
+            }
+            const float t = (float) blockIndex / 399.0f;
+            Delay::Values values;
+            values.timeIndex = blockIndex % Delay::numTimeChoices;
+            values.feedback = Delay::maxFeedback * t;
+            values.tone = 1.0f - t;
+            values.pingPong = (blockIndex / 16) % 2 == 1;
+            delay.process (block.getWritePointer (0), block.getWritePointer (1), blockSize,
+                           bpm + 200.0 * t, values);
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < blockSize; ++i)
+                {
+                    const float y = block.getSample (ch, i);
+                    allFinite = allFinite && std::isfinite (y);
+                    maxAbs = juce::jmax (maxAbs, std::abs (y));
+                    maxStep = juce::jmax (maxStep, std::abs (y - prevSample[ch]));
+                    prevSample[ch] = y;
+                }
+        }
+        expect (allFinite, "フルスイープでNaN/infが出ない");
+        expect (maxAbs < 8.0f, "フルスイープで発散しない");
+        // 隣接サンプル段差（クリック）の上限。入力サイン（振幅0.5・0.05rad/sample）の自然な
+        // 段差は約0.025で、平滑・クロスフェードが効いていれば出力もその数倍に収まる
+        expect (maxStep < 0.3f, "フルスイープでクリック級の段差が出ない");
+    }
+}
+
+// ---- バスReverb: Pre-delayのサンプル一致・Low Cut応答・テール収束・Width=0・スイープ耐性 ----
+void testBusReverbBasics()
+{
+    beginTest ("bus reverb basics");
+
+    constexpr double sr = 48000.0;
+    constexpr int blockSize = 512;
+
+    auto renderImpulse = [&] (const Reverb::Values& values, int totalSamples,
+                              juce::AudioBuffer<float>& out)
+    {
+        BusReverb reverb;
+        reverb.prepare (sr);
+        reverb.snapTo (values);
+        out.setSize (2, totalSamples);
+        out.clear();
+        out.setSample (0, 0, 1.0f);
+        out.setSample (1, 0, 1.0f);
+        for (int pos = 0; pos < totalSamples; pos += blockSize)
+            reverb.process (out.getWritePointer (0) + pos, out.getWritePointer (1) + pos,
+                            juce::jmin (blockSize, totalSamples - pos), values);
+    };
+
+    auto firstAudibleIndex = [] (const juce::AudioBuffer<float>& out)
+    {
+        for (int i = 0; i < out.getNumSamples(); ++i)
+            if (std::abs (out.getSample (0, i)) > 1.0e-5f)
+                return i;
+        return -1;
+    };
+
+    // Pre-delay: 0msと50msの出だしの差がぴったり 50ms×SR サンプル
+    {
+        auto base = Reverb::defaultsForBus (0);
+        base.preDelayMs = 0.0f;
+        auto delayed = base;
+        delayed.preDelayMs = 50.0f;
+        juce::AudioBuffer<float> outBase, outDelayed;
+        renderImpulse (base, 12000, outBase);
+        renderImpulse (delayed, 12000, outDelayed);
+        const int i0 = firstAudibleIndex (outBase);
+        const int i1 = firstAudibleIndex (outDelayed);
+        expect (i0 >= 0 && i1 >= 0, "残響が出ること");
+        expect (i1 - i0 == (int) std::lround (0.05 * sr),
+                "Pre-delay 50msのオフセットがサンプル単位で一致");
+    }
+
+    // Low Cut: 30Hzサインは 500Hzカットで大きく減る（残響へ低域を送らない）
+    {
+        auto open = Reverb::defaultsForBus (0);
+        open.lowCutHz = Reverb::minLowCutHz;
+        auto cut = open;
+        cut.lowCutHz = 500.0f;
+        auto renderSine = [&] (const Reverb::Values& values)
+        {
+            BusReverb reverb;
+            reverb.prepare (sr);
+            reverb.snapTo (values);
+            juce::AudioBuffer<float> out (2, (int) sr);
+            for (int i = 0; i < out.getNumSamples(); ++i)
+            {
+                const float x = 0.5f * std::sin (juce::MathConstants<float>::twoPi * 30.0f
+                                                 * (float) i / (float) sr);
+                out.setSample (0, i, x);
+                out.setSample (1, i, x);
+            }
+            for (int pos = 0; pos < out.getNumSamples(); pos += blockSize)
+                reverb.process (out.getWritePointer (0) + pos, out.getWritePointer (1) + pos,
+                                juce::jmin (blockSize, out.getNumSamples() - pos), values);
+            return out.getRMSLevel (0, out.getNumSamples() / 2, out.getNumSamples() / 2);
+        };
+        const auto rmsOpen = renderSine (open);
+        const auto rmsCut = renderSine (cut);
+        expect (rmsCut < rmsOpen * 0.3f, "Low Cut 500Hzで30Hzの残響が大きく減ること");
+    }
+
+    // テール収束: 中庸設定のインパルス残響が-60dBへ減衰しきる
+    {
+        Reverb::Values values { 0.5f, 0.5f, 1.0f, 0.0f, 100.0f };
+        juce::AudioBuffer<float> out;
+        renderImpulse (values, (int) (sr * 12.0), out);
+        expect (out.getMagnitude (0, out.getNumSamples() - (int) sr, (int) sr) < 0.001f,
+                "テールが-60dB未満へ収束すること（12秒以内）");
+    }
+
+    // Width=0: 完全モノ（L==R）
+    {
+        Reverb::Values values { 0.5f, 0.5f, 0.0f, 0.0f, 100.0f };
+        juce::AudioBuffer<float> out;
+        renderImpulse (values, 24000, out);
+        float maxDiff = 0.0f;
+        for (int i = 0; i < out.getNumSamples(); ++i)
+            maxDiff = juce::jmax (maxDiff, std::abs (out.getSample (0, i) - out.getSample (1, i)));
+        expect (maxDiff < 1.0e-6f, "Width=0でL/Rが一致（モノ残響）");
+    }
+
+    // スイープ耐性: 全ノブを端から端まで動かしてもNaN・発散がない
+    {
+        BusReverb reverb;
+        reverb.prepare (sr);
+        reverb.snapTo (Reverb::defaultsForBus (0));
+        juce::AudioBuffer<float> block (2, blockSize);
+        float maxAbs = 0.0f;
+        float maxStep = 0.0f;
+        float prevSample[2] = { 0.0f, 0.0f };
+        bool allFinite = true;
+        for (int blockIndex = 0; blockIndex < 400; ++blockIndex)
+        {
+            for (int i = 0; i < blockSize; ++i)
+            {
+                const float x = 0.5f * std::sin (0.03f * (float) (blockIndex * blockSize + i));
+                block.setSample (0, i, x);
+                block.setSample (1, i, x * 0.7f);
+            }
+            const float t = (float) blockIndex / 399.0f;
+            const Reverb::Values values { t, 1.0f - t, t, Reverb::maxPreDelayMs * t,
+                                          Reverb::minLowCutHz
+                                              + (Reverb::maxLowCutHz - Reverb::minLowCutHz) * t };
+            reverb.process (block.getWritePointer (0), block.getWritePointer (1), blockSize, values);
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < blockSize; ++i)
+                {
+                    const float y = block.getSample (ch, i);
+                    allFinite = allFinite && std::isfinite (y);
+                    maxAbs = juce::jmax (maxAbs, std::abs (y));
+                    maxStep = juce::jmax (maxStep, std::abs (y - prevSample[ch]));
+                    prevSample[ch] = y;
+                }
+        }
+        expect (allFinite, "フルスイープでNaN/infが出ない");
+        expect (maxAbs < 8.0f, "フルスイープで発散しない");
+        // Low Cut平滑（20ms）・Pre-delayクロスフェード・juce::Reverb内部平滑が効いていれば
+        // 隣接サンプル段差は入力サインの自然な段差（約0.015）の数倍に収まる
+        expect (maxStep < 0.3f, "フルスイープでクリック級の段差が出ない");
+    }
+}
+
+// ---- バウンス: バスFXテール契約（中立トラック＋sendだけでテールへ入る・最初のエコーが切れない）----
+void testBounceBusFxTail()
+{
+    beginTest ("bounce bus fx tail");
+
+    constexpr double sr = 48000.0;
+    const int delaySamples = (int) std::lround (Delay::timeSeconds (120.0, 0) * sr); // 6000
+
+    auto makeClickTrack = [&] (int clipLength)
+    {
+        BounceRenderer::TrackRender render;
+        render.gain = 1.0f;
+        render.sends[2] = 1.0f;
+        ClipPlayback clip;
+        auto audio = std::make_shared<juce::AudioBuffer<float>> (1, clipLength);
+        audio->clear();
+        for (int i = 0; i < 100; ++i)
+            audio->setSample (0, i, 0.5f); // 短いクリック（FXは全て中立＝トラックテールなし）
+        clip.audio = audio;
+        clip.lengthSamples = clipLength;
+        render.clips.push_back (std::move (clip));
+        return render;
+    };
+
+    const auto dir = makeTempDir();
+    {
+        BounceRenderer::Request request;
+        request.sampleRate = sr;
+        request.bpm = 120.0;
+        request.endSample = 2400; // クリック直後に本編が終わる＝エコーは全部テール側
+        request.targetFile = dir.getChildFile ("bus-tail.wav");
+        request.busDelay = Delay::normalized ({ 0, 0.5f, 0.0f, false });
+        request.tracks.push_back (makeClickTrack (2400));
+        request.resolveWantTail();
+        expect (request.wantTail, "中立トラック＋sendだけでテールに入ること（resolveWantTailの拡張）");
+
+        BounceRenderer renderer;
+        expect (renderer.start (std::move (request)), "startできること");
+        expect (waitForBounce (renderer), "タイムアウトせず完了すること");
+        const auto result = renderer.takeResult();
+        expect (result.status == BounceRenderer::Status::success, "successで終わること");
+
+        auto rendered = Project::loadWav (dir.getChildFile ("bus-tail.wav"));
+        expect (rendered != nullptr, "書き出しWAVを読めること");
+        if (rendered != nullptr)
+        {
+            // 第1エコー（6000）はエコー前の無音ブロックで打ち切られずに残る
+            expect (rendered->getNumSamples() > delaySamples + 500,
+                    "最初のエコーの前でテールが打ち切られないこと");
+            expect (rendered->getMagnitude (0, delaySamples - 10, 1000) > 0.1f,
+                    "第1エコーが書かれていること");
+            expect (rendered->getMagnitude (0, delaySamples * 2 - 10, 1000) > 0.05f,
+                    "第2エコー（fb 0.5）が書かれていること");
+            // fb 0.5 は9タップ前後で-60dBを切る。窓（1周期＋1ブロック）を足しても
+            // 12タップ分を大きく超えない（テールが無駄に伸びない）
+            expect (rendered->getNumSamples() < delaySamples * 13,
+                    "減衰後は速やかに終わること");
+        }
+    }
+
+    // Reverbのみ（Delayなし）: 曲末ぎりぎりの入力の残響は Pre-delay＋初期反射の後に始まる。
+    // 無音窓が1ブロックだと最初のテールブロックの無音で打ち切られる（レビューP1の回帰）
+    {
+        BounceRenderer::Request request;
+        request.sampleRate = sr;
+        request.bpm = 120.0;
+        request.endSample = 2400;
+        request.targetFile = dir.getChildFile ("bus-tail-reverb.wav");
+        auto reverbValues = Reverb::defaultsForBus (0);
+        reverbValues.preDelayMs = 50.0f; // 2400サンプル ＝ 範囲終端まで残響が一切出ない設定
+        request.busReverb[0] = reverbValues;
+        {
+            BounceRenderer::TrackRender render;
+            render.gain = 1.0f;
+            render.sends[0] = 1.0f; // Reverb Aのみ
+            ClipPlayback clip;
+            auto audio = std::make_shared<juce::AudioBuffer<float>> (1, 2400);
+            audio->clear();
+            for (int i = 400; i < 2400; ++i)
+                audio->setSample (0, i, 0.9f); // 曲末で切れるバースト
+            clip.audio = audio;
+            clip.lengthSamples = 2400;
+            render.clips.push_back (std::move (clip));
+            request.tracks.push_back (std::move (render));
+        }
+        request.resolveWantTail();
+        expect (request.wantTail, "Reverb sendのみでもテールに入ること");
+
+        BounceRenderer renderer;
+        expect (renderer.start (std::move (request)), "startできること（Reverbのみ）");
+        expect (waitForBounce (renderer), "タイムアウトせず完了すること（Reverbのみ）");
+        expect (renderer.takeResult().status == BounceRenderer::Status::success,
+                "successで終わること（Reverbのみ）");
+
+        auto rendered = Project::loadWav (dir.getChildFile ("bus-tail-reverb.wav"));
+        expect (rendered != nullptr, "書き出しWAVを読めること（Reverbのみ）");
+        if (rendered != nullptr)
+        {
+            // 最初の残響はおよそ burst開始(400)＋Pre-delay(2400)＋最短コム(約1200) ≈ 4000
+            expect (rendered->getNumSamples() > 4500,
+                    "残響が始まる前の無音ブロックで打ち切られないこと");
+            expect (rendered->getMagnitude (0, 4000, 1500) > 0.005f,
+                    "テールに残響が書かれていること");
+        }
+    }
+    dir.deleteRecursively();
+}
+
+// ---- バウンス: バスFXテールの上限30秒とフェード畳み（fb90%は減衰しきらない設定）----
+void testBounceBusTailCap()
+{
+    beginTest ("bounce bus tail cap");
+
+    constexpr double sr = 8000.0; // 上限30秒を速くレンダするための低SR
+    const auto dir = makeTempDir();
+
+    BounceRenderer::Request request;
+    request.sampleRate = sr;
+    request.bpm = 120.0;
+    request.endSample = 800;
+    request.targetFile = dir.getChildFile ("bus-tail-cap.wav");
+    // 1/2音符 @120BPM = 1秒周期・fb90% → -60dBまで約66秒 ＝ 30秒の上限に必ず当たる
+    request.busDelay = Delay::normalized ({ 3, 0.9f, 0.0f, false });
+    {
+        BounceRenderer::TrackRender render;
+        render.gain = 1.0f;
+        render.sends[2] = 1.0f;
+        ClipPlayback clip;
+        auto audio = std::make_shared<juce::AudioBuffer<float>> (1, 800);
+        audio->clear();
+        for (int i = 0; i < 50; ++i)
+            audio->setSample (0, i, 0.5f);
+        clip.audio = audio;
+        clip.lengthSamples = 800;
+        render.clips.push_back (std::move (clip));
+        request.tracks.push_back (std::move (render));
+    }
+    request.resolveWantTail();
+    expect (request.wantTail, "テールに入ること");
+
+    BounceRenderer renderer;
+    expect (renderer.start (std::move (request)), "startできること");
+    expect (waitForBounce (renderer), "タイムアウトせず完了すること");
+    expect (renderer.takeResult().status == BounceRenderer::Status::success, "successで終わること");
+
+    auto rendered = Project::loadWav (dir.getChildFile ("bus-tail-cap.wav"));
+    expect (rendered != nullptr, "書き出しWAVを読めること");
+    if (rendered != nullptr)
+    {
+        const auto total = (juce::int64) rendered->getNumSamples();
+        // エコー間の無音（約1秒）で早期終了せず、上限30秒まで書かれること（±2ブロック）
+        expect (total >= 800 + (juce::int64) (sr * 30.0) - 2048,
+                "1秒間隔のエコーの無音ギャップで早期終了しないこと（上限まで書く）");
+        expect (total <= 800 + (juce::int64) (sr * 30.0) + 4096,
+                "上限30秒で打ち切られること");
+        // 末尾0.5秒のフェードで畳まれてクリックにならない。Limiter flush（lookahead分）も
+        // ゼロ保証（レビューP2: 未フェードのエコーが末尾で復活しない）
+        expect (rendered->getMagnitude (0, rendered->getNumSamples() - 100, 100) < 1.0e-4f,
+                "上限到達時は末尾フェード＋flushゼロ保証で閉じること");
+    }
+    dir.deleteRecursively();
+}
+
+// ---- エンジン: バスミュート中もバスFXは進む（解除時に凍結した古いエコーが出ない）----
+void testEngineBusMuteKeepsFxRunning()
+{
+    beginTest ("engine bus mute keeps fx running");
+
+    constexpr double sr = 48000.0;
+    constexpr int blockSize = 512;
+
+    TransportState transport;
+    SnapshotExchange snapshots;
+    PreviewFifo previewFifo;
+    PlaybackEngine engine (transport, snapshots, previewFifo);
+    engine.prepareToPlay (blockSize, sr);
+
+    Project project;
+    Track track;
+    track.id = 1;
+    track.params->gain.store (1.0f);
+    track.params->sends[2].store (1.0f);
+    Clip clip;
+    clip.lengthSamples = blockSize * 4; // 短いクリップ（2048サンプルで入力が止まる）
+    clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, blockSize * 4);
+    for (int i = 0; i < clip.audio->getNumSamples(); ++i)
+        clip.audio->setSample (0, i, 0.4f);
+    track.clips.push_back (std::move (clip));
+    project.tracks.push_back (std::move (track));
+    Delay::store (project.busParams[2]->delay, Delay::normalized ({ 0, 0.0f, 0.0f, false }));
+    project.busParams[2]->mute.store (true); // 最初からミュート
+    snapshots.push (project.buildSnapshot());
+
+    // エコー（6000〜8048）が鳴り終わるところまでミュートのまま進める（30ブロック=15360）。
+    // FXが止まっていたらリングに古いエコーが残り、解除後に化けて出る
+    transport.seekRequest.store (0);
+    engine.play();
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+    for (int i = 0; i < 30; ++i)
+    {
+        buffer.clear();
+        engine.process (info);
+    }
+
+    project.busParams[2]->mute.store (false); // 解除
+    float maxAfterUnmute = 0.0f;
+    for (int i = 0; i < 10; ++i)
+    {
+        buffer.clear();
+        engine.process (info);
+        maxAfterUnmute = juce::jmax (maxAfterUnmute, buffer.getMagnitude (0, 0, blockSize));
+    }
+    engine.stop();
+    buffer.clear();
+    engine.process (info);
+    expect (maxAfterUnmute < 1.0e-4f,
+            "ミュート解除後に凍結した古いエコーが出ないこと（ミュート中もFXが進む）");
+    snapshots.deleteRetired();
+}
+
+// ---- エンジン⇄バウンス: バスFX（Reverb A/B・Delay）有効時の経路一致 ----
+// パラメータ・バスindex・リセット条件の食い違いを検出する（A/Bは別値にして入れ違いも見る）
+void testEngineBounceBusFxConsistency()
+{
+    beginTest ("engine vs bounce with bus fx");
+
+    constexpr double sr = 44100.0;
+    constexpr int blockSize = 512;
+    constexpr int numBlocks = 24; // 12288サンプル > Delayの1タップ目（5513）
+    constexpr int totalSamples = blockSize * numBlocks;
+
+    auto makeAudio = [] (int len)
+    {
+        auto buffer = std::make_shared<juce::AudioBuffer<float>> (1, len);
+        juce::Random random (77);
+        for (int i = 0; i < len; ++i)
+            buffer->setSample (0, i, std::sin ((float) i * 0.11f) * 0.25f
+                                         + (random.nextFloat() - 0.5f) * 0.1f);
+        return buffer;
+    };
+
+    Project project;
+    {
+        Track track;
+        track.id = 1;
+        track.params->gain.store (0.8f);
+        track.params->pan.store (0.2f);
+        track.params->sends[0].store (0.6f);
+        track.params->sends[1].store (0.3f);
+        track.params->sends[2].store (0.5f);
+        Clip clip;
+        clip.audio = makeAudio (totalSamples);
+        clip.lengthSamples = totalSamples;
+        track.clips.push_back (std::move (clip));
+        project.tracks.push_back (std::move (track));
+    }
+    // A/Bを別値に（入れ違い検出）。Delayは1/16・fb50%・Tone中庸
+    Reverb::store (project.busParams[0]->reverb,
+                   Reverb::normalized ({ 0.3f, 0.7f, 1.0f, 10.0f, 150.0f },
+                                       Reverb::defaultsForBus (0)));
+    Reverb::store (project.busParams[1]->reverb,
+                   Reverb::normalized ({ 0.9f, 0.2f, 0.5f, 60.0f, 60.0f },
+                                       Reverb::defaultsForBus (1)));
+    Delay::store (project.busParams[2]->delay, Delay::normalized ({ 0, 0.5f, 0.5f, true }));
+    project.busParams[0]->gain.store (0.8f);
+    project.busParams[1]->gain.store (0.9f);
+    project.busParams[2]->gain.store (0.7f);
+    project.masterParams->gain.store (0.85f);
+
+    auto renderEngine = [&] (juce::AudioBuffer<float>& out)
+    {
+        TransportState transport;
+        SnapshotExchange snapshots;
+        PreviewFifo previewFifo;
+        PlaybackEngine engine (transport, snapshots, previewFifo);
+        engine.prepareToPlay (blockSize, sr);
+        snapshots.push (project.buildSnapshot());
+        transport.seekRequest.store (0);
+        engine.play();
+        juce::AudioBuffer<float> buffer (2, blockSize);
+        for (int blockIndex = 0; blockIndex * blockSize < out.getNumSamples(); ++blockIndex)
+        {
+            buffer.clear();
+            juce::AudioSourceChannelInfo info (&buffer, 0, blockSize);
+            engine.process (info);
+            for (int ch = 0; ch < 2; ++ch)
+                out.copyFrom (ch, blockIndex * blockSize, buffer, ch, 0, blockSize);
+        }
+        engine.stop();
+        snapshots.deleteRetired();
+    };
+
+    const int latency = engineLimiterLatency (sr);
+    juce::AudioBuffer<float> engineOut (2, totalSamples + blockSize);
+    renderEngine (engineOut);
+
+    // バスFXが実際に効いていること（send全0との差がある）— 空一致の防止
+    {
+        auto& params = *project.tracks[0].params;
+        const float sends[3] = { params.sends[0].load(), params.sends[1].load(),
+                                 params.sends[2].load() };
+        for (auto& send : params.sends)
+            send.store (0.0f);
+        juce::AudioBuffer<float> dryOut (2, totalSamples + blockSize);
+        renderEngine (dryOut);
+        float maxDiff = 0.0f;
+        for (int i = 0; i < totalSamples; ++i)
+            maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (0, i)
+                                                     - dryOut.getSample (0, i)));
+        expect (maxDiff > 1.0e-3f, "sendありはsend全0と出力が異なること（バスFXが効いている）");
+        for (int b = 0; b < numSendBuses; ++b)
+            params.sends[b].store (sends[b]);
+    }
+
+    const auto dir = makeTempDir();
+    const auto target = dir.getChildFile ("bounce-busfx.wav");
+    {
+        BounceRenderer::Request request;
+        request.sampleRate = sr;
+        request.bpm = 120.0;
+        request.endSample = totalSamples;
+        request.targetFile = target;
+        request.masterGain = 0.85f;
+        for (int b = 0; b < numSendBuses; ++b)
+        {
+            request.busGain[b] = project.busParams[b]->gain.load();
+            request.busMute[b] = project.busParams[b]->mute.load();
+        }
+        request.busReverb[0] = Reverb::load (project.busParams[0]->reverb);
+        request.busReverb[1] = Reverb::load (project.busParams[1]->reverb);
+        request.busDelay = Delay::load (project.busParams[2]->delay);
+        for (auto& track : project.tracks)
+        {
+            BounceRenderer::TrackRender render;
+            render.gain = track.params->gain.load();
+            render.pan = track.params->pan.load();
+            for (int b = 0; b < numSendBuses; ++b)
+                render.sends[b] = track.params->sends[b].load();
+            render.loadFxFrom (*track.params);
+            for (auto& clip : track.clips)
+                appendClipPlaybacks (clip, render.clips);
+            request.tracks.push_back (std::move (render));
+        }
+        BounceRenderer renderer;
+        expect (renderer.start (std::move (request)), "startできること");
+        expect (waitForBounce (renderer), "タイムアウトせず完了すること");
+        expect (renderer.takeResult().status == BounceRenderer::Status::success, "successで終わること");
+    }
+
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatReader> reader (
+        wav.createReaderFor (new juce::FileInputStream (target), true));
+    expect (reader != nullptr && reader->lengthInSamples == totalSamples, "バウンス出力を読めること");
+    if (reader != nullptr && reader->lengthInSamples == totalSamples)
+    {
+        juce::AudioBuffer<float> bounceOut (2, totalSamples);
+        reader->read (&bounceOut, 0, totalSamples, 0, true, true);
+        float maxDiff = 0.0f;
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < totalSamples; ++i)
+                maxDiff = juce::jmax (maxDiff, std::abs (engineOut.getSample (ch, i + latency)
+                                                         - bounceOut.getSample (ch, i)));
+        expect (maxDiff < 1.0e-4f, "バスFX有効時もエンジンとバウンスが許容誤差内で一致すること");
+    }
+    reader.reset();
+    dir.deleteRecursively();
+}
+
+// ---- バスFXパラメータの永続化（新規既定値・v18読込・保存往復）----
+void testBusFxParamsPersistence()
+{
+    beginTest ("bus fx params persistence");
+
+    auto expectReverbEquals = [&] (const Reverb::Values& actual, const Reverb::Values& expected,
+                                   const char* label)
+    {
+        expect (std::abs (actual.size - expected.size) < 1.0e-6f
+                    && std::abs (actual.damp - expected.damp) < 1.0e-6f
+                    && std::abs (actual.width - expected.width) < 1.0e-6f
+                    && std::abs (actual.preDelayMs - expected.preDelayMs) < 1.0e-6f
+                    && std::abs (actual.lowCutHz - expected.lowCutHz) < 1.0e-6f,
+                label);
+    };
+
+    // 新規作成: A/Bがバスindex別の既定値・Delayが既定値
+    {
+        Project fresh;
+        expectReverbEquals (Reverb::load (fresh.busParams[0]->reverb), Reverb::defaultsForBus (0),
+                            "新規作成でReverb AがA用の既定値");
+        expectReverbEquals (Reverb::load (fresh.busParams[1]->reverb), Reverb::defaultsForBus (1),
+                            "新規作成でReverb BがB用の既定値");
+        const auto delay = Delay::load (fresh.busParams[2]->delay);
+        expect (delay.timeIndex == Delay::defaults.timeIndex
+                    && ! delay.pingPong
+                    && std::abs (delay.feedback - Delay::defaults.feedback) < 1.0e-6f,
+                "新規作成でDelayが既定値");
+    }
+
+    const auto dir = makeTempDir();
+    const Reverb::Values customA { 0.11f, 0.22f, 0.33f, 44.0f, 55.0f };
+    const Reverb::Values customB { 0.91f, 0.82f, 0.73f, 64.0f, 255.0f };
+    const Delay::Values customD { 1, 0.6f, 0.8f, true };
+
+    // 保存→読込の往復
+    {
+        Project src;
+        src.directory = dir;
+        Reverb::store (src.busParams[0]->reverb, Reverb::normalized (customA, Reverb::defaultsForBus (0)));
+        Reverb::store (src.busParams[1]->reverb, Reverb::normalized (customB, Reverb::defaultsForBus (1)));
+        Delay::store (src.busParams[2]->delay, Delay::normalized (customD));
+        juce::String error;
+        expect (src.save (error), "保存できること");
+
+        juce::StringArray warnings;
+        auto loaded = Project::load (dir, warnings, error);
+        expect (loaded != nullptr, "読込できること");
+        if (loaded != nullptr)
+        {
+            expectReverbEquals (Reverb::load (loaded->busParams[0]->reverb), customA,
+                                "Reverb Aの値が往復すること");
+            expectReverbEquals (Reverb::load (loaded->busParams[1]->reverb), customB,
+                                "Reverb Bの値が往復すること");
+            const auto delay = Delay::load (loaded->busParams[2]->delay);
+            expect (delay.timeIndex == customD.timeIndex && delay.pingPong
+                        && std::abs (delay.feedback - customD.feedback) < 1.0e-6f
+                        && std::abs (delay.tone - customD.tone) < 1.0e-6f,
+                    "Delayの値が往復すること");
+        }
+    }
+
+    // v18読込（busesにreverb/delayキーが無い）: バスindex別の既定値で埋まる
+    {
+        const auto jsonFile = dir.getChildFile ("project.json");
+        auto parsed = juce::JSON::parse (jsonFile.loadFileAsString());
+        parsed.getDynamicObject()->setProperty ("version", 18);
+        if (auto* busesArray = parsed.getProperty ("buses", {}).getArray())
+            for (auto& busVar : *busesArray)
+                if (auto* busObj = busVar.getDynamicObject())
+                {
+                    busObj->removeProperty ("reverb");
+                    busObj->removeProperty ("delay");
+                }
+        expect (jsonFile.replaceWithText (juce::JSON::toString (parsed)), "v18相当へ書き換えられること");
+
+        juce::StringArray warnings;
+        juce::String error;
+        auto loaded = Project::load (dir, warnings, error);
+        expect (loaded != nullptr, "v18相当を読込できること");
+        if (loaded != nullptr)
+        {
+            expectReverbEquals (Reverb::load (loaded->busParams[0]->reverb), Reverb::defaultsForBus (0),
+                                "v18読込でReverb AがA用の既定値");
+            expectReverbEquals (Reverb::load (loaded->busParams[1]->reverb), Reverb::defaultsForBus (1),
+                                "v18読込でReverb BがB用の既定値");
+            const auto delay = Delay::load (loaded->busParams[2]->delay);
+            expect (delay.timeIndex == Delay::defaults.timeIndex && ! delay.pingPong,
+                    "v18読込でDelayが既定値");
+        }
+    }
+    dir.deleteRecursively();
+}
+
 } // namespace
 
 
@@ -13067,6 +13872,13 @@ int main (int argc, char** argv)
     testSpawnedProcess();
     testTempDirSweep();
     testUrlDownloaderLive(); // LALA_VERIFY_URL が無ければ何もしない
+    testBusDelayImpulse();
+    testBusReverbBasics();
+    testBounceBusFxTail();
+    testBounceBusTailCap();
+    testEngineBusMuteKeepsFxRunning();
+    testEngineBounceBusFxConsistency();
+    testBusFxParamsPersistence();
     testMonoRenderRegressionHash();
     testTrackFxRegressionHash();
 

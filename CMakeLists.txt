@@ -90,6 +90,8 @@ target_sources(daw PRIVATE
     Source/audio/AudioImporter.cpp
     Source/audio/AudioFilePreview.cpp
     Source/audio/BounceRenderer.cpp
+    Source/audio/BusDelay.cpp
+    Source/audio/BusReverb.cpp
     Source/audio/MasterLimiter.cpp
     Source/audio/PlaybackEngine.cpp
     Source/audio/Recorder.cpp
@@ -112,12 +114,14 @@ target_sources(daw PRIVATE
     Source/shared/SpectrumAnalyzer.cpp
     Source/shared/SynthBank.cpp
     Source/ui/CompEditorView.cpp
+    Source/ui/DelayEditorView.cpp
     Source/ui/EqEditorView.cpp
     Source/ui/FxEditorView.cpp
     Source/ui/GachaPanelView.cpp
     Source/ui/InstrumentDetailView.cpp
     Source/ui/LimiterEditorView.cpp
     Source/ui/LofiEditorView.cpp
+    Source/ui/ReverbEditorView.cpp
     Source/ui/SatEditorView.cpp
     Source/ui/AudioFileBrowserView.cpp
     Source/ui/MainComponent.cpp
@@ -241,6 +245,8 @@ target_sources(daw_tests PRIVATE
     Source/audio/AudioImporter.cpp
     Source/audio/AudioFilePreview.cpp
     Source/audio/BounceRenderer.cpp
+    Source/audio/BusDelay.cpp
+    Source/audio/BusReverb.cpp
     Source/audio/MasterLimiter.cpp
     Source/audio/PlaybackEngine.cpp
     Source/audio/Recorder.cpp

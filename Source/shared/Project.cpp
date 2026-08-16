@@ -736,6 +736,29 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
         auto* busObj = new juce::DynamicObject();
         busObj->setProperty ("gain", (double) busParams[b]->gain.load());
         busObj->setProperty ("mute", busParams[b]->mute.load());
+        // バスFX（v19）。常に明示書き出し（「既定値なら省略」はしない — 省略判定が
+        // バスindex別の既定値に依存して壊れる余地を消す）
+        if (b == 2)
+        {
+            const auto delay = Delay::load (busParams[b]->delay);
+            auto* delayObj = new juce::DynamicObject();
+            delayObj->setProperty ("time", delay.timeIndex);
+            delayObj->setProperty ("feedback", (double) delay.feedback);
+            delayObj->setProperty ("tone", (double) delay.tone);
+            delayObj->setProperty ("pingpong", delay.pingPong);
+            busObj->setProperty ("delay", juce::var (delayObj));
+        }
+        else
+        {
+            const auto reverb = Reverb::load (busParams[b]->reverb);
+            auto* reverbObj = new juce::DynamicObject();
+            reverbObj->setProperty ("size", (double) reverb.size);
+            reverbObj->setProperty ("damp", (double) reverb.damp);
+            reverbObj->setProperty ("width", (double) reverb.width);
+            reverbObj->setProperty ("predelay", (double) reverb.preDelayMs);
+            reverbObj->setProperty ("lowcut", (double) reverb.lowCutHz);
+            busObj->setProperty ("reverb", juce::var (reverbObj));
+        }
         busesArray.add (juce::var (busObj));
     }
     root->setProperty ("buses", busesArray);
@@ -1208,6 +1231,32 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
             project->busParams[b]->gain.store (juce::jlimit (0.0f, 1.0f,
                                                              (float) (double) busVar.getProperty ("gain", 1.0)));
             project->busParams[b]->mute.store ((bool) busVar.getProperty ("mute", false));
+
+            // バスFX（v19。v18以下＝キー欠損はバスindex別の既定値: busDefaultParams が
+            // 入れた値のまま触らない。normalizedが非有限・範囲外も既定値化する）
+            if (b == 2)
+            {
+                if (const auto delayVar = busVar.getProperty ("delay", {}); delayVar.isObject())
+                {
+                    Delay::Values delay;
+                    delay.timeIndex = (int) delayVar.getProperty ("time", delay.timeIndex);
+                    delay.feedback = (float) (double) delayVar.getProperty ("feedback", (double) delay.feedback);
+                    delay.tone = (float) (double) delayVar.getProperty ("tone", (double) delay.tone);
+                    delay.pingPong = (bool) delayVar.getProperty ("pingpong", delay.pingPong);
+                    Delay::store (project->busParams[b]->delay, Delay::normalized (delay));
+                }
+            }
+            else if (const auto reverbVar = busVar.getProperty ("reverb", {}); reverbVar.isObject())
+            {
+                auto reverb = Reverb::defaultsForBus (b);
+                reverb.size = (float) (double) reverbVar.getProperty ("size", (double) reverb.size);
+                reverb.damp = (float) (double) reverbVar.getProperty ("damp", (double) reverb.damp);
+                reverb.width = (float) (double) reverbVar.getProperty ("width", (double) reverb.width);
+                reverb.preDelayMs = (float) (double) reverbVar.getProperty ("predelay", (double) reverb.preDelayMs);
+                reverb.lowCutHz = (float) (double) reverbVar.getProperty ("lowcut", (double) reverb.lowCutHz);
+                Reverb::store (project->busParams[b]->reverb,
+                               Reverb::normalized (reverb, Reverb::defaultsForBus (b)));
+            }
         }
     }
     if (const auto masterVar = parsed.getProperty ("master", {}); masterVar.isObject())

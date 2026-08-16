@@ -31,8 +31,12 @@
 ## チャンネル構成
 
 - **全トラック固定ストリップ**: EQ → Comp → 外部AU 1枠（各 ON/OFF のみ。順序入替・複数挿しなし）＋ send ノブ3個
-- **send用の固定バス3本**: Reverb A（短い Room 系想定）・Reverb B（長い Hall/Plate 系想定）・Delay
-  - 各バスに該当FXが1個固定（リバーブは種類セレクタを持つ）
+- **send用の固定バス3本**: Reverb A（短い Room 系・初期値のみの違い）・Reverb B（長い Hall 系・同）・Delay
+  - 各バスに該当FXが1個固定・常在（バイパスなし）・Mixノブなしの full wet
+  - リバーブの種類セレクタは**作らない**（2026-08-16 バッチ4 dig で変更。単一アルゴリズム
+    （juce::Reverb）のプリセットに過ぎず、ノブ5個（Size/Damp/Width/Pre-delay/Low Cut）の
+    中身が見えなくなる。A/Bの違いはバスindex別の既定値だけ）
+  - Reverb B は曲作りで使わなかったら消す（fx-roadmap.md バッチ4の注記）
   - バスの作成・削除・命名UIは作らない
 - **Master 1本**（Logic の Stereo Out 相当）。固定チェーンは **Limiter のみ**
   - グループバスは作らない（欲しくなったら「Vocalバス固定1本＋出力先トグル」で足す）

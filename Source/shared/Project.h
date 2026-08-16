@@ -377,7 +377,10 @@ public:
     // v18: トラックSat（fx.sat.enabled/drive/mix。欠損＝既定値 enabled=ON・Drive0＝中立。
     //      同planで後続のLo-fi（fx.lofi）も v18 に足す — 欠損は既定値で読むため、
     //      Sat のみ保存された途中版のプロジェクトも壊れない）
-    static constexpr int currentVersion = 18;
+    // v19: バスFX（buses[0/1].reverb = size/damp/width/predelay/lowcut・buses[2].delay =
+    //      time/feedback/tone/pingpong。欠損＝バスindex別の既定値 Reverb::defaultsForBus /
+    //      Delay::defaults。保存は常に明示書き出し＝「既定値なら省略」はしない）
+    static constexpr int currentVersion = 19;
 
     juce::File directory;
     double bpm = 120.0;
@@ -423,10 +426,11 @@ public:
     // - 開始点が終端以後なら 0（判定は呼び出し側でグリッドへ丸めた後の値で行うこと）
     int resolveSongFadeEnd (int startSixteenths, double sampleRate) const;
 
-    // send用固定バス3本（gain=リターン量・mute使用）とMaster（gain使用）。
-    // gainの既定はトラック（0.8）と違いユニティ1.0（unityParams()が保証。
-    // v3以前の読込・新規作成でもこの初期値のまま）
-    std::shared_ptr<TrackParams> busParams[numSendBuses] { unityParams(), unityParams(), unityParams() };
+    // send用固定バス3本（gain=リターン量・mute・reverb/delayのFXパラメータ使用）とMaster（gain使用）。
+    // gainの既定はトラック（0.8）と違いユニティ1.0、バスFXの既定はバスindex別
+    // （busDefaultParams()が保証。v3以前の読込・新規作成でもこの初期値のまま）
+    std::shared_ptr<TrackParams> busParams[numSendBuses] { busDefaultParams (0), busDefaultParams (1),
+                                                          busDefaultParams (2) };
     std::shared_ptr<TrackParams> masterParams { unityParams() };
 
     juce::String name() const { return directory.getFileName(); }
@@ -483,6 +487,17 @@ private:
     {
         auto params = std::make_shared<TrackParams>();
         params->gain.store (1.0f); // TrackParamsの既定0.8fを引き継がない（バス/Masterはユニティ）
+        return params;
+    }
+
+    // バス用のparams生成（v19）。ユニティに加えてバスFXの既定値をバスindex別テーブル
+    // （Reverb::defaultsForBus）から入れる。新規作成＝この初期値のまま・旧版読込（キー欠損）＝
+    // load側が同じテーブルで埋め直す、の両経路がここへ収束する
+    static std::shared_ptr<TrackParams> busDefaultParams (int busIndex)
+    {
+        auto params = unityParams();
+        Reverb::store (params->reverb, Reverb::defaultsForBus (busIndex));
+        Delay::store (params->delay, Delay::defaults);
         return params;
     }
 
