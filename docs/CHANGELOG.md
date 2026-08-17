@@ -30,6 +30,8 @@ LaLa（旧名 daw）の更新履歴。形式は [Keep a Changelog](https://keepa
 ---
 
 ## [Unreleased]
+
+## [0.11.0] - 2026-08-17
 ### ✨ Added
 - センドバスにエフェクトの実体を追加: **Reverb A/B**（Size・Damp・Width・Pre-delay・Low Cut の5ノブ。A=短めRoom系・B=長めHall系の初期値）と **Delay**（テンポ同期 Time 1/16〜1/2・Feedback・Tone・Ping-pong）。各トラックの send ノブが実際に残響・エコーの量として効くように
 - **Master Limiter** を追加（Gain・Ceiling・Release の3ノブ・lookahead 2ms 固定のブリックウォール。Masterの[Limiter]スロットから開く）
