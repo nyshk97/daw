@@ -2,9 +2,9 @@
 # 配布用 Salva.app をビルド → Developer ID で inside-out 再署名 → notarize → staple →
 # build-release/Salva.dmg に出力する。scripts/build.sh（LaLa）のSalva版。
 #
-# 前提は build.sh と同じ（Developer ID 証明書・notarytool profile "ide-notary"・create-dmg）。
-# 注: notarytool は Claude Code の Bash からは keychain に届かない。
-#     このスクリプトはユーザーの Terminal で実行すること（通常は release-salva.sh 経由）。
+# 前提は build.sh と同じ（Developer ID 証明書・notarytool profile "nyshk97-notary"・create-dmg）。
+# 注: 環境によっては notarytool が Claude Code の Bash から keychain に届かないことがある。
+#     リリースはユーザーの Terminal で実行するのが確実（通常は release-salva.sh 経由）。
 #
 # --skip-notarize: 署名検証まで実行して終了する（notarize / DMG 生成をスキップ）
 set -euo pipefail
@@ -24,7 +24,7 @@ EXPORT_DIR="/tmp/salva-export"
 APP="$EXPORT_DIR/Salva.app"
 DMG_PATH="$BUILD_DIR/Salva.dmg"
 ENTITLEMENTS="$PROJECT_ROOT/Resources/daw.entitlements"  # audio-input のみ。LaLaと共用でよい
-NOTARY_PROFILE="${NOTARY_PROFILE:-ide-notary}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-nyshk97-notary}"
 
 cd "$PROJECT_ROOT"
 

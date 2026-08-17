@@ -43,7 +43,7 @@ JUCE と Sparkle は自動取得なので手動インストール不要。Sparkl
 | `python3` | CHANGELOG の書き換え・appcast.xml へのアイテム挿入 |
 | `claude` CLI | CHANGELOG `[Unreleased]` の自動生成（任意。無ければ手動編集にフォールバック） |
 | Developer ID Application 証明書 | 配布用の再署名（hardened runtime） |
-| notarytool の keychain profile `ide-notary` | 公証。**Claude Code の Bash からは keychain に届かないため、リリースはユーザーのTerminalで実行する** |
+| notarytool の keychain profile `nyshk97-notary` | 公証。App Store Connect の API キーで登録する（`.p8` は Dropbox の `secrets/`）。**環境によっては Claude Code の Bash から keychain に届かないため、リリースはユーザーのTerminalで実行する** |
 | Sparkle の EdDSA 秘密鍵（Keychain アカウント `daw`） | appcast の署名。バックアップは `~/Library/CloudStorage/Dropbox/secrets/sparkle-ed25519-daw-private.key` |
 | `mise`（任意） | `start` / `stop` / `release` タスクのランナー |
 

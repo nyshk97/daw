@@ -7,13 +7,17 @@
 # 手動再署名手順 (https://sparkle-project.org/documentation/sandboxing/) に従い、
 # --deep や全体への --entitlements 一括適用はしない（XPC の entitlement を壊すため）。
 #
-# 前提（一度だけ手作業で用意する。PolePole と共通のものを流用）:
+# 前提（一度だけ手作業で用意する。自作 Mac アプリ全体で共通）:
 #   1. キーチェーンに "Developer ID Application: ... (VYDUR99LAM)" 証明書がある
-#   2. notarytool の認証情報が keychain profile "ide-notary" に保存済み
+#   2. notarytool の認証情報が keychain profile "nyshk97-notary" に保存済み。
+#      App Store Connect の API キー（.p8 は Dropbox の secrets/）で登録する:
+#        xcrun notarytool store-credentials nyshk97-notary \
+#          --key ~/Library/CloudStorage/Dropbox/secrets/AuthKey_M4FG2B8JFX.p8 \
+#          --key-id M4FG2B8JFX --issuer 024fc873-10f9-49a4-8d6f-20fb5c7bd522
 #   3. create-dmg (Brewfile 経由でインストール済み)
 #
-# 注: notarytool は Claude Code の Bash からは keychain に届かない。
-#     このスクリプトはユーザーの Terminal で実行すること（通常は release.sh 経由）。
+# 注: 環境によっては notarytool が Claude Code の Bash から keychain に届かないことがある。
+#     リリースはユーザーの Terminal で実行するのが確実（通常は release.sh 経由）。
 #
 # --skip-notarize: 署名検証まで実行して終了する（notarize / DMG 生成をスキップ）。
 #     署名まわりの変更（モジュール追加等）を、リリース本番より前に自走検証する用
@@ -34,7 +38,7 @@ EXPORT_DIR="/tmp/daw-export"
 APP="$EXPORT_DIR/LaLa.app"
 DMG_PATH="$BUILD_DIR/LaLa.dmg"
 ENTITLEMENTS="$PROJECT_ROOT/Resources/daw.entitlements"
-NOTARY_PROFILE="${NOTARY_PROFILE:-ide-notary}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-nyshk97-notary}"
 
 cd "$PROJECT_ROOT"
 
