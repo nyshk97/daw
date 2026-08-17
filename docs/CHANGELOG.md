@@ -30,6 +30,18 @@ LaLa（旧名 daw）の更新履歴。形式は [Keep a Changelog](https://keepa
 ---
 
 ## [Unreleased]
+### ✨ Added
+- センドバスにエフェクトの実体を追加: **Reverb A/B**（Size・Damp・Width・Pre-delay・Low Cut の5ノブ。A=短めRoom系・B=長めHall系の初期値）と **Delay**（テンポ同期 Time 1/16〜1/2・Feedback・Tone・Ping-pong）。各トラックの send ノブが実際に残響・エコーの量として効くように
+- **Master Limiter** を追加（Gain・Ceiling・Release の3ノブ・lookahead 2ms 固定のブリックウォール。Masterの[Limiter]スロットから開く）
+- マスターメーター群を追加: **LUFS**（short-term＋integrated・-14/-9 ターゲットライン）・**相関**・**トゥルーピーク**（Limiterエディタ内に常設）
+- 書き出し完了時に integrated LUFS / トゥルーピークを自動計測して表示
+- トラックFXに **Sat**（サチュレーション。Drive・Mix の2ノブ＋伝達カーブ・倍音バー表示）を追加
+- トラックFXに **Lo-fi**（Wow・Tone・Noise・Crush の成分別4ノブ。レコード質感の劣化系）を追加
+
+### 📝 Changed
+- FXストリップを `[EQ][Comp][Sat][Lo-fi][Ext]` の固定5枠に拡張（ミキサー・FXパネルとも）
+- センドバスは素通し（音量が増えるだけ）から full wet のエフェクト返しに変更（過去に send を上げて保存したプロジェクトは聴こえ方が変わる）
+- 書き出しのテールをバスFXの残響・エコーが減衰しきるまで延長（上限30秒・上限到達時はフェードで自然に終了）
 
 ## [0.10.0] - 2026-08-15
 ### ✨ Added
