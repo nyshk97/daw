@@ -27,7 +27,7 @@ SKIP_NOTARIZE=0
 for arg in "$@"; do
   case "$arg" in
     --skip-notarize) SKIP_NOTARIZE=1 ;;
-    *) echo "不明な引数: $arg（使えるのは --skip-notarize のみ）" >&2; exit 2 ;;
+    *) echo "不明な引数: ${arg}（使えるのは --skip-notarize のみ）" >&2; exit 2 ;;
   esac
 done
 

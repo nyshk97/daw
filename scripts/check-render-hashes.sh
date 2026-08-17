@@ -76,7 +76,7 @@ for config in debug release; do
     cat "$baseline"
   else
     if [ ! -f "$baseline" ]; then
-      echo "ERROR: ベースラインがありません: $baseline（先に capture を実行してください）" >&2
+      echo "ERROR: ベースラインがありません: ${baseline}（先に capture を実行してください）" >&2
       rm -f "$current"
       exit 2
     fi
