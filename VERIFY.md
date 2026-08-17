@@ -41,6 +41,10 @@ sleep 6 && tail -5 ~/Library/Logs/daw/"$(ls -t ~/Library/Logs/daw | head -1)"  #
 - FX（Sat/Lo-fi/バスReverb/Delay）の確認用プロジェクトは `scripts/seed-fx-test.sh` で生成（冪等）:
   `~/Music/daw/0-0-fx-test`（90BPM/48k/8小節。Drums=Lo-fi軽め・Keys=Sat 35%＋RevA send・
   Pad=RevB send・Lead=Delay＋RevA send。トラック構成と確認項目の対応はスクリプト冒頭のコメント参照）
+- seeder 再実行時の注意: **アプリで対象プロジェクトを開いたままだと反映されない**（開き直しが必要）。
+  また旧インスタンスが同プロジェクトを未保存（タイトル●）で開いていると、その保存で seeder の内容が
+  旧状態へ巻き戻る。「FXが効いていない」ように見えたら、まず開いているプロジェクトのトラック構成・
+  send値が seeder の想定（スクリプト冒頭コメント）と一致するか確認する
 - `--play`: 開いた後に再生開始（ログ `transport.play`）。**音を出したくない検証**はトラックの
   `volume: 0.001`（-60dB＝実質無音）にする — EQのアナライザ・CompのGR検波はどちらも
   フェーダー前タップなので表示はフルに出る。Compの表示検証は `~/Music/daw/0-0-comp-test`
@@ -213,6 +217,11 @@ scripts/check-render-hashes.sh compare
 - `daw_tests | grep hash-` の直結は使わない（テストがハッシュ出力後に落ちても grep の 0 が失敗を隠す）
 - testMonoRenderRegressionHash が「重なりクリップ×pan×send×Master」の決定的レンダリングをFNV-1aで出力する
 - ハッシュの期待値はテストにハードコードしない（浮動小数点の積和順序がコンパイラ・環境依存。同一環境の変更前後比較にのみ使う）
+- **仕様変更でハッシュが変わるとき**: fixture が対象機能を含むなら変化は「意図した仕様変化」（実例:
+  バッチ4で素通しバス→wet返しになり、send>0 を含む全 fixture のハッシュが変化）。変更前に capture →
+  compare の diff で**変わった本数・経路が意図と一致するか**を確認（変わるはずのない経路の変化はバグ）→
+  説明がついたら capture し直して新基準にする。「意図した変化かどうか」は別テスト（不変であるべき性質の
+  直接検証）で裏取りする
 - 不一致＝モノのみトラック経路の演算順序が変わった兆候（PlaybackEngine/BounceRendererの2経路構造のコメント参照）
 - **変更前のハッシュを採り忘れたときは `git stash` で取れる**（作業ツリーを退避して同じ手順を実行 → `git stash pop` で戻す）。Masterゲイン経路に手を入れる変更（曲末フェード等）で「既存プロジェクトの出音を変えていない」ことを実証するのに使える:
   ```sh
