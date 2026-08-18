@@ -1,0 +1,8 @@
+# noiselab Step 0（計測）用の最小依存。
+# Step 1（候補処理）に進んだら noisereduce / melband-roformer-infer / deepfilternet を
+# ここに追記し、確定版を env-freeze-*.lock に固定する（stemlab の運用に合わせる）
+numpy>=1.26
+soundfile>=0.12
+# Step 1（古典比較・2026-08-18 追加）
+noisereduce>=3.0
+scipy>=1.11

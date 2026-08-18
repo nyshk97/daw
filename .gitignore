@@ -20,3 +20,11 @@ __pycache__/
 /tools/stemlab/*.txt
 /tools/stemlab/scratch/
 /.render-hash-baseline/
+
+# ノイズ除去ラボ（tools/noiselab/）の生成物。スクリプト・設定・環境lockだけコミットする
+/tools/noiselab/.venv/
+/tools/noiselab/listen/
+/tools/noiselab/work/
+/tools/noiselab/models/
+/tools/noiselab/logs/
+/tools/noiselab/*.log

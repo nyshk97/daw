@@ -1,0 +1,28 @@
+{
+  "uta-Y": "original",
+  "uta-X": "classic-ideal",
+  "reveal/uta-removed-1.wav": {
+    "label": "X",
+    "variant": "classic-ideal",
+    "amplified_db": 22.5
+  },
+  "uta-Z": "classic-auto",
+  "reveal/uta-removed-2.wav": {
+    "label": "Z",
+    "variant": "classic-auto",
+    "amplified_db": 12.3
+  },
+  "rap-Z": "original",
+  "rap-Y": "classic-ideal",
+  "reveal/rap-removed-1.wav": {
+    "label": "Y",
+    "variant": "classic-ideal",
+    "amplified_db": 24.1
+  },
+  "rap-X": "classic-auto",
+  "reveal/rap-removed-2.wav": {
+    "label": "X",
+    "variant": "classic-auto",
+    "amplified_db": 3.7
+  }
+}

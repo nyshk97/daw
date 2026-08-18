@@ -106,6 +106,8 @@
 機材の提案・接続経路の検討はこの前提で行う。
 
 - オーディオインターフェース: MOTU UltraLite mk5
+  - **Phones 端子は CueMix で Phones Mix (L-R) に分離済み**（2026-08-18。デフォルトの Main 1-2 ミラーから変更）。アプリの出力を Phones Out 1+2 に向ければ「ヘッドフォンのみ・スピーカー無音」になる — ボーカル録音時の回り込み対策。逆に、通常の音楽再生（Main 1-2 行き）はヘッドフォンに流れない
+  - **ボーカル録音のゲイン基準: 声のピークが -12〜-6dBFS**（録り音の検品は `tools/noiselab/measure.py`。回り込み・クリップ事故の実測記録は `docs/labs/noise-removal.md`）
 - モニタースピーカー: GENELEC 8010AM
 - モニターヘッドフォン: SONY MDR-7506
 - ダイナミックマイク: SHURE SM58SE
