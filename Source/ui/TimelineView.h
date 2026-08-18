@@ -104,6 +104,10 @@ public:
     // （MainComponent::pushAudioValueSnapshot へ繋ぐ）
     std::function<void()> onWillEditClipValue; // ドラッグ開始直前（undoは1操作=1件）
     std::function<void()> onClipValueEdited;   // 値の変更ごと（ドラッグ中も呼ばれる）
+    // 移調・伸縮の**要求値**の変更通知。値を変えただけでは音は変わらない（レンダー完了時に
+    // 一斉に切り替わる）ので snapshot は押さず、dirty 化と RenderCache の要求同期だけを行う
+    // （MainComponent が繋ぐ）。undo は onWillEditClipValue（吹き出しを開いてから閉じるまで1件）
+    std::function<void()> onClipStretchEdited;
     // 構造編集を受け付けてよいか（録音中は不可）。TimelineViewはPlaybackEngineを知らず
     // TransportState::recordArmed は録音待機であって録音中と別物なので、MainComponentから渡してもらう。
     // 未設定なら常に編集可（TrackHeadersView::canReorder と同じ形）
@@ -243,6 +247,13 @@ private:
     void showItemMenu (int trackIndex, int itemIndex); // 右クリックメニュー（ミュート/複製/削除）
     void showClipGainCallout (int trackIndex, int itemIndex); // メニューの「ゲイン…」→ 吹き出し
     void applyClipGain (int trackIndex, int itemIndex, float gain); // 値の適用（index範囲を再検証する）
+    void showClipStretchCallout (int trackIndex, int itemIndex); // メニューの「移調・伸縮…」→ 吹き出し
+    // 移調・伸縮の要求値の適用（受付層 = ClipStretchLimits でクランプして受理。
+    // 値が変わったらレンダードメインをクリップ自身の範囲へリセットする）
+    void applyClipStretch (int trackIndex, int itemIndex, int semitones, double ratio);
+    // 要求と実効の不一致（レンダリング待ち）。この間は長さ依存操作（分割・終端直後へ複製）を
+    // 無効にする（planの「処理中は分割が無効化される」）
+    bool clipRenderPending (const Clip& clip) const;
 
     // サイクル範囲（ルーラーの操作。クリック=シークは維持し、ドラッグだけが範囲を作る）
     int sixteenthToX (int sixteenths) const;
@@ -296,6 +307,9 @@ private:
         // 縮めすぎてから戻したときにフェードが復元されない（1ジェスチャー内で値が削られる）。
         // 毎イベント「元値を代入 → clampFades()」で再計算する
         juce::int64 origFadeInSamples = 0, origFadeOutSamples = 0;
+        // フェードドラッグの基準（実効＝見かけ座標）。ドラッグは実効座標で行い、保存時に
+        // chain 変換の逆で原音座標（origFadeInSamples 系とは別の値）へ戻す
+        juce::int64 origRenderedFadeIn = 0, origRenderedFadeOut = 0;
         int startX = 0;
         bool duplicateOnDrag = false; // ⌥ドラッグ: 最初の移動時に複製してから動かす
         // 実際に動いた時点で編集開始通知を一度だけ呼ぶ（フェードは onWillEditClipValue、
@@ -363,8 +377,9 @@ private:
     std::unique_ptr<MarkerLaneContent> markerLane;
     std::unique_ptr<SongFadeBandContent> songFadeBand;
     bool lastFadeBandVisible = false; // 帯の出入りを検出してレイアウトを組み直すため
-    // リージョンゲインの吹き出し（非同期に閉じられるので SafePointer で追う）
+    // リージョンゲイン・移調/伸縮の吹き出し（非同期に閉じられるので SafePointer で追う）
     juce::Component::SafePointer<juce::CallOutBox> gainCallout;
+    juce::Component::SafePointer<juce::CallOutBox> stretchCallout;
 
     std::unique_ptr<LaneViewport> viewport;
     std::unique_ptr<LaneContent> lanes;

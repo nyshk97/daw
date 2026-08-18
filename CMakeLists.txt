@@ -28,6 +28,39 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(JUCE)
 
+# ---- signalsmith-stretch（オーディオクリップの移調・タイムストレッチ。MIT）----
+# 公開タグが 1.1.0 までで main のヘッダは 1.3.2 のため commit SHA で pin する。
+# 上流 CMake は 3.24 要求（LaLa は 3.22）なので add_subdirectory せず、ヘッダの
+# include ディレクトリだけを使う（FFT で Signalsmith Linear に依存するため 2 リポジトリを取得）。
+# SHA を上げるときは両者の整合（stretch が要求する linear のバージョン）を上流 CMakeLists で再確認すること
+FetchContent_Declare(
+    signalsmith-stretch
+    GIT_REPOSITORY https://github.com/Signalsmith-Audio/signalsmith-stretch.git
+    GIT_TAG 57b93f4e9206a089a45387eaa39bdc9f310d3308 # v1.3.2 相当（2026-08 時点の main）
+)
+FetchContent_Declare(
+    signalsmith-linear
+    GIT_REPOSITORY https://github.com/Signalsmith-Audio/linear.git
+    GIT_TAG 5668673560146a9cfe38c25315071e3fd68c8317 # 0.3.1（stretch 上流 CMake の指定タグ）
+)
+# **取得のみ**（MakeAvailable は使わない）: MakeAvailable は上流を add_subdirectory するため、
+# 上流の cmake_minimum_required(3.24) が LaLa の 3.22 宣言で configure を落とす。
+# FetchContent_Populate の単引数形は新しい CMake では非推奨（CMP0169）だが、
+# 3.22 互換で「ソースだけ取り出す」公式パターンはこれなので OLD を明示して使う
+if(POLICY CMP0169)
+    cmake_policy(SET CMP0169 OLD)
+endif()
+foreach(_dep IN ITEMS signalsmith-stretch signalsmith-linear)
+    FetchContent_GetProperties(${_dep})
+    if(NOT ${_dep}_POPULATED)
+        FetchContent_Populate(${_dep})
+    endif()
+endforeach()
+set(DAW_STRETCH_INCLUDE_DIRS
+    "${signalsmith-stretch_SOURCE_DIR}/include"
+    "${signalsmith-linear_SOURCE_DIR}/include"
+)
+
 # Debug は dev 版として別アプリ扱いにする（名前・bundle id・アイコンを分離し、
 # Dock・⌘Tab・TCC 権限が常用版（Release）と独立する）。
 # bundle id が異なるため dev 版の初回起動時のみマイク許可の再付与が必要。
@@ -90,6 +123,8 @@ target_sources(daw PRIVATE
     Source/audio/AudioImporter.cpp
     Source/audio/AudioFilePreview.cpp
     Source/audio/BounceRenderer.cpp
+    Source/audio/ClipStretcher.cpp
+    Source/audio/RenderCache.cpp
     Source/audio/BusDelay.cpp
     Source/audio/BusReverb.cpp
     Source/audio/MasterLimiter.cpp
@@ -103,6 +138,7 @@ target_sources(daw PRIVATE
     Source/audio/TrackLofi.cpp
     Source/audio/TrackSaturator.cpp
     Source/audio/UrlDownloader.cpp
+    Source/shared/ClipDomains.cpp
     Source/shared/GachaSession.cpp
     Source/shared/Log.cpp
     Source/shared/LoudnessMeter.cpp
@@ -134,6 +170,27 @@ target_sources(daw PRIVATE
 )
 
 target_include_directories(daw PRIVATE Source)
+# SYSTEM: 上流ヘッダを警告ゼロ基準の対象から外す（juce_recommended_warning_flags と衝突させない）
+target_include_directories(daw SYSTEM PRIVATE ${DAW_STRETCH_INCLUDE_DIRS})
+
+# ---- サードパーティのライセンス同梱（MIT の配布条件）----
+# signalsmith-stretch / Signalsmith Linear のライセンス文を名前を付けてコピーし、
+# アプリバンドルの Resources に入れる（リリース成果物 = .app 丸ごとなのでこれで同梱される）
+set(DAW_LICENSE_DIR "${CMAKE_BINARY_DIR}/third-party-licenses")
+file(MAKE_DIRECTORY "${DAW_LICENSE_DIR}")
+file(COPY_FILE "${signalsmith-stretch_SOURCE_DIR}/LICENSE.txt"
+    "${DAW_LICENSE_DIR}/LICENSE-signalsmith-stretch.txt" ONLY_IF_DIFFERENT)
+file(COPY_FILE "${signalsmith-linear_SOURCE_DIR}/LICENSE.txt"
+    "${DAW_LICENSE_DIR}/LICENSE-signalsmith-linear.txt" ONLY_IF_DIFFERENT)
+target_sources(daw PRIVATE
+    "${DAW_LICENSE_DIR}/LICENSE-signalsmith-stretch.txt"
+    "${DAW_LICENSE_DIR}/LICENSE-signalsmith-linear.txt"
+)
+set_source_files_properties(
+    "${DAW_LICENSE_DIR}/LICENSE-signalsmith-stretch.txt"
+    "${DAW_LICENSE_DIR}/LICENSE-signalsmith-linear.txt"
+    PROPERTIES MACOSX_PACKAGE_LOCATION Resources
+)
 
 target_compile_definitions(daw PRIVATE
     # アプリ表示名（Debug=LaLa-dev / Release=LaLa）とバージョン。Main.cpp が参照する
@@ -245,6 +302,8 @@ target_sources(daw_tests PRIVATE
     Source/audio/AudioImporter.cpp
     Source/audio/AudioFilePreview.cpp
     Source/audio/BounceRenderer.cpp
+    Source/audio/ClipStretcher.cpp
+    Source/audio/RenderCache.cpp
     Source/audio/BusDelay.cpp
     Source/audio/BusReverb.cpp
     Source/audio/MasterLimiter.cpp
@@ -258,6 +317,7 @@ target_sources(daw_tests PRIVATE
     Source/audio/TrackLofi.cpp
     Source/audio/TrackSaturator.cpp
     Source/audio/UrlDownloader.cpp
+    Source/shared/ClipDomains.cpp
     Source/shared/GachaSession.cpp
     Source/shared/Log.cpp
     Source/shared/LoudnessMeter.cpp
@@ -271,6 +331,7 @@ target_sources(daw_tests PRIVATE
 )
 
 target_include_directories(daw_tests PRIVATE Source)
+target_include_directories(daw_tests SYSTEM PRIVATE ${DAW_STRETCH_INCLUDE_DIRS})
 
 target_compile_definitions(daw_tests PRIVATE
     JUCE_WEB_BROWSER=0

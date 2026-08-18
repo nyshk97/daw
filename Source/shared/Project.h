@@ -7,6 +7,7 @@
 
 #include "PlaybackSnapshot.h"
 #include "Ppq.h"
+#include "RenderedDomain.h"
 
 // メッセージスレッドが所有するデータモデル。オーディオスレッドへは
 // buildSnapshot() で作った PlaybackSnapshot を SnapshotExchange 経由で渡す。
@@ -43,14 +44,121 @@ struct Clip
     // 掛かるのは「ループの連なり全体」の先頭と末尾だけで、繰り返しの間はシームレス
     // （各反復に掛けると繰り返すたびに音量が抜けてポンプするため）。カーブはリニア固定。
     // 不変条件: 0 <= fadeInSamples, 0 <= fadeOutSamples,
-    //           fadeInSamples + fadeOutSamples <= totalLengthSamples()（clampFades が強制する）
+    //           fadeInSamples + fadeOutSamples <= sourceTotalLengthSamples()（clampFades が強制する。原音座標）
     juce::int64 fadeInSamples = 0;
     juce::int64 fadeOutSamples = 0;
     std::shared_ptr<juce::AudioBuffer<float>> audio; // 1ch=モノ（録音）/ 2ch=ステレオ（取り込み）。メモリ常駐
-    std::vector<float> peakCache;                    // samplesPerPeak ごとの絶対値ピーク（参照範囲のみ。ステレオはL/Rのmax合成）
 
-    // ループを含む総再生長（描画・ヒットテスト・終端計算はこちらを見る）
-    juce::int64 totalLengthSamples() const { return lengthSamples * (1 + juce::jmax (0, loopCount)); }
+    // ---- 移調・タイムストレッチ（v20・非破壊）----
+    // transposeSemitones / stretchRatio / renderDomain* は**要求値**（まだ音になっていない
+    // かもしれない値）。描画・ヒットテスト・再生・終端計算はすべて activeDomain（実効）と、
+    // そこから導いた view だけを見る。要求値から見かけ長を計算する経路は作らないこと
+    // （レンダー完了前に使うと再生長と実バッファ長が食い違う）。
+    // 設計の真実の源: docs/plans/2026-08-18-1028-audio-transpose-stretch.md
+    int transposeSemitones = 0; // ±ClipStretchLimits::maxSemitones
+    double stretchRatio = 1.0;  // 原音長 → 見かけ長の倍率（0.911 = 短くなる）
+    // 要求レンダードメイン（原音座標・永続化）。分割の子は親のドメインを継承し、値を変更したら
+    // クリップ自身の範囲へリセットする。length == 0 は「未設定 = 自身の範囲」（requestedDomain* が解決）
+    juce::int64 renderDomainOffset = 0;
+    juce::int64 renderDomainLength = 0;
+    // 実効状態（鳴っている・見えている音）。永続化せず、undo state にも積まない
+    // （UndoStack が積む際にクリアする）。有効契約は ClipDomains::domainValidFor —
+    // 原音・SR が一致し、ドメインがクリップ範囲を包含していれば、要求値と不一致でも有効
+    // （「完了までは古い音」を守るため）
+    std::shared_ptr<const RenderedDomain> activeDomain;
+
+    juce::int64 requestedDomainOffset() const
+    {
+        return renderDomainLength > 0 ? renderDomainOffset : offsetSamples;
+    }
+    juce::int64 requestedDomainLength() const
+    {
+        return renderDomainLength > 0 ? renderDomainLength : lengthSamples;
+    }
+    void resetRenderDomainToSelf()
+    {
+        renderDomainOffset = offsetSamples;
+        renderDomainLength = lengthSamples;
+    }
+
+    // 要求指紋（sampleRate は呼び出し側の実効SR）。RenderCache のキー・pending 判定に使う
+    RenderFingerprint requestedFingerprint (double sampleRate) const
+    {
+        return { audio.get(), requestedDomainOffset(), requestedDomainLength(),
+                 transposeSemitones, stretchRatio, sampleRate };
+    }
+
+    // 要求と実効の不一致（レンダリング待ち）。この間は長さ依存操作（分割・終端直後へ複製）を
+    // 無効にする — startSample は landing 後に追従しないため、実効 1.0 / 要求 1.5 の処理中に
+    // 切ると重なりが生まれる
+    bool renderPending (double sampleRate) const
+    {
+        if (activeDomain == nullptr)
+            return ! requestedFingerprint (sampleRate).isNeutral();
+        const RenderFingerprint active { activeDomain->sourceAudio.get(),
+                                         activeDomain->domainOffset, activeDomain->domainLength,
+                                         activeDomain->semitones, activeDomain->ratio,
+                                         activeDomain->sampleRate };
+        return requestedFingerprint (sampleRate) != active;
+    }
+
+    // ---- 長さのメソッドは2本 ----
+    // 原音側の不変条件（clampFades）・分割・保存はこちら（従来の totalLengthSamples の定義）
+    juce::int64 sourceTotalLengthSamples() const { return lengthSamples * (1 + juce::jmax (0, loopCount)); }
+
+    // ---- 実効（見かけ）座標のヘルパー。activeDomain が無い間は無加工として振る舞う ----
+    // 実効の移調量（リージョンの +2 バッジ用）。要求値 transposeSemitones を描くと、レンダー
+    // 完了前にバッジだけ新しい値へ変わり「完了まで見た目も音も古いまま・同時に切り替える」
+    // 契約が破れる。要求値を見せてよいのは吹き出しとメニュー併記（＝これから適用される値の
+    // 編集画面）だけ
+    int effectiveTransposeSemitones() const
+    {
+        return activeDomain != nullptr ? activeDomain->semitones : 0;
+    }
+
+    juce::int64 viewStartRendered() const
+    {
+        return activeDomain != nullptr ? activeDomain->mapBoundary (offsetSamples) : (juce::int64) 0;
+    }
+    juce::int64 viewEndRendered() const
+    {
+        return activeDomain != nullptr ? activeDomain->mapBoundary (offsetSamples + lengthSamples)
+                                       : lengthSamples;
+    }
+    // 本体1反復の見かけ長。**絶対境界の差**で求める（独立に round(length × ratio) しない —
+    // 隣接 view の境界が一致せずバッファ終端を越えて読む）
+    juce::int64 renderedLengthSamples() const { return viewEndRendered() - viewStartRendered(); }
+
+    // ループを含む総再生長の見かけ（描画・ヒットテスト・再生・終端計算はこちらを見る）
+    juce::int64 renderedTotalLengthSamples() const
+    {
+        return renderedLengthSamples() * (1 + juce::jmax (0, loopCount));
+    }
+
+    // フェード長の原音 → 実効変換（chain 座標変換）。フェードは「ループの連なり全体」の両端に
+    // 掛かるため、単純な × ratio では反復ごとの丸めが積み上がって合わない。
+    // 「完了した本体数」と「本体内の端数」に分解して写す（fromEnd = フェードアウト側。終端から測る）
+    juce::int64 renderedFadeLength (juce::int64 fadeSamples, bool fromEnd) const;
+    juce::int64 renderedFadeIn() const { return renderedFadeLength (fadeInSamples, false); }
+    juce::int64 renderedFadeOut() const { return renderedFadeLength (fadeOutSamples, true); }
+
+    // 実効 → 原音の逆変換（フェードドラッグ用）。/ ratio ではなく chain 変換の逆。
+    // 戻り値を renderedFadeLength に通すと入力（到達可能な実効値）へ厳密に戻る
+    juce::int64 sourceFadeFromRendered (juce::int64 renderedFade, bool fromEnd) const;
+
+    // 実効座標での「相手を押しのけない」クランプ（clampedFadeIn/Out の実効版。ドラッグ側が使う）
+    juce::int64 clampedRenderedFadeIn (juce::int64 samples) const
+    {
+        const auto limit = juce::jmax ((juce::int64) 0,
+                                       renderedTotalLengthSamples() - renderedFadeOut());
+        return juce::jlimit ((juce::int64) 0, limit, samples);
+    }
+    juce::int64 clampedRenderedFadeOut (juce::int64 samples) const
+    {
+        const auto limit = juce::jmax ((juce::int64) 0,
+                                       renderedTotalLengthSamples() - renderedFadeIn());
+        return juce::jlimit ((juce::int64) 0, limit, samples);
+    }
 
     // フェードの不変条件をモデル層で強制する（MidiRegion::clampNote と同じ立ち位置）。
     // 規則は「fadeIn を先に頭打ち → 残りで fadeOut を頭打ち」。読込・splitClip・
@@ -65,7 +173,7 @@ struct Clip
     // ドラッグ側で先に `total - 相手のフェード` へ制限してから通す（通した時点で no-op になる）
     void clampFades()
     {
-        const auto total = totalLengthSamples();
+        const auto total = sourceTotalLengthSamples();
         fadeInSamples = juce::jlimit ((juce::int64) 0, total, fadeInSamples);
         fadeOutSamples = juce::jlimit ((juce::int64) 0, total - fadeInSamples, fadeOutSamples);
     }
@@ -76,17 +184,16 @@ struct Clip
     // （fadeIn を伸ばすと fadeOut が押し縮められ、ドラッグの規則に反する）
     juce::int64 clampedFadeIn (juce::int64 samples) const
     {
-        const auto limit = juce::jmax ((juce::int64) 0, totalLengthSamples() - fadeOutSamples);
+        const auto limit = juce::jmax ((juce::int64) 0, sourceTotalLengthSamples() - fadeOutSamples);
         return juce::jlimit ((juce::int64) 0, limit, samples);
     }
 
     juce::int64 clampedFadeOut (juce::int64 samples) const
     {
-        const auto limit = juce::jmax ((juce::int64) 0, totalLengthSamples() - fadeInSamples);
+        const auto limit = juce::jmax ((juce::int64) 0, sourceTotalLengthSamples() - fadeInSamples);
         return juce::jlimit ((juce::int64) 0, limit, samples);
     }
 
-    void buildPeakCache();
 };
 
 // 区間の下端/上端（signed）。絶対値1本にしないのは、512サンプルが1周期に満たない低音
@@ -99,7 +206,7 @@ struct PeakRange
 };
 
 // バッファ全長の描画用ピークキャッシュ（Clip::samplesPerPeak 単位・ステレオはL/Rを合成）。
-// サンプル音源の波形表示用（クリップは参照範囲だけを見る Clip::buildPeakCache を使う）
+// サンプル音源の波形表示用（クリップの波形は RenderedDomain::peakCache を部分参照して描く）
 std::vector<PeakRange> buildFullPeakCache (const juce::AudioBuffer<float>& audio);
 
 // クリップを splitSample（絶対サンプル位置）で左右に分ける。左右は同じソースWAVを共有参照する。
@@ -107,7 +214,11 @@ std::vector<PeakRange> buildFullPeakCache (const juce::AudioBuffer<float>& audio
 // フェードは外側だけを継承する（左: fadeIn / 右: fadeOut）。内側を0にしないと
 // 分割点にフェードが移動してしまう。
 // ループは解除して返す（左右どちらに繰り返しを引き継ぐか自明でないため）。解除はフェードの
-// クランプより先に行うので、返ってきた左右は不変条件を満たしている
+// クランプより先に行うので、返ってきた左右は不変条件を満たしている。
+// 伸縮クリップの分割は**再レンダーしない**: 分割点は「表示座標 → 原音境界へ逆算 →
+// mapBoundary で canonical な表示境界」の順で1回だけ決め、左右が同じ RenderedDomain を
+// 共有して view（offset/length）だけを分ける。canonical 境界が view の端と一致する
+//（＝長さ0の view ができる）分割は false
 bool splitClip (const Clip& clip, juce::int64 splitSample, Clip& left, Clip& right);
 
 // MIDIノート。startPpq はリージョン相対。
@@ -380,7 +491,11 @@ public:
     // v19: バスFX（buses[0/1].reverb = size/damp/width/predelay/lowcut・buses[2].delay =
     //      time/feedback/tone/pingpong。欠損＝バスindex別の既定値 Reverb::defaultsForBus /
     //      Delay::defaults。保存は常に明示書き出し＝「既定値なら省略」はしない）
-    static constexpr int currentVersion = 19;
+    // v20: オーディオクリップの移調・タイムストレッチ（clips[].transposeSemitones /
+    //      stretchRatio / renderDomainOffset / renderDomainLength。欠損＝無加工・クリップ
+    //      自身の範囲）。値のみ保存し、加工済みバッファは読込時に再生成する（WAV永続化しない）。
+    //      旧LaLaが開いて保存すると値が黙って消えるため版を上げる
+    static constexpr int currentVersion = 20;
 
     juce::File directory;
     double bpm = 120.0;

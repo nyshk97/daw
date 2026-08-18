@@ -66,7 +66,8 @@ bool BounceRenderer::buildItemRender (const Track& track, int itemIndex, double 
             return false;
 
         rangeStart = clip.startSample;
-        rangeEnd = clip.startSample + clip.totalLengthSamples(); // ループ終端まで書き出す
+        // ループ終端まで書き出す（伸縮クリップは実効長。appendClipPlaybacks と同じ座標系）
+        rangeEnd = clip.startSample + clip.renderedTotalLengthSamples();
         return true;
     }
 

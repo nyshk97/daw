@@ -354,6 +354,35 @@ TrackEqの「セグメント頭で `skip(segLen)` → 戻り値で係数再計�
 
 「1ブロック無音なら終了」は、出力が遅れて始まるFXで**音が出る前に打ち切る**: ディレイはエコー間の無音ギャップ（窓=1周期）、リバーブは Pre-delay＋初期反射（juce::Reverbの最短コム≈25ms）まで完全無音。窓は**有効なFXごとの出力遅延の最大値＋1ブロック**を取る。また終端フェードで閉じた後の**後処理経路（Limiterのflush等）も同じ契約に含める** — flushがバスFXを再処理するとリングに残った信号が未フェードで復活してクリックになる（閉じたらゼロ保証）。この種の穴は経路を1本足すたびに再発する（Delay窓→Reverb窓→flushと3回指摘された）ので、「無音から音を出す経路・書き込む経路」を列挙してから窓と契約を決める。
 
+## 移調・タイムストレッチ（signalsmith-stretch / RenderedDomain）の落とし穴
+
+設計の真実の源は `docs/plans/2026-08-18-1028-audio-transpose-stretch.md`。触る前にそちらの
+「データモデルの方針」を読むこと。ここは grep で引く要点のみ。
+
+### signalsmith-stretch は固定シードのコンストラクタを使う（既定は起動ごとに音が変わる）
+
+`SignalsmithStretch()` は `std::random_device` でシードするため、「値のみ保存して読込時に再生成」の設計（毎回同じ音になる前提）と回帰テストの両方が壊れる。必ず `SignalsmithStretch(long seed)` を固定値で使う（`ClipStretcher.cpp` の `fixedSeed`）。
+
+### signalsmith-stretch のレイテンシ補償は「前後パディング＋exact()」で吸う
+
+`exact()` は先頭 `outputSeekLength()` 分の入力をプリロールに使い、入力がそれより短いと**無音を返して false**（20〜50ms のチョップが該当）。範囲の前後に原音を助走として足し（バッファ端は無音埋め）、出力の対応区間だけを切り出す（`ClipStretcher::render`）。頭が無音になったらこの補償を疑う（回帰テストあり）。
+
+### 原音バッファは共有参照 — 絶対に書き換えない・識別はアドレス＋強参照で守る
+
+`Clip::audio` は分割・複製・ペーストで共有される。加工は必ず新バッファへ（in-place 禁止）。レンダー結果の指紋は原音の**アドレス**を含むため、`RenderedDomain` と実行中の request が原音の `shared_ptr` を持つことでアドレス再利用による誤ヒットを防いでいる — この強参照を「メモリ節約」で weak にしないこと。
+
+### 要求値（transposeSemitones/stretchRatio）と実効値（activeDomain）を混ぜない
+
+描画・ヒットテスト・再生・終端計算は **activeDomain 由来の実効長だけ**を見る（`renderedLengthSamples()` 系）。要求値から見かけ長を計算すると、レンダー完了前に再生長と実バッファ長が食い違う（1.5倍なら 0.5N の無音、0.5倍なら反復の重なり）。原音側の不変条件（`clampFades`・分割・保存）は `sourceTotalLengthSamples()`。activeDomain の有効契約は「原音・SR一致＋ドメインがクリップ範囲を包含」で、**要求値との一致は求めない**（求めると「完了までは古い音」が壊れる）。
+
+### レンダードメインは分割で継承・値変更でリセット。指紋の範囲はクリップでなくドメイン
+
+分割は再レンダーしない（子は親の `RenderedDomain` を共有し view だけが変わる＝境界の音が厳密に一致し、再起動後も保たれる）。値を変えたらドメインをクリップ自身の範囲へリセットする（チョップ1個のために8小節を再レンダーしない）。undo state には activeDomain を積まない（`UndoStack::stripClipDomains`。100件×約69MBで数GBを抱えるため）。
+
+### 原音座標と実効座標をまたぐ計算は必ず mapBoundary を通す（× ratio / ÷ ratio 直書き禁止）
+
+view の両端・分割境界・再生 offset は**絶対境界の差**（`RenderedDomain::mapBoundary` / `sourceForBoundary`）で求める。相対値に `round(x × ratio)` を独立に使うと、隣接 view の境界が一致せず**バッファ終端を越えて読む**（domainLength=2 / ratio=0.5 の退化ケース）。ループをまたぐフェードは「完了した本体数＋本体内の端数」の chain 変換（`Clip::renderedFadeLength` / `sourceFadeFromRendered`）— 単純な `× ratio` は反復ごとの丸めが積み上がって連なり全長と合わない。範囲外読み・ループフェードのずれ・分割境界のずれ・再生 offset の欠落（`audioBaseOffset` 落とし）は、すべてこの規律を外したときに出る。
+
 ## JUCE一般の落とし穴
 
 ### 非ASCIIの文字列リテラルは必ず `juce::String::fromUTF8(u8"...")` を通す

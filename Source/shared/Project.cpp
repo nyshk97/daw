@@ -5,6 +5,7 @@
 #include <limits>
 #include <map>
 
+#include "ClipDomains.h"
 #include "GainScale.h"
 
 namespace
@@ -12,33 +13,76 @@ namespace
 juce::String jp (const char* text) { return juce::String::fromUTF8 (text); }
 }
 
-void Clip::buildPeakCache()
+// ドメイン（[start, start + length)）の描画用ピーク列。RenderedDomain の生成側
+// （ClipDomains::makeNeutralDomain / RenderCache のワーカー）から使う。
+// ステレオはL/Rのmaxを取って1本にする（波形表示は1本のまま）
+std::vector<float> buildDomainPeakCache (const juce::AudioBuffer<float>& audio,
+                                         juce::int64 start, juce::int64 length,
+                                         int samplesPerPeak)
 {
-    peakCache.clear();
-    if (audio == nullptr)
-        return;
+    std::vector<float> peaks;
+    const auto bufferLength = (juce::int64) audio.getNumSamples();
+    const auto begin = juce::jlimit ((juce::int64) 0, bufferLength, start);
+    const auto numSamples = juce::jlimit ((juce::int64) 0, bufferLength - begin, length);
+    const int numChannels = juce::jmin (2, audio.getNumChannels());
+    if (numSamples <= 0 || numChannels <= 0)
+        return peaks;
 
-    // 参照範囲 [offsetSamples, offsetSamples + lengthSamples) のみをキャッシュする
-    // （index 0 = クリップ先頭。描画側はクリップ相対位置でそのまま引ける）。
-    // ステレオはL/Rのmaxを取って1本にする（波形表示は1本のまま）
-    const int numSamples = (int) juce::jlimit ((juce::int64) 0,
-                                               (juce::int64) audio->getNumSamples() - offsetSamples,
-                                               lengthSamples);
-    const int numChannels = juce::jmin (2, audio->getNumChannels());
-    peakCache.reserve ((size_t) (numSamples / samplesPerPeak + 1));
-
-    for (int i = 0; i < numSamples; i += samplesPerPeak)
+    peaks.reserve ((size_t) (numSamples / samplesPerPeak + 1));
+    for (juce::int64 i = 0; i < numSamples; i += samplesPerPeak)
     {
-        const int count = juce::jmin (samplesPerPeak, numSamples - i);
+        const auto count = juce::jmin ((juce::int64) samplesPerPeak, numSamples - i);
         float peak = 0.0f;
         for (int ch = 0; ch < numChannels; ++ch)
         {
-            const float* data = audio->getReadPointer (ch, (int) offsetSamples);
-            for (int j = 0; j < count; ++j)
+            const float* data = audio.getReadPointer (ch, (int) begin);
+            for (juce::int64 j = 0; j < count; ++j)
                 peak = juce::jmax (peak, std::abs (data[i + j]));
         }
-        peakCache.push_back (peak);
+        peaks.push_back (peak);
     }
+    return peaks;
+}
+
+// フェード長の chain 座標変換（原音 → 実効）。「完了した本体数」と「本体内の端数」に分解して
+// 写す — 単純な × ratio はループ反復ごとの丸めが積み上がって連なり全長と合わない
+// （本体1サンプル・ratio=1.5・100反復の全長フェードは実効200だが round(100×1.5)=150 になる）
+juce::int64 Clip::renderedFadeLength (juce::int64 fadeSamples, bool fromEnd) const
+{
+    if (activeDomain == nullptr || lengthSamples <= 0)
+        return fadeSamples;
+    const auto& d = *activeDomain;
+    const auto viewStart = d.mapBoundary (offsetSamples);
+    const auto viewEnd = d.mapBoundary (offsetSamples + lengthSamples);
+    const auto renderedBody = viewEnd - viewStart;
+    const auto fullBodies = fadeSamples / lengthSamples;
+    const auto remainder = fadeSamples % lengthSamples;
+    if (! fromEnd)
+        return fullBodies * renderedBody + (d.mapBoundary (offsetSamples + remainder) - viewStart);
+    // フェードアウトは終端側から同じ規則で測る
+    return fullBodies * renderedBody
+         + (viewEnd - d.mapBoundary (offsetSamples + lengthSamples - remainder));
+}
+
+// 逆変換（実効 → 原音）。/ ratio ではなく chain 変換の逆: 実効長を本体の実効長で割って
+// 本体数を出し、端数は sourceForBoundary（mapBoundary の逆）で原音側へ戻す
+juce::int64 Clip::sourceFadeFromRendered (juce::int64 renderedFade, bool fromEnd) const
+{
+    if (activeDomain == nullptr || lengthSamples <= 0)
+        return renderedFade;
+    const auto& d = *activeDomain;
+    const auto viewStart = d.mapBoundary (offsetSamples);
+    const auto viewEnd = d.mapBoundary (offsetSamples + lengthSamples);
+    const auto renderedBody = viewEnd - viewStart;
+    if (renderedBody <= 0)
+        return 0;
+    const auto fullBodies = renderedFade / renderedBody;
+    const auto remainder = renderedFade % renderedBody;
+    if (! fromEnd)
+        return fullBodies * lengthSamples
+             + (d.sourceForBoundary (viewStart + remainder) - offsetSamples);
+    return fullBodies * lengthSamples
+         + ((offsetSamples + lengthSamples) - d.sourceForBoundary (viewEnd - remainder));
 }
 
 std::vector<PeakRange> buildFullPeakCache (const juce::AudioBuffer<float>& audio)
@@ -72,12 +116,45 @@ std::vector<PeakRange> buildFullPeakCache (const juce::AudioBuffer<float>& audio
 
 bool splitClip (const Clip& clip, juce::int64 splitSample, Clip& left, Clip& right)
 {
-    if (splitSample <= clip.startSample || splitSample >= clip.startSample + clip.lengthSamples)
+    // 判定は**見かけ（実効）座標**の本体1反復の内側のみ。伸縮中（ratio != 1）は
+    // タイムライン上の差分をそのまま原音長に使えない
+    const auto renderedLength = clip.renderedLengthSamples();
+    if (splitSample <= clip.startSample || splitSample >= clip.startSample + renderedLength)
         return false;
 
-    const auto leftLength = splitSample - clip.startSample;
+    const auto displayedDelta = splitSample - clip.startSample;
 
-    left = clip; // fileName/audio は共有参照
+    // 表示座標の分割点 → 原音境界へ逆算 → その原音境界から canonical な表示境界を求め、
+    // **左右が同じ値を共有する**（相対値の round(delta / ratio) は使わない —
+    // ドメイン途中の view では viewStart の丸めぶんずれる）。隙間も重なりも定義上生じない
+    juce::int64 srcBoundary = 0, canonicalDelta = 0;
+    if (clip.activeDomain != nullptr)
+    {
+        const auto& d = *clip.activeDomain;
+        const auto viewStart = d.mapBoundary (clip.offsetSamples);
+        const auto viewEnd = d.mapBoundary (clip.offsetSamples + clip.lengthSamples);
+        srcBoundary = d.sourceForBoundary (viewStart + displayedDelta);
+        srcBoundary = juce::jlimit (clip.offsetSamples, clip.offsetSamples + clip.lengthSamples,
+                                    srcBoundary);
+        const auto canonical = d.mapBoundary (srcBoundary);
+        // 長さ0の view / 原音側の空片ができる分割は行わない
+        if (canonical <= viewStart || canonical >= viewEnd
+            || srcBoundary <= clip.offsetSamples
+            || srcBoundary >= clip.offsetSamples + clip.lengthSamples)
+            return false;
+        canonicalDelta = canonical - viewStart;
+    }
+    else
+    {
+        srcBoundary = clip.offsetSamples + displayedDelta;
+        canonicalDelta = displayedDelta;
+    }
+
+    const auto leftLength = srcBoundary - clip.offsetSamples;
+
+    // 分割は再レンダーしない: 左右とも親の activeDomain / renderDomain をそのまま継承し
+    //（構造体コピー）、view = offset/length だけが変わる。境界の音が分割前と厳密に一致する
+    left = clip; // fileName/audio/activeDomain は共有参照
     left.lengthSamples = leftLength;
     // ループは解除する（左右どちらに繰り返しを引き継ぐか自明でない）。**フェードのクランプより
     // 先に**0にすること: 元の loopCount 込みの全長でクランプしてから呼び出し側が解除すると、
@@ -87,17 +164,15 @@ bool splitClip (const Clip& clip, juce::int64 splitSample, Clip& left, Clip& rig
     // フェードは外側だけ継承する（内側＝分割点側は0）。丸ごとコピーのままだと
     // 左が元のフェードアウトを、右が元のフェードインを引き継ぎ、分割点にフェードが移動してしまう
     left.fadeOutSamples = 0;
-    left.clampFades(); // 継承した fadeIn を左の長さへ収める
-    left.buildPeakCache();
+    left.clampFades(); // 継承した fadeIn を左の長さへ収める（原音座標）
 
     right = clip;
-    right.startSample = splitSample;
-    right.offsetSamples = clip.offsetSamples + leftLength;
-    right.lengthSamples = clip.lengthSamples - leftLength;
+    right.startSample = clip.startSample + canonicalDelta; // canonical 境界＝左の実効終端と一致
+    right.offsetSamples = srcBoundary;
+    right.lengthSamples = clip.offsetSamples + clip.lengthSamples - srcBoundary;
     right.loopCount = 0;
     right.fadeInSamples = 0;
     right.clampFades(); // 継承した fadeOut を右の長さへ収める
-    right.buildPeakCache();
     return true;
 }
 
@@ -122,30 +197,50 @@ void appendRegionNotes (const MidiRegion& region, int fixedPitch, std::vector<Mi
 
 void appendClipPlaybacks (const Clip& clip, std::vector<ClipPlayback>& out)
 {
-    if (clip.audio == nullptr)
+    // 再生は activeDomain（実効）だけを見る。要求値（stretchRatio 等）から見かけ長を
+    // 計算してはいけない — レンダー完了前に使うと再生長と実バッファ長が食い違う
+    const std::shared_ptr<const juce::AudioBuffer<float>> audio =
+        clip.activeDomain != nullptr ? clip.activeDomain->audio
+                                     : std::shared_ptr<const juce::AudioBuffer<float>> (clip.audio);
+    if (audio == nullptr)
         return;
+
+    // 読み出し位置。**audioBaseOffset を落とさない** — 無加工ドメインの audio は原音その
+    // ものなので、domainOffset != 0 のクリップが原音の先頭から鳴ってしまう
+    juce::int64 readOffset = clip.offsetSamples;
+    juce::int64 renderedLength = clip.lengthSamples;
+    if (clip.activeDomain != nullptr)
+    {
+        const auto& d = *clip.activeDomain;
+        const auto viewStart = d.mapBoundary (clip.offsetSamples);
+        const auto viewEnd = d.mapBoundary (clip.offsetSamples + clip.lengthSamples);
+        readOffset = d.audioBaseOffset + viewStart;
+        renderedLength = viewEnd - viewStart;
+    }
+
     // オーディオスレッドの範囲外読みを防ぐ最終防衛線（モデル側の不変条件が正なら素通し）
-    const auto bufferLength = (juce::int64) clip.audio->getNumSamples();
-    const auto offset = juce::jlimit ((juce::int64) 0, bufferLength, clip.offsetSamples);
-    const auto length = juce::jlimit ((juce::int64) 0, bufferLength - offset, clip.lengthSamples);
+    const auto bufferLength = (juce::int64) audio->getNumSamples();
+    const auto offset = juce::jlimit ((juce::int64) 0, bufferLength, readOffset);
+    const auto length = juce::jlimit ((juce::int64) 0, bufferLength - offset, renderedLength);
     if (length <= 0)
         return;
 
     // フェードは「連なり全体」の両端に掛かる（繰り返しの間はシームレス）。絶対位置で持つので
-    // 反復をまたぐ長さでもそのまま表現でき、全反復に同じ値を載せてよい。
-    // モデル側の不変条件（fadeIn + fadeOut <= 全長）が破れていても区間が交差しないよう頭打ちする
+    // 反復をまたぐ長さでもそのまま表現でき、全反復に同じ値を載せてよい。長さは chain 座標変換で
+    // 実効へ写す（renderedFadeIn/Out）。モデル側の不変条件が破れていても区間が交差しないよう頭打ちする
     const auto chainStart = clip.startSample;
-    const auto chainEnd = chainStart + clip.totalLengthSamples();
-    const auto fadeIn = juce::jlimit ((juce::int64) 0, chainEnd - chainStart, clip.fadeInSamples);
-    const auto fadeOut = juce::jlimit ((juce::int64) 0, chainEnd - chainStart - fadeIn, clip.fadeOutSamples);
+    const auto chainEnd = chainStart + clip.renderedTotalLengthSamples();
+    const auto fadeIn = juce::jlimit ((juce::int64) 0, chainEnd - chainStart, clip.renderedFadeIn());
+    const auto fadeOut = juce::jlimit ((juce::int64) 0, chainEnd - chainStart - fadeIn,
+                                       clip.renderedFadeOut());
     const auto fadeInEnd = chainStart + fadeIn;
     const auto fadeOutStart = chainEnd - fadeOut;
 
-    // 反復の間隔はクランプ後の length でなくモデルの lengthSamples。描画も lengthSamples 基準なので、
+    // 反復の間隔はクランプ後の length でなく view の実効長。描画も同じ値を使うので、
     // 異常値でクランプが効いたときに見た目と鳴りがズレないようにする
     const int reps = 1 + juce::jmax (0, clip.loopCount);
     for (int r = 0; r < reps; ++r)
-        out.push_back ({ clip.audio, clip.startSample + (juce::int64) r * clip.lengthSamples,
+        out.push_back ({ audio, clip.startSample + (juce::int64) r * renderedLength,
                          offset, length, clip.gain,
                          chainStart, fadeInEnd, fadeOutStart, chainEnd });
 }
@@ -648,6 +743,19 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
                     clipObj->setProperty ("fadeInSamples", clip.fadeInSamples);
                 if (clip.fadeOutSamples > 0)
                     clipObj->setProperty ("fadeOutSamples", clip.fadeOutSamples);
+                // 移調・伸縮（v20）。無加工はJSONを汚さない。保存するのは**値のみ**で、
+                // 加工済みバッファは読込時に再生成する（固定シードで同じ音になる）
+                if (clip.transposeSemitones != 0)
+                    clipObj->setProperty ("transposeSemitones", clip.transposeSemitones);
+                if (clip.stretchRatio != 1.0)
+                    clipObj->setProperty ("stretchRatio", clip.stretchRatio);
+                // レンダードメイン（v20）。自身の範囲と同じなら省略（未設定＝自範囲で読める）
+                if (clip.requestedDomainOffset() != clip.offsetSamples
+                    || clip.requestedDomainLength() != clip.lengthSamples)
+                {
+                    clipObj->setProperty ("renderDomainOffset", clip.requestedDomainOffset());
+                    clipObj->setProperty ("renderDomainLength", clip.requestedDomainLength());
+                }
                 clipsArray.add (juce::var (clipObj));
             }
             trackObj->setProperty ("clips", clipsArray);
@@ -1061,7 +1169,49 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
                         }
 
                         clip.clampFades(); // 全長（ループ込み）が確定した後に不変条件を強制する
-                        clip.buildPeakCache();
+
+                        // 移調・伸縮（v19以前は無い → 無加工）。要求受付層なので安全限界へ
+                        // **クランプして受理**する（弾いた値を要求値として残さない）
+                        clip.transposeSemitones = ClipStretchLimits::clampSemitones (
+                            (int) clipVar.getProperty ("transposeSemitones", 0));
+                        clip.stretchRatio = ClipStretchLimits::clampRatio (
+                            (double) clipVar.getProperty ("stretchRatio", 1.0));
+
+                        // レンダードメイン。包含関係だけでは負の開始や原音外を通すため、
+                        // checked addition で個別に検証し、外れたらクリップ自身の範囲へ戻す
+                        const auto domainOffset = (juce::int64) clipVar.getProperty (
+                            "renderDomainOffset", clip.offsetSamples);
+                        const auto domainLength = (juce::int64) clipVar.getProperty (
+                            "renderDomainLength", clip.lengthSamples);
+                        const bool domainOk = domainOffset >= 0 && domainLength >= 1
+                            && domainLength <= bufferLength
+                            && domainOffset <= bufferLength - domainLength // checked addition
+                            && domainOffset <= clip.offsetSamples
+                            && domainOffset + domainLength >= clip.offsetSamples + clip.lengthSamples;
+                        clip.renderDomainOffset = domainOk ? domainOffset : clip.offsetSamples;
+                        clip.renderDomainLength = domainOk ? domainLength : clip.lengthSamples;
+
+                        // 要求 ratio で view 長が1以上あること（mapBoundary の差が0になる
+                        // 極端に短い子 view を弾く）。外れたら自範囲へ戻して ratio を再検査する
+                        const auto viewLength = [&clip] (juce::int64 dOff)
+                        {
+                            const auto mapAt = [&] (juce::int64 src)
+                            { return (juce::int64) std::llround ((double) (src - dOff) * clip.stretchRatio); };
+                            return mapAt (clip.offsetSamples + clip.lengthSamples)
+                                 - mapAt (clip.offsetSamples);
+                        };
+                        if (viewLength (clip.renderDomainOffset) < 1)
+                        {
+                            clip.resetRenderDomainToSelf();
+                            if (viewLength (clip.renderDomainOffset) < 1)
+                                clip.stretchRatio = 1.0;
+                        }
+
+                        // 実効状態は当面「原音素通し」（見た目も音も原音のまま）。値が入った
+                        // クリップは読込後の一括再生成（MainComponent）が完了時に一斉に差し替える
+                        clip.activeDomain = ClipDomains::makeNeutralDomain (
+                            clip.audio, clip.requestedDomainOffset(), clip.requestedDomainLength(),
+                            project->sampleRate);
                         track.clips.push_back (std::move (clip));
                     }
                 }
@@ -1393,7 +1543,7 @@ int Project::lastItemEndSixteenths (double sr) const
         // トラックのミュート・ソロは見ない（一時的なモニター状態であって曲の長さではない）
         for (const auto& clip : track.clips)
             if (! clip.muted && sixteenthSamples > 0.0)
-                bump ((double) (clip.startSample + clip.totalLengthSamples()) / sixteenthSamples);
+                bump ((double) (clip.startSample + clip.renderedTotalLengthSamples()) / sixteenthSamples);
 
         if (track.type == TrackType::midi)
             for (const auto& region : track.midiRegions)

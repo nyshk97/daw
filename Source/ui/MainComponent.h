@@ -34,6 +34,7 @@
 #include "../audio/AudioFilePreview.h"
 #include "../audio/BounceRenderer.h"
 #include "../audio/PlaybackEngine.h"
+#include "../audio/RenderCache.h"
 #include "../audio/ReferenceAnalyzer.h"
 #include "../audio/UrlDownloader.h"
 #include "../shared/GachaSession.h"
@@ -267,10 +268,12 @@ private:
     // ダイアログ確定後の続き: 検出未完なら「進行を検出中…」を出して完了を待ち、
     // 完了済みなら契約検証 →「敷いています…」を描いてから placeLoopPreview へ
     void finishLoopAdoption (std::shared_ptr<LoopAdoptDetection> detection,
-                             const juce::File& wavFile, bool applyKeyBpm);
+                             const juce::File& wavFile, bool applyKeyBpm, int transposeSemitones);
     // ダイアログの選択後に実際に敷く（この時点のレートで wav を変換 → アンカー更新＋
-    // 任意で逆コピー＋仮配置＋UI同期。SR 未確定プロジェクトは keep 時に変換レートで確定）
-    void placeLoopPreview (const LoopAnchor& anchor, const juce::File& wavFile, bool applyKeyBpm);
+    // 任意で逆コピー＋仮配置＋UI同期。SR 未確定プロジェクトは keep 時に変換レートで確定）。
+    // transposeSemitones = おすすめ候補の自動移調（「採用のみ」のときだけ効く）
+    void placeLoopPreview (const LoopAnchor& anchor, const juce::File& wavFile, bool applyKeyBpm,
+                           int transposeSemitones);
     void releaseLoopAnchor();             // アンカーの明示解除（仮配置中はパーツ撤去・確定後は undo 1件）
     // ベース仮配置の基準になるドラムの解決（仮配置中 Drums → 選択中の Drum Kit リージョン → 無し）
     struct DrumsSource
@@ -304,6 +307,13 @@ private:
     void setSongFadeFrom (int startSixteenths);
     void clearSongFade();
     void pushSnapshotWithChange (Project::SnapshotChange change); // 上記2つの共通尻尾（synth参照を埋めて渡す）
+
+    // ---- 移調・伸縮（RenderCache との配線）----
+    // 指紋・reconcile が共有する実効SR（timeline.effectiveSampleRate と同じ値）
+    double renderSampleRate() const;
+    // ClipDomains::reconcile ＋ RenderCache の要求同期。構造変更後（pushSnapshot 内）と
+    // undo/redo 後・読込直後に通す。immediate = デバウンスを挟まず即同期（undo・読込）
+    void reconcileClipRenderState (bool immediate);
     void setDirty (bool nowDirty);
     void updateTransportButtons();
     void updateLcdTime();
@@ -318,6 +328,9 @@ private:
     std::unique_ptr<Project> project;
     SynthBank synthBank; // メッセージスレッド専用。MIDIトラックのGM音源を管理
     UndoStack undoStack; // 構造編集のundo/redo（メッセージスレッド専用）
+    // 移調・伸縮のバックグラウンドレンダラー＋キャッシュ。project より後に宣言する
+    //（破棄は逆順 = renderCache が先に止まり、ワーカー完了通知が破棄後の project に触れない）
+    RenderCache renderCache;
     PreviewFifo previewFifo;
     AnalyzerTap analyzerTap; // EQエディタのスペクトラム用タップ（engineより先に構築・後に破棄）
     MasterMeterRing masterMeterRing; // Masterメーターの十分統計量リング（engineより先に構築・後に破棄）

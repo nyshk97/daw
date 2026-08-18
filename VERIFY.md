@@ -603,6 +603,34 @@ JUCEアプリには合成キーストロークが届かないため、ショー�
 5. オーディオ設定（右上の歯車ボタン。AX名「オーディオ設定」、`⌘,` でも開く）でオーディオインターフェースに切り替えて録音できる
 6. サンプルレート不一致の警告と録音ブロックは、自動追従（上記セクション）が効かないケースでのみ出る（デバイスがプロジェクトSR非対応・設定画面で手動でSRをずらした場合）
 
+## 移調・タイムストレッチ（クリップの非破壊移調/伸縮）の確認
+
+```sh
+# 実機確認用プロジェクトは seeder で生成（冪等）: 440Hz 2秒を +2半音/1.25倍で敷いたもの。
+# 開いて数秒でクリップが 0.75→0.9375小節へ伸び、+2 バッジが出れば読込→一括再生成→装着まで正常
+bash scripts/seed-stretch-test.sh
+open -g build/daw_artefacts/Debug/LaLa-dev.app --args \
+  --open ~/Music/daw/0-0-stretch-test --snapshot /tmp/stretch-check.png
+sleep 8 && grep -E "project.open|render_failed" ~/Library/Logs/daw/"$(ls -t ~/Library/Logs/daw | head -1)"
+
+# ① モデル・レンダラーの回帰は CTest に集約済み（GUI 不要）
+#    - ClipStretcher render: ピッチ(+12→2倍)・長さの厳密一致・固定シード・短チョップ・異常値の拒否
+#    - stretch domain math: chain 変換のフェード・分割境界・退化view・ピーク再集計
+#    - render cache pipeline: 要求/装着/失敗巻き戻し/undo/キャッシュヒット/寿命
+#    - stretch split -> save -> reload: 分割→保存→再読込のビット一致（固定シードの実地）
+./build/daw_tests_artefacts/Debug/daw_tests 2>&1 | grep -E "stretch|ClipStretcher|render cache"
+```
+
+- GUI 側の操作: クリップ右クリック →「移調・伸縮…」。移調スライダー（±12半音）＋小節数入力
+  （現在の見かけ長を丸めず表示・編集するまで伸縮しない）＋倍率併記（0.9〜1.1倍の外は色が変わる）
+- 移調が0以外のクリップは右上に `+2` バッジ（ゲインバッジの左）。伸縮は長さ自体が変わる
+- 値の変更直後は**古い音のまま**鳴り、レンダー完了時に音・長さ・波形が一斉に切り替わる（正常動作）。
+  処理中は「分割」「複製」がグレーアウトする
+- ログでの裏取り: `clip_stretch.request`（要求）/ `clip_stretch.render_failed`（失敗。トーストと
+  値の巻き戻し＋dirty化を伴う）
+- 保存値は project.json の clips[].transposeSemitones / stretchRatio / renderDomain*（v20）。
+  加工済みWAVは書かれない（読込時に固定シードで再生成 = 再起動後も同じ音）
+
 ## リリース・アップデート（Sparkle）の確認
 
 - **メニュー疎通（AIで自動確認可）**: アプリメニューに `Check for Updates…` が出る。ネイティブメニューなのでAXでクリックできる（JUCEのPopupMenuと違いCGEvent合成は不要）:

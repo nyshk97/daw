@@ -1,7 +1,10 @@
 #include "GachaSession.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
+
+#include "ClipDomains.h"
 
 namespace
 {
@@ -519,7 +522,27 @@ bool GachaSession::previewLoopCandidate (Project& project, const LoopPreviewInpu
     clip.audio = trimmedAudio; // 小節グリッドちょうどに刻み済み（反復間隔＝グリッド）
     clip.lengthSamples = trimmedAudio->getNumSamples();
     clip.loopCount = juce::jlimit (0, maxLoopCount, input.loopCount);
-    clip.buildPeakCache();
+
+    // おすすめ5からの自動適用: 敷いた時点で移調量と伸縮（小節数）が入っている。
+    // 逆コピー（applyKeyBpm）ならプロジェクト側がループの値になるので両方とも中立。
+    // 伸縮は「ループ小節数をプロジェクトBPMの小節グリッドちょうどにする」倍率 =
+    // anchor.bpm / 適用後のプロジェクトBPM（trim 済みの原音は anchor.bpm でちょうど
+    // loopBars 小節なので、この比で敷き先のグリッドに噛む）。
+    // レンダリングはメモリ内のみで、SR確定・ファイル書き出しはプレビュー段階では起こさない
+    {
+        const double targetBpm = input.applyKeyBpm ? input.anchor.bpm : project.bpm;
+        double ratio = targetBpm > 0.0 ? input.anchor.bpm / targetBpm : 1.0;
+        if (std::abs (ratio - 1.0) < 1e-9)
+            ratio = 1.0; // サブサンプルの差でレンダリングを起こさない
+        clip.stretchRatio = ClipStretchLimits::clampRatio (ratio);
+        clip.transposeSemitones = input.applyKeyBpm
+                                      ? 0
+                                      : ClipStretchLimits::clampSemitones (input.transposeSemitones);
+    }
+    clip.resetRenderDomainToSelf();
+    // 実効状態は無加工から始める（値が入っていれば呼び出し側の RenderCache 同期が差し替える）
+    clip.activeDomain = ClipDomains::makeNeutralDomain (clip.audio, clip.offsetSamples,
+                                                        clip.lengthSamples, input.audioSampleRate);
     clips.push_back (std::move (clip));
 
     // アンカーは採用のたびに更新。逆コピー（BPM・キー）はダイアログの選択次第

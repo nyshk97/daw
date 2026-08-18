@@ -187,6 +187,9 @@ private:
         {
             std::unique_ptr<juce::AudioFormatReader> reader;
             juce::int64 start = 0, offset = 0, length = 0;
+            // タイムライン上の見かけ長（v20 の stretchRatio を掛けた長さ。無加工なら length と同じ）。
+            // 波形はソース範囲から正規化ビンで集約するので、読み出しは length・配置はこちらを使う
+            juce::int64 displayLength = 0;
             int reps = 1; // ループを含む再生回数（1 = ループなし）。同じソース範囲を繰り返す
         };
 
@@ -245,6 +248,11 @@ private:
                 ref.length = declared > 0 ? juce::jmin (declared, available) : available;
                 if (ref.length <= 0)
                     continue;
+                const double stretchRatio = ClipStretchLimits::clampRatio (
+                    (double) c.getProperty ("stretchRatio", 1.0));
+                ref.displayLength = juce::jmax ((juce::int64) 1,
+                                                (juce::int64) std::llround ((double) ref.length
+                                                                            * stretchRatio));
                 ref.reps = 1 + juce::jlimit (0, maxLoopCount, (int) c.getProperty ("loopCount", 0));
                 if (sampleRate <= 0)
                     sampleRate = reader->sampleRate;
@@ -255,7 +263,7 @@ private:
 
         juce::int64 totalSamples = 0;
         for (const auto& c : clips)
-            totalSamples = juce::jmax (totalSamples, c.start + c.length * c.reps);
+            totalSamples = juce::jmax (totalSamples, c.start + c.displayLength * c.reps);
 
         // 曲長 = 音声クリップとMIDIリージョンの終端の遅い方
         const double audioSeconds = sampleRate > 0 ? (double) totalSamples / sampleRate : 0.0;
@@ -295,7 +303,7 @@ private:
                 }
             }
 
-            spreadLoopedBins (localPeaks, numBins, c.start, c.length, c.reps, totalSamples,
+            spreadLoopedBins (localPeaks, numBins, c.start, c.displayLength, c.reps, totalSamples,
                               overview.peaks, &abortFlag);
         }
 

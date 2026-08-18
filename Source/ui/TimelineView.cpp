@@ -7,6 +7,7 @@
 #include "Shortcuts.h"
 #include "Theme.h"
 #include "../shared/AudioFileTypes.h"
+#include "../shared/ClipDomains.h"
 #include "../shared/MidiFileTypes.h"
 #include "../shared/ReferenceTools.h"
 #include "../shared/GainScale.h"
@@ -96,6 +97,185 @@ private:
     std::function<void()> willEdit;
     std::function<void (float)> apply;
     bool editBegun = false; // この一連の操作でundoを積んだか（ドラッグ開始/終了でリセット）
+};
+
+// 移調・伸縮の吹き出しの中身（CallOutBoxに載せる。ゲインパネルが型）。
+// - 移調: ±12半音・整数スライダー
+// - 伸縮: 小節数で指定（元BPMのメタデータを要求せず、グリッドに噛むことが直接保証される）。
+//   現在の見かけ長を**丸めずに**表示し、実際に編集されるまで stretchRatio に触れない
+//   （3.4小節のボーカルを開いて移調だけ変えたときに 3 or 4 小節へ伸縮させない）
+// - 倍率を併記し、0.9〜1.1倍の外では色を変える（音楽的なハード制限はしない。安全限界は別）
+// - undo の粒度は「吹き出しを開いてから閉じるまで1件」: willEdit は最初の変更で1回だけ呼ぶ
+class RegionTransposeStretchPanel : public juce::Component
+{
+public:
+    RegionTransposeStretchPanel (const Clip& clip, double barLengthSamplesIn,
+                                 std::function<void()> willEditIn,
+                                 std::function<void (int, double)> applyIn)
+        : sourceLengthSamples (juce::jmax ((juce::int64) 1, clip.lengthSamples)),
+          barLengthSamples (juce::jmax (1.0, barLengthSamplesIn)),
+          looped (clip.loopCount > 0),
+          semitones (clip.transposeSemitones),
+          ratio (clip.stretchRatio),
+          willEdit (std::move (willEditIn)),
+          apply (std::move (applyIn))
+    {
+        addAndMakeVisible (semitoneSlider);
+        semitoneSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+        semitoneSlider.setRange (-ClipStretchLimits::maxSemitones, ClipStretchLimits::maxSemitones, 1.0);
+        semitoneSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        semitoneSlider.setDoubleClickReturnValue (true, 0.0);
+        semitoneSlider.setPopupDisplayEnabled (false, false, nullptr);
+        semitoneSlider.setValue (semitones, juce::dontSendNotification);
+        semitoneSlider.setWantsKeyboardFocus (false);
+        semitoneSlider.setMouseClickGrabsKeyboardFocus (false);
+        semitoneSlider.onValueChange = [this]
+        {
+            const int value = (int) std::llround (semitoneSlider.getValue());
+            if (value == semitones)
+                return;
+            semitones = value;
+            pushValues();
+        };
+
+        addAndMakeVisible (barsEditor);
+        barsEditor.setInputRestrictions (8, "0123456789.");
+        barsEditor.setJustification (juce::Justification::centredRight);
+        barsEditor.setSelectAllWhenFocused (true);
+        barsEditor.onReturnKey = [this] { applyBarsText(); };
+        barsEditor.onFocusLost = [this] { applyBarsText(); };
+
+        addAndMakeVisible (resetButton);
+        resetButton.setButtonText (jp (u8"元に戻す"));
+        resetButton.setWantsKeyboardFocus (false);
+        resetButton.onClick = [this]
+        {
+            if (semitones == 0 && ratio == 1.0)
+                return;
+            semitones = 0;
+            ratio = 1.0;
+            semitoneSlider.setValue (0.0, juce::dontSendNotification);
+            pushValues();
+            refreshTexts();
+        };
+
+        refreshTexts();
+        setSize (250, looped ? 122 : 108);
+    }
+
+    // 吹き出しは「閉じる＝キャンセル」ではない（ゲインと同じ流儀）。Return を押さずに
+    // 外側クリックで閉じると CallOutBox がパネルごと破棄され、TextEditor の focusLost が
+    // 走らず入力途中の小節数が黙って捨てられていた（実地で「5と打っても反映されない」）。
+    // 破棄時に未確定の入力を適用する — applyBarsText は値が変わらなければ no-op なので、
+    // Return / focusLost 済みの経路と二重適用にはならない
+    ~RegionTransposeStretchPanel() override { applyBarsText(); }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.setColour (Theme::lcdLabel);
+        g.setFont (Fonts::small());
+        auto area = getLocalBounds().reduced (2, 0);
+        g.drawText ("PITCH", area.removeFromTop (16), juce::Justification::centredLeft);
+        // 現在の移調量（半音）
+        const auto pitchText = (semitones > 0 ? "+" : "") + juce::String (semitones) + " st";
+        g.setColour (juce::Colours::white.withAlpha (0.9f));
+        g.drawText (pitchText, getLocalBounds().removeFromTop (16).reduced (2, 0),
+                    juce::Justification::centredRight);
+
+        g.setColour (Theme::lcdLabel);
+        g.drawText ("LENGTH", 2, 44, 60, 16, juce::Justification::centredLeft);
+        g.setColour (juce::Colours::white.withAlpha (0.7f));
+        g.drawText (jp (u8"小節"), barsEditor.getRight() + 4, 44, 30, 20,
+                    juce::Justification::centredLeft);
+        // 倍率の併記。±10%（0.9〜1.1倍）の外では色を変える（ライブラリの推奨レンジより厳しめ =
+        // reference-beat の「近距離救済」の圏内表示）
+        const bool nearUnity = ratio >= 0.9 && ratio <= 1.1;
+        g.setColour (nearUnity ? juce::Colours::white.withAlpha (0.7f)
+                               : juce::Colours::orange.withAlpha (0.95f));
+        const double percent = (ratio - 1.0) * 100.0;
+        g.drawText (juce::String::fromUTF8 (u8"×") + juce::String (ratio, 3)
+                        + " (" + (percent >= 0 ? "+" : "") + juce::String (percent, 1) + "%)",
+                    getLocalBounds().removeFromTop (64).reduced (2, 0).removeFromRight (120),
+                    juce::Justification::bottomRight);
+        if (looped)
+        {
+            g.setColour (juce::Colours::white.withAlpha (0.5f));
+            g.drawText (jp (u8"小節数は本体1周分（繰り返しは別）"), 2, 68, getWidth() - 4, 14,
+                        juce::Justification::centredLeft);
+        }
+    }
+
+    void resized() override
+    {
+        semitoneSlider.setBounds (2, 18, getWidth() - 4, 22);
+        barsEditor.setBounds (64, 44, 64, 20);
+        resetButton.setBounds (getLocalBounds().removeFromBottom (24).reduced (2, 0)
+                                   .removeFromLeft (84));
+    }
+
+private:
+    void pushValues()
+    {
+        if (! editBegun)
+        {
+            editBegun = true; // 吹き出し1回の編集で undo 1件
+            if (willEdit)
+                willEdit();
+        }
+        if (apply)
+            apply (semitones, ratio);
+        repaint();
+    }
+
+    void applyBarsText()
+    {
+        const double bars = barsEditor.getText().getDoubleValue();
+        if (! (bars > 0.0))
+        {
+            refreshTexts(); // 不正入力は現在値へ戻す
+            return;
+        }
+        // 小節数はUIの入力手段であって保存値ではない（保存は ratio。BPM追従しないと決めた
+        // 以上、小節数を保存すると BPM 変更時に意味が変わる）。換算はモデル側の関数
+        auto next = ClipDomains::ratioForBars (bars, barLengthSamples, sourceLengthSamples);
+        // view 長が 0 になる要求は受理しない（読込時の検証と同じ規則）
+        if ((juce::int64) std::llround ((double) sourceLengthSamples * next) < 1)
+        {
+            refreshTexts();
+            return;
+        }
+        if (next != ratio)
+        {
+            ratio = next;
+            pushValues();
+        }
+        refreshTexts();
+    }
+
+    void refreshTexts()
+    {
+        // 現在の（要求）見かけ長を丸めずに表示する
+        const double bars = (double) sourceLengthSamples * ratio / barLengthSamples;
+        auto text = juce::String (bars, 2);
+        while (text.endsWith ("0"))
+            text = text.dropLastCharacters (1);
+        if (text.endsWith ("."))
+            text = text.dropLastCharacters (1);
+        barsEditor.setText (text, false);
+        repaint();
+    }
+
+    juce::int64 sourceLengthSamples;
+    double barLengthSamples;
+    bool looped = false;
+    int semitones = 0;
+    double ratio = 1.0;
+    juce::Slider semitoneSlider;
+    juce::TextEditor barsEditor;
+    juce::TextButton resetButton;
+    std::function<void()> willEdit;
+    std::function<void (int, double)> apply;
+    bool editBegun = false; // この吹き出しで undo を積んだか（開いてから閉じるまで1件）
 };
 
 // セクション種別ごとの固定色（ユーザー選択なし）。5種は有彩色、otherは「特定の種別ではない」ことが
@@ -715,6 +895,36 @@ private:
         return 44;
     }
 
+    // 移調バッジが占める幅（0 = 出さない）。移調は痕跡が見えない項目なのでバッジで示す
+    // （region-settings の可視性の原則。ストレッチは長さが変わる＝痕跡が見えるのでバッジ不要）。
+    // 表示するのは**実効値**（音・波形・長さと同時に切り替わる。要求値だとレンダー完了前に
+    // バッジだけ先に変わってしまう）
+    static int transposeBadgeWidth (const Clip& clip, const juce::Rectangle<int>& rect)
+    {
+        if (clip.effectiveTransposeSemitones() == 0 || rect.getWidth() < 56)
+            return 0;
+        return 30; // バッジ26px＋左マージン4px
+    }
+
+    // 移調バッジ（+2 等）。ゲインバッジの左に並べる（ゲインが無ければその位置に置く）
+    void drawTransposeBadge (juce::Graphics& g, const Clip& clip, const juce::Rectangle<int>& rect,
+                             bool dimmed)
+    {
+        if (transposeBadgeWidth (clip, rect) == 0)
+            return;
+        const int semitones = clip.effectiveTransposeSemitones();
+        const auto label = (semitones > 0 ? "+" : "") + juce::String (semitones);
+        // ゲインバッジ（right-44 起点・幅30）の左へ4px空けて並べる。ゲインが無ければその位置
+        const int badgeX = gainBadgeWidth (clip.gain, rect) > 0 ? rect.getRight() - 74
+                                                                : rect.getRight() - 40;
+        const auto badge = juce::Rectangle<int> (badgeX, rect.getY() + 3, 26, 13);
+        g.setColour (juce::Colours::black.withAlpha (0.34f));
+        g.fillRoundedRectangle (badge.toFloat(), 3.0f);
+        g.setColour (juce::Colours::white.withAlpha (dimmed ? 0.45f : 0.9f));
+        g.setFont (Fonts::small());
+        g.drawText (label, badge, juce::Justification::centred);
+    }
+
     // リージョンゲインのdB値。0dBのときは何も描かない（デフォルトは沈黙、逸脱だけ主張）。
     // 波形の振幅スケールだけでは -1dB のような微差が読めないので数値も添える。
     // 置き場所は本体の右上: 表示名（左上）とループハンドル（右下）を避けるため。
@@ -743,8 +953,9 @@ private:
                     bool dimmed)
     {
         const double spp = owner.samplesPerPixel();
-        const int inPx = (int) std::llround ((double) clip.fadeInSamples / spp);
-        const int outPx = (int) std::llround ((double) clip.fadeOutSamples / spp);
+        // 斜線の長さは実効座標（波形に対する相対位置が伸縮しても動かない）
+        const int inPx = (int) std::llround ((double) clip.renderedFadeIn() / spp);
+        const int outPx = (int) std::llround ((double) clip.renderedFadeOut() / spp);
         if (inPx <= 0 && outPx <= 0)
             return;
 
@@ -821,7 +1032,8 @@ private:
 
         const bool isFadeIn = drag.mode == RegionDrag::Mode::fadeIn;
         const auto handle = isFadeIn ? fadeInHandle : fadeOutHandle;
-        const auto samples = isFadeIn ? clip.fadeInSamples : clip.fadeOutSamples;
+        // 表示は実効座標（聴こえる長さ）。保存値は原音座標なので chain 変換で写す
+        const auto samples = isFadeIn ? clip.renderedFadeIn() : clip.renderedFadeOut();
         const double sr = juce::jmax (1.0, owner.effectiveSampleRate());
         const double ms = (double) samples * 1000.0 / sr;
         const auto label = ms >= 1000.0 ? juce::String (ms / 1000.0, 2) + " s"
@@ -851,9 +1063,11 @@ private:
     {
         const double spp = owner.samplesPerPixel();
         const int x = owner.sampleToX (clip.startSample);
-        const int w = juce::jmax (2, (int) ((double) clip.lengthSamples / spp));
+        // 幅・反復間隔・波形はすべて実効（見かけ）座標。要求値からは計算しない
+        const auto renderedLength = clip.renderedLengthSamples();
+        const int w = juce::jmax (2, (int) ((double) renderedLength / spp));
         const int reps = 1 + juce::jmax (0, clip.loopCount);
-        const int loopRight = owner.sampleToX (clip.startSample + clip.totalLengthSamples());
+        const int loopRight = owner.sampleToX (clip.startSample + clip.renderedTotalLengthSamples());
         if (x > clipRegion.getRight() || loopRight < clipRegion.getX())
             return;
 
@@ -878,12 +1092,17 @@ private:
             g.drawRoundedRectangle (rect.toFloat().reduced (0.5f), 4.0f, 1.5f);
         }
 
-        // 波形（ロード時に作ったピークキャッシュから描く）。ループ部分は同じ形を薄く繰り返す
+        // 波形（activeDomain の共有ピークキャッシュから描く。view の端の部分区間だけ
+        // peakBetween が実バッファから集計し直す — 境界の外にあるピークを見せないため）。
+        // ループ部分は同じ形を薄く繰り返す
         const float midY = (float) rect.getCentreY();
         const float halfH = (float) (rect.getHeight() / 2 - 3);
+        const auto* domain = clip.activeDomain.get();
+        const auto viewStart = clip.viewStartRendered();
+        const auto viewEnd = clip.viewEndRendered();
         for (int r = 0; r < reps; ++r)
         {
-            const int repX = owner.sampleToX (clip.startSample + (juce::int64) r * clip.lengthSamples);
+            const int repX = owner.sampleToX (clip.startSample + (juce::int64) r * renderedLength);
             if (repX > clipRegion.getRight())
                 break;
             if (repX + w < clipRegion.getX())
@@ -896,18 +1115,15 @@ private:
             g.setColour (juce::Colours::white.withAlpha (dimmed ? 0.3f : (r > 0 ? 0.4f : 0.75f)));
             const int x0 = juce::jmax (repX, clipRegion.getX());
             const int x1 = juce::jmin (repX + w, clipRegion.getRight());
-            for (int px = x0; px < x1; ++px)
+            for (int px = x0; domain != nullptr && px < x1; ++px)
             {
-                const double s0 = (px - repX) * spp;
-                const double s1 = s0 + spp;
-                const int i0 = (int) (s0 / Clip::samplesPerPeak);
-                const int i1 = juce::jmax (i0 + 1, (int) (s1 / Clip::samplesPerPeak));
+                // view 相対のピクセル範囲 → ドメイン render 座標。view の外は読まない
+                const auto r0 = viewStart + (juce::int64) ((double) (px - repX) * spp);
+                const auto r1 = juce::jmin (viewEnd,
+                                            viewStart + (juce::int64) std::ceil ((double) (px - repX + 1) * spp));
+                const float peak = domain->peakBetween (r0, r1, Clip::samplesPerPeak);
 
-                float peak = 0.0f;
-                for (int i = i0; i < i1 && i < (int) clip.peakCache.size(); ++i)
-                    peak = juce::jmax (peak, clip.peakCache[(size_t) i]);
-
-                // リージョンゲインを描画振幅に掛ける（「見た目＝出る音」。peakCacheは素のまま保つ）。
+                // リージョンゲインを描画振幅に掛ける（「見た目＝出る音」。キャッシュは素のまま保つ）。
                 // 上げ側は jlimit で頭打ちになり、リージョン内で潰れて見える
                 const float h = juce::jlimit (1.0f, halfH, peak * clip.gain * halfH * 1.4f);
                 g.drawVerticalLine (px, midY - h, midY + h);
@@ -922,15 +1138,17 @@ private:
         // 強弱方針: リージョン本体より控えめ（波形と同程度のアルファ）
         if (clip.name.isNotEmpty() && rect.getWidth() >= 40)
         {
-            // 名前とゲインバッジは同じ高さに並ぶので、バッジがある分だけ名前の幅を削る
+            // 名前とバッジ（ゲイン・移調）は同じ高さに並ぶので、バッジがある分だけ名前の幅を削る
             // （長い取り込みファイル名でdB値が読めなくなるのを防ぐ）
-            const int nameWidth = rect.getWidth() - 12 - gainBadgeWidth (clip.gain, rect);
+            const int nameWidth = rect.getWidth() - 12 - gainBadgeWidth (clip.gain, rect)
+                                  - transposeBadgeWidth (clip, rect);
             g.setColour (juce::Colours::white.withAlpha (dimmed ? 0.35f : 0.7f));
             g.setFont (Fonts::forText (Fonts::small(), clip.name));
             g.drawText (clip.name, rect.getX() + 6, rect.getY() + 3, juce::jmax (0, nameWidth), 12,
                         juce::Justification::centredLeft);
         }
         drawGainBadge (g, clip.gain, rect, dimmed); // 名前より後に描く（万一重なっても数値が読める）
+        drawTransposeBadge (g, clip, rect, dimmed); // ゲインバッジの左に並ぶ
     }
 
     void drawMidiRegion (juce::Graphics& g, const MidiRegion& region, int y, bool isSelected,
@@ -1367,7 +1585,7 @@ void TimelineView::updateContentSize()
         {
             // ループ終端まで含める（含めないと長いループがビューポート外に出てスクロールできない）
             for (auto& clip : track.clips)
-                maxSample = juce::jmax (maxSample, clip.startSample + clip.totalLengthSamples());
+                maxSample = juce::jmax (maxSample, clip.startSample + clip.renderedTotalLengthSamples());
             for (auto& region : track.midiRegions)
                 maxSample = juce::jmax (maxSample,
                                         (juce::int64) std::llround ((double) (region.startPpq + region.totalLengthPpq()) * spt));
@@ -1556,7 +1774,7 @@ void TimelineView::handleLaneMouseDown (const juce::MouseEvent& e)
                 // ⌥ドラッグで複製。判定順は フェードハンドル（上辺）→ ループハンドル（下辺）→ 移動で、
                 // どちらのハンドルも選択中しか出ない（MIDIリージョンと同じ規則）
                 const int itemX = sampleToX (clip.startSample);
-                const int itemRight = sampleToX (clip.startSample + clip.totalLengthSamples());
+                const int itemRight = sampleToX (clip.startSample + clip.renderedTotalLengthSamples());
                 const bool grabbable = wasSelected && ! e.mods.isAltDown();
                 const int fadeHandle = grabbable ? hitTestFadeHandle (clip, row * trackHeight,
                                                                      { e.x, e.y })
@@ -1583,6 +1801,8 @@ void TimelineView::handleLaneMouseDown (const juce::MouseEvent& e)
                 regionDrag.origLoopCount = clip.loopCount;
                 regionDrag.origFadeInSamples = clip.fadeInSamples;
                 regionDrag.origFadeOutSamples = clip.fadeOutSamples;
+                regionDrag.origRenderedFadeIn = clip.renderedFadeIn();
+                regionDrag.origRenderedFadeOut = clip.renderedFadeOut();
                 regionDrag.startX = e.x;
                 regionDrag.duplicateOnDrag = e.mods.isAltDown();
 
@@ -1631,19 +1851,19 @@ void TimelineView::handleLaneMouseDrag (const juce::MouseEvent& e)
     // スナップ後の時間位置・長さを先に計算する（編集開始の「実際に値が変わるか」の判定にも使う）
     juce::int64 snappedStart = 0, snappedLength = 0;
     int snappedLoopCount = regionDrag.origLoopCount;
-    juce::int64 draggedFadeIn = regionDrag.origFadeInSamples;
-    juce::int64 draggedFadeOut = regionDrag.origFadeOutSamples;
+    juce::int64 draggedFadeIn = regionDrag.origRenderedFadeIn;
+    juce::int64 draggedFadeOut = regionDrag.origRenderedFadeOut;
     if (regionDrag.isFadeDrag())
     {
-        // フェードはスナップしない（平滑化であって音楽的位置ではない）。
-        // クランプは clampFades() を直接使わず「全長 - 相手のフェード」で止める
+        // フェードはスナップしない（平滑化であって音楽的位置ではない）。ドラッグは
+        // **実効（見かけ）座標**で行い、クランプは「実効全長 - 相手のフェード」で止める
         // （clampFades は fadeIn 優先なので、そのまま通すと相手を押しのけてしまう）
         const auto& clip = sourceTrack.clips[(size_t) regionDrag.item];
         const auto deltaSamples = xToSample (e.x) - xToSample (regionDrag.startX);
         if (regionDrag.mode == RegionDrag::Mode::fadeIn)
-            draggedFadeIn = clip.clampedFadeIn (regionDrag.origFadeInSamples + deltaSamples);
+            draggedFadeIn = clip.clampedRenderedFadeIn (regionDrag.origRenderedFadeIn + deltaSamples);
         else // フェードアウトのハンドルは右へ動かすほど短くなる
-            draggedFadeOut = clip.clampedFadeOut (regionDrag.origFadeOutSamples - deltaSamples);
+            draggedFadeOut = clip.clampedRenderedFadeOut (regionDrag.origRenderedFadeOut - deltaSamples);
     }
     if (regionDrag.isMidi)
     {
@@ -1663,7 +1883,7 @@ void TimelineView::handleLaneMouseDrag (const juce::MouseEvent& e)
         const auto deltaSamples = xToSample (e.x) - xToSample (regionDrag.startX);
         snappedStart = snapSampleToGrid (regionDrag.origStartSample + deltaSamples);
         if (regionDrag.mode == RegionDrag::Mode::loop)
-            snappedLoopCount = loopCountFromDrag ((double) sourceTrack.clips[(size_t) regionDrag.item].lengthSamples,
+            snappedLoopCount = loopCountFromDrag ((double) sourceTrack.clips[(size_t) regionDrag.item].renderedLengthSamples(),
                                                   (double) deltaSamples);
     }
     const bool timeChanged = regionDrag.mode == RegionDrag::Mode::resize
@@ -1671,9 +1891,9 @@ void TimelineView::handleLaneMouseDrag (const juce::MouseEvent& e)
                              : regionDrag.mode == RegionDrag::Mode::loop
                                  ? snappedLoopCount != regionDrag.origLoopCount
                              : regionDrag.mode == RegionDrag::Mode::fadeIn
-                                 ? draggedFadeIn != regionDrag.origFadeInSamples
+                                 ? draggedFadeIn != regionDrag.origRenderedFadeIn
                              : regionDrag.mode == RegionDrag::Mode::fadeOut
-                                 ? draggedFadeOut != regionDrag.origFadeOutSamples
+                                 ? draggedFadeOut != regionDrag.origRenderedFadeOut
                                  : snappedStart != (regionDrag.isMidi ? regionDrag.origStartPpq
                                                                       : regionDrag.origStartSample);
 
@@ -1784,12 +2004,14 @@ void TimelineView::handleLaneMouseDrag (const juce::MouseEvent& e)
         }
         else if (regionDrag.mode == RegionDrag::Mode::fadeIn)
         {
-            clip.fadeInSamples = draggedFadeIn;
+            // タイムライン差分（実効座標）は chain 変換の逆で原音座標へ戻してから保存する
+            // （/ ratio では合わない。clampFades は原音座標のままなので不変条件も保たれる）
+            clip.fadeInSamples = clip.sourceFadeFromRendered (draggedFadeIn, false);
             clip.clampFades(); // 保険（全長が別要因で変わっていた場合のみ効く）
         }
         else if (regionDrag.mode == RegionDrag::Mode::fadeOut)
         {
-            clip.fadeOutSamples = draggedFadeOut;
+            clip.fadeOutSamples = clip.sourceFadeFromRendered (draggedFadeOut, true);
             clip.clampFades();
         }
         else
@@ -1950,7 +2172,7 @@ int TimelineView::hitTestClip (int trackIndex, int x) const
     {
         const auto& clip = track.clips[(size_t) ci];
         // ループ部分も本体と同じ扱い（クリックで選択・ドラッグで移動）
-        if (samplePos >= clip.startSample && samplePos < clip.startSample + clip.totalLengthSamples())
+        if (samplePos >= clip.startSample && samplePos < clip.startSample + clip.renderedTotalLengthSamples())
             return ci;
     }
     return -1;
@@ -1987,9 +2209,13 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
     }
     else
     {
+        // 判定は見かけ長（実効座標）。レンダリング待ちの間は無効 — 実効 1.0 / 要求 1.5 の
+        // 処理中に切ると、landing 後に右の開始位置が旧長のままで重なる
         const auto& clip = track.clips[(size_t) itemIndex];
         const auto playhead = editPositionSample();
-        canSplit = playhead > clip.startSample && playhead < clip.startSample + clip.lengthSamples;
+        canSplit = playhead > clip.startSample
+                && playhead < clip.startSample + clip.renderedLengthSamples()
+                && ! clipRenderPending (clip);
     }
 
     // ショートカット持ちの項目は表記を横に出す（shortcutKeyDescriptionはsetterのない公開フィールド）
@@ -2003,6 +2229,10 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
         return item;
     };
 
+    // 実効と要求の不一致（移調・伸縮のレンダリング待ち）の間は長さ依存操作を無効にする
+    // （分割・終端直後へ複製。startSample は landing 後に追従しないため重なりが生まれる）
+    const bool pendingClip = ! isMidi && clipRenderPending (track.clips[(size_t) itemIndex]);
+
     juce::PopupMenu menu;
     menu.addItem (itemWithKey (1, muted ? jp (u8"ミュート解除") : jp (u8"ミュート"),
                                Shortcuts::ID::muteRegion));
@@ -2015,11 +2245,31 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
         if (std::abs (gainDb) >= 0.05)
             gainItem.shortcutKeyDescription = GainScale::text (gainDb);
         menu.addItem (gainItem);
+
+        // 移調・伸縮（オーディオ専用・v20）。既定値以外なら現在値を横に出す（ゲインと同じ流儀）
+        const auto& clip = track.clips[(size_t) itemIndex];
+        juce::PopupMenu::Item stretchItem (jp (u8"移調・伸縮…"));
+        stretchItem.itemID = 9;
+        {
+            juce::String current;
+            if (clip.transposeSemitones != 0)
+                current << (clip.transposeSemitones > 0 ? "+" : "")
+                        << juce::String (clip.transposeSemitones);
+            if (clip.stretchRatio != 1.0)
+            {
+                if (current.isNotEmpty())
+                    current << " / ";
+                current << juce::String::fromUTF8 (u8"×") << juce::String (clip.stretchRatio, 2);
+            }
+            stretchItem.shortcutKeyDescription = current;
+        }
+        menu.addItem (stretchItem);
     }
-    menu.addItem (itemWithKey (2, jp (u8"複製"), Shortcuts::ID::repeatItem));
+    menu.addItem (itemWithKey (2, jp (u8"複製"), Shortcuts::ID::repeatItem, ! pendingClip));
     // ループはハンドルのドラッグで作るので「解除」だけメニューに置く（ループ中のみ有効）
     menu.addItem (6, jp (u8"ループ解除"), looped);
-    menu.addItem (itemWithKey (4, jp (u8"再生ヘッド位置で分割"), Shortcuts::ID::split, canSplit));
+    menu.addItem (itemWithKey (4, jp (u8"再生ヘッド位置で分割"), Shortcuts::ID::split,
+                               canSplit && ! pendingClip));
     menu.addItem (itemWithKey (5, jp (u8"書き出し…"), Shortcuts::ID::exportRegion));
     // リファレンス分析はオーディオリージョン専用（リージョン範囲がそのままトリムになる）。
     // ツール群（~/daw の Python パイプライン）不在時は無効化し、理由を文言で示す
@@ -2056,6 +2306,8 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
                                 safe->showClipGainCallout (trackIndex, itemIndex);
                             else if (result == 8 && safe->onAnalyzeItemRequested)
                                 safe->onAnalyzeItemRequested (trackIndex, itemIndex);
+                            else if (result == 9)
+                                safe->showClipStretchCallout (trackIndex, itemIndex);
                         });
 }
 
@@ -2076,7 +2328,7 @@ void TimelineView::showClipGainCallout (int trackIndex, int itemIndex)
     // ループの反復部分も右クリックできるので、範囲はループ終端まで含める
     // （本体だけにすると「本体は画面外・反復だけ表示中」で交差が空になり、吹き出しが的を外す）
     const int x = sampleToX (clip.startSample);
-    const int right = sampleToX (clip.startSample + clip.totalLengthSamples());
+    const int right = sampleToX (clip.startSample + clip.renderedTotalLengthSamples());
     const auto areaInLanes = juce::Rectangle<int> (x, trackIndex * trackHeight + 4,
                                                   juce::jmax (2, right - x), trackHeight - 8);
     // JUCEは渡した矩形の中央と各辺を矢印の候補にするため、長いリージョンや横スクロールで
@@ -2111,11 +2363,71 @@ void TimelineView::applyClipGain (int trackIndex, int itemIndex, float gain)
     lanes->repaint(); // 波形の振幅とバッジを追従させる（ドラッグ中もここを通る）
 }
 
+// 移調・伸縮の吹き出し（ゲインと同じ流儀・CallOutBox は非同期だがモーダル）
+void TimelineView::showClipStretchCallout (int trackIndex, int itemIndex)
+{
+    if (project == nullptr || trackIndex < 0 || trackIndex >= (int) project->tracks.size())
+        return;
+    auto& track = project->tracks[(size_t) trackIndex];
+    if (track.type != TrackType::audio
+        || itemIndex < 0 || itemIndex >= (int) track.clips.size())
+        return;
+    const auto& clip = track.clips[(size_t) itemIndex];
+
+    const int x = sampleToX (clip.startSample);
+    const int right = sampleToX (clip.startSample + clip.renderedTotalLengthSamples());
+    const auto areaInLanes = juce::Rectangle<int> (x, trackIndex * trackHeight + 4,
+                                                  juce::jmax (2, right - x), trackHeight - 8);
+    auto area = getLocalArea (lanes.get(), areaInLanes).getIntersection (viewport->getBounds());
+    if (area.isEmpty())
+        area = viewport->getBounds();
+
+    juce::Component::SafePointer<TimelineView> safe (this);
+    auto panel = std::make_unique<RegionTransposeStretchPanel> (
+        clip, barLengthSamples(),
+        [safe] { if (safe != nullptr && safe->onWillEditClipValue) safe->onWillEditClipValue(); },
+        [safe, trackIndex, itemIndex] (int semitones, double ratio)
+        { if (safe != nullptr) safe->applyClipStretch (trackIndex, itemIndex, semitones, ratio); });
+
+    stretchCallout = &juce::CallOutBox::launchAsynchronously (std::move (panel), area, this);
+}
+
+void TimelineView::applyClipStretch (int trackIndex, int itemIndex, int semitones, double ratio)
+{
+    // 吹き出し表示中の非同期な構造変更（録音終了など）に備えて、適用のたびに範囲を再検証する
+    if (project == nullptr || trackIndex < 0 || trackIndex >= (int) project->tracks.size())
+        return;
+    auto& track = project->tracks[(size_t) trackIndex];
+    if (track.type != TrackType::audio
+        || itemIndex < 0 || itemIndex >= (int) track.clips.size())
+        return;
+    auto& clip = track.clips[(size_t) itemIndex];
+
+    // 受付の判断（クランプ・view長ガード・ドメインのリセット）はモデル側（ClipDomains）
+    if (! ClipDomains::applyStretchRequest (clip, semitones, ratio))
+        return;
+    Log::info ("clip_stretch.request", "track=" + juce::String (trackIndex)
+                                           + " item=" + juce::String (itemIndex)
+                                           + " semitones=" + juce::String (semitones)
+                                           + " ratio=" + juce::String (ratio, 4));
+    if (onClipStretchEdited)
+        onClipStretchEdited(); // dirty 化＋RenderCache の debounce 同期（MainComponent）
+    lanes->repaint(); // バッジ・メニュー併記の即時反映（音と長さはレンダー完了時に切り替わる）
+}
+
+bool TimelineView::clipRenderPending (const Clip& clip) const
+{
+    return clip.renderPending (effectiveSampleRate());
+}
+
 void TimelineView::dismissGainCallout()
 {
     if (gainCallout != nullptr)
         gainCallout->dismiss();
     gainCallout = nullptr;
+    if (stretchCallout != nullptr)
+        stretchCallout->dismiss();
+    stretchCallout = nullptr;
 }
 
 void TimelineView::toggleMuteAt (int trackIndex, int itemIndex)
@@ -2185,15 +2497,16 @@ bool TimelineView::fadeHandleRects (const Clip& clip, int laneY,
                                    juce::Rectangle<int>& fadeOutHandle) const
 {
     const int x = sampleToX (clip.startSample);
-    const int right = sampleToX (clip.startSample + clip.totalLengthSamples());
+    const int right = sampleToX (clip.startSample + clip.renderedTotalLengthSamples());
     if (right - x < fadeHandleMinWidth)
         return false; // ハンドル2つ＋移動用の余白が取れない幅では出さない
 
+    // ハンドル位置は実効（見かけ）座標。フェード長は chain 変換で実効へ写す
     fadeInHandle = fadeHandleRectAt (x, right, laneY,
-                                     sampleToX (clip.startSample + clip.fadeInSamples));
+                                     sampleToX (clip.startSample + clip.renderedFadeIn()));
     fadeOutHandle = fadeHandleRectAt (x, right, laneY,
-                                      sampleToX (clip.startSample + clip.totalLengthSamples()
-                                                 - clip.fadeOutSamples));
+                                      sampleToX (clip.startSample + clip.renderedTotalLengthSamples()
+                                                 - clip.renderedFadeOut()));
     return true;
 }
 
@@ -2242,11 +2555,13 @@ void TimelineView::duplicateAt (int trackIndex, int itemIndex)
     {
         if (itemIndex < 0 || itemIndex >= (int) track.clips.size())
             return;
+        if (clipRenderPending (track.clips[(size_t) itemIndex]))
+            return; // レンダリング待ち: 「終端直後」が旧長のままで重なりを作るため無効
         if (onWillEditModel)
             onWillEditModel();
-        Clip copy = track.clips[(size_t) itemIndex]; // fileName/audioは共有、peakCacheは値コピー
+        Clip copy = track.clips[(size_t) itemIndex]; // fileName/audio/activeDomainは共有参照
         // 元の終端直後（Logicのリピート相当）。ループ中はループ終端の直後＝重ならない位置へ
-        copy.startSample += copy.totalLengthSamples();
+        copy.startSample += copy.renderedTotalLengthSamples();
         track.clips.push_back (std::move (copy));
         selection = { trackIndex, (int) track.clips.size() - 1 };
         regionSelection.clear();
@@ -2294,6 +2609,8 @@ void TimelineView::splitAtPlayhead (int trackIndex, int itemIndex)
     {
         if (itemIndex < 0 || itemIndex >= (int) track.clips.size())
             return;
+        if (clipRenderPending (track.clips[(size_t) itemIndex]))
+            return; // レンダリング待ち: 実効 1.0 / 要求 1.5 の処理中に切ると landing 後に重なる
         Clip left, right;
         if (! splitClip (track.clips[(size_t) itemIndex], playhead, left, right))
             return;

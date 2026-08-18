@@ -39,6 +39,8 @@ void operator delete[] (void* p, std::size_t) noexcept { std::free (p); }
 #include "audio/AudioImporter.h"
 #include "audio/AudioFilePreview.h"
 #include "audio/BounceRenderer.h"
+#include "audio/ClipStretcher.h"
+#include "audio/RenderCache.h"
 #include "audio/MasterLimiter.h"
 #include "audio/PlaybackEngine.h"
 #include "audio/SamplerEngine.h"
@@ -48,6 +50,7 @@ void operator delete[] (void* p, std::size_t) noexcept { std::free (p); }
 #include "audio/UrlDownloader.h"
 #include "ui/FxSlotLayout.h"
 #include "audio/ReferenceReportGenerator.h"
+#include "shared/ClipDomains.h"
 #include "shared/Project.h"
 #include "shared/SynthBank.h"
 #include "shared/UndoStack.h"
@@ -1914,7 +1917,9 @@ void testSplitClip()
     clip.audio = std::make_shared<juce::AudioBuffer<float>> (1, 1000);
     for (int i = 0; i < 1000; ++i)
         clip.audio->setSample (0, i, (float) i);
-    clip.buildPeakCache();
+    clip.resetRenderDomainToSelf();
+    clip.activeDomain = ClipDomains::makeNeutralDomain (clip.audio, clip.offsetSamples,
+                                                        clip.lengthSamples, 48000.0);
 
     Clip left, right;
     expect (splitClip (clip, 1100, left, right), "内側の分割点で分割できること");
@@ -1927,11 +1932,19 @@ void testSplitClip()
     expect (left.fileName == clip.fileName && right.fileName == clip.fileName, "fileName共有");
     expect (left.muted && right.muted, "mutedが両方に引き継がれること");
 
-    // peakCacheは参照範囲のみ: 右の先頭ピークはソースのoffset位置以降の値になる
-    expect (left.peakCache.size() == 1 && right.peakCache.size() == 1, "peakCacheが再構築されること");
-    if (! right.peakCache.empty())
-        expect (juce::approximatelyEqual (right.peakCache[0], 449.0f), // max(|150..449|)
-                "右のpeakCacheが自分の参照範囲から作られること");
+    // 波形キャッシュはドメイン共有＋view端の再集計: 右の先頭ピークは自分の参照範囲
+    //（offset 150 以降）から集計され、左側にしかない値（<150）が混ざらない
+    expect (left.activeDomain.get() == clip.activeDomain.get()
+                && right.activeDomain.get() == clip.activeDomain.get(),
+            "分割で RenderedDomain が親と同一インスタンスのまま共有されること（再レンダーなし）");
+    if (right.activeDomain != nullptr)
+    {
+        const auto peak = right.activeDomain->peakBetween (right.viewStartRendered(),
+                                                           right.viewStartRendered() + 300,
+                                                           Clip::samplesPerPeak);
+        expect (juce::approximatelyEqual (peak, 449.0f), // max(|150..449|)
+                "右の波形ピークが自分の参照範囲から集計されること");
+    }
 
     // フェードは外側だけ継承する（内側＝分割点側は0）。丸ごとコピーだと分割点にフェードが移動する
     {
@@ -1963,8 +1976,8 @@ void testSplitClip()
         Clip ll, lr;
         expect (splitClip (looped, 1100, ll, lr), "ループ済みクリップも分割できること");
         expect (ll.loopCount == 0 && lr.loopCount == 0, "分割でループが解除されること");
-        expect (ll.fadeInSamples + ll.fadeOutSamples <= ll.totalLengthSamples()
-                    && lr.fadeInSamples + lr.fadeOutSamples <= lr.totalLengthSamples(),
+        expect (ll.fadeInSamples + ll.fadeOutSamples <= ll.sourceTotalLengthSamples()
+                    && lr.fadeInSamples + lr.fadeOutSamples <= lr.sourceTotalLengthSamples(),
                 "左右のフェードが分割後の全長に収まること（不変条件が破れないこと）");
         expect (ll.fadeInSamples == 100 && lr.fadeOutSamples == 300,
                 "継承したフェードがそれぞれの長さで頭打ちになること");
@@ -2410,7 +2423,8 @@ void testLoopExpansion()
     clip.offsetSamples = 500;
     clip.lengthSamples = 800;
     clip.loopCount = 3;
-    expect (clip.totalLengthSamples() == 3200, "総再生長は本体長×4");
+    expect (clip.sourceTotalLengthSamples() == 3200, "総再生長は本体長×4");
+    expect (clip.renderedTotalLengthSamples() == 3200, "無加工では見かけの総再生長も同じ");
     {
         std::vector<ClipPlayback> out;
         appendClipPlaybacks (clip, out);
@@ -7377,25 +7391,21 @@ void testStereoClipLoadAndV6()
 
     // ステレオのピークキャッシュ: L/Rのmax合成（L=0.1, R=0.2 → 0.2）
     {
-        Clip clip;
-        clip.audio = stereo;
-        clip.lengthSamples = 2000;
-        clip.buildPeakCache();
-        expect (! clip.peakCache.empty(), "ピークキャッシュが作られること");
+        const auto peaks = buildDomainPeakCache (*stereo, 0, 2000, Clip::samplesPerPeak);
+        expect (! peaks.empty(), "ピークキャッシュが作られること");
         bool allMax = true;
-        for (float peak : clip.peakCache)
+        for (float peak : peaks)
             if (std::abs (peak - 0.2f) > 0.001f)
                 allMax = false;
         expect (allMax, "ステレオのピークはL/Rのmax（0.2）");
     }
 
-    // ステレオクリップの分割: audio共有・ピークキャッシュ再構築
+    // ステレオクリップの分割: audio共有
     {
         Clip clip;
         clip.audio = stereo;
         clip.startSample = 0;
         clip.lengthSamples = 2000;
-        clip.buildPeakCache();
         Clip left, right;
         expect (splitClip (clip, 800, left, right), "ステレオクリップを分割できること");
         expect (left.audio.get() == right.audio.get() && left.audio.get() == stereo.get(),
@@ -12614,7 +12624,7 @@ void testSatParamsRoundtrip()
         expect (project.save (error), "保存できること");
     }
     const auto parsed = juce::JSON::parse (dir.getChildFile ("project.json").loadFileAsString());
-    expect ((int) parsed.getProperty ("version", 0) == 19, "v19で保存されること");
+    expect ((int) parsed.getProperty ("version", 0) == Project::currentVersion, "現行版数で保存されること");
 
     auto reloaded = Project::load (dir, warnings, error);
     expect (reloaded != nullptr && reloaded->tracks.size() == 1, "再読込できること");
@@ -13729,6 +13739,1091 @@ void testBusFxParamsPersistence()
     dir.deleteRecursively();
 }
 
+// ---- 移調・タイムストレッチ（docs/plans/2026-08-18-1028-audio-transpose-stretch.md）----
+
+// テスト用の正弦波バッファ
+std::shared_ptr<juce::AudioBuffer<float>> makeToneBuffer (double freqHz, int numSamples,
+                                                          double sr, int channels = 1)
+{
+    auto buffer = std::make_shared<juce::AudioBuffer<float>> (channels, numSamples);
+    for (int ch = 0; ch < channels; ++ch)
+        for (int i = 0; i < numSamples; ++i)
+            buffer->setSample (ch, i,
+                               0.5f * (float) std::sin (juce::MathConstants<double>::twoPi
+                                                        * freqHz * i / sr));
+    return buffer;
+}
+
+// FFT（Hann窓）で支配的な周波数を求める
+double dominantFrequency (const juce::AudioBuffer<float>& buffer, int start, int length, double sr)
+{
+    constexpr int order = 14; // 16384
+    constexpr int size = 1 << order;
+    length = juce::jmin (length, size, buffer.getNumSamples() - start);
+    std::vector<float> data ((size_t) size * 2, 0.0f);
+    for (int i = 0; i < length; ++i)
+    {
+        const double window = 0.5 - 0.5 * std::cos (juce::MathConstants<double>::twoPi * i
+                                                    / juce::jmax (1, length - 1));
+        data[(size_t) i] = buffer.getSample (0, start + i) * (float) window;
+    }
+    juce::dsp::FFT fft (order);
+    fft.performFrequencyOnlyForwardTransform (data.data());
+    int peakBin = 1;
+    for (int bin = 1; bin < size / 2; ++bin)
+        if (data[(size_t) bin] > data[(size_t) peakBin])
+            peakBin = bin;
+    return peakBin * sr / size;
+}
+
+float bufferRms (const juce::AudioBuffer<float>& buffer, int start, int length)
+{
+    double sum = 0.0;
+    length = juce::jmin (length, buffer.getNumSamples() - start);
+    for (int i = 0; i < length; ++i)
+    {
+        const double v = buffer.getSample (0, start + i);
+        sum += v * v;
+    }
+    return length > 0 ? (float) std::sqrt (sum / length) : 0.0f;
+}
+
+// 数学のテスト用の「偽の」レンダー済みドメイン（中身は無音。長さ・座標だけが本物）
+std::shared_ptr<const RenderedDomain> makeFakeDomain (
+    const std::shared_ptr<juce::AudioBuffer<float>>& source,
+    juce::int64 domainOffset, juce::int64 domainLength, int semitones, double ratio, double sr)
+{
+    auto d = std::make_shared<RenderedDomain>();
+    const auto outLength = (juce::int64) std::llround ((double) domainLength * ratio);
+    d->audio = std::make_shared<juce::AudioBuffer<float>> (
+        juce::jmax (1, source->getNumChannels()), (int) juce::jmax ((juce::int64) 1, outLength));
+    d->sourceAudio = source;
+    d->audioBaseOffset = 0;
+    d->domainOffset = domainOffset;
+    d->domainLength = domainLength;
+    d->semitones = semitones;
+    d->ratio = ratio;
+    d->sampleRate = sr;
+    d->peakCache = buildDomainPeakCache (*d->audio, 0, d->audio->getNumSamples(),
+                                         Clip::samplesPerPeak);
+    return d;
+}
+
+void testClipStretcher()
+{
+    beginTest ("ClipStretcher render");
+    const double sr = 48000.0;
+    auto tone = makeToneBuffer (440.0, 48000, sr);
+
+    // 無加工設定は入力とほぼ一致（位相ボコーダーの再合成を通るため厳密一致ではない）
+    if (auto out = ClipStretcher::render (*tone, 0, 48000, 0, 1.0, sr); out != nullptr)
+    {
+        expect (out->getNumSamples() == 48000, "0半音/1.0倍で全長が保たれること");
+        expect (std::abs (dominantFrequency (*out, 8000, 16384, sr) - 440.0) < 6.0,
+                "0半音でピッチが変わらないこと");
+        expect (std::abs (bufferRms (*out, 8000, 16000) - bufferRms (*tone, 8000, 16000)) < 0.08f,
+                "0半音/1.0倍でレベルがほぼ保たれること");
+    }
+    else
+        expect (false, "0半音/1.0倍のレンダリングが成功すること");
+
+    // +12半音で基本周波数が2倍（FFTのピーク位置で判定）
+    if (auto out = ClipStretcher::render (*tone, 0, 48000, 12, 1.0, sr); out != nullptr)
+        expect (std::abs (dominantFrequency (*out, 8000, 16384, sr) - 880.0) < 12.0,
+                "+12半音で440Hzが880Hzになること");
+    else
+        expect (false, "+12半音のレンダリングが成功すること");
+
+    // ratio=1.25 で出力長が round(length × 1.25) ちょうど・ピッチは変わらない
+    if (auto out = ClipStretcher::render (*tone, 0, 48000, 0, 1.25, sr); out != nullptr)
+    {
+        expect (out->getNumSamples() == 60000, "1.25倍で出力長が厳密に一致すること");
+        expect (std::abs (dominantFrequency (*out, 16000, 16384, sr) - 440.0) < 6.0,
+                "1.25倍に伸ばしてもピッチが変わらないこと");
+        // 出力の頭が無音でない（レイテンシ補償の回帰。補償を外すと必ず落ちる）
+        expect (bufferRms (*out, 0, 1000) > 0.1f, "出力の頭が無音でないこと");
+    }
+    else
+        expect (false, "1.25倍のレンダリングが成功すること");
+
+    // 同じ入力を2回処理すると完全に一致する（固定シードの回帰）
+    {
+        auto a = ClipStretcher::render (*tone, 1000, 20000, 3, 1.1, sr);
+        auto b = ClipStretcher::render (*tone, 1000, 20000, 3, 1.1, sr);
+        bool identical = a != nullptr && b != nullptr
+                      && a->getNumSamples() == b->getNumSamples();
+        if (identical)
+            for (int i = 0; i < a->getNumSamples(); ++i)
+                if (a->getSample (0, i) != b->getSample (0, i))
+                {
+                    identical = false;
+                    break;
+                }
+        expect (identical, "同じ入力の2回のレンダリングが完全一致すること（固定シード）");
+    }
+
+    // 20〜50msの短いクリップ（チョップ用途・分析窓より短い）が無音にならない。
+    // exact() は入力が seek 用の長さに足りないと無音を返すため、前後パディングの回帰
+    {
+        auto out = ClipStretcher::render (*tone, 24000, 960, 2, 1.0, sr); // 20ms
+        expect (out != nullptr && out->getNumSamples() == 960 && bufferRms (*out, 0, 960) > 0.1f,
+                "20msのチョップが無音にならないこと");
+    }
+
+    // 原音バッファの先頭・末尾に接するクリップ（助走が取れない側を無音で埋める経路）
+    {
+        auto head = ClipStretcher::render (*tone, 0, 960, 2, 1.0, sr);
+        auto tail = ClipStretcher::render (*tone, 47040, 960, 2, 1.0, sr);
+        expect (head != nullptr && bufferRms (*head, 0, 960) > 0.1f,
+                "バッファ先頭に接するクリップが鳴ること");
+        expect (tail != nullptr && bufferRms (*tail, 0, 960) > 0.1f,
+                "バッファ末尾に接するクリップが鳴ること");
+    }
+
+    // 異常値は**失敗を返す**（直呼びは受付層を通っていないのでクランプしない。
+    // 原音を「その指紋の生成結果」として返さない）
+    expect (ClipStretcher::render (*tone, 0, 48000, 0, 0.0, sr) == nullptr, "ratio=0は失敗");
+    expect (ClipStretcher::render (*tone, 0, 48000, 0, -1.0, sr) == nullptr, "負のratioは失敗");
+    expect (ClipStretcher::render (*tone, 0, 48000, 0,
+                                   std::numeric_limits<double>::quiet_NaN(), sr) == nullptr,
+            "NaNは失敗");
+    expect (ClipStretcher::render (*tone, 0, 48000, 0,
+                                   std::numeric_limits<double>::infinity(), sr) == nullptr,
+            "infは失敗");
+    expect (ClipStretcher::render (*tone, 0, 48000, 0, 100.0, sr) == nullptr, "巨大倍率は失敗");
+    expect (ClipStretcher::render (*tone, 0, 48000, 13, 1.0, sr) == nullptr, "±12半音の外は失敗");
+    expect (ClipStretcher::render (*tone, 40000, 20000, 0, 1.0, sr) == nullptr,
+            "原音外のドメインは失敗");
+}
+
+void testStretchDomainMath()
+{
+    beginTest ("stretch domain math (view/fade/split)");
+    const double sr = 48000.0;
+
+    // ループをまたぐフェードの chain 変換: 本体1サンプル・ratio=1.5・100反復の全長フェードは
+    // 実効200（round(fade × ratio) = 150 だと落ちる）
+    {
+        auto source = makeToneBuffer (440.0, 10, sr);
+        Clip clip;
+        clip.audio = source;
+        clip.offsetSamples = 0;
+        clip.lengthSamples = 1;
+        clip.loopCount = 99; // 100反復
+        clip.fadeInSamples = 100; // 連なり全長
+        clip.activeDomain = makeFakeDomain (source, 0, 1, 0, 1.5, sr);
+        expect (clip.renderedLengthSamples() == 2, "本体1サンプル×1.5は実効2");
+        expect (clip.renderedTotalLengthSamples() == 200, "連なりの実効全長は200");
+        expect (clip.renderedFadeIn() == 200,
+                "連なり全長のフェードが実効200になること（×ratioの丸め累積だと150）");
+    }
+
+    // 0.5倍・1.5倍でフェードの相対位置（波形に対する斜線の位置）が変わらない
+    for (double ratio : { 0.5, 1.5 })
+    {
+        auto source = makeToneBuffer (440.0, 2000, sr);
+        Clip clip;
+        clip.audio = source;
+        clip.offsetSamples = 0;
+        clip.lengthSamples = 2000;
+        clip.fadeInSamples = 500;  // 本体の1/4
+        clip.fadeOutSamples = 250; // 本体の1/8
+        clip.activeDomain = makeFakeDomain (source, 0, 2000, 0, ratio, sr);
+        const auto renderedBody = clip.renderedLengthSamples();
+        expect (clip.renderedFadeIn() * 4 == renderedBody,
+                "フェードインの相対位置（1/4）が伸縮後も保たれること");
+        expect (clip.renderedFadeOut() * 8 == renderedBody,
+                "フェードアウトの相対位置（1/8）が伸縮後も保たれること");
+    }
+
+    // フェードドラッグの往復（実効→原音→実効）で値が変わらない（idempotent）
+    {
+        auto source = makeToneBuffer (440.0, 1000, sr);
+        Clip clip;
+        clip.audio = source;
+        clip.offsetSamples = 100;
+        clip.lengthSamples = 700;
+        clip.loopCount = 2;
+        clip.activeDomain = makeFakeDomain (source, 100, 700, 0, 1.3, sr);
+        bool stable = true;
+        for (juce::int64 rendered = 0; rendered <= clip.renderedTotalLengthSamples();
+             rendered += 37)
+        {
+            const auto sourceFade = clip.sourceFadeFromRendered (rendered, false);
+            const auto rendered2 = clip.renderedFadeLength (sourceFade, false);
+            const auto sourceFade2 = clip.sourceFadeFromRendered (rendered2, false);
+            if (clip.renderedFadeLength (sourceFade2, false) != rendered2)
+                stable = false;
+            // フェードアウト側も同じ規則
+            const auto outSource = clip.sourceFadeFromRendered (rendered, true);
+            const auto outRendered = clip.renderedFadeLength (outSource, true);
+            if (clip.renderedFadeLength (clip.sourceFadeFromRendered (outRendered, true), true)
+                != outRendered)
+                stable = false;
+        }
+        expect (stable, "フェードの実効→原音→実効の往復が安定すること");
+    }
+
+    // clampFades は原音長基準のまま（実効長を渡すと1.5倍で fadeOut が過剰に許容される）
+    {
+        auto source = makeToneBuffer (440.0, 1000, sr);
+        Clip clip;
+        clip.audio = source;
+        clip.lengthSamples = 1000;
+        clip.activeDomain = makeFakeDomain (source, 0, 1000, 0, 1.5, sr);
+        clip.fadeOutSamples = 1400; // 実効全長(1500)未満だが原音全長(1000)超
+        clip.clampFades();
+        expect (clip.fadeOutSamples == 1000, "clampFadesが原音長基準でクランプすること");
+    }
+
+    // stretchRatio を往復させても lengthSamples が変わらない（非破壊）
+    {
+        auto source = makeToneBuffer (440.0, 1000, sr);
+        Clip clip;
+        clip.audio = source;
+        clip.lengthSamples = 1000;
+        ClipDomains::applyStretchRequest (clip, 0, 1.5);
+        ClipDomains::applyStretchRequest (clip, 0, 1.0);
+        expect (clip.lengthSamples == 1000 && clip.stretchRatio == 1.0,
+                "ratio往復でlengthSamplesが変わらないこと");
+    }
+
+    // 移調だけ変えても stretchRatio と見かけ長が変わらない
+    {
+        auto source = makeToneBuffer (440.0, 1000, sr);
+        Clip clip;
+        clip.audio = source;
+        clip.lengthSamples = 1000;
+        clip.stretchRatio = 1.25;
+        clip.activeDomain = makeFakeDomain (source, 0, 1000, 0, 1.25, sr);
+        const auto before = clip.renderedLengthSamples();
+        ClipDomains::applyStretchRequest (clip, 2, clip.stretchRatio);
+        expect (clip.stretchRatio == 1.25 && clip.renderedLengthSamples() == before,
+                "移調だけの変更で伸縮と見かけ長が変わらないこと");
+    }
+
+    // 小節数 → stretchRatio の換算
+    {
+        expect (ClipDomains::ratioForBars (8.0, 48000.0, 384000) == 1.0, "8小節→1.0倍");
+        expect (ClipDomains::ratioForBars (12.0, 48000.0, 384000) == 1.5, "12小節→1.5倍");
+        expect (ClipDomains::ratioForBars (0.0, 48000.0, 384000) == 1.0, "不正入力は1.0");
+    }
+
+    // 分割: 0.5倍・1.5倍の双方で正しい位置で切れる・再レンダーなし・隙間も重なりもない
+    for (double ratio : { 0.5, 1.5 })
+    {
+        auto source = makeToneBuffer (440.0, 1000, sr);
+        Clip clip;
+        clip.audio = source;
+        clip.startSample = 10000;
+        clip.offsetSamples = 0;
+        clip.lengthSamples = 1000;
+        clip.stretchRatio = ratio;
+        clip.activeDomain = makeFakeDomain (source, 0, 1000, 0, ratio, sr);
+        clip.renderDomainOffset = 0;
+        clip.renderDomainLength = 1000;
+
+        const auto renderedLength = clip.renderedLengthSamples();
+        const auto splitAt = clip.startSample + renderedLength / 2;
+        Clip left, right;
+        expect (splitClip (clip, splitAt, left, right), "伸縮クリップを分割できること");
+        expect (left.activeDomain.get() == clip.activeDomain.get()
+                    && right.activeDomain.get() == clip.activeDomain.get(),
+                "分割に再レンダーが走らないこと（RenderedDomainが同一インスタンス）");
+        expect (right.startSample == left.startSample + left.renderedLengthSamples(),
+                "右の開始が左の実効終端と一致すること（隙間も重なりもない）");
+        expect (left.renderedLengthSamples() + right.renderedLengthSamples() == renderedLength,
+                "左右の実効長の和が親と厳密に一致すること");
+        expect (left.lengthSamples + right.lengthSamples == 1000
+                    && right.offsetSamples == left.offsetSamples + left.lengthSamples,
+                "原音側の分割も整合すること");
+        expect (right.viewStartRendered() == left.viewEndRendered(),
+                "左右のviewが同じ境界を共有すること");
+        // 分割で値・ドメインが継承される
+        expect (right.stretchRatio == ratio && right.renderDomainLength == 1000,
+                "分割で要求値とレンダードメインが継承されること");
+    }
+
+    // view がバッファ終端を越えない退化ケース（domainLength=2 / ratio=0.5 / 右子 offset=+1）。
+    // 独立に round(length × ratio) すると長さ1のバッファの [1, 2) を読む
+    {
+        auto source = makeToneBuffer (440.0, 2, sr);
+        Clip child;
+        child.audio = source;
+        child.offsetSamples = 1;
+        child.lengthSamples = 1;
+        child.activeDomain = makeFakeDomain (source, 0, 2, 0, 0.5, sr);
+        // 加工バッファ長は round(2×0.5) = 1。絶対境界の差なら view は [1,1) = 長さ0
+        expect (child.renderedLengthSamples() == 0
+                    || child.viewEndRendered() <= child.activeDomain->renderedDomainLength(),
+                "退化した子viewがバッファ終端を越えないこと");
+        std::vector<ClipPlayback> playbacks;
+        appendClipPlaybacks (child, playbacks);
+        for (const auto& p : playbacks)
+            expect (p.offsetSamples + p.lengthSamples <= p.audio->getNumSamples(),
+                    "退化viewの再生が範囲外を読まないこと");
+        // 長さ0のviewができる分割は行われない（実効長1の親は内側の分割点を持たない）
+        Clip parent;
+        parent.audio = source;
+        parent.offsetSamples = 0;
+        parent.lengthSamples = 2;
+        parent.activeDomain = child.activeDomain;
+        Clip l, r;
+        expect (! splitClip (parent, parent.startSample + 1, l, r) || (l.renderedLengthSamples() > 0 && r.renderedLengthSamples() > 0),
+                "長さ0のviewを作る分割が拒否されること");
+    }
+
+    // 無加工ドメインで domainOffset != 0 のクリップが原音の正しい位置を鳴らす
+    // （audioBaseOffset の回帰。落とすと先頭から鳴る）
+    {
+        auto source = makeToneBuffer (440.0, 3000, sr);
+        Clip clip;
+        clip.audio = source;
+        clip.offsetSamples = 1500;
+        clip.lengthSamples = 300;
+        clip.activeDomain = ClipDomains::makeNeutralDomain (source, 1000, 2000, sr);
+        std::vector<ClipPlayback> playbacks;
+        appendClipPlaybacks (clip, playbacks);
+        expect (playbacks.size() == 1 && playbacks[0].offsetSamples == 1500
+                    && playbacks[0].lengthSamples == 300,
+                "無加工の分割済みクリップが原音の正しい位置を読むこと");
+    }
+
+    // バウンス範囲が実効長で決まる（BounceRenderer::buildItemRender の rangeEnd 回帰）
+    {
+        auto source = makeToneBuffer (440.0, 1000, sr);
+        Track track;
+        Clip clip;
+        clip.audio = source;
+        clip.startSample = 4000;
+        clip.lengthSamples = 1000;
+        clip.loopCount = 1; // 2反復
+        clip.activeDomain = makeFakeDomain (source, 0, 1000, 0, 1.5, sr);
+        track.clips.push_back (clip);
+        BounceRenderer::TrackRender render;
+        juce::int64 rangeStart = 0, rangeEnd = 0;
+        expect (BounceRenderer::buildItemRender (track, 0, 120.0, sr, render, rangeStart, rangeEnd),
+                "伸縮クリップの書き出し範囲を組めること");
+        expect (rangeStart == 4000 && rangeEnd == 4000 + 3000,
+                "書き出し範囲がループ込みの実効長（1500×2）で決まること");
+        expect (render.clips.size() == 2 && render.clips[0].lengthSamples == 1500,
+                "展開されたClipPlaybackが実効長であること");
+    }
+
+    // チョップした右側の波形に、左側にしかないトランジェントが出ない（view端のピーク再集計）
+    {
+        auto source = std::make_shared<juce::AudioBuffer<float>> (1, 1024);
+        source->clear();
+        source->setSample (0, 590, 1.0f); // 右viewの開始(600)と同じ512binの左側
+        Clip right;
+        right.audio = source;
+        right.offsetSamples = 600;
+        right.lengthSamples = 424;
+        right.activeDomain = ClipDomains::makeNeutralDomain (source, 0, 1024, sr);
+        const auto peak = right.activeDomain->peakBetween (right.viewStartRendered(),
+                                                           right.viewStartRendered() + 100,
+                                                           Clip::samplesPerPeak);
+        expect (peak < 0.5f, "境界の外にあるトランジェントが右側の波形に出ないこと");
+        // 共有キャッシュ自体はドメイン全体を覆っている（トランジェントを含むbinは1.0）
+        expect (right.activeDomain->peakBetween (512, 1024, Clip::samplesPerPeak) > 0.99f,
+                "ドメイン全体のキャッシュにはトランジェントが入っていること");
+    }
+}
+
+void testStretchPersistence()
+{
+    beginTest ("stretch persistence (v20)");
+    auto dir = makeTempDir();
+    const double sr = 48000.0;
+
+    // 保存 → 読込で値とドメインが保たれる
+    {
+        Project project;
+        project.directory = dir;
+        project.sampleRate = sr;
+        Track track;
+        track.id = project.allocateId();
+        Clip clip;
+        clip.fileName = "clip-001.wav";
+        clip.lengthSamples = 4000;
+        clip.offsetSamples = 1000;
+        clip.transposeSemitones = 2;
+        clip.stretchRatio = 0.911;
+        clip.renderDomainOffset = 0;
+        clip.renderDomainLength = 8000;
+        clip.audio = makeToneBuffer (440.0, 8000, sr);
+        track.clips.push_back (clip);
+        project.tracks.push_back (std::move (track));
+
+        juce::AudioBuffer<float> wav (1, 8000);
+        for (int i = 0; i < 8000; ++i)
+            wav.setSample (0, i, std::sin (i * 0.05f) * 0.4f);
+        expect (writeBufferWav (dir.getChildFile ("clip-001.wav"), wav, sr), "WAVを書けること");
+
+        juce::String error;
+        expect (project.save (error), "保存できること");
+
+        juce::StringArray warnings;
+        auto loaded = Project::load (dir, warnings, error);
+        expect (loaded != nullptr && ! loaded->tracks.empty()
+                    && ! loaded->tracks[0].clips.empty(),
+                "読込できること");
+        if (loaded != nullptr && ! loaded->tracks.empty() && ! loaded->tracks[0].clips.empty())
+        {
+            const auto& c = loaded->tracks[0].clips[0];
+            expect (c.transposeSemitones == 2 && c.stretchRatio == 0.911,
+                    "移調・伸縮の値が保存→読込で保たれること");
+            expect (c.renderDomainOffset == 0 && c.renderDomainLength == 8000,
+                    "レンダードメインが保たれること");
+            expect (c.activeDomain != nullptr && c.activeDomain->ratio == 1.0,
+                    "読込直後の実効状態は原音素通しであること");
+        }
+    }
+
+    // v19相当（キー欠損）は既定値で読める
+    {
+        const auto jsonFile = dir.getChildFile ("project.json");
+        auto parsed = juce::JSON::parse (jsonFile.loadFileAsString());
+        parsed.getDynamicObject()->setProperty ("version", 19);
+        if (auto* tracksArray = parsed.getProperty ("tracks", {}).getArray())
+            for (auto& trackVar : *tracksArray)
+                if (auto* clipsArray = trackVar.getProperty ("clips", {}).getArray())
+                    for (auto& clipVar : *clipsArray)
+                        if (auto* obj = clipVar.getDynamicObject())
+                        {
+                            obj->removeProperty ("transposeSemitones");
+                            obj->removeProperty ("stretchRatio");
+                            obj->removeProperty ("renderDomainOffset");
+                            obj->removeProperty ("renderDomainLength");
+                        }
+        expect (jsonFile.replaceWithText (juce::JSON::toString (parsed)), "v19相当へ書き換え");
+
+        juce::StringArray warnings;
+        juce::String error;
+        auto loaded = Project::load (dir, warnings, error);
+        expect (loaded != nullptr && ! loaded->tracks[0].clips.empty(), "v19相当を読込できること");
+        if (loaded != nullptr && ! loaded->tracks[0].clips.empty())
+        {
+            const auto& c = loaded->tracks[0].clips[0];
+            expect (c.transposeSemitones == 0 && c.stretchRatio == 1.0,
+                    "v19の読込で既定値（無加工）が入ること");
+            expect (c.requestedDomainOffset() == c.offsetSamples
+                        && c.requestedDomainLength() == c.lengthSamples,
+                    "v19の読込でドメインがクリップ自身の範囲になること");
+        }
+    }
+
+    // 異常JSON（ratio が 0 / 負 / 文字列 / null・巨大semitone・不正ドメイン）を読んでも落ちない
+    {
+        const auto jsonFile = dir.getChildFile ("project.json");
+        const auto setClipProps = [&jsonFile] (juce::var ratio, juce::var semis,
+                                               juce::var dOff, juce::var dLen)
+        {
+            auto parsed = juce::JSON::parse (jsonFile.loadFileAsString());
+            if (auto* tracksArray = parsed.getProperty ("tracks", {}).getArray())
+                for (auto& trackVar : *tracksArray)
+                    if (auto* clipsArray = trackVar.getProperty ("clips", {}).getArray())
+                        for (auto& clipVar : *clipsArray)
+                            if (auto* obj = clipVar.getDynamicObject())
+                            {
+                                obj->setProperty ("stretchRatio", ratio);
+                                obj->setProperty ("transposeSemitones", semis);
+                                obj->setProperty ("renderDomainOffset", dOff);
+                                obj->setProperty ("renderDomainLength", dLen);
+                            }
+            jsonFile.replaceWithText (juce::JSON::toString (parsed));
+        };
+
+        struct Case { juce::var ratio, semis, dOff, dLen; };
+        const Case cases[] = {
+            { 0.0, 40, -5, 100 },                       // ratio 0・範囲外semitone・負のドメイン
+            { -2.0, 0, 0, 999999 },                     // 負のratio・原音外のドメイン
+            { "broken", 2, 2000, 0 },                   // 文字列ratio・長さ0ドメイン
+            { juce::var(), 0, 5000, 100 },              // null ratio・クリップ範囲を含まないドメイン
+        };
+        for (const auto& c : cases)
+        {
+            setClipProps (c.ratio, c.semis, c.dOff, c.dLen);
+            juce::StringArray warnings;
+            juce::String error;
+            auto loaded = Project::load (dir, warnings, error);
+            expect (loaded != nullptr && ! loaded->tracks[0].clips.empty(),
+                    "異常JSONでも読込が落ちないこと");
+            if (loaded != nullptr && ! loaded->tracks[0].clips.empty())
+            {
+                const auto& clip = loaded->tracks[0].clips[0];
+                expect (std::isfinite (clip.stretchRatio) && clip.stretchRatio >= ClipStretchLimits::minRatio
+                            && clip.stretchRatio <= ClipStretchLimits::maxRatio,
+                        "ratioが安全限界内へ収まること");
+                expect (std::abs (clip.transposeSemitones) <= ClipStretchLimits::maxSemitones,
+                        "semitoneが±12へ収まること");
+                expect (clip.requestedDomainOffset() <= clip.offsetSamples
+                            && clip.requestedDomainOffset() + clip.requestedDomainLength()
+                                   >= clip.offsetSamples + clip.lengthSamples
+                            && clip.requestedDomainOffset() >= 0,
+                        "不正なドメインがクリップ自身の範囲へ戻ること");
+            }
+        }
+    }
+    dir.deleteRecursively();
+}
+
+void testRenderCachePipeline()
+{
+    beginTest ("render cache pipeline");
+    const double sr = 48000.0;
+
+    // 1クリップの要求 → レンダー → 装着 → ClipPlayback の長さと実バッファが一致
+    {
+        Project project;
+        project.sampleRate = sr;
+        Track track;
+        Clip clip;
+        clip.audio = makeToneBuffer (440.0, 24000, sr);
+        clip.lengthSamples = 24000;
+        track.clips.push_back (clip);
+        project.tracks.push_back (std::move (track));
+        ClipDomains::reconcile (project, sr);
+
+        auto& liveClip = project.tracks[0].clips[0];
+        expect (ClipDomains::applyStretchRequest (liveClip, 2, 1.25), "要求を受理できること");
+        expect (liveClip.renderPending (sr), "受理直後はレンダリング待ちであること");
+        expect (liveClip.effectiveTransposeSemitones() == 0,
+                "完了前は実効の移調量（+2バッジの表示値）が旧値のままであること");
+
+        // 完了前: 見かけも音も古い（無加工）まま。長さと実バッファの有効長が常に一致する
+        {
+            std::vector<ClipPlayback> playbacks;
+            appendClipPlaybacks (liveClip, playbacks);
+            expect (playbacks.size() == 1 && playbacks[0].lengthSamples == 24000
+                        && playbacks[0].offsetSamples + playbacks[0].lengthSamples
+                               <= playbacks[0].audio->getNumSamples(),
+                    "完了前は古い実効長のままで、バッファと矛盾しないこと");
+        }
+
+        RenderCache cache;
+        bool attachedAny = false;
+        cache.collectRequests = [&]
+        {
+            bool attached = false;
+            auto requests = ClipDomains::collectRequests (
+                project, sr, [&cache] (const RenderFingerprint& fp) { return cache.lookup (fp); },
+                attached);
+            attachedAny = attachedAny || attached;
+            return requests;
+        };
+        std::shared_ptr<const RenderedDomain> ready;
+        cache.onRenderReady = [&] (const std::shared_ptr<const RenderedDomain>& domain)
+        { ready = domain; ClipDomains::attachRenderResult (project, sr, domain); };
+        cache.syncNow();
+        expect (cache.waitForRenders (20000), "レンダリングが完了すること");
+        cache.drainCompletedNow();
+        expect (ready != nullptr, "完了コールバックが結果を受け取ること");
+        expect (! liveClip.renderPending (sr), "装着後は要求と実効が一致すること");
+        expect (liveClip.effectiveTransposeSemitones() == 2,
+                "装着と同時に実効の移調量（バッジ）が切り替わること");
+        expect (liveClip.renderedLengthSamples() == 30000, "見かけ長が1.25倍になること");
+        {
+            std::vector<ClipPlayback> playbacks;
+            appendClipPlaybacks (liveClip, playbacks);
+            expect (playbacks.size() == 1 && playbacks[0].lengthSamples == 30000
+                        && playbacks[0].audio->getNumSamples() == 30000,
+                    "装着後のClipPlaybackが加工済みバッファと長さ一致すること");
+        }
+
+        // 同じループを8個にチョップしても RenderedDomain は1本しか作られない（ドメイン共有）
+        {
+            auto& clips = project.tracks[0].clips;
+            for (int i = 0; i < 3; ++i) // 3回の分割で4片（さらに複製で8片）
+            {
+                std::vector<Clip> next;
+                for (auto& c : clips)
+                {
+                    Clip l, r;
+                    if (splitClip (c, c.startSample + c.renderedLengthSamples() / 2, l, r))
+                    {
+                        next.push_back (l);
+                        next.push_back (r);
+                    }
+                    else
+                        next.push_back (c);
+                }
+                clips = next;
+            }
+            expect (clips.size() == 8, "8片にチョップできること");
+            bool sameDomain = true;
+            for (const auto& c : clips)
+                sameDomain = sameDomain && c.activeDomain.get() == ready.get();
+            expect (sameDomain, "8片が同じRenderedDomainを共有すること");
+            bool attached = false;
+            const auto requests = ClipDomains::collectRequests (
+                project, sr, [&cache] (const RenderFingerprint& fp) { return cache.lookup (fp); },
+                attached);
+            expect (requests.empty(), "チョップしても新しいレンダー要求が発生しないこと");
+        }
+    }
+
+    // 同じ素材の複製を +2 / -2 にしたとき両方の要求が残る（「同じ範囲は最新1件」にしない）
+    {
+        Project project;
+        project.sampleRate = sr;
+        Track track;
+        Clip clip;
+        clip.audio = makeToneBuffer (440.0, 4800, sr);
+        clip.lengthSamples = 4800;
+        track.clips.push_back (clip);
+        track.clips.push_back (clip);
+        project.tracks.push_back (std::move (track));
+        ClipDomains::reconcile (project, sr);
+        ClipDomains::applyStretchRequest (project.tracks[0].clips[0], 2, 1.0);
+        ClipDomains::applyStretchRequest (project.tracks[0].clips[1], -2, 1.0);
+        bool attached = false;
+        const auto requests = ClipDomains::collectRequests (project, sr, nullptr, attached);
+        expect (requests.size() == 2, "+2と-2の両方の要求が残ること");
+    }
+
+    // 失敗の巻き戻し: 「現在の要求指紋が失敗指紋と一致するクリップだけ」
+    {
+        Project project;
+        project.sampleRate = sr;
+        Track track;
+        Clip clip;
+        clip.audio = makeToneBuffer (440.0, 4800, sr);
+        clip.lengthSamples = 4800;
+        track.clips.push_back (clip);
+        project.tracks.push_back (std::move (track));
+        ClipDomains::reconcile (project, sr);
+        auto& liveClip = project.tracks[0].clips[0];
+
+        ClipDomains::applyStretchRequest (liveClip, 2, 1.0);
+        const auto oldFingerprint = liveClip.requestedFingerprint (sr);
+        ClipDomains::applyStretchRequest (liveClip, 3, 1.0); // +2実行中に+3へ変更した状況
+
+        expect (! ClipDomains::rollbackFailedRequest (project, sr, oldFingerprint),
+                "古い+2の失敗で+3の要求が巻き戻らないこと");
+        expect (liveClip.transposeSemitones == 3, "+3の要求が維持されること");
+
+        const auto currentFingerprint = liveClip.requestedFingerprint (sr);
+        expect (ClipDomains::rollbackFailedRequest (project, sr, currentFingerprint),
+                "現在の要求の失敗は巻き戻されること（dirty化が要る=true）");
+        expect (liveClip.transposeSemitones == 0 && liveClip.stretchRatio == 1.0,
+                "前例が無いので無加工へ戻ること");
+        expect (! liveClip.renderPending (sr), "巻き戻し後は永続状態＝鳴っている音であること");
+    }
+
+    // 失敗後に保存 → 再読込で、鳴る音が失敗直後と一致する（値も実効も無加工）
+    {
+        auto dir = makeTempDir();
+        Project project;
+        project.directory = dir;
+        project.sampleRate = sr;
+        Track track;
+        track.id = project.allocateId();
+        Clip clip;
+        clip.fileName = "clip-001.wav";
+        clip.audio = makeToneBuffer (440.0, 4800, sr);
+        clip.lengthSamples = 4800;
+        track.clips.push_back (clip);
+        project.tracks.push_back (std::move (track));
+        ClipDomains::reconcile (project, sr);
+        juce::AudioBuffer<float> wav (1, 4800);
+        wav.clear();
+        writeBufferWav (dir.getChildFile ("clip-001.wav"), wav, sr);
+
+        auto& liveClip = project.tracks[0].clips[0];
+        ClipDomains::applyStretchRequest (liveClip, 5, 1.0);
+        ClipDomains::rollbackFailedRequest (project, sr, liveClip.requestedFingerprint (sr));
+        juce::String error;
+        expect (project.save (error), "巻き戻し後に保存できること");
+        juce::StringArray warnings;
+        auto loaded = Project::load (dir, warnings, error);
+        expect (loaded != nullptr
+                    && loaded->tracks[0].clips[0].transposeSemitones == 0
+                    && loaded->tracks[0].clips[0].stretchRatio == 1.0,
+                "再読込した値が失敗直後に鳴っていた音（無加工）と一致すること");
+        dir.deleteRecursively();
+    }
+
+    // 実行中と同じ指紋を sync が積み直しても、同じレンダーが二重実行されない
+    {
+        Project project;
+        project.sampleRate = sr;
+        Track track;
+        Clip clip;
+        clip.audio = makeToneBuffer (220.0, 480000, sr); // 10秒（sync の再実行が確実に処理中に走る）
+        clip.lengthSamples = 480000;
+        track.clips.push_back (clip);
+        project.tracks.push_back (std::move (track));
+        ClipDomains::reconcile (project, sr);
+        ClipDomains::applyStretchRequest (project.tracks[0].clips[0], 3, 1.5);
+
+        RenderCache cache;
+        cache.collectRequests = [&]
+        {
+            bool attached = false;
+            return ClipDomains::collectRequests (
+                project, sr, [&cache] (const RenderFingerprint& fp) { return cache.lookup (fp); },
+                attached);
+        };
+        int readyCount = 0;
+        cache.onRenderReady = [&] (const std::shared_ptr<const RenderedDomain>& d)
+        { ++readyCount; ClipDomains::attachRenderResult (project, sr, d); };
+        cache.syncNow();
+        juce::Thread::sleep (100); // ワーカーがジョブを掴んで処理中になるまで待つ
+        cache.syncNow();           // クリップはまだ pending → 同じ指紋が集まる
+        expect (cache.waitForRenders (60000), "レンダーが完了すること");
+        cache.drainCompletedNow();
+        cache.syncNow();           // 配達済み: もう要求は無い
+        expect (cache.waitForRenders (60000), "再同期後も待ちが残らないこと");
+        cache.drainCompletedNow();
+        expect (readyCount == 1, "実行中の指紋が再キューされず、レンダーが1回で済むこと");
+    }
+
+    // レンダー実行中に RenderCache を破棄しても落ちない（プロジェクト切替相当）
+    {
+        Project project;
+        project.sampleRate = sr;
+        Track track;
+        Clip clip;
+        clip.audio = makeToneBuffer (220.0, 480000, sr); // 10秒（確実に実行中に破棄が走る）
+        clip.lengthSamples = 480000;
+        track.clips.push_back (clip);
+        project.tracks.push_back (std::move (track));
+        ClipDomains::reconcile (project, sr);
+        ClipDomains::applyStretchRequest (project.tracks[0].clips[0], -7, 2.0);
+        {
+            RenderCache cache;
+            cache.collectRequests = [&]
+            {
+                bool attached = false;
+                return ClipDomains::collectRequests (project, sr, nullptr, attached);
+            };
+            cache.syncNow();
+            juce::Thread::sleep (20); // ワーカーがジョブを掴むまで少し待つ
+        } // ← 実行中に破棄（デストラクタが停止要求 → join）
+        expect (true, "実行中の破棄がクラッシュしないこと");
+    }
+
+    // 処理中に最後の参照元クリップを削除しても原音が生存する（request の強参照）
+    {
+        Project project;
+        project.sampleRate = sr;
+        Track track;
+        Clip clip;
+        clip.audio = makeToneBuffer (330.0, 96000, sr);
+        clip.lengthSamples = 96000;
+        track.clips.push_back (clip);
+        project.tracks.push_back (std::move (track));
+        ClipDomains::reconcile (project, sr);
+        ClipDomains::applyStretchRequest (project.tracks[0].clips[0], 4, 1.5);
+        std::weak_ptr<juce::AudioBuffer<float>> weakSource = project.tracks[0].clips[0].audio;
+
+        RenderCache cache;
+        cache.collectRequests = [&]
+        {
+            bool attached = false;
+            return ClipDomains::collectRequests (project, sr, nullptr, attached);
+        };
+        std::shared_ptr<const RenderedDomain> ready;
+        cache.onRenderReady = [&ready] (const std::shared_ptr<const RenderedDomain>& d) { ready = d; };
+        cache.syncNow();
+        project.tracks[0].clips.clear(); // 最後の参照元クリップを削除
+        expect (! weakSource.expired(), "request が原音の生存を保証すること");
+        expect (cache.waitForRenders (30000), "クリップ削除後もレンダーが完走すること");
+        cache.drainCompletedNow();
+        expect (ready != nullptr && ready->sourceAudio != nullptr,
+                "結果が原音の強参照を持つこと（アドレス再利用の誤ヒット防止）");
+    }
+
+    // undo に activeDomain が入らない（100件積んでも render がメモリに滞留しない）
+    {
+        Project project;
+        project.sampleRate = sr;
+        Track track;
+        Clip clip;
+        clip.audio = makeToneBuffer (440.0, 4800, sr);
+        clip.lengthSamples = 4800;
+        track.clips.push_back (clip);
+        project.tracks.push_back (std::move (track));
+        ClipDomains::reconcile (project, sr);
+
+        const auto domain = project.tracks[0].clips[0].activeDomain;
+        const auto baseline = domain.use_count();
+        UndoStack undo;
+        for (int i = 0; i < 100; ++i)
+            undo.begin (project);
+        expect (domain.use_count() == baseline,
+                "undoを100件積んでもactiveDomainの参照が増えないこと");
+
+        // undo 復元後は activeDomain が空 → reconcile が立て直す
+        auto kind = UndoStack::EditKind::structure;
+        undo.undo (project, kind);
+        expect (project.tracks[0].clips[0].activeDomain == nullptr,
+                "undo stateにはactiveDomainが入っていないこと");
+        expect (ClipDomains::reconcile (project, sr), "undo後のreconcileが立て直すこと");
+        expect (project.tracks[0].clips[0].activeDomain != nullptr, "実効状態が復元されること");
+    }
+
+    // レンダー完了前に undo → 結果到着 → redo（キャッシュから引き直し）
+    {
+        Project project;
+        project.sampleRate = sr;
+        Track track;
+        Clip clip;
+        clip.audio = makeToneBuffer (440.0, 24000, sr);
+        clip.lengthSamples = 24000;
+        track.clips.push_back (clip);
+        project.tracks.push_back (std::move (track));
+        ClipDomains::reconcile (project, sr);
+
+        UndoStack undo;
+        undo.begin (project, UndoStack::EditKind::clipValue); // 吹き出し1件ぶん
+        ClipDomains::applyStretchRequest (project.tracks[0].clips[0], 6, 1.0);
+
+        RenderCache cache;
+        cache.collectRequests = [&]
+        {
+            bool attached = false;
+            return ClipDomains::collectRequests (project, sr, nullptr, attached);
+        };
+        std::shared_ptr<const RenderedDomain> ready;
+        cache.onRenderReady = [&] (const std::shared_ptr<const RenderedDomain>& d)
+        { ready = d; ClipDomains::attachRenderResult (project, sr, d); };
+        cache.syncNow();
+
+        auto kind = UndoStack::EditKind::structure;
+        undo.undo (project, kind); // 完了前に undo
+        ClipDomains::reconcile (project, sr);
+
+        expect (cache.waitForRenders (20000), "レンダーが完了すること");
+        cache.drainCompletedNow(); // 結果到着（undo済みなので誰も装着しない）
+        expect (project.tracks[0].clips[0].transposeSemitones == 0
+                    && ! project.tracks[0].clips[0].renderPending (sr),
+                "undo後に到着した結果が古いクリップへ適用されないこと");
+        {
+            std::vector<ClipPlayback> playbacks;
+            appendClipPlaybacks (project.tracks[0].clips[0], playbacks);
+            expect (! playbacks.empty()
+                        && playbacks[0].offsetSamples + playbacks[0].lengthSamples
+                               <= playbacks[0].audio->getNumSamples(),
+                    "undo→到着の途中でも不変条件が保たれること");
+        }
+
+        undo.redo (project, kind);
+        ClipDomains::reconcile (project, sr);
+        bool attached = false;
+        const auto requests = ClipDomains::collectRequests (
+            project, sr, [&cache] (const RenderFingerprint& fp) { return cache.lookup (fp); },
+            attached);
+        expect (attached && requests.empty(),
+                "redo後はキャッシュから即装着され、再レンダーが要らないこと");
+        expect (! project.tracks[0].clips[0].renderPending (sr), "redo後に実効が追いつくこと");
+    }
+}
+
+void testStretchSplitSaveReload()
+{
+    beginTest ("stretch split -> save -> reload keeps sound");
+    auto dir = makeTempDir();
+    const double sr = 48000.0;
+
+    Project project;
+    project.directory = dir;
+    project.sampleRate = sr;
+    Track track;
+    track.id = project.allocateId();
+    // 原音は最初からWAV経由で読む（24bit量子化を挟むため、メモリ上のfloatと混ぜると
+    // 再読込後のレンダーがビット一致しなくなる — 比較の前提を「同一ソース」に揃える）
+    {
+        auto tone = makeToneBuffer (440.0, 24000, sr);
+        expect (writeBufferWav (dir.getChildFile ("clip-001.wav"), *tone, sr), "WAVを書けること");
+    }
+    Clip clip;
+    clip.fileName = "clip-001.wav";
+    clip.audio = Project::loadWav (dir.getChildFile ("clip-001.wav"));
+    expect (clip.audio != nullptr, "WAVを読み戻せること");
+    clip.lengthSamples = 24000;
+    track.clips.push_back (clip);
+    project.tracks.push_back (std::move (track));
+    ClipDomains::reconcile (project, sr);
+
+    // レンダー → 装着 → 分割
+    const auto renderAll = [&sr] (Project& target)
+    {
+        RenderCache cache;
+        cache.collectRequests = [&target, &sr]
+        {
+            bool attached = false;
+            return ClipDomains::collectRequests (target, sr, nullptr, attached);
+        };
+        cache.onRenderReady = [&target, &sr] (const std::shared_ptr<const RenderedDomain>& d)
+        { ClipDomains::attachRenderResult (target, sr, d); };
+        cache.syncNow();
+        const bool done = cache.waitForRenders (30000);
+        cache.drainCompletedNow();
+        return done;
+    };
+
+    ClipDomains::applyStretchRequest (project.tracks[0].clips[0], 2, 1.25);
+    expect (renderAll (project), "初回レンダーが完了すること");
+    expect (! project.tracks[0].clips[0].renderPending (sr), "装着済みであること");
+
+    auto& clips = project.tracks[0].clips;
+    Clip left, right;
+    const auto splitPoint = clips[0].startSample + clips[0].renderedLengthSamples() / 2;
+    expect (splitClip (clips[0], splitPoint, left, right), "伸縮済みクリップを分割できること");
+    clips[0] = left;
+    clips.push_back (right);
+
+    // 境界付近の音（分割の左右をつなげた読み出し）を控える
+    const auto boundarySamples = [&clips] () -> std::vector<float>
+    {
+        std::vector<float> samples;
+        std::vector<ClipPlayback> playbacks;
+        for (const auto& c : clips)
+            appendClipPlaybacks (c, playbacks);
+        std::sort (playbacks.begin(), playbacks.end(),
+                   [] (const ClipPlayback& a, const ClipPlayback& b)
+                   { return a.startSample < b.startSample; });
+        for (const auto& p : playbacks)
+            for (juce::int64 i = 0; i < p.lengthSamples; ++i)
+                samples.push_back (p.audio->getSample (0, (int) (p.offsetSamples + i)));
+        return samples;
+    };
+    const auto before = boundarySamples();
+    expect ((juce::int64) before.size() == (juce::int64) 30000,
+            "分割後も左右の実効長の和が全体と一致すること");
+
+    juce::String error;
+    expect (project.save (error), "分割状態を保存できること");
+
+    juce::StringArray warnings;
+    auto loaded = Project::load (dir, warnings, error);
+    expect (loaded != nullptr && loaded->tracks[0].clips.size() == 2, "分割状態を読込できること");
+    if (loaded != nullptr)
+    {
+        ClipDomains::reconcile (*loaded, sr);
+        expect (renderAll (*loaded), "再読込後の一括再生成が完了すること");
+        // 左右が同じ1本のドメインへ戻る（ドメイン永続化の中心的な回帰）
+        expect (loaded->tracks[0].clips[0].activeDomain.get()
+                    == loaded->tracks[0].clips[1].activeDomain.get(),
+                "再読込後も左右が1本のレンダーを共有すること");
+        auto& reloadedClips = loaded->tracks[0].clips;
+        std::vector<float> after;
+        {
+            std::vector<ClipPlayback> playbacks;
+            for (const auto& c : reloadedClips)
+                appendClipPlaybacks (c, playbacks);
+            std::sort (playbacks.begin(), playbacks.end(),
+                       [] (const ClipPlayback& a, const ClipPlayback& b)
+                       { return a.startSample < b.startSample; });
+            for (const auto& p : playbacks)
+                for (juce::int64 i = 0; i < p.lengthSamples; ++i)
+                    after.push_back (p.audio->getSample (0, (int) (p.offsetSamples + i)));
+        }
+        bool identical = before.size() == after.size();
+        if (identical)
+            for (size_t i = 0; i < before.size(); ++i)
+                if (before[i] != after[i])
+                {
+                    identical = false;
+                    break;
+                }
+        expect (identical,
+                "分割 → 保存 → 再読込で境界付近を含めて同じ音になること（固定シード）");
+    }
+    dir.deleteRecursively();
+}
+
+void testGachaLoopStretchValues()
+{
+    beginTest ("gacha loop preview stretch values");
+    const double sr = 48000.0;
+
+    const auto makeAnchor = [] (double bpm)
+    {
+        LoopAnchor anchor;
+        anchor.libraryPath = "loops/test.wav";
+        anchor.bpm = bpm;
+        anchor.key = ProjectKey { 9, KeyMode::minor };
+        anchor.loopBars = 2;
+        anchor.slotsPerBar = 1;
+        anchor.roots = { 9, 9 };
+        anchor.confidence = { 1.0f, 1.0f };
+        return anchor;
+    };
+
+    // 「採用のみ」（applyKeyBpm=false）: stretchRatio = ループBPM / プロジェクトBPM・移調も入る
+    {
+        Project project;
+        project.bpm = 90.0;
+        project.sampleRate = sr;
+        GachaSession session;
+        GachaSession::LoopPreviewInput input;
+        input.anchor = makeAnchor (82.0);
+        const int loopSamples = (int) std::llround (2 * 240.0 / 82.0 * sr);
+        input.audio = makeToneBuffer (440.0, loopSamples, sr);
+        input.audioSampleRate = sr;
+        input.displayName = "test";
+        input.applyKeyBpm = false;
+        input.transposeSemitones = 2;
+        expect (session.previewLoopCandidate (project, input), "仮配置できること");
+
+        const Clip* placed = nullptr;
+        for (const auto& t : project.tracks)
+            for (const auto& c : t.clips)
+                if (session.isPreviewClip (t.id, c.fileName))
+                    placed = &c;
+        expect (placed != nullptr, "仮クリップが見つかること");
+        if (placed != nullptr)
+        {
+            expect (placed->transposeSemitones == 2, "候補の移調量が入ること");
+            expect (std::abs (placed->stretchRatio - 82.0 / 90.0) < 1e-12,
+                    "stretchRatio = ループBPM/プロジェクトBPM で入ること");
+            expect (placed->activeDomain != nullptr && placed->activeDomain->ratio == 1.0,
+                    "プレビューの実効状態は無加工から始まること（副作用はメモリ内のみ）");
+            // 敷いた時点で「ちょうどN小節」の見かけ長になる要求であること
+            const auto targetLength = (juce::int64) std::llround (
+                (double) placed->lengthSamples * placed->stretchRatio);
+            const auto projectBar = 240.0 / 90.0 * sr;
+            expect (std::abs ((double) targetLength - projectBar * 2) < 2.0,
+                    "要求の見かけ長がプロジェクトBPMの2小節に一致すること");
+        }
+
+        // キャンセルで track ごと消え、値が残らない
+        session.cancelPart (GachaSession::Part::loops, project);
+        bool remains = false;
+        for (const auto& t : project.tracks)
+            remains = remains || ! t.clips.empty();
+        expect (! remains, "キャンセルで仮クリップが残らないこと");
+    }
+
+    // 逆コピー（applyKeyBpm=true）: BPM・キーがループに合うので両方とも中立
+    {
+        Project project;
+        project.bpm = 90.0;
+        project.sampleRate = sr;
+        GachaSession session;
+        GachaSession::LoopPreviewInput input;
+        input.anchor = makeAnchor (82.0);
+        const int loopSamples = (int) std::llround (2 * 240.0 / 82.0 * sr);
+        input.audio = makeToneBuffer (440.0, loopSamples, sr);
+        input.audioSampleRate = sr;
+        input.displayName = "test";
+        input.applyKeyBpm = true;
+        input.transposeSemitones = 2; // 逆コピーでは無視される
+        expect (session.previewLoopCandidate (project, input), "逆コピーで仮配置できること");
+        const Clip* placed = nullptr;
+        for (const auto& t : project.tracks)
+            for (const auto& c : t.clips)
+                if (session.isPreviewClip (t.id, c.fileName))
+                    placed = &c;
+        expect (placed != nullptr && placed->transposeSemitones == 0
+                    && placed->stretchRatio == 1.0,
+                "逆コピーでは移調・伸縮とも中立であること");
+    }
+}
+
 } // namespace
 
 
@@ -13889,6 +14984,12 @@ int main (int argc, char** argv)
     testBusFxParamsPersistence();
     testMonoRenderRegressionHash();
     testTrackFxRegressionHash();
+    testClipStretcher();
+    testStretchDomainMath();
+    testStretchPersistence();
+    testRenderCachePipeline();
+    testStretchSplitSaveReload();
+    testGachaLoopStretchValues();
 
 
     if (failureCount > 0)

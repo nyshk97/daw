@@ -45,6 +45,7 @@ public:
         undoStates.push_back ({ project.tracks, project.markers,
                                 project.fadeOutStartSixteenths, project.fadeOutEndSixteenths,
                                 project.bpm, project.key, project.loopAnchor, kind });
+        stripClipDomains (undoStates.back().tracks);
         if ((int) undoStates.size() > maxDepth)
             undoStates.erase (undoStates.begin());
         redoStates.clear();
@@ -62,6 +63,7 @@ public:
         undoStates.push_back ({ std::move (beforeTracks), project.markers,
                                 project.fadeOutStartSixteenths, project.fadeOutEndSixteenths,
                                 beforeBpm, beforeKey, beforeAnchor, EditKind::structure });
+        stripClipDomains (undoStates.back().tracks);
         if ((int) undoStates.size() > maxDepth)
             undoStates.erase (undoStates.begin());
         redoStates.clear();
@@ -76,6 +78,7 @@ public:
         redoStates.push_back ({ std::move (project.tracks), std::move (project.markers),
                                 project.fadeOutStartSixteenths, project.fadeOutEndSixteenths,
                                 project.bpm, project.key, project.loopAnchor, kind });
+        stripClipDomains (redoStates.back().tracks);
         restoreFrom (undoStates, project);
         return true;
     }
@@ -88,6 +91,7 @@ public:
         undoStates.push_back ({ std::move (project.tracks), std::move (project.markers),
                                 project.fadeOutStartSixteenths, project.fadeOutEndSixteenths,
                                 project.bpm, project.key, project.loopAnchor, kind });
+        stripClipDomains (undoStates.back().tracks);
         restoreFrom (redoStates, project);
         return true;
     }
@@ -127,6 +131,16 @@ private:
         std::optional<LoopAnchor> loopAnchor;
         EditKind kind = EditKind::structure;
     };
+
+    // undo state に activeDomain（レンダー済みバッファ）を入れない。maxDepth = 100 ×
+    // 3分ステレオ約69MB で数GBを抱え込むため。undo/redo 後は ClipDomains::reconcile と
+    // RenderCache が（多くはキャッシュから）引き直す
+    static void stripClipDomains (std::vector<Track>& tracks)
+    {
+        for (auto& track : tracks)
+            for (auto& clip : track.clips)
+                clip.activeDomain = nullptr;
+    }
 
     // states 末尾 → project の復元（undo/redo 共通。State のフィールドを増やしたらここも足す）
     static void restoreFrom (std::vector<State>& states, Project& project)

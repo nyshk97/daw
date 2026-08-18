@@ -112,6 +112,9 @@ public:
         double audioSampleRate = 0.0;
         int loopCount = 1;           // Clip::loopCount（0 = 1周のみ）
         bool applyKeyBpm = true;     // 逆コピー（「設定して敷く」）。false = 敷くだけ
+        // 敷くクリップへの自動移調（LoopCandidate::transposeSemitones。プロジェクトのキー圏へ
+        // 合わせる量）。applyKeyBpm = true（キーがループに合う）では無視して 0 にする
+        int transposeSemitones = 0;
     };
 
     // ループバッファをアンカーの小節グリッドちょうどに刻む（docs/plans/2026-08-09-0024）。

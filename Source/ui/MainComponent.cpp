@@ -330,6 +330,52 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         pushAudioValueSnapshot();
         setDirty (true);
     };
+    // 移調・伸縮の値変更（吹き出し）。値を変えただけでは音は変わらない（レンダー完了時に
+    // activeDomain ごと一斉に切り替わる）ので snapshot は押さない。dirty ＋ 要求の debounce 同期のみ
+    timeline.onClipStretchEdited = [this]
+    {
+        setDirty (true);
+        renderCache.requestSync();
+    };
+
+    // ---- 移調・伸縮のレンダリング配線 ----
+    renderCache.collectRequests = [this]
+    {
+        bool attachedAny = false;
+        auto requests = ClipDomains::collectRequests (
+            *project, renderSampleRate(),
+            [this] (const RenderFingerprint& fp) { return renderCache.lookup (fp); },
+            attachedAny);
+        if (attachedAny)
+        {
+            // その場で装着できた（無加工化・キャッシュヒット）→ 音と長さが変わった
+            pushAudioValueSnapshot();
+            timeline.refresh();
+        }
+        return requests;
+    };
+    renderCache.onRenderReady = [this] (const std::shared_ptr<const RenderedDomain>& domain)
+    {
+        // 完了は装着だけで dirty にしない（値の変更時に dirty 済み。音は同じで再生成できる）
+        if (ClipDomains::attachRenderResult (*project, renderSampleRate(), domain))
+        {
+            pushAudioValueSnapshot();
+            timeline.refresh();
+        }
+    };
+    renderCache.onRenderFailed = [this] (const RenderFingerprint& failed)
+    {
+        // 「永続状態＝鳴っている音」を保つ: 要求値を実効値へ巻き戻す。保存後に失敗すると
+        // ディスクは新しい値・メモリは旧値になるので、巻き戻しは必ず dirty 化する（undoには積まない）
+        if (ClipDomains::rollbackFailedRequest (*project, renderSampleRate(), failed))
+        {
+            setDirty (true);
+            pushAudioValueSnapshot();
+            timeline.refresh();
+            toast.show (jp (u8"移調・伸縮の処理に失敗したため、値を元に戻しました"),
+                        /*isError=*/ true, nullptr);
+        }
+    };
     // サイクル範囲はundo対象外（音量・ミュートと同じ扱い。Logicもサイクル操作はundoしない）なので
     // onWillEditModel/onModelEdited でなく専用コールバックで Transport同期とdirty化だけ行う
     timeline.onCycleChanged = [this]
@@ -631,6 +677,10 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     fxEditor.openView();
     fxEditor.showTrack (selectedTrack);
 
+    // 読込時の一括再生成: 移調・伸縮の値が入ったクリップをまとめてキューへ。activeDomain は
+    // 読込時点で「原音素通し」なので見た目も音も原音のまま始まり、完了時に一斉に整う
+    //（最初の描画を同期で待たない — 数百msを超える素材で起動が引っかかるため非同期のまま）
+    reconcileClipRenderState (/*immediate=*/ true);
     pushSnapshot();
     syncCycleToTransport(); // 保存済みサイクルを読み込んだ時点で反映（SR確定後はTimerが再同期する）
     updateTransportButtons();
@@ -1058,7 +1108,7 @@ void MainComponent::finishRecording()
         if (clip.audio != nullptr
             && pendingRecordTrack >= 0 && pendingRecordTrack < (int) project->tracks.size())
         {
-            clip.buildPeakCache();
+            // 波形キャッシュは pushSnapshot 内の reconcile が中立ドメインとして作る
             undoStack.begin (*project); // 録音＝クリップ追加もundo対象
             project->tracks[(size_t) pendingRecordTrack].clips.push_back (std::move (clip));
             pushSnapshot();
@@ -1349,6 +1399,11 @@ void MainComponent::afterHistoryRestore (UndoStack::EditKind kind)
     timeline.clearSelection();
     headers.rebuild();
     selectTrack (selectedTrack); // 範囲内にクランプし直す（下部エディタの対象もここで張り替わる）
+
+    // undo state は activeDomain を持たない（UndoStack::stripClipDomains）。復元直後に
+    // reconcile で中立ドメインを立て、キャッシュに残る render を即座に引き直す
+    //（直前の値はキャッシュにあることが多い。無ければ再レンダーが積まれ、完了まで原音で鳴る）
+    reconcileClipRenderState (/*immediate=*/ true);
 
     // BPMもStateに含まれる。transport（再生換算）とLCD表示を復元値に追従させる
     // （末尾の timeline.refresh() が小節幅を描き直す）
@@ -2760,7 +2815,7 @@ void MainComponent::finishImport (const AudioImporter::Result& result)
         return;
     }
     clip.lengthSamples = clip.audio->getNumSamples();
-    clip.buildPeakCache();
+    // 波形キャッシュは pushSnapshot 内の reconcile が中立ドメインとして作る
 
     undoStack.begin (*project); // 取り込み＝クリップ/トラック追加もundo対象（SR確定は対象外）
 
@@ -3774,6 +3829,11 @@ void MainComponent::keepGachaCandidate()
                 input.startSample = 0;
                 input.loopCount = 1;
                 input.applyKeyBpm = false; // 値は適用済み。クリップだけ現在レートに入れ替える
+                // 差し替えは値が不変の契約: 現在の仮クリップの移調量を引き継ぐ
+                for (const auto& t : project->tracks)
+                    for (const auto& c : t.clips)
+                        if (gachaSession.isPreviewClip (t.id, c.fileName))
+                            input.transposeSemitones = c.transposeSemitones;
                 replaced = gachaSession.previewLoopCandidate (*project, input);
             }
             if (! replaced)
@@ -4059,7 +4119,7 @@ void MainComponent::adoptLoopCandidate (int index)
             .withButton (jp (u8"設定して採用"))
             .withButton (jp (u8"採用のみ"))
             .withButton (jp (u8"キャンセル")),
-        [safe, detection, wavFile] (int result)
+        [safe, detection, wavFile, transpose = candidate.transposeSemitones] (int result)
         {
             if (safe == nullptr)
                 return;
@@ -4069,12 +4129,13 @@ void MainComponent::adoptLoopCandidate (int index)
                 safe->loopAdoptDetection = nullptr;
                 return;
             }
-            safe->finishLoopAdoption (detection, wavFile, /*applyKeyBpm=*/ result == 0);
+            safe->finishLoopAdoption (detection, wavFile, /*applyKeyBpm=*/ result == 0, transpose);
         });
 }
 
 void MainComponent::finishLoopAdoption (std::shared_ptr<LoopAdoptDetection> detection,
-                                        const juce::File& wavFile, bool applyKeyBpm)
+                                        const juce::File& wavFile, bool applyKeyBpm,
+                                        int transposeSemitones)
 {
     if (! detection->finished)
     {
@@ -4082,10 +4143,10 @@ void MainComponent::finishLoopAdoption (std::shared_ptr<LoopAdoptDetection> dete
         // 理由を出して、検出完了時にこの関数へ再入する
         rightPanel.gachaPanel().showStatus (jp (u8"進行を検出中…"));
         juce::Component::SafePointer<MainComponent> safe (this);
-        detection->pendingAction = [safe, detection, wavFile, applyKeyBpm]
+        detection->pendingAction = [safe, detection, wavFile, applyKeyBpm, transposeSemitones]
         {
             if (safe != nullptr)
-                safe->finishLoopAdoption (detection, wavFile, applyKeyBpm);
+                safe->finishLoopAdoption (detection, wavFile, applyKeyBpm, transposeSemitones);
         };
         return;
     }
@@ -4123,15 +4184,15 @@ void MainComponent::finishLoopAdoption (std::shared_ptr<LoopAdoptDetection> dete
     // フレームへ逃す — 同期のまま続けるとラベルが描画されず「押したのに無反応」に見える
     rightPanel.gachaPanel().showStatus (jp (u8"配置しています…"));
     juce::Component::SafePointer<MainComponent> safe (this);
-    juce::Timer::callAfterDelay (50, [safe, anchor, wavFile, applyKeyBpm]
+    juce::Timer::callAfterDelay (50, [safe, anchor, wavFile, applyKeyBpm, transposeSemitones]
     {
         if (safe != nullptr)
-            safe->placeLoopPreview (anchor, wavFile, applyKeyBpm);
+            safe->placeLoopPreview (anchor, wavFile, applyKeyBpm, transposeSemitones);
     });
 }
 
 void MainComponent::placeLoopPreview (const LoopAnchor& anchor, const juce::File& wavFile,
-                                      bool applyKeyBpm)
+                                      bool applyKeyBpm, int transposeSemitones)
 {
     if (engine.isRecording())
     {
@@ -4181,6 +4242,9 @@ void MainComponent::placeLoopPreview (const LoopAnchor& anchor, const juce::File
     input.startSample = 0; // ループはアンカー（曲のベッド）なので1小節目の頭に敷く
     input.loopCount = 1;   // 2周ぶん（ドラム・ベースを重ねたとき展開が分かる最小）
     input.applyKeyBpm = applyKeyBpm;
+    // おすすめ5の自動移調（「採用のみ」でプロジェクトのキー圏へ寄せる量。逆コピーでは
+    // GachaSession 側が 0 扱いにする）
+    input.transposeSemitones = transposeSemitones;
 
     // 採用＝即確定の通常編集（2026-08-08 変更 — 「残す」を別途押させない）。
     // 未確定のドラム・ベースの仮配置は先に畳む — willBegin（通常編集は仮配置を畳む）と同じ
@@ -4535,6 +4599,11 @@ void MainComponent::setDirty (bool nowDirty)
 
 void MainComponent::pushSnapshot()
 {
+    // 構造が変わり得る経路の共通入口なので、移調・伸縮の実効状態もここで整合させる
+    //（分割・複製・ペースト・削除・移動・録音/取り込みのクリップ追加・ガチャの仮配置/キャンセル）。
+    // buildSnapshot より先 — activeDomain が無いクリップに中立ドメインを立ててから積む
+    reconcileClipRenderState (/*immediate=*/ false);
+
     // MIDIトラックの音源を先に用意してから、スナップショットに参照を埋めて渡す。
     // sampleRate 未確定の間は synth が null のまま（timerCallback の sync が確定後に再pushする）
     synthBank.sync (*project, transport.sampleRate.load(), transport.blockSizeExpected.load());
@@ -4556,6 +4625,20 @@ void MainComponent::pushSnapshot()
 void MainComponent::pushAudioValueSnapshot()
 {
     pushSnapshotWithChange (Project::SnapshotChange::audioValuesOnly);
+}
+
+double MainComponent::renderSampleRate() const
+{
+    return timeline.effectiveSampleRate();
+}
+
+void MainComponent::reconcileClipRenderState (bool immediate)
+{
+    ClipDomains::reconcile (*project, renderSampleRate());
+    if (immediate)
+        renderCache.syncNow();   // undo/redo・読込直後はキャッシュヒットの即装着を待たせない
+    else
+        renderCache.requestSync(); // 通常の編集はデバウンス（値が落ち着いてから積む）
 }
 
 // ---- 曲末フェードアウト ----
@@ -5145,7 +5228,7 @@ bool MainComponent::copySelectedItem()
         if (sel.clip < 0 || sel.clip >= (int) clips.size())
             return false;
         itemClipboard.kind = ItemClipboard::Kind::audioClip;
-        itemClipboard.clip = clips[(size_t) sel.clip]; // fileName/audioは共有参照、peakCacheは値コピー
+        itemClipboard.clip = clips[(size_t) sel.clip]; // fileName/audio/activeDomainは共有参照
         itemClipboard.region = {};
         Log::info ("region.copy", "type=audio track=" + juce::String (sel.track)
                                       + " item=" + juce::String (sel.clip));
@@ -5214,7 +5297,7 @@ bool MainComponent::pasteItemAtPlayhead()
     }
     else
     {
-        Clip pasted = itemClipboard.clip; // fileName/audioは共有参照、peakCacheは値コピー
+        Clip pasted = itemClipboard.clip; // fileName/audio/activeDomainは共有参照
         pasted.startSample = timeline.snapSampleToVisibleGrid (playhead);
         track.clips.push_back (std::move (pasted));
         pastedIndex = (int) track.clips.size() - 1;
