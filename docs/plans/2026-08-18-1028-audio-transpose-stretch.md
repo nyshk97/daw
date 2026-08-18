@@ -653,6 +653,13 @@ readOffset = audioBaseOffset + start;
   一度も効かないため `! cache.empty()` へ修正（使用中のクリップは自分の shared_ptr を持つので
   音には影響しない）
 
+- **吹き出しUIの磨き込み（2026-08-18・HTMLモックのC案で確定）**: 素のJUCEスライダー＋TextEditor
+  から、①半音ノッチ・0デテント・センター起点フィルのカスタムピッチスライダー（ダブルクリックで0）
+  ②小節数のLCD小窓（上下ドラッグ / ダブルクリックで入力）③前後の整数小節へスナップする −/+
+  ステッパー ④±10%ゾーン付き偏差ゲージ ⑤Resetをフッターのテキストリンクへ、に置き換えた。
+  固定文言は英語（bars / Reset。ui-principles「UI固定文言は英語を好む」）。
+  モック: scratchpad/stretch-callout-mock.html（A/B/B+/C の4案からCを選択）
+
 ### 方針変更
 - **値の受付ロジックは ui/ でなくモデル側へ**: `ClipDomains::applyStretchRequest`（クランプ・
   view長ガード・ドメインのリセット）と `ratioForBars`（小節数→倍率換算）を新設し、

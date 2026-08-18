@@ -747,7 +747,7 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
                 // 加工済みバッファは読込時に再生成する（固定シードで同じ音になる）
                 if (clip.transposeSemitones != 0)
                     clipObj->setProperty ("transposeSemitones", clip.transposeSemitones);
-                if (clip.stretchRatio != 1.0)
+                if (! juce::exactlyEqual (clip.stretchRatio, 1.0))
                     clipObj->setProperty ("stretchRatio", clip.stretchRatio);
                 // レンダードメイン（v20）。自身の範囲と同じなら省略（未設定＝自範囲で読める）
                 if (clip.requestedDomainOffset() != clip.offsetSamples

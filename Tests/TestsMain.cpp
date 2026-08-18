@@ -13854,7 +13854,7 @@ void testClipStretcher()
                       && a->getNumSamples() == b->getNumSamples();
         if (identical)
             for (int i = 0; i < a->getNumSamples(); ++i)
-                if (a->getSample (0, i) != b->getSample (0, i))
+                if (! juce::exactlyEqual (a->getSample (0, i), b->getSample (0, i)))
                 {
                     identical = false;
                     break;
@@ -14040,7 +14040,7 @@ void testStretchDomainMath()
         expect (right.viewStartRendered() == left.viewEndRendered(),
                 "左右のviewが同じ境界を共有すること");
         // 分割で値・ドメインが継承される
-        expect (right.stretchRatio == ratio && right.renderDomainLength == 1000,
+        expect (juce::exactlyEqual (right.stretchRatio, ratio) && right.renderDomainLength == 1000,
                 "分割で要求値とレンダードメインが継承されること");
     }
 
@@ -14157,7 +14157,7 @@ void testStretchPersistence()
 
         juce::AudioBuffer<float> wav (1, 8000);
         for (int i = 0; i < 8000; ++i)
-            wav.setSample (0, i, std::sin (i * 0.05f) * 0.4f);
+            wav.setSample (0, i, std::sin ((float) i * 0.05f) * 0.4f);
         expect (writeBufferWav (dir.getChildFile ("clip-001.wav"), wav, sr), "WAVを書けること");
 
         juce::String error;
@@ -14171,7 +14171,7 @@ void testStretchPersistence()
         if (loaded != nullptr && ! loaded->tracks.empty() && ! loaded->tracks[0].clips.empty())
         {
             const auto& c = loaded->tracks[0].clips[0];
-            expect (c.transposeSemitones == 2 && c.stretchRatio == 0.911,
+            expect (c.transposeSemitones == 2 && juce::exactlyEqual (c.stretchRatio, 0.911),
                     "移調・伸縮の値が保存→読込で保たれること");
             expect (c.renderDomainOffset == 0 && c.renderDomainLength == 8000,
                     "レンダードメインが保たれること");
@@ -14724,7 +14724,7 @@ void testStretchSplitSaveReload()
         bool identical = before.size() == after.size();
         if (identical)
             for (size_t i = 0; i < before.size(); ++i)
-                if (before[i] != after[i])
+                if (! juce::exactlyEqual (before[i], after[i]))
                 {
                     identical = false;
                     break;

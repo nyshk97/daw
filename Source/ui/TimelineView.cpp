@@ -99,13 +99,270 @@ private:
     bool editBegun = false; // この一連の操作でundoを積んだか（ドラッグ開始/終了でリセット）
 };
 
-// 移調・伸縮の吹き出しの中身（CallOutBoxに載せる。ゲインパネルが型）。
-// - 移調: ±12半音・整数スライダー
-// - 伸縮: 小節数で指定（元BPMのメタデータを要求せず、グリッドに噛むことが直接保証される）。
+// 移調・伸縮の吹き出しの中身（CallOutBoxに載せる）。見た目・操作はC案モック
+// （scratchpad の stretch-callout-mock.html で確定・2026-08-18）:
+// - PITCH: 半音ノッチ＋0デテント付きのカスタムスライダー（ダブルクリックで0）。値は右上に併記
+// - LENGTH: LCD小窓（上下ドラッグ / ダブルクリックで入力）＋前後の整数小節へスナップする −/+
+//   ステッパー。小節数で指定（元BPMのメタデータを要求せず、グリッドに噛むことが直接保証される）。
 //   現在の見かけ長を**丸めずに**表示し、実際に編集されるまで stretchRatio に触れない
-//   （3.4小節のボーカルを開いて移調だけ変えたときに 3 or 4 小節へ伸縮させない）
-// - 倍率を併記し、0.9〜1.1倍の外では色を変える（音楽的なハード制限はしない。安全限界は別）
+// - 倍率は「×N.NNN」の併記＋±10%ゾーン付き偏差ゲージ。圏外はソロ色（黄）で知らせる
+//   （音楽的なハード制限はしない。安全限界は別）
 // - undo の粒度は「吹き出しを開いてから閉じるまで1件」: willEdit は最初の変更で1回だけ呼ぶ
+
+// 半音ノッチ・0デテント・センター起点フィルのピッチスライダー（±12・整数）
+class PitchNotchSlider : public juce::Component
+{
+public:
+    std::function<void (int)> onChange;
+
+    void setValue (int newValue)
+    {
+        value = juce::jlimit (-ClipStretchLimits::maxSemitones, ClipStretchLimits::maxSemitones,
+                              newValue);
+        repaint();
+    }
+    int getValue() const { return value; }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto area = getLocalBounds().toFloat().reduced (thumbRadius, 0.0f);
+        const float railY = (float) getHeight() * 0.5f;
+
+        // レール
+        g.setColour (Theme::lcdBg);
+        g.fillRoundedRectangle (area.getX(), railY - 2.0f, area.getWidth(), 4.0f, 2.0f);
+
+        // 目盛り（半音ごと。オクターブと0は強調）
+        for (int s = -ClipStretchLimits::maxSemitones; s <= ClipStretchLimits::maxSemitones; ++s)
+        {
+            const float x = xForValue (s);
+            const bool major = s % 12 == 0;
+            g.setColour (juce::Colours::white.withAlpha (major ? 0.30f : 0.14f));
+            g.fillRect (x - 0.5f, railY + 5.0f, 1.0f, major ? 5.0f : 3.0f);
+        }
+        // 0デテント（レールを縦に貫く線）
+        g.setColour (juce::Colours::white.withAlpha (0.35f));
+        g.fillRect (xForValue (0) - 0.5f, railY - 7.0f, 1.0f, 14.0f);
+
+        // センター起点のフィル
+        const float zeroX = xForValue (0);
+        const float thumbX = xForValue (value);
+        g.setColour (Theme::accent);
+        g.fillRect (juce::jmin (zeroX, thumbX), railY - 2.0f, std::abs (thumbX - zeroX), 4.0f);
+
+        // つまみ
+        g.setColour (juce::Colours::black.withAlpha (0.4f));
+        g.fillEllipse (thumbX - thumbRadius, railY - thumbRadius + 1.0f,
+                       thumbRadius * 2.0f, thumbRadius * 2.0f);
+        g.setColour (juce::Colour (0xffd6d6da));
+        g.fillEllipse (thumbX - thumbRadius, railY - thumbRadius,
+                       thumbRadius * 2.0f, thumbRadius * 2.0f);
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override { applyFromX (e.position.x); }
+    void mouseDrag (const juce::MouseEvent& e) override { applyFromX (e.position.x); }
+    void mouseDoubleClick (const juce::MouseEvent&) override
+    {
+        if (value != 0 && onChange)
+        {
+            value = 0;
+            onChange (0);
+        }
+        repaint();
+    }
+
+private:
+    static constexpr float thumbRadius = 8.0f;
+
+    float xForValue (int v) const
+    {
+        const float usable = (float) getWidth() - thumbRadius * 2.0f;
+        const float p = (float) (v + ClipStretchLimits::maxSemitones)
+                        / (float) (ClipStretchLimits::maxSemitones * 2);
+        return thumbRadius + p * usable;
+    }
+
+    void applyFromX (float x)
+    {
+        const float usable = juce::jmax (1.0f, (float) getWidth() - thumbRadius * 2.0f);
+        const float p = juce::jlimit (0.0f, 1.0f, (x - thumbRadius) / usable);
+        const int next = (int) std::llround (p * ClipStretchLimits::maxSemitones * 2)
+                         - ClipStretchLimits::maxSemitones;
+        if (next != value)
+        {
+            value = next;
+            if (onChange)
+                onChange (value);
+        }
+        repaint();
+    }
+
+    int value = 0;
+};
+
+// −/+ の小さな角丸ステッパー
+class StepSquareButton : public juce::Component
+{
+public:
+    explicit StepSquareButton (const juce::String& glyphIn) : glyph (glyphIn) {}
+    std::function<void()> onClick;
+
+    void paint (juce::Graphics& g) override
+    {
+        g.setColour (hovered ? juce::Colour (0xff1c1c21) : Theme::lcdBg);
+        g.fillRoundedRectangle (getLocalBounds().toFloat(), 5.0f);
+        g.setColour (hovered ? juce::Colours::white : juce::Colours::white.withAlpha (0.55f));
+        g.setFont (juce::Font (juce::FontOptions (14.0f)));
+        g.drawText (glyph, getLocalBounds(), juce::Justification::centred);
+    }
+    void mouseEnter (const juce::MouseEvent&) override { hovered = true;  repaint(); }
+    void mouseExit  (const juce::MouseEvent&) override { hovered = false; repaint(); }
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (getLocalBounds().contains (e.getPosition()) && onClick)
+            onClick();
+    }
+
+private:
+    juce::String glyph;
+    bool hovered = false;
+};
+
+// 小節数のLCD小窓。上下ドラッグで連続変更・ダブルクリックでインライン入力
+class BarsLcdBox : public juce::Component
+{
+public:
+    std::function<double()> getBars;          // 現在の見かけ小節数（丸めない）
+    std::function<void (double)> setBars;     // 入力・ドラッグの適用先（受付はモデル側）
+
+    BarsLcdBox()
+    {
+        setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
+        addChildComponent (editor);
+        editor.setInputRestrictions (8, "0123456789.");
+        editor.setJustification (juce::Justification::centred);
+        editor.setFont (Fonts::mono (18.0f));
+        editor.setSelectAllWhenFocused (true);
+        editor.setColour (juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
+        editor.setColour (juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+        editor.setColour (juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
+        editor.onReturnKey = [this] { commitPendingEdit(); };
+        editor.onFocusLost = [this] { commitPendingEdit(); };
+        editor.onEscapeKey = [this] { hideEditor(); };
+    }
+
+    static juce::String barsText (double bars)
+    {
+        auto text = juce::String (bars, 2);
+        while (text.endsWith ("0"))
+            text = text.dropLastCharacters (1);
+        if (text.endsWith ("."))
+            text = text.dropLastCharacters (1);
+        return text;
+    }
+
+    // 破棄・確定時に未確定の入力を適用する（Return を押さず閉じても捨てられない —
+    // 「閉じる＝キャンセルではない」の流儀）
+    void commitPendingEdit()
+    {
+        if (! editor.isVisible())
+            return;
+        const double bars = editor.getText().getDoubleValue();
+        hideEditor();
+        if (bars > 0.0 && setBars)
+            setBars (bars);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const bool editing = editor.isVisible();
+        g.setColour (editing ? Theme::lcdEditBg
+                             : hovered ? juce::Colour (0xff1c1c21) : Theme::lcdBg);
+        g.fillRoundedRectangle (getLocalBounds().toFloat(), 7.0f);
+        if (editing)
+            return;
+
+        const auto valueText = getBars != nullptr ? barsText (getBars()) : juce::String ("--");
+        const auto valueFont = Fonts::mono (18.0f);
+        const auto unitFont = Fonts::small();
+        const int valueW = juce::GlyphArrangement::getStringWidthInt (valueFont, valueText);
+        const int unitW = juce::GlyphArrangement::getStringWidthInt (unitFont, "bars");
+        const int x0 = (getWidth() - (valueW + 5 + unitW)) / 2;
+        g.setColour (juce::Colours::white);
+        g.setFont (valueFont);
+        g.drawText (valueText, x0, 0, valueW, getHeight(), juce::Justification::centredLeft);
+        g.setColour (Theme::lcdLabel);
+        g.setFont (unitFont);
+        g.drawText ("bars", x0 + valueW + 5, 0, unitW + 4, getHeight() - 1,
+                    juce::Justification::centredLeft);
+    }
+
+    void resized() override { editor.setBounds (getLocalBounds().reduced (6, 4)); }
+
+    void mouseEnter (const juce::MouseEvent&) override { hovered = true;  repaint(); }
+    void mouseExit  (const juce::MouseEvent&) override { hovered = false; repaint(); }
+    void mouseDown (const juce::MouseEvent&) override
+    {
+        dragStartBars = getBars != nullptr ? getBars() : 0.0;
+    }
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (editor.isVisible() || setBars == nullptr)
+            return;
+        // 上ドラッグで伸ばす（値の上下ドラッグ = LCDと同じ文法）。0.02小節/px
+        const double bars = dragStartBars + (double) -e.getDistanceFromDragStartY() * 0.02;
+        if (bars > 0.0)
+            setBars (bars);
+    }
+    void mouseDoubleClick (const juce::MouseEvent&) override
+    {
+        editor.setText (getBars != nullptr ? barsText (getBars()) : juce::String(), false);
+        editor.setVisible (true);
+        editor.grabKeyboardFocus();
+        repaint();
+    }
+
+private:
+    void hideEditor()
+    {
+        editor.setVisible (false);
+        repaint();
+    }
+
+    juce::TextEditor editor;
+    bool hovered = false;
+    double dragStartBars = 0.0;
+};
+
+// フッターの控えめなテキストリンク（Reset）
+class TextLinkLabel : public juce::Component
+{
+public:
+    explicit TextLinkLabel (const juce::String& textIn) : text (textIn)
+    {
+        setMouseCursor (juce::MouseCursor::PointingHandCursor);
+    }
+    std::function<void()> onClick;
+
+    void paint (juce::Graphics& g) override
+    {
+        g.setColour (hovered ? juce::Colours::white : juce::Colours::white.withAlpha (0.55f));
+        g.setFont (Fonts::small());
+        g.drawText (text, getLocalBounds(), juce::Justification::centredRight);
+    }
+    void mouseEnter (const juce::MouseEvent&) override { hovered = true;  repaint(); }
+    void mouseExit  (const juce::MouseEvent&) override { hovered = false; repaint(); }
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (getLocalBounds().contains (e.getPosition()) && onClick)
+            onClick();
+    }
+
+private:
+    juce::String text;
+    bool hovered = false;
+};
+
 class RegionTransposeStretchPanel : public juce::Component
 {
 public:
@@ -120,100 +377,141 @@ public:
           willEdit (std::move (willEditIn)),
           apply (std::move (applyIn))
     {
-        addAndMakeVisible (semitoneSlider);
-        semitoneSlider.setSliderStyle (juce::Slider::LinearHorizontal);
-        semitoneSlider.setRange (-ClipStretchLimits::maxSemitones, ClipStretchLimits::maxSemitones, 1.0);
-        semitoneSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
-        semitoneSlider.setDoubleClickReturnValue (true, 0.0);
-        semitoneSlider.setPopupDisplayEnabled (false, false, nullptr);
-        semitoneSlider.setValue (semitones, juce::dontSendNotification);
-        semitoneSlider.setWantsKeyboardFocus (false);
-        semitoneSlider.setMouseClickGrabsKeyboardFocus (false);
-        semitoneSlider.onValueChange = [this]
+        addAndMakeVisible (pitchSlider);
+        pitchSlider.setValue (semitones);
+        pitchSlider.onChange = [this] (int value)
         {
-            const int value = (int) std::llround (semitoneSlider.getValue());
             if (value == semitones)
                 return;
             semitones = value;
             pushValues();
         };
 
-        addAndMakeVisible (barsEditor);
-        barsEditor.setInputRestrictions (8, "0123456789.");
-        barsEditor.setJustification (juce::Justification::centredRight);
-        barsEditor.setSelectAllWhenFocused (true);
-        barsEditor.onReturnKey = [this] { applyBarsText(); };
-        barsEditor.onFocusLost = [this] { applyBarsText(); };
+        addAndMakeVisible (barsBox);
+        barsBox.getBars = [this] { return currentBars(); };
+        barsBox.setBars = [this] (double bars) { setBarsValue (bars); };
 
-        addAndMakeVisible (resetButton);
-        resetButton.setButtonText (jp (u8"元に戻す"));
-        resetButton.setWantsKeyboardFocus (false);
-        resetButton.onClick = [this]
+        // 前後の整数小節へスナップ（グリッド合わせの最短経路）
+        addAndMakeVisible (minusButton);
+        minusButton.onClick = [this]
         {
-            if (semitones == 0 && ratio == 1.0)
+            const auto target = std::ceil (currentBars() - 1e-6) - 1.0;
+            if (target >= 1.0)
+                setBarsValue (target);
+        };
+        addAndMakeVisible (plusButton);
+        plusButton.onClick = [this] { setBarsValue (std::floor (currentBars() + 1e-6) + 1.0); };
+
+        addAndMakeVisible (resetLink);
+        resetLink.onClick = [this]
+        {
+            if (semitones == 0 && juce::exactlyEqual (ratio, 1.0))
                 return;
             semitones = 0;
             ratio = 1.0;
-            semitoneSlider.setValue (0.0, juce::dontSendNotification);
+            pitchSlider.setValue (0);
             pushValues();
-            refreshTexts();
         };
 
-        refreshTexts();
-        setSize (250, looped ? 122 : 108);
+        setSize (264, 158);
     }
 
-    // 吹き出しは「閉じる＝キャンセル」ではない（ゲインと同じ流儀）。Return を押さずに
-    // 外側クリックで閉じると CallOutBox がパネルごと破棄され、TextEditor の focusLost が
-    // 走らず入力途中の小節数が黙って捨てられていた（実地で「5と打っても反映されない」）。
-    // 破棄時に未確定の入力を適用する — applyBarsText は値が変わらなければ no-op なので、
-    // Return / focusLost 済みの経路と二重適用にはならない
-    ~RegionTransposeStretchPanel() override { applyBarsText(); }
+    // 「閉じる＝キャンセル」ではない: 外側クリックで CallOutBox ごと破棄されても、
+    // 入力途中の小節数を適用してから死ぬ（focusLost が走らない経路の取りこぼし対策）
+    ~RegionTransposeStretchPanel() override { barsBox.commitPendingEdit(); }
 
     void paint (juce::Graphics& g) override
     {
-        g.setColour (Theme::lcdLabel);
-        g.setFont (Fonts::small());
-        auto area = getLocalBounds().reduced (2, 0);
-        g.drawText ("PITCH", area.removeFromTop (16), juce::Justification::centredLeft);
-        // 現在の移調量（半音）
-        const auto pitchText = (semitones > 0 ? "+" : "") + juce::String (semitones) + " st";
-        g.setColour (juce::Colours::white.withAlpha (0.9f));
-        g.drawText (pitchText, getLocalBounds().removeFromTop (16).reduced (2, 0),
-                    juce::Justification::centredRight);
+        const auto labelFont = Fonts::small().withExtraKerningFactor (0.08f);
 
+        // PITCH 行（ラベル左・現在値右）
         g.setColour (Theme::lcdLabel);
-        g.drawText ("LENGTH", 2, 44, 60, 16, juce::Justification::centredLeft);
-        g.setColour (juce::Colours::white.withAlpha (0.7f));
-        g.drawText (jp (u8"小節"), barsEditor.getRight() + 4, 44, 30, 20,
-                    juce::Justification::centredLeft);
-        // 倍率の併記。±10%（0.9〜1.1倍）の外では色を変える（ライブラリの推奨レンジより厳しめ =
-        // reference-beat の「近距離救済」の圏内表示）
+        g.setFont (labelFont);
+        g.drawText ("PITCH", 4, 0, 100, 16, juce::Justification::centredLeft);
+        g.setColour (juce::Colours::white.withAlpha (0.9f));
+        g.setFont (Fonts::mono (13.0f));
+        g.drawText ((semitones > 0 ? "+" : "") + juce::String (semitones) + " st",
+                    getWidth() - 104, 0, 100, 16, juce::Justification::centredRight);
+
+        // LENGTH 行（ラベル左・倍率右。±10%＝0.9〜1.1倍の外はソロ色で知らせる —
+        // reference-beat の「近距離救済」の圏内表示。音楽的なハード制限はしない）
+        const int lengthRowY = 52;
+        g.setColour (Theme::lcdLabel);
+        g.setFont (labelFont);
+        g.drawText ("LENGTH", 4, lengthRowY, 100, 16, juce::Justification::centredLeft);
         const bool nearUnity = ratio >= 0.9 && ratio <= 1.1;
-        g.setColour (nearUnity ? juce::Colours::white.withAlpha (0.7f)
-                               : juce::Colours::orange.withAlpha (0.95f));
-        const double percent = (ratio - 1.0) * 100.0;
-        g.drawText (juce::String::fromUTF8 (u8"×") + juce::String (ratio, 3)
-                        + " (" + (percent >= 0 ? "+" : "") + juce::String (percent, 1) + "%)",
-                    getLocalBounds().removeFromTop (64).reduced (2, 0).removeFromRight (120),
-                    juce::Justification::bottomRight);
+        g.setColour (nearUnity ? juce::Colours::white.withAlpha (0.55f) : Theme::soloOn);
+        g.setFont (Fonts::mono (12.0f));
+        g.drawText (juce::String::fromUTF8 (u8"×") + juce::String (ratio, 3),
+                    getWidth() - 104, lengthRowY, 100, 16, juce::Justification::centredRight);
+
+        // 偏差ゲージ（フルスケール±30%・中央±10%が推奨ゾーン）
+        const auto gauge = gaugeBounds();
+        g.setColour (Theme::lcdBg);
+        g.fillRoundedRectangle (gauge, 2.0f);
+        const float zoneHalf = gauge.getWidth() * (0.1f / 0.3f) * 0.5f;
+        g.setColour (juce::Colours::white.withAlpha (0.07f));
+        g.fillRoundedRectangle (gauge.getCentreX() - zoneHalf, gauge.getY(),
+                                zoneHalf * 2.0f, gauge.getHeight(), 2.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.25f));
+        g.fillRect (gauge.getCentreX() - 0.5f, gauge.getY() - 2.0f, 1.0f, gauge.getHeight() + 4.0f);
+        const float deviation = juce::jlimit (-0.3f, 0.3f, (float) (ratio - 1.0));
+        const float pinX = gauge.getCentreX() + deviation / 0.3f * gauge.getWidth() * 0.5f;
+        g.setColour (nearUnity ? Theme::playGreen : Theme::soloOn);
+        g.fillRoundedRectangle (pinX - 1.0f, gauge.getY() - 3.0f, 2.0f, gauge.getHeight() + 6.0f, 1.0f);
+
+        // フッター注記（ループ中のみ。「小節数は本体1周分」の英語版）
         if (looped)
         {
-            g.setColour (juce::Colours::white.withAlpha (0.5f));
-            g.drawText (jp (u8"小節数は本体1周分（繰り返しは別）"), 2, 68, getWidth() - 4, 14,
-                        juce::Justification::centredLeft);
+            g.setColour (juce::Colours::white.withAlpha (0.35f));
+            g.setFont (Fonts::small());
+            g.drawText ("bars = one cycle (repeats excluded)", 4, getHeight() - 16,
+                        getWidth() - 60, 16, juce::Justification::centredLeft);
         }
     }
 
     void resized() override
     {
-        semitoneSlider.setBounds (2, 18, getWidth() - 4, 22);
-        barsEditor.setBounds (64, 44, 64, 20);
-        resetButton.setBounds (getLocalBounds().removeFromBottom (24).reduced (2, 0)
-                                   .removeFromLeft (84));
+        pitchSlider.setBounds (2, 16, getWidth() - 4, 28);
+        const int lengthControlsY = 70;
+        minusButton.setBounds (2, lengthControlsY + 6, 22, 22);
+        plusButton.setBounds (getWidth() - 24, lengthControlsY + 6, 22, 22);
+        barsBox.setBounds (32, lengthControlsY, getWidth() - 64, 34);
+        resetLink.setBounds (getWidth() - 64, getHeight() - 18, 60, 16);
     }
 
 private:
+    juce::Rectangle<float> gaugeBounds() const
+    {
+        return { 4.0f, 116.0f, (float) getWidth() - 8.0f, 4.0f };
+    }
+
+    double currentBars() const
+    {
+        // 現在の（要求）見かけ長を丸めずに扱う
+        return (double) sourceLengthSamples * ratio / barLengthSamples;
+    }
+
+    void setBarsValue (double bars)
+    {
+        // 小節数はUIの入力手段であって保存値ではない（保存は ratio。BPM追従しないと決めた
+        // 以上、小節数を保存すると BPM 変更時に意味が変わる）。換算・クランプはモデル側
+        const auto next = ClipDomains::ratioForBars (bars, barLengthSamples, sourceLengthSamples);
+        // view 長が 0 になる要求は受理しない（読込時の検証と同じ規則）
+        if ((juce::int64) std::llround ((double) sourceLengthSamples * next) < 1)
+        {
+            repaint();
+            return;
+        }
+        if (! juce::exactlyEqual (next, ratio))
+        {
+            ratio = next;
+            pushValues();
+        }
+        barsBox.repaint();
+        repaint();
+    }
+
     void pushValues()
     {
         if (! editBegun)
@@ -224,44 +522,7 @@ private:
         }
         if (apply)
             apply (semitones, ratio);
-        repaint();
-    }
-
-    void applyBarsText()
-    {
-        const double bars = barsEditor.getText().getDoubleValue();
-        if (! (bars > 0.0))
-        {
-            refreshTexts(); // 不正入力は現在値へ戻す
-            return;
-        }
-        // 小節数はUIの入力手段であって保存値ではない（保存は ratio。BPM追従しないと決めた
-        // 以上、小節数を保存すると BPM 変更時に意味が変わる）。換算はモデル側の関数
-        auto next = ClipDomains::ratioForBars (bars, barLengthSamples, sourceLengthSamples);
-        // view 長が 0 になる要求は受理しない（読込時の検証と同じ規則）
-        if ((juce::int64) std::llround ((double) sourceLengthSamples * next) < 1)
-        {
-            refreshTexts();
-            return;
-        }
-        if (next != ratio)
-        {
-            ratio = next;
-            pushValues();
-        }
-        refreshTexts();
-    }
-
-    void refreshTexts()
-    {
-        // 現在の（要求）見かけ長を丸めずに表示する
-        const double bars = (double) sourceLengthSamples * ratio / barLengthSamples;
-        auto text = juce::String (bars, 2);
-        while (text.endsWith ("0"))
-            text = text.dropLastCharacters (1);
-        if (text.endsWith ("."))
-            text = text.dropLastCharacters (1);
-        barsEditor.setText (text, false);
+        barsBox.repaint();
         repaint();
     }
 
@@ -270,9 +531,11 @@ private:
     bool looped = false;
     int semitones = 0;
     double ratio = 1.0;
-    juce::Slider semitoneSlider;
-    juce::TextEditor barsEditor;
-    juce::TextButton resetButton;
+    PitchNotchSlider pitchSlider;
+    BarsLcdBox barsBox;
+    StepSquareButton minusButton { juce::String::fromUTF8 (u8"−") };
+    StepSquareButton plusButton { "+" };
+    TextLinkLabel resetLink { "Reset" };
     std::function<void()> willEdit;
     std::function<void (int, double)> apply;
     bool editBegun = false; // この吹き出しで undo を積んだか（開いてから閉じるまで1件）
@@ -2255,7 +2518,7 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
             if (clip.transposeSemitones != 0)
                 current << (clip.transposeSemitones > 0 ? "+" : "")
                         << juce::String (clip.transposeSemitones);
-            if (clip.stretchRatio != 1.0)
+            if (! juce::exactlyEqual (clip.stretchRatio, 1.0))
             {
                 if (current.isNotEmpty())
                     current << " / ";

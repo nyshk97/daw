@@ -39,7 +39,8 @@ bool ClipDomains::domainValidFor (const Clip& clip, double sampleRate)
     if (d == nullptr || clip.audio == nullptr)
         return false;
     // 原音・SR の一致
-    if (d->sourceAudio.get() != clip.audio.get() || d->sampleRate != sampleRate)
+    if (d->sourceAudio.get() != clip.audio.get()
+        || ! juce::exactlyEqual (d->sampleRate, sampleRate))
         return false;
     // ドメイン自体の健全性（負の開始・原音外を通さない。checked addition）
     const auto sourceLength = (juce::int64) clip.audio->getNumSamples();
@@ -186,7 +187,7 @@ bool ClipDomains::applyStretchRequest (Clip& clip, int semitones, double ratio)
     ratio = ClipStretchLimits::clampRatio (ratio);
     if ((juce::int64) std::llround ((double) clip.lengthSamples * ratio) < 1)
         return false; // view 長 0 になる要求は受理しない
-    if (clip.transposeSemitones == semitones && clip.stretchRatio == ratio)
+    if (clip.transposeSemitones == semitones && juce::exactlyEqual (clip.stretchRatio, ratio))
         return false;
 
     clip.transposeSemitones = semitones;

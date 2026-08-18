@@ -55,13 +55,15 @@ struct RenderFingerprint
     double ratio = 1.0;
     double sampleRate = 0.0;
 
-    bool isNeutral() const { return semitones == 0 && ratio == 1.0; }
+    bool isNeutral() const { return semitones == 0 && juce::exactlyEqual (ratio, 1.0); }
 
     bool operator== (const RenderFingerprint& other) const
     {
+        // 指紋は「同じ値か」の識別なので厳密比較が正しい（近似だと別要求が同一視される）
         return source == other.source && domainOffset == other.domainOffset
             && domainLength == other.domainLength && semitones == other.semitones
-            && ratio == other.ratio && sampleRate == other.sampleRate;
+            && juce::exactlyEqual (ratio, other.ratio)
+            && juce::exactlyEqual (sampleRate, other.sampleRate);
     }
     bool operator!= (const RenderFingerprint& other) const { return ! (*this == other); }
 
@@ -72,7 +74,7 @@ struct RenderFingerprint
         if (domainOffset != other.domainOffset) return domainOffset < other.domainOffset;
         if (domainLength != other.domainLength) return domainLength < other.domainLength;
         if (semitones != other.semitones) return semitones < other.semitones;
-        if (ratio != other.ratio) return ratio < other.ratio;
+        if (! juce::exactlyEqual (ratio, other.ratio)) return ratio < other.ratio;
         return sampleRate < other.sampleRate;
     }
 };
