@@ -192,9 +192,21 @@ UrlDownloader::Status UrlDownloader::download()
     // ここから先の失敗・キャンセルは run() が tempDirectory を消す
     result.tempDirectory = tempDir;
 
+    // YouTube側の仕様変更で yt-dlp stable のデフォルト player client が 403 を返す時期がある
+    // （2026-08 実測: デフォルトの android vr は 403 になる動画がある）。
+    // 403 のときだけ client を替えて1回リトライする。web_embedded は音声のみを取れるが
+    // 埋め込み不可の動画では使えないため、web_safari（HLS・映像込みで重いが広く通る）と
+    // 複数指定してフォーマットをマージさせる。stable が追いつけば1回目で通り、発動しなくなる
     juce::String dlOut, dlErr;
+    for (int attempt = 0;; ++attempt)
     {
+        dlOut.clear();
+        dlErr.clear();
+
         auto argv = baseArgs (ytDlp);
+        if (attempt > 0)
+            argv.addArray (juce::StringArray {
+                "--extractor-args", "youtube:player_client=web_embedded,web_safari" });
         argv.addArray (juce::StringArray {
             "--max-downloads", "1",
             "-x", "--audio-format", "wav", // ffmpegでPCM化。劣化がなく、opus/webmしか無い動画でも通る
@@ -228,14 +240,21 @@ UrlDownloader::Status UrlDownloader::download()
 
         // --max-downloads に達したときの 101 は正常系（実測で確認済み）
         const int exitCode = proc.exitCode();
-        if (exitCode != 0 && exitCode != 101)
+        if (exitCode == 0 || exitCode == 101)
+            break;
+
+        const auto detail = YtDlpOutput::extractErrorLine (dlErr.isNotEmpty() ? dlErr : dlOut);
+        Log::error ("url.download.failed",
+                    "exit=" + juce::String (exitCode)
+                        + " detail=" + YtDlpOutput::redactUrls (detail, request.url));
+
+        if (attempt == 0 && YtDlpOutput::isHttp403 (detail))
         {
-            const auto detail = YtDlpOutput::extractErrorLine (dlErr.isNotEmpty() ? dlErr : dlOut);
-            Log::error ("url.download.failed",
-                        "exit=" + juce::String (exitCode)
-                            + " detail=" + YtDlpOutput::redactUrls (detail, request.url));
-            return fail (YtDlpOutput::redactUrls (detail, request.url));
+            Log::info ("url.download.retry", "player_client=web_embedded,web_safari");
+            progressValue.store (metadataShare);
+            continue;
         }
+        return fail (YtDlpOutput::redactUrls (detail, request.url));
     }
 
     // 出力ファイル名は固定と仮定せず、実際に出来たWAVを拾う

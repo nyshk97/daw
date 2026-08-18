@@ -9693,6 +9693,14 @@ void testYtDlpOutput()
             "ERROR行が無ければ末尾の非空行");
     expect (YtDlpOutput::extractErrorLine ("").isEmpty(), "空入力なら空");
 
+    // ---- 403 の判定（player client を替えたリトライの条件）----
+    expect (YtDlpOutput::isHttp403 (
+                "ERROR: unable to download video data: HTTP Error 403: Forbidden"),
+            "実測の403エラー行を403と判定する");
+    expect (! YtDlpOutput::isHttp403 ("ERROR: [youtube] AAAAAAAAAAA: Video unavailable"),
+            "403以外のエラーではリトライしない");
+    expect (! YtDlpOutput::isHttp403 (""), "空入力は403ではない");
+
     // ---- URLのマスク ----
     {
         // 漏れ方①: stdout の scheme 付きURL

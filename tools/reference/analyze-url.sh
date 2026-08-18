@@ -50,11 +50,19 @@ else
   echo "==> 音源を取得"
   # 一部のYouTube動画はbestaudioが選ぶWebM/251だけCDNで403になる一方、AAC/140は
   # 同じ動画から正常取得できる。動画削除と誤認せず、1回だけformatを限定してfallbackする。
+  # さらに yt-dlp stable のデフォルト player client 自体が丸ごと 403 になる時期がある
+  # （2026-08 実測: 140 も共倒れ）ので、最後に client を替えて再試行する。
+  # web_embedded は音声のみを取れるが埋め込み不可動画では使えないため web_safari と複数指定。
   if ! yt-dlp -f bestaudio --extract-audio --audio-format wav --audio-quality 0 --no-playlist \
               -o "$REF/source.%(ext)s" --write-info-json "$URL"; then
     echo "==> bestaudio取得失敗。AAC format 140で1回だけ再試行" >&2
-    yt-dlp -f 140 --extract-audio --audio-format wav --audio-quality 0 --no-playlist \
-           -o "$REF/source.%(ext)s" --write-info-json "$URL"
+    if ! yt-dlp -f 140 --extract-audio --audio-format wav --audio-quality 0 --no-playlist \
+                -o "$REF/source.%(ext)s" --write-info-json "$URL"; then
+      echo "==> format 140 も失敗。player_client=web_embedded,web_safari で再試行" >&2
+      yt-dlp --extractor-args "youtube:player_client=web_embedded,web_safari" \
+             --extract-audio --audio-format wav --audio-quality 0 --no-playlist \
+             -o "$REF/source.%(ext)s" --write-info-json "$URL"
+    fi
   fi
 fi
 

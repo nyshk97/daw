@@ -173,6 +173,14 @@ inline juce::String extractErrorLine (const juce::String& text)
     return {};
 }
 
+// ダウンロード失敗が HTTP 403 かどうか。YouTube側の仕様変更で yt-dlp stable の
+// デフォルト player client が丸ごと 403 になる時期があり（2026-08 実測）、その場合は
+// 別クライアントでのリトライで通ることがある。リトライ判断に使う
+inline bool isHttp403 (const juce::String& errorLine)
+{
+    return errorLine.contains ("HTTP Error 403");
+}
+
 // ログ・アラートに出す前にURLを伏せる。2段構えなのは実測した漏れ方が2種類あるため:
 //   ① stdout の "[youtube] Extracting URL: https://…?v=xxx" → scheme付きなのでパターンで拾える
 //   ② stderr の "[generic] foo?token=SECRET#frag: Unable to download webpage…"

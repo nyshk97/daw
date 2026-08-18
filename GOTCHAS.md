@@ -618,6 +618,15 @@ macOSの消音は**出力デバイスごとに記憶される**。切替先が�
 - 初回コストは重い工程のついでに前倒しする（analyze.py の `upper-features` ステップが分析中にキャッシュを温める）。前倒しステップは `fatal=False` にして本来の成果物（カード）を道連れにしない
 - 新しいガチャ系ツールにキャッシュや遅延初期化を足すときは「kill されても次回が速くなるか」を確認する
 
+### yt-dlp の YouTube 403 は player client 単位で出る（1動画の検証では判定できない）
+
+- YouTube 側の対策強化で、yt-dlp stable のデフォルト player client（2026-08 時点は android vr）が**動画によっては**ダウンロード段だけ `HTTP Error 403: Forbidden` になる（メタ取得は通る）。`brew upgrade yt-dlp` は stable が追いつくまで効かない（2026-08-18 実測: stable 2026.07.04 = brew 最新で403、nightly 2026.08.17 は修正済み）
+- client と動画の相性は交差する: デフォルト client は「Me at the zoo」○ / Rick Astley 403、`web_safari` は Rick Astley ○（HLS・映像込みで重い）/「Me at the zoo」と縦動画 zVmYWuLC4Ek は No video formats found / Requested format is not available、`web_embedded` は3本とも音声のみで○（ただし埋め込み不可動画では使えないはず）。**1動画で通った/落ちたを client 全体の生死と誤認しない**
+- 対処は「デフォルトで試行 → 403 のときだけ `--extractor-args "youtube:player_client=web_embedded,web_safari"`（複数指定でフォーマットをマージ・片方が失敗しても続行）でリトライ」（`UrlDownloader::download()` と `tools/reference/analyze-url.sh` に実装済み。403 判定は `YtDlpOutput::isHttp403`）。stable が追いつけば1回目で通りフォールバックは自然に発動しなくなる
+- キャッシュ削除（`--rm-cache-dir`）やフォーマット限定（`-f 140`）はこの型の 403 には効かない（同一 client 経由のため共倒れ）
+- **web 系 client は JS チャレンジ解決に deno（/opt/homebrew/bin）が必要**。`.app` は launchd 起動で PATH が最小限のため deno が見つからず、`n challenge solving failed` → フォーマット全滅 → `Requested format is not available` になる（デフォルト client はチャレンジ不要なので、この欠落は**リトライ経路でだけ**発火する）。対処は `SpawnedProcess::start` が子の PATH に Homebrew の bin を前置する実装
+- **CLI・ターミナル起動の daw_tests で通っても .app で落ちる**のはこの PATH 差が原因のことがある。yt-dlp まわりの E2E は `PATH=/usr/bin:/bin:/usr/sbin:/sbin LALA_VERIFY_URL=… daw_tests` と launchd 相当の最小 PATH で回して初めてアプリ実機と同条件になる
+
 ### `File::replaceWithText` の既定改行は CRLF（bash スクリプトを書くと壊れる）
 
 - `juce::File::replaceWithText (text)` は既定引数 `lineEndings = "\r\n"` で `\n` を CRLF に変換して書く。テストから bash スクリプトや `.next` 系の検証ファイルを生成すると `exit 65\r` のような行になり、bash が `numeric argument required` で exit 255 を返す（daw_tests の fake script で実際に踏んだ）

@@ -197,6 +197,7 @@ LALA_VERIFY_URL='…' LALA_VERIFY_LONG_URL='<34分超の動画>' build/daw_tests
   # → dead だけ消え、他3つは残る。ログに url.tempdir.swept count=1
   ```
   **Bash tool のシェルはコマンドごとにPIDが変わる**ので、`$$` を「生きているPID」の検証に使うと次のコマンド実行時には死んでいて誤判定する。`nohup sleep` 等の長命プロセスを使う
+- **403フォールバック（player_client リトライ）の検証**: まず CLI で `yt-dlp --ignore-config -x --audio-format wav -o 'x.%(ext)s' '<URL>'` がデフォルト経路で `HTTP Error 403` になる動画を見つけ（403 が出るかは動画依存。GOTCHAS.md「yt-dlp の YouTube 403」参照）、その URL を `LALA_VERIFY_URL` に渡して成功すればリトライ経路が機能している。CLI 側が同時点で 403 のままであることも併せて確認する（「たまたま通った」の除外）。**必ず `PATH=/usr/bin:/bin:/usr/sbin:/sbin` を付けて launchd 相当の最小 PATH で回す**（リトライ先の web 系 client は deno が要るため、ターミナルの PATH だと .app で再現する失敗を取りこぼす）
 - **ログにフルURLを残さない**（query/fragment に署名トークンを載せるサイトがあるため）。`Log::` と `showAlert` に渡す文字列は全て `YtDlpOutput::redactUrls()` を通す。yt-dlp のエラー本文は `[generic] foo?token=…:` のように scheme も host も落ちた形でクエリだけ出すことがあるので、パターンマッチだけでなく「渡した元URLの `?` 以降を直接伏せる」2段構えになっている
 
 ## エンジン/バウンスの数値回帰確認（ビット一致）

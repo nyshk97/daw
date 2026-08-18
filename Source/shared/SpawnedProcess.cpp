@@ -140,9 +140,37 @@ bool SpawnedProcess::start (const juce::StringArray& argv)
         args.push_back (const_cast<char*> (s.c_str()));
     args.push_back (nullptr);
 
+    // 環境変数は親のものを複製し、PATH に Homebrew の bin を前置する。
+    // .app は launchd 起動で PATH が最小限（/usr/bin:/bin:/usr/sbin:/sbin）のため、
+    // 子（yt-dlp）が補助ツールを見つけられない（実例: YouTube の JS チャレンジ解決に
+    // deno が必要で、無いと web 系 client のフォーマットが全滅し
+    // "Requested format is not available" になる）。yt-dlp 本体を絶対パスで探すのと同じ発想
+    std::vector<std::string> envStorage;
+    {
+        bool foundPath = false;
+        for (char** e = *_NSGetEnviron(); *e != nullptr; ++e)
+        {
+            std::string entry (*e);
+            if (entry.rfind ("PATH=", 0) == 0)
+            {
+                foundPath = true;
+                entry = "PATH=/opt/homebrew/bin:/usr/local/bin:" + entry.substr (5);
+            }
+            envStorage.push_back (std::move (entry));
+        }
+        if (! foundPath)
+            envStorage.push_back ("PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin");
+    }
+
+    std::vector<char*> envp;
+    envp.reserve (envStorage.size() + 1);
+    for (auto& s : envStorage)
+        envp.push_back (const_cast<char*> (s.c_str()));
+    envp.push_back (nullptr);
+
     pid_t spawnedPid = 0;
     const int spawnResult = ::posix_spawn (&spawnedPid, storage[0].c_str(),
-                                           &actions, &attr, args.data(), *_NSGetEnviron());
+                                           &actions, &attr, args.data(), envp.data());
 
     posix_spawn_file_actions_destroy (&actions);
     posix_spawnattr_destroy (&attr);
