@@ -479,6 +479,8 @@ PopupMenuの表示位置はOSの「使用可能画面領域」（Dock除け）�
 
 `CallOutBox::launchAsynchronously` は内部で `callout.enterModalState (true, this)` を呼ぶ（`juce_CallOutBox.cpp:71`）。表示中はキー入力も⌘Zもボックスが取り、外部クリックは閉じてから下のコンポーネントへ渡る。つまり表示中にユーザー操作でモデルが変わることはなく、保持したindexが失効する経路は録音完了のような非同期処理とプロジェクト破棄だけに絞れる。ドラッグ中の再描画・タイマーは通常どおり走る。
 
+**CallOutBox 内の TextEditor は外側クリックで閉じると `onFocusLost` が走らない**（パネルごと破棄されるため）。「Return を押さずに閉じる」自然な操作で入力途中の値が黙って捨てられる（移調・伸縮の小節数入力で実際に「打ったのに反映されない」となった）。対策はパネルのデストラクタで未確定入力を commit する（値が変わらなければ no-op の冪等な commit にしておけば、Return / focusLost 済みの経路と二重適用にならない）。
+
 - 位置決めと矢印の向きはJUCEが自動でやる（`updatePosition`）ので、渡すのは「指し示す矩形」だけ。ただし**矩形の中央と各辺が矢印の候補**になるため、Viewport内の長いアイテムを指すときは可視領域（`viewport->getBounds()`）との交差を渡す。そのまま渡すとスクロール状態次第で画面外を指す
 - 交差を取る元は「クリックできる範囲全体」にする（ループ反復部分なども含む）。本体だけにすると「本体は画面外・反復だけ表示中」で交差が空になる
 
@@ -616,6 +618,10 @@ macOSの消音は**出力デバイスごとに記憶される**。切替先が�
 ### juce::Reverb は「setParameters→setSampleRate」の順で初期化する
 
 コンストラクタ既定が dry 0.4 / wet 0.33 で、`setParameters()` は内部 SmoothedValue の**ターゲットを変えるだけ**（即時反映しない）。平滑値をターゲットへスナップするのは `setSampleRate()`。full wet で使うつもりで「setSampleRate → setParameters(dry 0)」の順に書くと、**冒頭10msだけ dry 0.4 が漏れる**（`reset()` はバッファを消すだけで平滑値は触らない）。逆順（wet/dry設定 → setSampleRate）なら最初から確定する。聴感では気づきにくく、出だし位置のサンプル一致テストで検出できた（バッチ4のPre-delayテスト）。
+
+### FetchContent で「取得のみ」したい依存は Populate を使う（MakeAvailable は上流の CMake 要求を巻き込む）
+
+`FetchContent_MakeAvailable` は上流を `add_subdirectory` するため、上流の `cmake_minimum_required` が LaLa の宣言（3.22）より新しいと configure できない。**ローカルの CMake が新しいと 3.22 宣言のままでも通ってしまうため、自分の環境では検知できない**（signalsmith-stretch = 3.24 要求で実際に踏んだ）。include だけ使うヘッダライブラリは `FetchContent_Populate`（単引数形。CMP0169 は `if(POLICY ...)` ガード付きで OLD を明示）で**取得のみ**にする。CMakeLists.txt の signalsmith 節が実例。
 
 ## 分析パイプライン（tools/reference）の落とし穴
 
