@@ -681,8 +681,9 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
 
     selectTrack (project->tracks.empty() ? -1 : 0);
 
-    // FXパネルは基本常設（Iで開閉）
+    // FXパネルは基本常設（Iで開閉）。開閉状態はヘッダーのトグルボタンにも映す
     fxEditor.openView();
+    fxButton.setToggleState (true, juce::dontSendNotification);
     fxEditor.showTrack (selectedTrack);
 
     // 読込時の一括再生成: 移調・伸縮の値が入ったクリップをまとめてキューへ。activeDomain は
