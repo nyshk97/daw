@@ -155,7 +155,8 @@ public:
                                 || icon == Icon::cycle;
         // 塗り図形は枠なしだと小さく見えるので一回り大きくする（枠付きは従来寸法）
         const float side = juce::jmin (bounds.getWidth(), bounds.getHeight())
-                           * (strokeIcon ? 0.57f : (borderless ? 0.46f : 0.42f));
+                           * (strokeIcon ? 0.57f : (borderless ? 0.46f : 0.42f))
+                           * (icon == Icon::metronome ? 0.88f : 1.0f); // メトロノームは背が高く大きく見えるので少し絞る
         const auto r = juce::Rectangle<float> (side, side).withCentre (bounds.getCentre());
 
         switch (icon)

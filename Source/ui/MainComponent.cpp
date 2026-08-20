@@ -5467,10 +5467,10 @@ void MainComponent::resized()
     notesButton.setBounds (auxButton());
     topRow.removeFromRight (10);
 
-    // 中央クラスタ: [再生 録音 サイクル] LCD [メトロノーム] をひとまとまりでウィンドウ中央に置く
-    // （Logicの配置: トランスポートはLCDの左、メトロノームは右）。狭いときは左端のボタンを優先して右へ逃がす
+    // 中央クラスタ: [再生 録音] LCD [メトロノーム サイクル] をひとまとまりでウィンドウ中央に置く
+    // （LCDの左＝走らせる操作、右＝鳴り方の設定）。狭いときは左端のボタンを優先して右へ逃がす
     constexpr int tBtn = 30, tGap = 2, lcdGap = 10;
-    const int clusterWidth = tBtn * 3 + tGap * 2 + lcdGap + TransportLcd::preferredWidth + lcdGap + tBtn;
+    const int clusterWidth = tBtn * 2 + tGap + lcdGap + TransportLcd::preferredWidth + lcdGap + tBtn * 2 + tGap;
     auto cluster = juce::Rectangle<int> (clusterWidth, topRow.getHeight())
                        .withCentre ({ getWidth() / 2, topRow.getCentreY() });
     cluster.setX (juce::jlimit (topRow.getX(), juce::jmax (topRow.getX(), topRow.getRight() - clusterWidth),
@@ -5479,16 +5479,16 @@ void MainComponent::resized()
     playButton.setBounds (clusterButton());
     cluster.removeFromLeft (tGap);
     recordButton.setBounds (clusterButton());
-    cluster.removeFromLeft (tGap);
-    cycleButton.setBounds (clusterButton());
     cluster.removeFromLeft (lcdGap);
     auto lcdArea = cluster.removeFromLeft (TransportLcd::preferredWidth);
     lcd.setBounds (lcdArea);
     cluster.removeFromLeft (lcdGap);
     clickButton.setBounds (clusterButton());
+    cluster.removeFromLeft (tGap);
+    cycleButton.setBounds (clusterButton());
 
     auto warnArea = topRow;
-    warnArea.setLeft (juce::jmin (warnArea.getRight(), clickButton.getRight() + 10));
+    warnArea.setLeft (juce::jmin (warnArea.getRight(), cycleButton.getRight() + 10));
     srWarningLabel.setBounds (warnArea);
 
     // 右ドックは上部バー直下の全高。先に右側を取ることで、下部エディタも
