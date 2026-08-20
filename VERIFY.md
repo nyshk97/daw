@@ -60,6 +60,23 @@ sleep 6 && tail -5 ~/Library/Logs/daw/"$(ls -t ~/Library/Logs/daw | head -1)"  #
   - `codesign -dvv build/daw_artefacts/Debug/LaLa-dev.app 2>&1 | grep Signature` → `Signature=adhoc` になっていたら、configure 時の証明書自動解決が失敗して ad-hoc フォールバックしている（`cmake -B build` を再実行して `Codesign identity:` の STATUS 行と WARNING の有無を見る）
   - 署名の安定性確認: リビルド前後で `codesign -dr - <app>` の出力が一致すること（証明書更新後もこれで確認する）
 
+### Release版並走での見た目検証（dev版をユーザーが使用中のとき）
+
+検証フック（`--open` / `--snapshot`）は dev 限定なので、選択画面の「Create」で一時プロジェクトを作ってメイン画面へ入る:
+
+```sh
+cmake --build build-release --target daw && open -g build-release/daw_artefacts/Release/LaLa.app; sleep 4
+osascript -e 'tell application "System Events" to tell process "LaLa" to click button "Create" of window 1'; sleep 3
+# Release は再署名のたびにマイク許可が出て、出ている間は AX が window 1 を取れない（-1719）
+osascript -e 'tell application "System Events" to tell process "UserNotificationCenter" to click button "許可" of window 1'
+# windowID は CGWindowListCopyWindowInfo(.optionAll) で owner=LaLa の行から取る。
+# onscreen=false ならユーザーが別 Space にいる → true になるまでポーリングしてから AX を撃つ
+screencapture -x -l <windowID> shot.png
+osascript -e 'tell application "LaLa" to quit'; rm -rf ~/Music/daw/$(date +%Y-%m-%d)-*   # 一時プロジェクトの片付け（名前は「日付-単語」）
+```
+
+メイン画面の AX 名: 停止 / 再生 / 録音 / サイクル / クリック / FXパネル（パネルが開いている間は非表示）/ ×（FXパネルを閉じる）/ プロジェクトメモ / オーディオファイル / ドラムガチャ / オーディオ設定 / M / S / トラックを追加
+
 ## アプリログでの裏取り
 
 操作がスクショで判別しにくいときは `~/Library/Logs/daw/` のセッションログを ground truth にする:

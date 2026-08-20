@@ -385,6 +385,10 @@ view の両端・分割境界・再生 offset は**絶対境界の差**（`Rende
 
 ## JUCE一般の落とし穴
 
+### NSWindow の styleMask を後から変えても JUCE の resized() は走らない
+
+`setContentOwned()` 時点で `resized()` は済んでおり、その後 `TitleBarStyle::apply()` で `fullSizeContentView` を立ててもコンテンツビューの frame は変わらない（`contentLayoutRect` だけ変わる）ので再レイアウトが起きない。`TitleBarStyle::titleBarInset()` を `resized()` で読む設計なら、apply の直後に `component->resized(); component->repaint();` を明示的に呼ぶ。症状は「帯はタイトルバー下まで伸びたのにタイトルが描かれず、ボタン群がタイトルバーに食い込む」。
+
 ### 非ASCIIの文字列リテラルは必ず `juce::String::fromUTF8(u8"...")` を通す
 
 `juce::String(const char*)` はUTF-8を解釈しない。日本語に限らず em-dash（—）や ● などの記号も対象で、生リテラルのまま `String` と連結すると文字化けする（`"daw — "` が「daw â」になった実例あり）。UI文言・タイトル・ダイアログの全てで `fromUTF8` を徹底する。
