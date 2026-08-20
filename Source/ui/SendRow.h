@@ -16,7 +16,7 @@
 class SendRow : public juce::Component
 {
 public:
-    static constexpr int preferredHeight = 28; // 小ノブ26pxが収まる高さ（20pxでは円盤が潰れて読めなかった）
+    static constexpr int preferredHeight = 32; // 小ノブ30px（大ノブと同じ描き方・目盛り7本）が収まる高さ
 
     explicit SendRow (int busIndex) : bus (busIndex)
     {
@@ -67,7 +67,7 @@ public:
     void resized() override
     {
         auto area = getLocalBounds();
-        const int knobSize = juce::jmin (26, area.getHeight());
+        const int knobSize = juce::jmin (30, area.getHeight());
         knob.setBounds (area.removeFromRight (knobSize).withSizeKeepingCentre (knobSize, knobSize));
         area.removeFromRight (6);
         pillArea = area.withSizeKeepingCentre (area.getWidth(), juce::jmin (26, area.getHeight())); // ピルはFXスロットと同じ高さに揃える

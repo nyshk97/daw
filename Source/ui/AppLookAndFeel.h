@@ -303,7 +303,6 @@ public:
         const bool small = radius < 20.0f;
         const bool bipolar = slider.getMinimum() < 0.0 && slider.getMaximum() > 0.0;
         const float centreAngle = (rotaryStartAngle + rotaryEndAngle) * 0.5f;
-        const float litFrom = bipolar ? centreAngle : rotaryStartAngle;
         const auto lit = slider.findColour (juce::Slider::rotarySliderFillColourId);
 
         auto isLit = [&] (float a)
@@ -313,56 +312,24 @@ public:
                            : a <= angle + 0.001f;
         };
 
-        if (small)
+        // スカートの目盛り（値まで点灯）。大径11本・小径（Sends 30px）は潰れないよう7本に減らす。
+        // 同じ家族の描き方のまま縮小するのが狙い（別デザインの簡素ノブは大ノブと家族に見えなかった）
         {
-            // 小径: 溝アーク＋点灯アーク（目盛りの代わり）を太めに、円盤はフラット（描き込みを減らして読める情報を絞る。モック案4）
-            const float ring = radius - 1.5f;
-            juce::Path track;
-            track.addCentredArc (centre.x, centre.y, ring, ring, 0.0f,
-                                 rotaryStartAngle, rotaryEndAngle, true);
-            g.setColour (Theme::hwTickOff.withMultipliedAlpha (1.2f));
-            g.strokePath (track, juce::PathStrokeType (2.5f, juce::PathStrokeType::curved,
-                                                       juce::PathStrokeType::rounded));
-            if (std::abs (angle - litFrom) > 0.02f)
-            {
-                juce::Path value;
-                value.addCentredArc (centre.x, centre.y, ring, ring, 0.0f,
-                                     juce::jmin (litFrom, angle), juce::jmax (litFrom, angle), true);
-                g.setColour (lit);
-                g.strokePath (value, juce::PathStrokeType (2.5f, juce::PathStrokeType::curved,
-                                                           juce::PathStrokeType::rounded));
-            }
-            const float body = radius * 0.56f;
-            const auto disc = juce::Rectangle<float> (body * 2.0f, body * 2.0f).withCentre (centre);
-            g.setColour (Theme::hwKnobRimMid);
-            g.fillEllipse (disc);
-            g.setColour (juce::Colours::white.withAlpha (0.16f));
-            g.drawEllipse (disc.reduced (0.5f), 1.0f);
-            juce::Path pointer;
-            pointer.startNewSubPath (centre.getPointOnCircumference (body * 0.3f, angle));
-            pointer.lineTo (centre.getPointOnCircumference (body * 0.85f, angle));
-            g.setColour (Theme::hwKnobPointer);
-            g.strokePath (pointer, juce::PathStrokeType (2.5f, juce::PathStrokeType::curved,
-                                                         juce::PathStrokeType::rounded));
-            return;
-        }
-        else
-        {
-            // スカートの目盛り11本（値まで点灯）
-            constexpr int numTicks = 11;
+            const int numTicks = small ? 7 : 11;
+            const float tickLen = small ? 3.0f : 4.0f;
             for (int i = 0; i < numTicks; ++i)
             {
                 const float t = rotaryStartAngle
                               + (rotaryEndAngle - rotaryStartAngle) * (float) i / (float) (numTicks - 1);
                 g.setColour (isLit (t) ? lit : Theme::hwTickOff);
                 juce::Path tick;
-                tick.startNewSubPath (centre.getPointOnCircumference (radius - 4.0f, t));
+                tick.startNewSubPath (centre.getPointOnCircumference (radius - tickLen, t));
                 tick.lineTo (centre.getPointOnCircumference (radius, t));
                 g.strokePath (tick, juce::PathStrokeType (1.5f));
             }
         }
 
-        // 円盤本体（大径）
+        // 円盤本体
         const float body = radius * 0.72f;
         const auto disc = juce::Rectangle<float> (body * 2.0f, body * 2.0f).withCentre (centre);
         g.setColour (juce::Colours::black.withAlpha (0.45f)); // 落ち影（下方向）
@@ -385,7 +352,7 @@ public:
         pointer.startNewSubPath (centre.getPointOnCircumference (body * 0.35f, angle));
         pointer.lineTo (centre.getPointOnCircumference (body * 0.78f, angle));
         g.setColour (Theme::hwKnobPointer);
-        g.strokePath (pointer, juce::PathStrokeType (3.0f, juce::PathStrokeType::curved,
+        g.strokePath (pointer, juce::PathStrokeType (small ? 2.0f : 3.0f, juce::PathStrokeType::curved,
                                                      juce::PathStrokeType::rounded));
     }
 
