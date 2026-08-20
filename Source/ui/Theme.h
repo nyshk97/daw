@@ -102,9 +102,8 @@ inline const juce::Colour meterOrange    { 0xffd98f3e };  // -4dB付近
 inline const juce::Colour meterRed       { 0xffd94a43 };  // 0dBFS直下（recordRedと同値だが役割が別）
 
 // ---- FXパネル ----
-// PanノブはLogicのストリップ準拠: シルバーのノブ本体（knobTop/Bottom）の外周に暗色リングを敷き、
-// センター起点の緑アークをリング上に重ねる。緑はplayGreenより彩度高め（Logicのパンゲージの見え方に合わせる）
-inline const juce::Colour panRing     { 0xff3a3a40 };
+// Panノブ: 素材はFXのハードウェアノブと同じで、センター起点で点灯する目盛りの色。
+// 緑はplayGreenより彩度高め（Logicのパンゲージの見え方に合わせる）
 inline const juce::Colour panArcGreen { 0xff55b85c };
 
 // ---- FX（Illustrated hardware × 1FX 1色）----

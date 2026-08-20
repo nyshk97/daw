@@ -278,6 +278,26 @@ public:
         g.drawRoundedRectangle (cap.reduced (0.5f), 3.0f, 1.0f);
     }
 
+    // ハードウェアノブの円盤（落ち影・上下グラデの縁・内側キャップ）。FXノブとパンノブで共有
+    static void drawHardwareDisc (juce::Graphics& g, juce::Point<float> centre, float body)
+    {
+        const auto disc = juce::Rectangle<float> (body * 2.0f, body * 2.0f).withCentre (centre);
+        g.setColour (juce::Colours::black.withAlpha (0.45f)); // 落ち影（下方向）
+        g.fillEllipse (disc.translated (0.0f, body * 0.14f).expanded (body * 0.06f));
+        juce::ColourGradient rimGrad (Theme::hwKnobRimTop, centre.x, disc.getY(),
+                                      Theme::hwKnobRimBottom, centre.x, disc.getBottom(), false);
+        rimGrad.addColour (0.5, Theme::hwKnobRimMid); // 上→中→下
+        g.setGradientFill (rimGrad);
+        g.fillEllipse (disc);
+        g.setColour (juce::Colours::white.withAlpha (0.14f)); // 縁のハイライト
+        g.drawEllipse (disc.reduced (0.5f), 1.0f);
+        const auto cap = disc.reduced (body * 0.2f);
+        juce::ColourGradient capGrad (Theme::hwKnobCapLight, centre.x - body * 0.25f, centre.y - body * 0.3f,
+                                      Theme::hwKnobCapDark, centre.x + body * 0.6f, centre.y + body * 0.6f, true);
+        g.setGradientFill (capGrad);
+        g.fillEllipse (cap);
+    }
+
     // FXのロータリーノブ（Illustrated hardware。docs/plans/2026-08-20-1836）:
     // 金属風の円盤（上下グラデ・縁ハイライト・内側キャップ・落ち影）＋暖色の白い針。
     // 大径（直径40px以上）はスカートに11本の目盛りを置き、値まで点灯させる。
@@ -331,21 +351,7 @@ public:
 
         // 円盤本体
         const float body = radius * 0.72f;
-        const auto disc = juce::Rectangle<float> (body * 2.0f, body * 2.0f).withCentre (centre);
-        g.setColour (juce::Colours::black.withAlpha (0.45f)); // 落ち影（下方向）
-        g.fillEllipse (disc.translated (0.0f, body * 0.14f).expanded (body * 0.06f));
-        juce::ColourGradient rimGrad (Theme::hwKnobRimTop, centre.x, disc.getY(),
-                                      Theme::hwKnobRimBottom, centre.x, disc.getBottom(), false);
-        rimGrad.addColour (0.5, Theme::hwKnobRimMid); // 上→中→下
-        g.setGradientFill (rimGrad);
-        g.fillEllipse (disc);
-        g.setColour (juce::Colours::white.withAlpha (0.14f)); // 縁のハイライト
-        g.drawEllipse (disc.reduced (0.5f), 1.0f);
-        const auto cap = disc.reduced (body * 0.2f);
-        juce::ColourGradient capGrad (Theme::hwKnobCapLight, centre.x - body * 0.25f, centre.y - body * 0.3f,
-                                      Theme::hwKnobCapDark, centre.x + body * 0.6f, centre.y + body * 0.6f, true);
-        g.setGradientFill (capGrad);
-        g.fillEllipse (cap);
+        drawHardwareDisc (g, centre, body);
 
         // 針
         juce::Path pointer;
@@ -359,65 +365,51 @@ public:
     // FXパネルのPanノブ（Logicのチャンネルストリップ準拠）。構成は外側から
     // 「暗色リング（可動域トラック・下欠け）→ その上にセンター起点の緑アーク → 内側にシルバーのノブ本体」。
     // ノブ面には現在位置の黒tick、センター以外では中央に白の値（L35/R35表記）を描く
+    // パンノブ（FXパネル・ミキサー）: 素材はFXのハードウェアノブと同じ（暗い金属円盤・双極の目盛りが
+    // センター起点で点灯）だが、読み方はLogic準拠のまま＝値「L46 / C / R46」をノブの中に書く。
+    // パンは量でなく「位置」なので数値で読む方が速い。針は中の文字と干渉しないよう縁に短く
     void drawLogicPanKnob (juce::Graphics& g, int x, int y, int width, int height,
                            float sliderPos, float rotaryStartAngle, float rotaryEndAngle,
                            juce::Slider& slider)
     {
-        const auto bounds = juce::Rectangle<int> (x, y, width, height).toFloat().reduced (1.5f);
-        const float outerRadius = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
+        const auto bounds = juce::Rectangle<int> (x, y, width, height).toFloat().reduced (1.0f);
+        const float radius = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
         const auto centre = bounds.getCentre();
         const float angle = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
         const float centreAngle = (rotaryStartAngle + rotaryEndAngle) * 0.5f; // 12時=パンセンター
-        const float ringThickness = juce::jmax (3.5f, outerRadius * 0.18f);
-        const float ringRadius = outerRadius - ringThickness * 0.5f;
-        const float bodyRadius = outerRadius - ringThickness;
-        const auto body = juce::Rectangle<float> (bodyRadius * 2.0f, bodyRadius * 2.0f)
-                              .withCentre (centre);
 
-        // 外周リング（可動域ぶんだけの暗色トラック。Logicと同じく下側が欠ける）
-        // ＋センター起点の緑値アーク
-        juce::Path ring;
-        ring.addCentredArc (centre.x, centre.y, ringRadius, ringRadius, 0.0f,
-                            rotaryStartAngle, rotaryEndAngle, true);
-        g.setColour (Theme::panRing);
-        g.strokePath (ring, juce::PathStrokeType (ringThickness));
-        if (std::abs (angle - centreAngle) > 0.02f)
+        constexpr int numTicks = 9;
+        for (int i = 0; i < numTicks; ++i)
         {
-            juce::Path arc;
-            arc.addCentredArc (centre.x, centre.y, ringRadius, ringRadius, 0.0f,
-                               juce::jmin (centreAngle, angle), juce::jmax (centreAngle, angle), true);
-            g.setColour (Theme::panArcGreen);
-            g.strokePath (arc, juce::PathStrokeType (ringThickness));
+            const float t = rotaryStartAngle
+                          + (rotaryEndAngle - rotaryStartAngle) * (float) i / (float) (numTicks - 1);
+            const bool on = (t >= centreAngle - 0.001f && t <= angle + 0.001f)
+                         || (t <= centreAngle + 0.001f && t >= angle - 0.001f);
+            g.setColour (on ? Theme::panArcGreen : Theme::hwTickOff);
+            juce::Path tick;
+            tick.startNewSubPath (centre.getPointOnCircumference (radius - 4.0f, t));
+            tick.lineTo (centre.getPointOnCircumference (radius, t));
+            g.strokePath (tick, juce::PathStrokeType (1.5f));
         }
 
-        // ノブ本体（フェーダーキャップと同じシルバー）
-        g.setColour (juce::Colours::black.withAlpha (0.3f));
-        g.fillEllipse (body.translated (0.0f, 1.0f)); // リングへ落ちる影
-        g.setGradientFill (juce::ColourGradient (Theme::knobTop, centre.x, body.getY(),
-                                                 Theme::knobBottom, centre.x, body.getBottom(), false));
-        g.fillEllipse (body);
-        g.setColour (juce::Colours::black.withAlpha (0.25f));
-        g.drawEllipse (body.reduced (0.5f), 1.0f);
+        const float body = radius * 0.74f;
+        drawHardwareDisc (g, centre, body);
 
-        // 現在位置のtick（明るい面の上なので黒の短線。センターでは12時を指す）
-        juce::Path tick;
-        tick.startNewSubPath (centre.getPointOnCircumference (bodyRadius - 1.0f, angle));
-        tick.lineTo (centre.getPointOnCircumference (bodyRadius * 0.6f, angle));
-        g.setColour (juce::Colours::black.withAlpha (0.6f));
-        g.strokePath (tick, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved,
-                                                  juce::PathStrokeType::rounded));
+        juce::Path pointer;
+        pointer.startNewSubPath (centre.getPointOnCircumference (body * 0.62f, angle));
+        pointer.lineTo (centre.getPointOnCircumference (body * 0.9f, angle));
+        g.setColour (Theme::hwKnobPointer);
+        g.strokePath (pointer, juce::PathStrokeType (2.5f, juce::PathStrokeType::curved,
+                                                     juce::PathStrokeType::rounded));
 
-        // 中央の値（Logicの+20表記ではなく、ミキサーのPANラベルと同じ L/R＋量で統一。
-        // Logicと同じくノブ径に対して大きめの白文字）
+        // 中央の値（ミキサーのPANラベルと同じ L/R＋量。センターは C）
         const float value = (float) slider.getValue();
         const int amount = juce::roundToInt (std::abs (value) * 100.0f);
-        if (amount >= 1)
-        {
-            g.setColour (juce::Colours::white.withAlpha (0.95f));
-            g.setFont (Fonts::small());
-            g.drawText ((value < 0.0f ? "L" : "R") + juce::String (amount),
-                        body, juce::Justification::centred);
-        }
+        g.setColour (Theme::hwValue);
+        g.setFont (Fonts::smallStrong());
+        g.drawText (amount >= 1 ? (value < 0.0f ? "L" : "R") + juce::String (amount) : juce::String ("C"),
+                    juce::Rectangle<float> (body * 2.0f, body * 2.0f).withCentre (centre),
+                    juce::Justification::centred);
     }
 
     // ---- PopupMenu（右クリックメニュー・ComboBoxのドロップダウン）----
