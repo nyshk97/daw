@@ -110,6 +110,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
                                         rightWidthAtDragStart - dx);
         resized();
     };
+    addAndMakeVisible (stopButton);
     addAndMakeVisible (playButton);
     addAndMakeVisible (recordButton);
     addAndMakeVisible (addTrackButton);
@@ -598,9 +599,17 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     // ---- トランスポートバー ----
     // 3ボタンとも枠なし（右上の補助ボタンと同じ流儀。枠付きだけがヘッダーの中でフォーム部品に
     // 見えて浮いていた）。状態は色で示す: 再生中=緑アイコン・録音中=赤地＋明滅・クリックON=accent地
-    playButton.onClick = [this] { togglePlay(); };
-    playButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::playStop));
-    playButton.setBorderless (true, true);
+    // ■ ▶ ● の3ボタン（役割固定・状態は点灯で示す。他DAWと同じ読み方）。
+    // ▶/■ を1ボタンで入れ替える方式は「緑の停止ボタン」に見えて読めなかった
+    stopButton.onClick = [this] { stopTransport(); };
+    stopButton.setTooltip (jp (u8"停止 (Space)"));
+    stopButton.setBorderless (true);
+
+    playButton.onClick = [this] { if (! transport.isPlaying.load() && ! engine.isRecording()) togglePlay(); };
+    playButton.setTooltip (jp (u8"再生 (Space)"));
+    playButton.setColour (juce::TextButton::buttonOnColourId, Theme::playGreen.darker (0.15f)); // 再生中は緑点灯（Logic）
+    playButton.setToggleIconColour (juce::Colours::white);
+    playButton.setBorderless (true);
 
     recordButton.setIconColour (Theme::recordRed); // 待機中も録音ボタンと分かる赤
     recordButton.setColour (juce::TextButton::buttonOnColourId, Theme::recordRed);
@@ -616,11 +625,12 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     cycleButton.setBorderless (true);
 
     // 上部バーはシルバーなので、載せるボタンは全部「明るい地」配色にする
-    for (auto* b : { &playButton, &recordButton, &cycleButton, &clickButton, &fxButton,
+    for (auto* b : { &stopButton, &playButton, &recordButton, &cycleButton, &clickButton, &fxButton,
                      &settingsButton, &notesButton, &filesButton, &gachaButton })
         b->setOnLightBackground (true);
     recordButton.onClick = [this] { toggleRecord(); };
-    recordButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::record));
+    recordButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::record)
+                             + jp (u8" — 開始位置からカウントインして録音"));
 
     addTrackButton.onClick = [this] { showAddTrackMenu(); };
     addTrackButton.setTooltip (jp (u8"トラックを追加"));
@@ -693,7 +703,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
 
     // Space（再生/停止）をボタンに奪わせない
     for (auto* c : std::initializer_list<juce::Component*> {
-             &playButton, &recordButton, &addTrackButton, &settingsButton, &notesButton,
+             &stopButton, &playButton, &recordButton, &addTrackButton, &settingsButton, &notesButton,
              &filesButton, &gachaButton, &clickButton, &fxButton, &cycleButton })
     {
         c->setWantsKeyboardFocus (false);
@@ -979,7 +989,7 @@ void MainComponent::setPlayStart (juce::int64 samplePos)
 
 // ---- 再生・録音 ----
 
-void MainComponent::togglePlay()
+void MainComponent::stopTransport()
 {
     if (engine.isRecording())
     {
@@ -999,6 +1009,15 @@ void MainComponent::togglePlay()
         engine.stop();
         Log::info ("transport.stop", "pos=" + juce::String (transport.playheadSamplePos.load())
                                          + " startPos=" + juce::String (playStartSample));
+    }
+    updateTransportButtons();
+}
+
+void MainComponent::togglePlay()
+{
+    if (engine.isRecording() || seekResumePending || transport.isPlaying.load())
+    {
+        stopTransport();
     }
     else
     {
@@ -5365,9 +5384,7 @@ void MainComponent::updateTransportButtons()
     const bool recording = engine.isRecording();
     // シーク後の再開待ち中も見かけ上は「再生中」として表示する
     const bool playing = transport.isPlaying.load() || seekResumePending;
-    playButton.setIcon (playing ? IconButton::Icon::stop : IconButton::Icon::play);
-    playButton.setIconColour (playing ? Theme::playGreen.darker (0.25f) // 再生中は緑（シルバー地で読める濃さ）
-                                      : Theme::topBarIcon);
+    playButton.setToggleState (playing, juce::dontSendNotification); // 再生中（録音中も走っている）は緑点灯
     cycleButton.setToggleState (project->cycleEnabled && project->hasCycleRange(),
                                 juce::dontSendNotification);
     recordButton.setToggleState (recording, juce::dontSendNotification); // 録音中は赤点灯
@@ -5467,15 +5484,17 @@ void MainComponent::resized()
     notesButton.setBounds (auxButton());
     topRow.removeFromRight (10);
 
-    // 中央クラスタ: [再生 録音] LCD [メトロノーム サイクル] をひとまとまりでウィンドウ中央に置く
+    // 中央クラスタ: [停止 再生 録音] LCD [メトロノーム サイクル] をひとまとまりでウィンドウ中央に置く
     // （LCDの左＝走らせる操作、右＝鳴り方の設定）。狭いときは左端のボタンを優先して右へ逃がす
     constexpr int tBtn = 30, tGap = 2, lcdGap = 10;
-    const int clusterWidth = tBtn * 2 + tGap + lcdGap + TransportLcd::preferredWidth + lcdGap + tBtn * 2 + tGap;
+    const int clusterWidth = tBtn * 3 + tGap * 2 + lcdGap + TransportLcd::preferredWidth + lcdGap + tBtn * 2 + tGap;
     auto cluster = juce::Rectangle<int> (clusterWidth, topRow.getHeight())
                        .withCentre ({ getWidth() / 2, topRow.getCentreY() });
     cluster.setX (juce::jlimit (topRow.getX(), juce::jmax (topRow.getX(), topRow.getRight() - clusterWidth),
                                 cluster.getX()));
     auto clusterButton = [&cluster, tBtn] { return cluster.removeFromLeft (tBtn).withSizeKeepingCentre (tBtn, tBtn); };
+    stopButton.setBounds (clusterButton());
+    cluster.removeFromLeft (tGap);
     playButton.setBounds (clusterButton());
     cluster.removeFromLeft (tGap);
     recordButton.setBounds (clusterButton());

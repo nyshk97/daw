@@ -114,6 +114,7 @@ private:
     void timerCallback() override;
 
     void togglePlay();
+    void stopTransport(); // 再生・シーク再開待ち・録音のどれでも止める（停止ボタン）
     void toggleRecord();
     void startRecordingFlow();
     void finishRecording();
@@ -403,6 +404,7 @@ private:
     static constexpr int rightPanelMinWidth = 240;
     static constexpr int rightPanelMaxWidth = 480;
 
+    IconButton stopButton { IconButton::Icon::stop, juce::String::fromUTF8 (u8"停止") };
     IconButton playButton { IconButton::Icon::play, juce::String::fromUTF8 (u8"再生") };
     IconButton recordButton { IconButton::Icon::record, juce::String::fromUTF8 (u8"録音") };
     IconButton clickButton { IconButton::Icon::metronome, juce::String::fromUTF8 (u8"クリック") };
