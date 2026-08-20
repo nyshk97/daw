@@ -405,8 +405,9 @@ public:
         // 中央の値（ミキサーのPANラベルと同じ L/R＋量。センターは C）
         const float value = (float) slider.getValue();
         const int amount = juce::roundToInt (std::abs (value) * 100.0f);
+        // 等幅（LCD・フェーダー値と同じ書体）＝「計器の読み」に見せる。SF Pro だと「文字」に見えて浮く
         g.setColour (Theme::hwValue);
-        g.setFont (Fonts::smallStrong());
+        g.setFont (Fonts::mono (10.0f));
         g.drawText (amount >= 1 ? (value < 0.0f ? "L" : "R") + juce::String (amount) : juce::String ("C"),
                     juce::Rectangle<float> (body * 2.0f, body * 2.0f).withCentre (centre),
                     juce::Justification::centred);
