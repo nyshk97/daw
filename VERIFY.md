@@ -141,6 +141,7 @@ screencapture -x -R<x,y,w,h> /tmp/daw-check.png
 
 - プロジェクト選択画面に「開く」ボタンはない。開くのは**ダブルクリック or Return**の2経路。リストは**更新日時の降順**（`project.json` のmtime）で、先頭行が自動選択される（AXでは行選択不可）
 - **CLIから開くにはCGEvent合成の「単クリック→スクショで選択確認→同座標にダブルクリック」**（検証済み）。ダブルクリックは down/up (clickState=1) → 150ms → down/up (clickState=2) の順で `mouseEventClickState` を明示する（単クリック2連打のOS集約任せは不安定）。行の座標目安: コンテンツ上端＝ウィンドウ上端+32pt（タイトルバー）、行高48pt、行1中心 ≈ +86pt・行2中心 ≈ +134pt（左右はウィンドウ中央でよい）
+- **ウィンドウをタイトルバーから動かせるか（TitleBarStyle・styleMask を触った後）**: `activate` → 被覆チェック → タイトル文字の位置（ウィンドウ中央・上端+14pt）から CGEvent 合成ドラッグ（down→補間drag→up）→ `osascript -e 'tell application "System Events" to tell process "LaLa-dev" to get position of window 1'` の前後差がドラッグ量と一致すれば pass。確認後は `set position of window 1 to {x, y}` で元に戻す。上部バー（+14〜+82pt）はボタン群があるので掴み点にしない
 - **テストプロジェクトを先頭に出すには `touch ~/Music/daw/<name>/project.json`**（更新日時降順のため。旧「`0-` 始まりの名前で辞書順先頭」は効かない）。開いた直後にタイトルバーの名前で対象プロジェクトか確認する
 - **新規作成の自動命名**: 名前欄には候補名 `YYYY-MM-DD-<ランダム英単語>`（例: `2026-07-22-dawn`）がプリフィルされており、そのまま「Create」AXPress（またはEnter）で候補名のまま作成される（フォーカスすると全選択になり、打ち始めれば置き換わる）。作成された名前は `ls ~/Music/daw/` とログ `project.create name=` で裏取りする。検証で作ったプロジェクトは終了後に削除して片付ける
   - 選択画面が他アプリの大窓に覆われて合成クリックが撃てない（被覆チェックでABORTする）ときも、Create のAXPressは**背面のまま効く**ので、新規プロジェクト作成でプロジェクト画面の検証に入る代替になる（検証済み）
