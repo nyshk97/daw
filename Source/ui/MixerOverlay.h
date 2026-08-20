@@ -23,7 +23,9 @@ public:
 
     static constexpr int preferredWidth = 104;
 
-    explicit MixerStrip (Kind kindToUse, juce::String fxSlotNameToUse = {});
+    // fxVisualKind はバス/Masterの単一スロットの固有色（Reverb A/B は名前が同じ "Reverb" なので名前から推測しない）
+    explicit MixerStrip (Kind kindToUse, juce::String fxSlotNameToUse = {},
+                         FxVisualKind fxVisualKindToUse = FxVisualKind::neutral);
 
     void bind (const juce::String& name, std::shared_ptr<TrackParams> paramsToBind, bool isSelected);
     void updateMeter (const MeterFeed& feed); // 30Hz。表示更新（MixerOverlayが集約値を配る。減衰はStereoMeter側）
@@ -49,6 +51,7 @@ private:
 
     Kind kind;
     juce::String fxSlotName;                      // バス/Masterの単一スロット名（Reverb/Delay/Limiter）
+    FxVisualKind fxVisualKind = FxVisualKind::neutral;
     std::shared_ptr<TrackParams> params;
     juce::String stripName;
     bool selected = false;
@@ -128,10 +131,11 @@ private:
     juce::Component stripRow;
     std::vector<std::unique_ptr<MixerStrip>> trackStrips;
     // スロット名はFXパネルと同じ命名規則（FxSlots::busFxName / masterFxName）から取る
-    MixerStrip busStrips[numSendBuses] { MixerStrip (MixerStrip::Kind::bus, FxSlots::busFxName (0)),
-                                         MixerStrip (MixerStrip::Kind::bus, FxSlots::busFxName (1)),
-                                         MixerStrip (MixerStrip::Kind::bus, FxSlots::busFxName (2)) };
-    MixerStrip masterStrip { MixerStrip::Kind::master, FxSlots::masterFxName() };
+    MixerStrip busStrips[numSendBuses] {
+        MixerStrip (MixerStrip::Kind::bus, FxSlots::busFxName (0), FxSlots::busVisualKind (0)),
+        MixerStrip (MixerStrip::Kind::bus, FxSlots::busFxName (1), FxSlots::busVisualKind (1)),
+        MixerStrip (MixerStrip::Kind::bus, FxSlots::busFxName (2), FxSlots::busVisualKind (2)) };
+    MixerStrip masterStrip { MixerStrip::Kind::master, FxSlots::masterFxName(), FxVisualKind::limiter };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MixerOverlay)
 };

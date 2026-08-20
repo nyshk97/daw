@@ -5,6 +5,8 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "Fonts.h"
+#include "FxSlotLayout.h"
+#include "StripParts.h"
 #include "Theme.h"
 #include "../shared/Project.h"
 
@@ -14,7 +16,7 @@
 class SendRow : public juce::Component
 {
 public:
-    static constexpr int preferredHeight = 22;
+    static constexpr int preferredHeight = 28; // 小ノブ26pxが収まる高さ（20pxでは円盤が潰れて読めなかった）
 
     explicit SendRow (int busIndex) : bus (busIndex)
     {
@@ -23,7 +25,7 @@ public:
         knob.setRange (0.0, 1.0);
         knob.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
         knob.setDoubleClickReturnValue (true, 0.0);
-        knob.setColour (juce::Slider::rotarySliderFillColourId, Theme::sendArcGreen);
+        knob.setColour (juce::Slider::rotarySliderFillColourId, Theme::fxHue (FxSlots::busVisualKind (busIndex)));
         knob.setColour (juce::Slider::rotarySliderOutlineColourId, Theme::controlBg);
         knob.textFromValueFunction = [] (double v) { return juce::String (juce::roundToInt (v * 100.0)); };
         knob.setWantsKeyboardFocus (false);          // Space（再生/停止）を奪わせない
@@ -65,20 +67,18 @@ public:
     void resized() override
     {
         auto area = getLocalBounds();
-        const int knobSize = juce::jmin (20, area.getHeight());
+        const int knobSize = juce::jmin (26, area.getHeight());
         knob.setBounds (area.removeFromRight (knobSize).withSizeKeepingCentre (knobSize, knobSize));
         area.removeFromRight (6);
-        pillArea = area;
+        pillArea = area.withSizeKeepingCentre (area.getWidth(), juce::jmin (26, area.getHeight())); // ピルはFXスロットと同じ高さに揃える
     }
 
     void paint (juce::Graphics& g) override
     {
+        // バスのピル: send>0 でLED点灯（色はバス固有色）。スロットピルと同じ部品で描く
         const bool active = params != nullptr && params->sends[bus].load() > 0.001f;
-        g.setColour (active ? Theme::accent : Theme::controlBg);
-        g.fillRoundedRectangle (pillArea.toFloat(), 5.0f);
-        g.setColour (juce::Colours::white.withAlpha (active ? 0.95f : 0.75f));
-        g.setFont (Fonts::smallStrong());
-        g.drawText (SendBuses::names[bus], pillArea, juce::Justification::centred);
+        StripParts::drawSlotPill (g, pillArea, SendBuses::names[bus], active, false,
+                                  FxSlots::busVisualKind (bus));
     }
 
 private:

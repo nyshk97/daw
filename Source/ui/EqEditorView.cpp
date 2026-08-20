@@ -5,6 +5,7 @@
 
 #include "EqCurve.h"
 #include "Fonts.h"
+#include "HardwarePanelStyle.h"
 #include "Theme.h"
 #include "../shared/GainScale.h"
 
@@ -103,15 +104,22 @@ float EqEditorView::freqForX (float x) const
     return minFreqShown * std::pow (maxFreqShown / minFreqShown, t);
 }
 
+// 縦軸の両端に余白を取り、±24dB（上限）の点が窓の縁に乗らないようにする。縁に乗ると点の半分しか
+// 見えず、クリックが上のタイトル行に逃げて「掴めない＝動かない」ように見える（実際に起きた）
+float EqEditorView::halfPlotHeight() const
+{
+    return (float) graphArea.getHeight() * 0.5f - (pointRadius + 6.0f);
+}
+
 float EqEditorView::yForDb (float db) const
 {
     const float t = juce::jlimit (-1.0f, 1.0f, db / dbRange);
-    return (float) graphArea.getCentreY() - t * (float) graphArea.getHeight() * 0.5f;
+    return (float) graphArea.getCentreY() - t * halfPlotHeight();
 }
 
 float EqEditorView::dbForY (float y) const
 {
-    const float t = ((float) graphArea.getCentreY() - y) / ((float) graphArea.getHeight() * 0.5f);
+    const float t = ((float) graphArea.getCentreY() - y) / halfPlotHeight();
     return juce::jlimit (-dbRange, dbRange, t * dbRange);
 }
 
@@ -174,8 +182,8 @@ void EqEditorView::notifyEdited()
 
 void EqEditorView::paint (juce::Graphics& g)
 {
-    g.setColour (Theme::timelineBg);
-    g.fillRoundedRectangle (graphArea.toFloat(), 4.0f);
+    const auto hue = Theme::fxHue (FxVisualKind::eq);
+    HardwarePanelStyle::paintMeterWindow (g, graphArea.toFloat());
 
     if (track == nullptr)
         return;
@@ -188,11 +196,11 @@ void EqEditorView::paint (juce::Graphics& g)
     for (int db = -18; db <= 18; db += 6)
     {
         const float y = yForDb ((float) db);
-        g.setColour (db == 0 ? Theme::rulerTickBar : Theme::gridLineBeat);
+        g.setColour (db == 0 ? hue.withAlpha (0.3f) : HardwarePanelStyle::gridColour (hue));
         g.drawHorizontalLine ((int) y, (float) graphArea.getX(), (float) graphArea.getRight());
         if (db % 12 == 0)
         {
-            g.setColour (Theme::rulerLabel.withAlpha (0.45f));
+            g.setColour (HardwarePanelStyle::captionColour());
             g.drawText ((db > 0 ? "+" : "") + juce::String (db),
                         graphArea.getX() + 4, (int) y - 13, 30, 12, juce::Justification::centredLeft);
         }
@@ -206,11 +214,11 @@ void EqEditorView::paint (juce::Graphics& g)
         const bool major = f == 50.0f || f == 100.0f || f == 200.0f || f == 500.0f
                            || f == 1000.0f || f == 2000.0f || f == 5000.0f || f == 10000.0f;
         const float x = xForFreq (f);
-        g.setColour (major ? Theme::gridLineBar : Theme::gridLineSub);
+        g.setColour (major ? HardwarePanelStyle::gridColour (hue) : hue.withAlpha (0.04f));
         g.drawVerticalLine ((int) x, (float) graphArea.getY(), (float) graphArea.getBottom());
         if (major)
         {
-            g.setColour (Theme::rulerLabel.withAlpha (0.45f));
+            g.setColour (HardwarePanelStyle::captionColour());
             const auto label = f >= 1000.0f ? juce::String ((int) (f / 1000.0f)) + "k"
                                             : juce::String ((int) f);
             g.drawText (label, (int) x - 15, graphArea.getBottom() - 15, 30, 12,
@@ -277,10 +285,10 @@ void EqEditorView::paint (juce::Graphics& g)
         fill.lineTo ((float) graphArea.getRight(), yForDb (0.0f));
         fill.lineTo ((float) graphArea.getX(), yForDb (0.0f));
         fill.closeSubPath();
-        g.setColour (Theme::accent.withAlpha (0.16f * dim));
+        g.setColour (hue.withAlpha (0.16f * dim));
         g.fillPath (fill);
     }
-    g.setColour (Theme::accent.withAlpha (dim));
+    g.setColour (hue.withAlpha (dim));
     g.strokePath (curve, juce::PathStrokeType (2.0f));
 
     // バンドのポイント（HPは無効時に沈める）
@@ -290,10 +298,10 @@ void EqEditorView::paint (juce::Graphics& g)
         const auto p = pointFor (band, value);
         const bool active = band == dragBand || (dragBand < 0 && band == hoverBand);
         const bool bandDim = band == Eq::highpass && ! value.enabled;
-        auto colour = active ? juce::Colours::white : Theme::accent.brighter (0.5f);
+        auto colour = active ? juce::Colours::white : hue.brighter (0.3f);
         g.setColour (colour.withAlpha ((bandDim ? 0.3f : 1.0f) * dim));
         g.fillEllipse (p.x - pointRadius, p.y - pointRadius, pointRadius * 2.0f, pointRadius * 2.0f);
-        g.setColour (Theme::timelineBg);
+        g.setColour (Theme::hwMeterBg);
         g.drawEllipse (p.x - pointRadius, p.y - pointRadius, pointRadius * 2.0f, pointRadius * 2.0f, 1.0f);
     }
 
@@ -307,17 +315,16 @@ void EqEditorView::paint (juce::Graphics& g)
         {
             // 名前ピル＝ON/OFFトグル
             const auto pill = hpToggleArea().toFloat();
-            g.setColour (bands[Eq::highpass].enabled ? Theme::accent
-                                                     : Theme::windowBg.brighter (0.15f));
+            g.setColour (bands[Eq::highpass].enabled ? Theme::hwButtonOn : Theme::hwButtonOff);
             g.fillRoundedRectangle (pill, 4.0f);
-            g.setColour (juce::Colours::white.withAlpha (bands[Eq::highpass].enabled ? 0.95f : 0.5f));
+            g.setColour (bands[Eq::highpass].enabled ? Theme::hwValue : Theme::hwLabel.withAlpha (0.6f));
             g.setFont (Fonts::smallStrong());
             g.drawText (bandName (band), pill.toNearestInt(), juce::Justification::centred);
         }
         else
         {
-            g.setColour (juce::Colours::white.withAlpha (0.55f));
-            g.setFont (Fonts::smallStrong());
+            g.setColour (Theme::hwLabel);
+            g.setFont (HardwarePanelStyle::labelFont());
             g.drawText (bandName (band), nameArea, juce::Justification::centred);
         }
 
@@ -330,7 +337,7 @@ void EqEditorView::paint (juce::Graphics& g)
         else
             text = freqText (value.freqHz) + "  " + GainScale::text (value.gainDb)
                    + "  Q " + juce::String (value.q, 2);
-        g.setColour (juce::Colours::white.withAlpha (0.8f));
+        g.setColour (Theme::hwValue);
         g.setFont (Fonts::small());
         g.drawText (text, column, juce::Justification::centred);
     }

@@ -62,6 +62,7 @@ private:
     double sampleRate() const;
     float xForFreq (float freqHz) const;
     float freqForX (float x) const;
+    float halfPlotHeight() const;
     float yForDb (float db) const;
     float dbForY (float y) const;
     juce::Point<float> pointFor (int band, const Eq::BandValue& value) const;

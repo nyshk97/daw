@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "Fonts.h"
+#include "HardwarePanelStyle.h"
 #include "Theme.h"
 #include "../shared/LimiterParams.h"
 
@@ -11,7 +12,6 @@ namespace
 constexpr int knobRowHeight = 74;
 
 // GR表示の色（CompエディタのGRと同じ系統。Logicの読み方に合わせる）
-const juce::Colour grColour { 0xffd9a13c };
 // ターゲットラインの色: -14=配信境界（accent系の青）・-9=hiphop帯の入口（GR系の黄）
 const juce::Colour streamLineColour { 0xff7a9ede };
 const juce::Colour hiphopLineColour { 0xffd8b04a };
@@ -47,7 +47,7 @@ void LimiterEditorView::configureKnob (juce::Slider& slider, double min, double 
     slider.setScrollWheelEnabled (false); // 変更経路を増やさない（GainSlider・Compと同じ流儀）
     slider.setWantsKeyboardFocus (false);
     slider.setMouseClickGrabsKeyboardFocus (false);
-    slider.setColour (juce::Slider::rotarySliderFillColourId, Theme::accent);
+    slider.setColour (juce::Slider::rotarySliderFillColourId, Theme::fxHue (FxVisualKind::limiter));
     slider.setColour (juce::Slider::rotarySliderOutlineColourId, Theme::controlBg);
     slider.onValueChange = [this]
     {
@@ -139,16 +139,16 @@ void LimiterEditorView::paint (juce::Graphics& g)
     const bool hasMaster = master != nullptr;
     const bool valid = meterFeed.measurementValid;
 
-    // ---- GR縦メーター（0〜-12dB。上から下がる=下げている量）----
+    // ---- GR縦メーター（0〜-12dB。上から下がる=下げている量。メーター窓＋固有色）----
+    // 固有色（Limiter赤）を使うのはGRだけ。LUFS・相関・True Peakは数値の意味を色で表すので既存の意味色を維持する
     {
-        const auto area = grMeterArea.toFloat();
-        g.setColour (Theme::timelineBg);
-        g.fillRoundedRectangle (area, 3.0f);
+        HardwarePanelStyle::paintMeterWindow (g, grMeterArea.toFloat());
+        const auto area = HardwarePanelStyle::meterWindowInner (grMeterArea.toFloat());
         if (hasMaster && currentGrDb > 0.02f)
         {
             const float h = juce::jmin (currentGrDb, grRangeDb) / grRangeDb * area.getHeight();
-            g.setColour (grColour);
-            g.fillRoundedRectangle (area.withHeight (h), 3.0f);
+            g.setColour (Theme::fxHue (FxVisualKind::limiter));
+            g.fillRect (area.withHeight (h));
         }
         // 目盛り（0/3/6/9/12）
         g.setColour (Theme::meterScaleText);
@@ -160,8 +160,8 @@ void LimiterEditorView::paint (juce::Graphics& g)
                         juce::Rectangle<float> (area.getX() - 16.0f, y - 5.0f, 13.0f, 10.0f),
                         juce::Justification::centredRight);
         }
-        g.setColour (juce::Colours::white.withAlpha (0.5f));
-        g.setFont (Fonts::small());
+        g.setColour (Theme::hwLabel);
+        g.setFont (HardwarePanelStyle::labelFont());
         g.drawText ("GR", grMeterArea.withY (grMeterArea.getBottom() + 2).withHeight (13)
                               .expanded (10, 0),
                     juce::Justification::centred);
@@ -177,8 +177,8 @@ void LimiterEditorView::paint (juce::Graphics& g)
 
     // ---- LUFSバー（-24〜0・short-term塗り＋integrated▲・ターゲットライン2本）----
     {
-        g.setColour (juce::Colours::white.withAlpha (0.55f));
-        g.setFont (Fonts::small());
+        g.setColour (Theme::hwLabel);
+        g.setFont (HardwarePanelStyle::labelFont());
         g.drawText ("LOUDNESS (LUFS)", lufsBarArea.withY (lufsBarArea.getY() - 17).withHeight (14),
                     juce::Justification::centredLeft);
 
@@ -244,8 +244,8 @@ void LimiterEditorView::paint (juce::Graphics& g)
 
     // ---- 相関バー（-1〜+1。マイナス域=モノで消える成分あり=赤）----
     {
-        g.setColour (juce::Colours::white.withAlpha (0.55f));
-        g.setFont (Fonts::small());
+        g.setColour (Theme::hwLabel);
+        g.setFont (HardwarePanelStyle::labelFont());
         g.drawText ("CORRELATION",
                     correlationArea.withY (correlationArea.getY() - 15).withHeight (13),
                     juce::Justification::centredLeft);
@@ -301,8 +301,8 @@ void LimiterEditorView::paint (juce::Graphics& g)
         for (const auto& readout : readouts)
         {
             auto row = column.removeFromTop (rowHeight);
-            g.setColour (juce::Colours::white.withAlpha (0.45f));
-            g.setFont (Fonts::small().withHeight (10.0f));
+            g.setColour (Theme::hwLabel);
+            g.setFont (HardwarePanelStyle::labelFont().withHeight (10.0f));
             g.drawText (readout.name, row.removeFromTop (13), juce::Justification::centredLeft);
             auto box = row.withTrimmedBottom (juce::jmax (0, row.getHeight() - 28));
             g.setColour (Theme::lcdBg);
@@ -331,19 +331,10 @@ void LimiterEditorView::paint (juce::Graphics& g)
           juce::String ((int) std::lround (releaseSlider.getValue())) + " ms" },
     };
     for (const auto& text : texts)
-    {
-        const auto bounds = text.slider->getBounds();
-        g.setColour (juce::Colours::white.withAlpha (0.5f));
-        g.setFont (Fonts::small());
-        g.drawText (text.name, bounds.getX() - 12, bounds.getY() - 13, bounds.getWidth() + 24, 12,
-                    juce::Justification::centred);
-        g.setColour (juce::Colours::white.withAlpha (0.85f));
-        g.drawText (text.value, bounds.getX() - 12, bounds.getBottom() + 2, bounds.getWidth() + 24, 13,
-                    juce::Justification::centred);
-    }
+        HardwarePanelStyle::drawKnobLabel (g, text.slider->getBounds(), text.name, text.value);
 
     // Lookaheadは固定値＋静的ラベルで概念だけ見せる（Compの「Knee: 6dB (soft)」と同じパターン）
-    g.setColour (juce::Colours::white.withAlpha (0.5f));
+    g.setColour (HardwarePanelStyle::captionColour());
     g.setFont (Fonts::small());
     g.drawText (juce::String::fromUTF8 (u8"Lookahead: 2ms（固定）"),
                 juce::Rectangle<int> (getLocalBounds().getX() + 10,

@@ -15,8 +15,8 @@ constexpr int panelPad = 12;
 
 // ---- MixerStrip -----------------------------------------------------------
 
-MixerStrip::MixerStrip (Kind kindToUse, juce::String fxSlotNameToUse)
-    : kind (kindToUse), fxSlotName (std::move (fxSlotNameToUse))
+MixerStrip::MixerStrip (Kind kindToUse, juce::String fxSlotNameToUse, FxVisualKind fxVisualKindToUse)
+    : kind (kindToUse), fxSlotName (std::move (fxSlotNameToUse)), fxVisualKind (fxVisualKindToUse)
 {
     const bool isTrack = kind == Kind::track;
 
@@ -154,11 +154,11 @@ void MixerStrip::bind (const juce::String& name, std::shared_ptr<TrackParams> pa
         for (int i = 0; i < FxSlots::mixerSlots; ++i)
         {
             const auto& slot = layout.slots[FxSlots::mixerOrder[i]];
-            slotPills[i].configure (slot.name, slot.enabled, slot.placeholder);
+            slotPills[i].configure (slot.name, slot.enabled, slot.placeholder, slot.kind);
         }
     }
     else
-        slotPills[0].configure (fxSlotName, nullptr, false);
+        slotPills[0].configure (fxSlotName, nullptr, false, fxVisualKind);
 
     repaint();
 }

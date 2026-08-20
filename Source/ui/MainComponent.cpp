@@ -1639,7 +1639,7 @@ void MainComponent::toggleFxDetailSlot (int slot)
     fxDetailKey = fxEditor.targetKey();
     Log::info ("fxdetail.open", "fx=" + fxEditor.slotName (slot)
                                     + " channel=" + fxEditor.channelName());
-    fxDetail.show (fxEditor.slotName (slot), fxEditor.channelName());
+    fxDetail.show (fxEditor.slotName (slot), fxEditor.channelName(), fxEditor.slotKind (slot));
     fxEditor.setActiveSlot (slot);
     updateFxDetailBody();
     resized();
@@ -1680,7 +1680,7 @@ void MainComponent::syncFxDetail()
     if (followable && fxEditor.isValidSlot (fxDetailSlot))
     {
         fxDetailKey = key;
-        fxDetail.show (fxEditor.slotName (fxDetailSlot), fxEditor.channelName());
+        fxDetail.show (fxEditor.slotName (fxDetailSlot), fxEditor.channelName(), fxEditor.slotKind (fxDetailSlot));
         fxEditor.setActiveSlot (fxDetailSlot);
         updateFxDetailBody();
         // 追従は「ユーザーが下部エリアを開く操作をした」わけではないので履歴を1件消費させない。

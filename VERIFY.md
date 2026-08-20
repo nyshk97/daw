@@ -415,6 +415,21 @@ EOF
 - **タイトルバー帯（@2xで上約62px）は比較から除外する**。macOS側の合成（背後との透け・フォーカス状態）で毎回変わり、アプリ描画と無関係な差分が出る。クロップしてから比較する
 - 差分ゼロを期待して大きな差分が出たら、先に「同じバイナリか」（プロセス起動時刻 vs バイナリmtime）と「プロジェクトファイルが変わっていないか」（ユーザーが保存した等）を疑う
 
+## FXパネル（左ラック・下部詳細・ノブ）の見た目確認
+
+FX周りはトラック画面と別の文法（Illustrated hardware × 1FX 1色。`docs/design/ui-principles.md`）で描く。
+ノブ・地・メーター窓・ラベル・ラックLEDを触ったら全FXを一巡して崩れを見る:
+
+```sh
+tools/fx-snapshots.sh <outdir>            # 8枚（eq/comp/sat/lofi/reverbA/reverbB/delay/limiter.png・2200×1400）
+# 全行 snapshot_ok=1 を確認。見比べは <outdir>/*.png を2列グリッドのHTMLに並べて agent-browser で1枚に撮ると速い
+```
+
+- 見るポイント: ①各FXの線（カーブ/GR/倍音）・ノブの点灯目盛り・ラックLEDが `Theme::fxHue` の固有色になっている ②地・ノブ本体・ラベル・タイトルは全FX共通（固有色が漏れていない） ③Limiter の LUFS/相関/True Peak は意味色（緑黄赤）のまま ④Instrument スロットにLEDが無い
+- **再生中CPUの前後比較は `top` で採る**（`ps -o %cpu` は起動からの累積平均で単調増加するため瞬間値の比較に使えない）:
+  `open -g <app> --args --open <proj> --comp-editor --comp-demo --play; sleep 12; top -l 7 -s 5 -pid $(pgrep -x LaLa-dev) -stats cpu | grep -E '^[0-9]+\.[0-9]+$' | tail -6 | sort -n` → 中央値で比較（2026-08-20 基準: 約58%）
+- ミキサー（`MixerOverlay`）のストリップにも同じ `SlotPill` が載る。起動フックが無いので M キーで開いてLEDと固有色を目視する
+
 ## アプリを起動せずに描画を確認する（オフスクリーン・スナップショット）
 
 実機が使えない（ユーザーが操作中・未保存変更あり・別Space）ときは、`daw_tests` に一時的な描画コードを足してコンポーネントの `paint*` を直接 `juce::Image` へ描き、PNGで目視する。アプリ起動もフォーカス奪取も不要:

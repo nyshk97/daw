@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "Fonts.h"
+#include "HardwarePanelStyle.h"
 #include "Theme.h"
 #include "../shared/DelayParams.h"
 
@@ -25,8 +26,8 @@ DelayEditorView::DelayEditorView()
         button.setRadioGroupId (timeRadioGroup);
         button.setConnectedEdges ((i > 0 ? juce::Button::ConnectedOnLeft : 0)
                                   | (i < Delay::numTimeChoices - 1 ? juce::Button::ConnectedOnRight : 0));
-        button.setColour (juce::TextButton::buttonColourId, Theme::controlBg);
-        button.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
+        button.setColour (juce::TextButton::buttonColourId, Theme::hwButtonOff);
+        button.setColour (juce::TextButton::buttonOnColourId, Theme::hwButtonOn);
         button.setColour (juce::TextButton::textColourOffId, juce::Colours::white.withAlpha (0.7f));
         button.setColour (juce::TextButton::textColourOnId, juce::Colours::white);
         button.setWantsKeyboardFocus (false);
@@ -47,8 +48,8 @@ DelayEditorView::DelayEditorView()
     configureKnob (toneSlider, 0.0, 1.0, 0.01, (double) Delay::defaults.tone);
 
     pingPongButton.setClickingTogglesState (true);
-    pingPongButton.setColour (juce::TextButton::buttonColourId, Theme::controlBg);
-    pingPongButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
+    pingPongButton.setColour (juce::TextButton::buttonColourId, Theme::hwButtonOff);
+    pingPongButton.setColour (juce::TextButton::buttonOnColourId, Theme::hwButtonOn);
     pingPongButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white.withAlpha (0.7f));
     pingPongButton.setColour (juce::TextButton::textColourOnId, juce::Colours::white);
     pingPongButton.setTooltip (juce::String::fromUTF8 (u8"エコーを左右交互に振る"));
@@ -75,7 +76,7 @@ void DelayEditorView::configureKnob (juce::Slider& slider, double min, double ma
     slider.setScrollWheelEnabled (false); // 変更経路を増やさない（Limiter・Compと同じ流儀）
     slider.setWantsKeyboardFocus (false);
     slider.setMouseClickGrabsKeyboardFocus (false);
-    slider.setColour (juce::Slider::rotarySliderFillColourId, Theme::accent);
+    slider.setColour (juce::Slider::rotarySliderFillColourId, Theme::fxHue (FxVisualKind::delay));
     slider.setColour (juce::Slider::rotarySliderOutlineColourId, Theme::controlBg);
     slider.onValueChange = [this]
     {
@@ -160,8 +161,8 @@ void DelayEditorView::paint (juce::Graphics& g)
     {
         const auto first = timeButtons[0].getBounds();
         const auto last = timeButtons[Delay::numTimeChoices - 1].getBounds();
-        g.setColour (juce::Colours::white.withAlpha (0.5f));
-        g.setFont (Fonts::small());
+        g.setColour (Theme::hwLabel);
+        g.setFont (HardwarePanelStyle::labelFont());
         g.drawText ("TIME", first.getX(), first.getY() - 15,
                     last.getRight() - first.getX(), 12, juce::Justification::centred);
     }
@@ -175,14 +176,5 @@ void DelayEditorView::paint (juce::Graphics& g)
           juce::String ((int) std::lround (toneSlider.getValue() * 100.0)) + " %" },
     };
     for (const auto& text : texts)
-    {
-        const auto bounds = text.slider->getBounds();
-        g.setColour (juce::Colours::white.withAlpha (0.5f));
-        g.setFont (Fonts::small());
-        g.drawText (text.name, bounds.getX() - 14, bounds.getY() - 13, bounds.getWidth() + 28, 12,
-                    juce::Justification::centred);
-        g.setColour (juce::Colours::white.withAlpha (0.85f));
-        g.drawText (text.value, bounds.getX() - 14, bounds.getBottom() + 2, bounds.getWidth() + 28, 13,
-                    juce::Justification::centred);
-    }
+        HardwarePanelStyle::drawKnobLabel (g, text.slider->getBounds(), text.name, text.value);
 }

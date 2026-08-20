@@ -4,6 +4,7 @@
 #include <juce_dsp/juce_dsp.h>
 
 #include "Fonts.h"
+#include "HardwarePanelStyle.h"
 #include "Theme.h"
 
 namespace
@@ -56,7 +57,7 @@ void LofiEditorView::configureKnob (juce::Slider& slider, double defaultValue)
     slider.setScrollWheelEnabled (false); // 変更経路を増やさない（GainSliderと同じ流儀）
     slider.setWantsKeyboardFocus (false);
     slider.setMouseClickGrabsKeyboardFocus (false);
-    slider.setColour (juce::Slider::rotarySliderFillColourId, Theme::accent);
+    slider.setColour (juce::Slider::rotarySliderFillColourId, Theme::fxHue (FxVisualKind::lofi));
     slider.setColour (juce::Slider::rotarySliderOutlineColourId, Theme::controlBg);
     slider.onValueChange = [this]
     {
@@ -137,15 +138,16 @@ void LofiEditorView::paint (juce::Graphics& g)
     const auto values = hasTrack ? Lofi::load (track->params->lofi) : Lofi::Values {};
     const float dim = enabled ? 1.0f : 0.4f; // バイパス中は沈める（EQ/Compと同じ扱い）
 
-    // ---- Toneカーブ（対数周波数軸 20Hz〜20kHz・0〜-30dB。DSPと同じRBJ設計式）----
+    const auto hue = Theme::fxHue (FxVisualKind::lofi);
+
+    // ---- Toneカーブ（対数周波数軸 20Hz〜20kHz・0〜-30dB。DSPと同じRBJ設計式。メーター窓）----
     {
-        const auto area = toneCurveArea.toFloat();
-        g.setColour (Theme::timelineBg);
-        g.fillRoundedRectangle (area, 4.0f);
+        HardwarePanelStyle::paintMeterWindow (g, toneCurveArea.toFloat());
+        const auto area = HardwarePanelStyle::meterWindowInner (toneCurveArea.toFloat());
 
         const double sr = getSampleRate != nullptr && getSampleRate() > 0.0 ? getSampleRate()
                                                                             : 48000.0;
-        g.setColour (juce::Colours::white.withAlpha (0.06f));
+        g.setColour (HardwarePanelStyle::gridColour (hue));
         for (const float f : { 100.0f, 1000.0f, 10000.0f })
         {
             const float x = area.getX()
@@ -157,7 +159,7 @@ void LofiEditorView::paint (juce::Graphics& g)
         {
             // Tone=0はDSPが完全素通し（toneMix=0でLPFを通らない）なので、20kHz LPFの応答でなく
             // 0dBの水平線を描く（描画と音を一致させる）
-            g.setColour (Theme::eqThumbCurve.withAlpha (dim));
+            g.setColour (hue.withAlpha (dim));
             g.drawLine (area.getX(), area.getY(), area.getRight(), area.getY(), 2.0f);
         }
         else if (hasTrack)
@@ -180,17 +182,17 @@ void LofiEditorView::paint (juce::Graphics& g)
                 else
                     path.lineTo (x, y);
             }
-            g.setColour (Theme::eqThumbCurve.withAlpha (dim));
+            g.setColour (hue.withAlpha (dim));
             g.strokePath (path, juce::PathStrokeType (2.0f));
         }
 
-        g.setColour (juce::Colours::white.withAlpha (0.45f));
+        g.setColour (HardwarePanelStyle::captionColour());
         g.setFont (Fonts::small());
-        g.drawText ("Tone", toneCurveArea.reduced (6, 2), juce::Justification::topLeft);
+        g.drawText ("Tone", toneCurveArea.reduced (8, 6), juce::Justification::topLeft);
     }
 
     // 内部の成分順（固定・概念だけ見せる静的ラベル）
-    g.setColour (juce::Colours::white.withAlpha (0.5f));
+    g.setColour (HardwarePanelStyle::captionColour());
     g.setFont (Fonts::small());
     g.drawText (juce::String::fromUTF8 (u8"Wow → Crush → Tone → Noise（固定順）"),
                 toneCurveArea.withY (toneCurveArea.getBottom() + 8).withHeight (14),
@@ -206,14 +208,5 @@ void LofiEditorView::paint (juce::Graphics& g)
         { &crushSlider, "CRUSH", crushText ((float) crushSlider.getValue()) },
     };
     for (const auto& text : texts)
-    {
-        const auto bounds = text.slider->getBounds();
-        g.setColour (juce::Colours::white.withAlpha (0.5f));
-        g.setFont (Fonts::small());
-        g.drawText (text.name, bounds.getX() - 16, bounds.getY() - 13, bounds.getWidth() + 32, 12,
-                    juce::Justification::centred);
-        g.setColour (juce::Colours::white.withAlpha (0.85f));
-        g.drawText (text.value, bounds.getX() - 16, bounds.getBottom() + 2, bounds.getWidth() + 32, 13,
-                    juce::Justification::centred);
-    }
+        HardwarePanelStyle::drawKnobLabel (g, text.slider->getBounds(), text.name, text.value);
 }

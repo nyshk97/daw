@@ -278,10 +278,13 @@ public:
         g.drawRoundedRectangle (cap.reduced (0.5f), 3.0f, 1.0f);
     }
 
-    // 小径ノブ（ミキサーのPan・send）用のロータリー描画。V4デフォルト（塗り円＋点サム）は
-    // 小さいサイズだと状態が読めないため、「溝アーク＋値アーク＋ポインタ線」で描き直す。
-    // 範囲が負〜正のスライダー（Pan）は値アークを中央起点の双方向にする。
-    // "logicKnob"プロパティ付き（FXパネルのPan）はLogicのストリップ準拠の物理ノブで描く
+    // FXのロータリーノブ（Illustrated hardware。docs/plans/2026-08-20-1836）:
+    // 金属風の円盤（上下グラデ・縁ハイライト・内側キャップ・落ち影）＋暖色の白い針。
+    // 大径（直径40px以上）はスカートに11本の目盛りを置き、値まで点灯させる。
+    // 小径（Sendsの小ノブ）は目盛りが潰れるので「細い溝アーク＋点灯アーク」に切り替える。
+    // 点灯色は rotarySliderFillColourId（各Viewが Theme::fxHue で設定。LookAndFeelはFX種別を知らない）。
+    // 範囲が負〜正のスライダー（Make up等）は点灯を中央起点の双方向にする。
+    // "logicKnob"プロパティ付き（Panノブ）はLogicのストリップ準拠の物理ノブで描く（変更なし）
     void drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height,
                            float sliderPos, float rotaryStartAngle, float rotaryEndAngle,
                            juce::Slider& slider) override
@@ -293,38 +296,96 @@ public:
             return;
         }
 
-        const auto bounds = juce::Rectangle<int> (x, y, width, height).toFloat().reduced (1.5f);
+        const auto bounds = juce::Rectangle<int> (x, y, width, height).toFloat().reduced (1.0f);
         const float radius = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
         const auto centre = bounds.getCentre();
         const float angle = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
-        const float thickness = juce::jmax (2.0f, radius * 0.22f);
-        const float arcRadius = radius - thickness * 0.5f;
-
-        juce::Path track;
-        track.addCentredArc (centre.x, centre.y, arcRadius, arcRadius, 0.0f,
-                             rotaryStartAngle, rotaryEndAngle, true);
-        g.setColour (slider.findColour (juce::Slider::rotarySliderOutlineColourId));
-        g.strokePath (track, juce::PathStrokeType (thickness, juce::PathStrokeType::curved,
-                                                   juce::PathStrokeType::rounded));
-
+        const bool small = radius < 20.0f;
         const bool bipolar = slider.getMinimum() < 0.0 && slider.getMaximum() > 0.0;
-        const float valueFrom = bipolar ? (rotaryStartAngle + rotaryEndAngle) * 0.5f
-                                        : rotaryStartAngle;
-        if (std::abs (angle - valueFrom) > 0.02f)
+        const float centreAngle = (rotaryStartAngle + rotaryEndAngle) * 0.5f;
+        const float litFrom = bipolar ? centreAngle : rotaryStartAngle;
+        const auto lit = slider.findColour (juce::Slider::rotarySliderFillColourId);
+
+        auto isLit = [&] (float a)
         {
-            juce::Path value;
-            value.addCentredArc (centre.x, centre.y, arcRadius, arcRadius, 0.0f,
-                                 juce::jmin (valueFrom, angle), juce::jmax (valueFrom, angle), true);
-            g.setColour (slider.findColour (juce::Slider::rotarySliderFillColourId));
-            g.strokePath (value, juce::PathStrokeType (thickness, juce::PathStrokeType::curved,
+            return bipolar ? ((a >= centreAngle - 0.001f && a <= angle + 0.001f)
+                              || (a <= centreAngle + 0.001f && a >= angle - 0.001f))
+                           : a <= angle + 0.001f;
+        };
+
+        if (small)
+        {
+            // 小径: 溝アーク＋点灯アーク（目盛りの代わり）を太めに、円盤はフラット（描き込みを減らして読める情報を絞る。モック案4）
+            const float ring = radius - 1.5f;
+            juce::Path track;
+            track.addCentredArc (centre.x, centre.y, ring, ring, 0.0f,
+                                 rotaryStartAngle, rotaryEndAngle, true);
+            g.setColour (Theme::hwTickOff.withMultipliedAlpha (1.2f));
+            g.strokePath (track, juce::PathStrokeType (2.5f, juce::PathStrokeType::curved,
                                                        juce::PathStrokeType::rounded));
+            if (std::abs (angle - litFrom) > 0.02f)
+            {
+                juce::Path value;
+                value.addCentredArc (centre.x, centre.y, ring, ring, 0.0f,
+                                     juce::jmin (litFrom, angle), juce::jmax (litFrom, angle), true);
+                g.setColour (lit);
+                g.strokePath (value, juce::PathStrokeType (2.5f, juce::PathStrokeType::curved,
+                                                           juce::PathStrokeType::rounded));
+            }
+            const float body = radius * 0.56f;
+            const auto disc = juce::Rectangle<float> (body * 2.0f, body * 2.0f).withCentre (centre);
+            g.setColour (Theme::hwKnobRimMid);
+            g.fillEllipse (disc);
+            g.setColour (juce::Colours::white.withAlpha (0.16f));
+            g.drawEllipse (disc.reduced (0.5f), 1.0f);
+            juce::Path pointer;
+            pointer.startNewSubPath (centre.getPointOnCircumference (body * 0.3f, angle));
+            pointer.lineTo (centre.getPointOnCircumference (body * 0.85f, angle));
+            g.setColour (Theme::hwKnobPointer);
+            g.strokePath (pointer, juce::PathStrokeType (2.5f, juce::PathStrokeType::curved,
+                                                         juce::PathStrokeType::rounded));
+            return;
+        }
+        else
+        {
+            // スカートの目盛り11本（値まで点灯）
+            constexpr int numTicks = 11;
+            for (int i = 0; i < numTicks; ++i)
+            {
+                const float t = rotaryStartAngle
+                              + (rotaryEndAngle - rotaryStartAngle) * (float) i / (float) (numTicks - 1);
+                g.setColour (isLit (t) ? lit : Theme::hwTickOff);
+                juce::Path tick;
+                tick.startNewSubPath (centre.getPointOnCircumference (radius - 4.0f, t));
+                tick.lineTo (centre.getPointOnCircumference (radius, t));
+                g.strokePath (tick, juce::PathStrokeType (1.5f));
+            }
         }
 
+        // 円盤本体（大径）
+        const float body = radius * 0.72f;
+        const auto disc = juce::Rectangle<float> (body * 2.0f, body * 2.0f).withCentre (centre);
+        g.setColour (juce::Colours::black.withAlpha (0.45f)); // 落ち影（下方向）
+        g.fillEllipse (disc.translated (0.0f, body * 0.14f).expanded (body * 0.06f));
+        juce::ColourGradient rimGrad (Theme::hwKnobRimTop, centre.x, disc.getY(),
+                                      Theme::hwKnobRimBottom, centre.x, disc.getBottom(), false);
+        rimGrad.addColour (0.5, Theme::hwKnobRimMid); // 上→中→下
+        g.setGradientFill (rimGrad);
+        g.fillEllipse (disc);
+        g.setColour (juce::Colours::white.withAlpha (0.14f)); // 縁のハイライト
+        g.drawEllipse (disc.reduced (0.5f), 1.0f);
+        const auto cap = disc.reduced (body * 0.2f);
+        juce::ColourGradient capGrad (Theme::hwKnobCapLight, centre.x - body * 0.25f, centre.y - body * 0.3f,
+                                      Theme::hwKnobCapDark, centre.x + body * 0.6f, centre.y + body * 0.6f, true);
+        g.setGradientFill (capGrad);
+        g.fillEllipse (cap);
+
+        // 針
         juce::Path pointer;
-        pointer.startNewSubPath (centre.getPointOnCircumference (radius * 0.15f, angle));
-        pointer.lineTo (centre.getPointOnCircumference (arcRadius - thickness * 0.6f, angle));
-        g.setColour (juce::Colours::white.withAlpha (0.85f));
-        g.strokePath (pointer, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved,
+        pointer.startNewSubPath (centre.getPointOnCircumference (body * 0.35f, angle));
+        pointer.lineTo (centre.getPointOnCircumference (body * 0.78f, angle));
+        g.setColour (Theme::hwKnobPointer);
+        g.strokePath (pointer, juce::PathStrokeType (3.0f, juce::PathStrokeType::curved,
                                                      juce::PathStrokeType::rounded));
     }
 

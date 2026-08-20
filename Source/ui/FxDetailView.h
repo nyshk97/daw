@@ -4,6 +4,8 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "Fonts.h"
+#include "FxVisualKind.h"
+#include "HardwarePanelStyle.h"
 #include "Shortcuts.h"
 #include "Theme.h"
 
@@ -36,10 +38,13 @@ public:
     bool isOpen() const { return open; }
 
     // 表示（タイトルの更新のみでも呼ぶ。レイアウトはMainComponentのresizedが行う）
-    void show (const juce::String& fxNameToShow, const juce::String& channelNameToShow)
+    // kind は固有色・タイトル書式用（neutral＝Instrument 等はFX名がユーザー由来なので大文字化しない）
+    void show (const juce::String& fxNameToShow, const juce::String& channelNameToShow,
+               FxVisualKind kindToShow = FxVisualKind::neutral)
     {
         fxName = fxNameToShow;
         channelName = channelNameToShow;
+        kind = kindToShow;
         open = true;
         setVisible (true);
         repaint();
@@ -69,7 +74,7 @@ public:
 
     juce::Component* currentBody() const { return body; }
 
-    // 中身を置く領域（タイトル行の下・一段沈めた角丸パネルの内側）
+    // 中身を置く領域（タイトル行の下。bodyは透過で地の質感をそのまま見せる）
     juce::Rectangle<int> bodyArea() const
     {
         auto area = getLocalBounds().withTrimmedTop (titleHeight).reduced (8, 0);
@@ -81,20 +86,13 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        g.fillAll (Theme::timelineBg);
-        g.setColour (Theme::panelBorder);
-        g.drawHorizontalLine (0, 0.0f, (float) getWidth());
+        // 機材の文法（HardwarePanelStyle）。上端1pxの縁でトラック画面（机）と切り替わる
+        HardwarePanelStyle::paintPanelBackground (g, getLocalBounds());
 
-        // タイトル: "EQ — チャンネル名"
-        g.setColour (juce::Colours::white.withAlpha (0.85f));
-        g.setFont (Fonts::bodyStrong());
-        const auto title = fxName + juce::String::fromUTF8 (u8" — ") + channelName;
-        g.setFont (Fonts::forText (Fonts::bodyStrong(), title));
-        g.drawText (title, 12, 0, getWidth() - 60, titleHeight, juce::Justification::centredLeft);
-
-        // 中身領域（bodyがここに載る。未実装のFXでは一段沈めた空パネルのまま）
-        g.setColour (Theme::headerBg);
-        g.fillRoundedRectangle (bodyArea().toFloat(), 6.0f);
+        // タイトル: "COMP — チャンネル名"（FX名は大文字トラッキング・チャンネル名は通常）
+        HardwarePanelStyle::drawTitle (g, juce::Rectangle<int> (12, 0, getWidth() - 60, titleHeight),
+                                       fxName, kind != FxVisualKind::neutral,
+                                       juce::String::fromUTF8 (u8"—  ") + channelName);
     }
 
     void resized() override
@@ -110,6 +108,7 @@ private:
 
     bool open = false;
     juce::String fxName, channelName;
+    FxVisualKind kind = FxVisualKind::neutral;
     juce::Component* body = nullptr; // 非所有（MainComponentが所有する）
     juce::TextButton closeButton { juce::String::fromUTF8 (u8"×") };
 

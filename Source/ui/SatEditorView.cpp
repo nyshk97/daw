@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "Fonts.h"
+#include "HardwarePanelStyle.h"
 #include "Theme.h"
 
 namespace
@@ -31,7 +32,7 @@ void SatEditorView::configureKnob (juce::Slider& slider, double defaultValue)
     slider.setScrollWheelEnabled (false); // 変更経路を増やさない（GainSliderと同じ流儀）
     slider.setWantsKeyboardFocus (false);
     slider.setMouseClickGrabsKeyboardFocus (false);
-    slider.setColour (juce::Slider::rotarySliderFillColourId, Theme::accent);
+    slider.setColour (juce::Slider::rotarySliderFillColourId, Theme::fxHue (FxVisualKind::sat));
     slider.setColour (juce::Slider::rotarySliderOutlineColourId, Theme::controlBg);
     slider.onValueChange = [this]
     {
@@ -144,11 +145,12 @@ void SatEditorView::paint (juce::Graphics& g)
     const auto values = hasTrack ? Sat::load (track->params->sat) : Sat::Values {};
     const float dim = enabled ? 1.0f : 0.4f; // バイパス中は沈める（EQ/Compと同じ扱い）
 
-    // ---- 伝達カーブ（線形軸±1.0）----
+    const auto hue = Theme::fxHue (FxVisualKind::sat);
+
+    // ---- 伝達カーブ（線形軸±1.0・メーター窓）----
     {
-        const auto area = curveArea.toFloat();
-        g.setColour (Theme::timelineBg);
-        g.fillRoundedRectangle (area, 4.0f);
+        HardwarePanelStyle::paintMeterWindow (g, curveArea.toFloat());
+        const auto area = HardwarePanelStyle::meterWindowInner (curveArea.toFloat());
 
         auto xFor = [&] (float v) { return area.getX() + (v + 1.0f) * 0.5f * area.getWidth(); };
         auto yFor = [&] (float v) { return area.getBottom() - (v + 1.0f) * 0.5f * area.getHeight(); };
@@ -158,7 +160,7 @@ void SatEditorView::paint (juce::Graphics& g)
         const float dash[2] = { 3.0f, 3.0f };
         g.drawDashedLine ({ xFor (-1.0f), yFor (-1.0f), xFor (1.0f), yFor (1.0f) }, dash, 2, 1.0f);
         // 0軸
-        g.setColour (juce::Colours::white.withAlpha (0.06f));
+        g.setColour (HardwarePanelStyle::gridColour (hue));
         g.drawVerticalLine ((int) xFor (0.0f), area.getY(), area.getBottom());
         g.drawHorizontalLine ((int) yFor (0.0f), area.getX(), area.getRight());
 
@@ -176,34 +178,33 @@ void SatEditorView::paint (juce::Graphics& g)
                 else
                     path.lineTo (p);
             }
-            g.setColour (Theme::eqThumbCurve.withAlpha (dim));
+            g.setColour (hue.withAlpha (dim));
             g.strokePath (path, juce::PathStrokeType (2.0f));
         }
 
-        g.setColour (juce::Colours::white.withAlpha (0.35f));
+        g.setColour (HardwarePanelStyle::captionColour());
         g.setFont (Fonts::small());
-        g.drawText ("in", curveArea.withTrimmedTop (curveArea.getHeight() - 14).reduced (4, 0),
+        g.drawText ("in", curveArea.withTrimmedTop (curveArea.getHeight() - 18).reduced (8, 4),
                     juce::Justification::centredRight);
-        g.drawText ("out", curveArea.reduced (4, 2), juce::Justification::topLeft);
+        g.drawText ("out", curveArea.reduced (8, 6), juce::Justification::topLeft);
     }
 
-    // ---- 倍音バー（H2〜H8・基本波比dBc・-60dB床。偶数=accent / 奇数=グレー）----
+    // ---- 倍音バー（H2〜H8・基本波比dBc・-60dB床。偶数=固有色 / 奇数=グレー。メーター窓）----
     {
-        const auto area = harmonicsArea.toFloat();
-        g.setColour (Theme::timelineBg);
-        g.fillRoundedRectangle (area, 4.0f);
+        HardwarePanelStyle::paintMeterWindow (g, harmonicsArea.toFloat());
+        const auto area = HardwarePanelStyle::meterWindowInner (harmonicsArea.toFloat());
 
-        const float padL = 26.0f, padB = 16.0f, padT = 8.0f;
+        const float padL = 30.0f, padB = 18.0f, padT = 10.0f;
         const auto plot = area.withTrimmedLeft (padL).withTrimmedBottom (padB).withTrimmedTop (padT);
 
         g.setFont (Fonts::small());
         for (float db = 0.0f; db >= barFloorDb; db -= 20.0f)
         {
             const float y = plot.getY() + (-db / -barFloorDb) * plot.getHeight();
-            g.setColour (juce::Colours::white.withAlpha (0.06f));
+            g.setColour (HardwarePanelStyle::gridColour (hue));
             g.drawHorizontalLine ((int) y, plot.getX(), plot.getRight());
-            g.setColour (juce::Colours::white.withAlpha (0.35f));
-            g.drawText (juce::String ((int) db), (int) area.getX() + 2, (int) y - 6, 22, 12,
+            g.setColour (HardwarePanelStyle::captionColour());
+            g.drawText (juce::String ((int) db), (int) area.getX() + 4, (int) y - 6, 22, 12,
                         juce::Justification::centredRight);
         }
 
@@ -215,18 +216,18 @@ void SatEditorView::paint (juce::Graphics& g)
             const auto bar = juce::Rectangle<float> (plot.getX() + barW * (float) h + 4.0f,
                                                      plot.getBottom() - t * plot.getHeight(),
                                                      barW - 8.0f, t * plot.getHeight());
-            // 偶数倍音（暖かさの成分）をaccentで際立たせる＝非対称カーブの性格が読める
-            g.setColour ((harmonic % 2 == 0 ? Theme::accent : juce::Colours::white.withAlpha (0.35f))
+            // 偶数倍音（暖かさの成分）を固有色で際立たせる＝非対称カーブの性格が読める
+            g.setColour ((harmonic % 2 == 0 ? hue : juce::Colours::white.withAlpha (0.35f))
                              .withMultipliedAlpha (hasTrack ? dim : 0.4f));
             g.fillRect (bar);
-            g.setColour (juce::Colours::white.withAlpha (0.45f));
+            g.setColour (HardwarePanelStyle::captionColour());
             g.drawText ("H" + juce::String (harmonic),
                         (int) (plot.getX() + barW * (float) h), (int) plot.getBottom() + 2,
                         (int) barW, 12, juce::Justification::centred);
         }
 
-        g.setColour (juce::Colours::white.withAlpha (0.45f));
-        g.drawText (juce::String::fromUTF8 (u8"倍音（基本波比 dB）"), harmonicsArea.reduced (6, 2),
+        g.setColour (HardwarePanelStyle::captionColour());
+        g.drawText (juce::String::fromUTF8 (u8"倍音（基本波比 dB）"), harmonicsArea.reduced (9, 6),
                     juce::Justification::topRight);
     }
 
@@ -237,14 +238,5 @@ void SatEditorView::paint (juce::Graphics& g)
         { &mixSlider, "MIX", juce::String ((int) std::lround (mixSlider.getValue() * 100.0)) + " %" },
     };
     for (const auto& text : texts)
-    {
-        const auto bounds = text.slider->getBounds();
-        g.setColour (juce::Colours::white.withAlpha (0.5f));
-        g.setFont (Fonts::small());
-        g.drawText (text.name, bounds.getX() - 12, bounds.getY() - 13, bounds.getWidth() + 24, 12,
-                    juce::Justification::centred);
-        g.setColour (juce::Colours::white.withAlpha (0.85f));
-        g.drawText (text.value, bounds.getX() - 12, bounds.getBottom() + 2, bounds.getWidth() + 24, 13,
-                    juce::Justification::centred);
-    }
+        HardwarePanelStyle::drawKnobLabel (g, text.slider->getBounds(), text.name, text.value);
 }

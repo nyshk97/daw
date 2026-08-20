@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "Fonts.h"
+#include "HardwarePanelStyle.h"
 #include "Theme.h"
 #include "../shared/ReverbParams.h"
 
@@ -36,7 +37,7 @@ void ReverbEditorView::configureKnob (juce::Slider& slider, double min, double m
     slider.setScrollWheelEnabled (false); // 変更経路を増やさない（Limiter・Compと同じ流儀）
     slider.setWantsKeyboardFocus (false);
     slider.setMouseClickGrabsKeyboardFocus (false);
-    slider.setColour (juce::Slider::rotarySliderFillColourId, Theme::accent);
+    slider.setColour (juce::Slider::rotarySliderFillColourId, Theme::fxHue (FxVisualKind::reverbA));
     slider.setColour (juce::Slider::rotarySliderOutlineColourId, Theme::controlBg);
     slider.onValueChange = [this]
     {
@@ -64,6 +65,10 @@ void ReverbEditorView::setBus (TrackParams* busParamsToShow, int busIndex)
 {
     bus = busParamsToShow;
     shownBusIndex = juce::jlimit (0, 1, busIndex);
+    // A/Bで同じインスタンスを使い回すので、ノブの固有色（点灯目盛り）もここで切り替える
+    const auto hue = Theme::fxHue (shownBusIndex == 1 ? FxVisualKind::reverbB : FxVisualKind::reverbA);
+    for (auto* s : { &sizeSlider, &dampSlider, &widthSlider, &preDelaySlider, &lowCutSlider })
+        s->setColour (juce::Slider::rotarySliderFillColourId, hue);
     applyDoubleClickDefaults();
     if (bus != nullptr)
         loadFromModel();
@@ -133,14 +138,5 @@ void ReverbEditorView::paint (juce::Graphics& g)
                                                        : juce::String ((int) std::lround (lowCut)) + " Hz" },
     };
     for (const auto& text : texts)
-    {
-        const auto bounds = text.slider->getBounds();
-        g.setColour (juce::Colours::white.withAlpha (0.5f));
-        g.setFont (Fonts::small());
-        g.drawText (text.name, bounds.getX() - 14, bounds.getY() - 13, bounds.getWidth() + 28, 12,
-                    juce::Justification::centred);
-        g.setColour (juce::Colours::white.withAlpha (0.85f));
-        g.drawText (text.value, bounds.getX() - 14, bounds.getBottom() + 2, bounds.getWidth() + 28, 13,
-                    juce::Justification::centred);
-    }
+        HardwarePanelStyle::drawKnobLabel (g, text.slider->getBounds(), text.name, text.value);
 }

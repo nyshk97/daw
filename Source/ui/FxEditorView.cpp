@@ -1,5 +1,7 @@
 #include "FxEditorView.h"
 
+#include "HardwarePanelStyle.h"
+
 #include "Fonts.h"
 #include "FxSlotLayout.h"
 #include "StripParts.h"
@@ -191,6 +193,13 @@ juce::String FxEditorView::slotName (int slot) const
     return {};
 }
 
+FxVisualKind FxEditorView::slotKind (int slot) const
+{
+    if (slot >= 0 && slot < maxSlots)
+        return slotKinds[slot];
+    return FxVisualKind::neutral;
+}
+
 juce::String FxEditorView::targetKey() const
 {
     switch (target)
@@ -254,6 +263,8 @@ void FxEditorView::rebind()
     numOrderedSlots = 0;
     for (auto& name : slotNames)
         name = {};
+    for (auto& kind : slotKinds)
+        kind = FxVisualKind::neutral;
     if (isTrack || params != nullptr)
     {
         const auto layout = isTrack ? FxSlots::trackPanelLayout (project->tracks[(size_t) targetTrack])
@@ -264,8 +275,9 @@ void FxEditorView::rebind()
             if (! layout.slots[i].used)
                 continue;
             slotNames[i] = layout.slots[i].name;
+            slotKinds[i] = layout.slots[i].kind;
             slotPills[i].configure (layout.slots[i].name, layout.slots[i].enabled,
-                                    layout.slots[i].placeholder);
+                                    layout.slots[i].placeholder, layout.slots[i].kind);
         }
         numOrderedSlots = isTrack ? FxSlots::panelOrder (layout, slotOrder)
                                   : (slotOrder[0] = 0, 1);
@@ -370,18 +382,16 @@ void FxEditorView::resized()
 
 void FxEditorView::paint (juce::Graphics& g)
 {
-    g.fillAll (Theme::timelineBg);
+    // 機材の文法（HardwarePanelStyle）。トラック画面（机）とはここで切り替わる
+    HardwarePanelStyle::paintPanelBackground (g, getLocalBounds());
 
     // ヘッダー列との境界線＋タイトル行（FX＋チャンネル名・下に区切り線）
-    g.setColour (Theme::panelBorder);
+    g.setColour (juce::Colours::black.withAlpha (0.6f));
     g.drawVerticalLine (getWidth() - 1, 0.0f, (float) getHeight());
+    g.setColour (juce::Colours::white.withAlpha (0.06f));
     g.drawHorizontalLine (titleHeight - 1, 0.0f, (float) getWidth() - 1.0f);
-    g.setColour (juce::Colours::white.withAlpha (0.45f));
-    g.setFont (Fonts::bodyStrong());
-    g.drawText ("FX", 12, 0, 26, titleHeight, juce::Justification::centredLeft);
-    g.setColour (juce::Colours::white.withAlpha (0.85f));
-    g.setFont (Fonts::forText (Fonts::body(), titleName));
-    g.drawText (titleName, 38, 0, getWidth() - 74, titleHeight, juce::Justification::centredLeft);
+    HardwarePanelStyle::drawTitle (g, juce::Rectangle<int> (12, 0, getWidth() - 48, titleHeight),
+                                   "FX", true, titleName);
 
     // EQサムネイル（描画はミキサーと共有のStripParts）
     if (! eqThumbArea.isEmpty())

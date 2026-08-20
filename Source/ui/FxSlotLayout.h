@@ -5,6 +5,7 @@
 
 #include "../shared/GmInstruments.h"
 #include "../shared/Project.h"
+#include "FxVisualKind.h"
 
 // FXスロット構成の単一の真実の源（FxEditorView と MixerStrip が共有する）。
 // 以前は両者が同じ構成を別々にハードコードしており、スロット番号 0=EQ / 1=Comp / 2=Ext が
@@ -52,7 +53,16 @@ struct Slot
     std::atomic<bool>* enabled = nullptr; // 電源トグルの実体（nullptr = トグルなし）
     bool placeholder = false;             // 空き/操作不可のグレー表示
     bool used = false;                    // このチャンネルに存在するスロットか
+    FxVisualKind kind = FxVisualKind::neutral; // 固有色・ラックLED用の表示ID（neutral = 色なし・LEDなし）
 };
+
+// バスindex → 表示ID（0=Reverb A / 1=Reverb B / 2=Delay。busFxName と対で保つ）
+inline FxVisualKind busVisualKind (int busIndex)
+{
+    return busIndex == 2 ? FxVisualKind::delay
+         : busIndex == 1 ? FxVisualKind::reverbB
+                         : FxVisualKind::reverbA;
+}
 
 struct Layout
 {
@@ -75,10 +85,10 @@ inline juce::String gmInstrumentName (const Track& track)
 inline Layout trackBaseLayout (TrackParams* params)
 {
     Layout layout;
-    layout.slots[eq] = { "EQ", params != nullptr ? &params->eqEnabled : nullptr, false, true };
-    layout.slots[comp] = { "Comp", params != nullptr ? &params->compEnabled : nullptr, false, true };
-    layout.slots[sat] = { "Sat", params != nullptr ? &params->satEnabled : nullptr, false, true };
-    layout.slots[lofi] = { "Lo-fi", params != nullptr ? &params->lofiEnabled : nullptr, false, true };
+    layout.slots[eq] = { "EQ", params != nullptr ? &params->eqEnabled : nullptr, false, true, FxVisualKind::eq };
+    layout.slots[comp] = { "Comp", params != nullptr ? &params->compEnabled : nullptr, false, true, FxVisualKind::comp };
+    layout.slots[sat] = { "Sat", params != nullptr ? &params->satEnabled : nullptr, false, true, FxVisualKind::sat };
+    layout.slots[lofi] = { "Lo-fi", params != nullptr ? &params->lofiEnabled : nullptr, false, true, FxVisualKind::lofi };
     layout.slots[ext] = { "Ext", nullptr, true, true };
     return layout;
 }
@@ -104,14 +114,14 @@ inline Layout trackPanelLayout (const Track& track)
 inline Layout busLayout (int busIndex)
 {
     Layout layout;
-    layout.slots[0] = { busFxName (busIndex), nullptr, false, true };
+    layout.slots[0] = { busFxName (busIndex), nullptr, false, true, busVisualKind (busIndex) };
     return layout;
 }
 
 inline Layout masterLayout()
 {
     Layout layout;
-    layout.slots[0] = { masterFxName(), nullptr, false, true };
+    layout.slots[0] = { masterFxName(), nullptr, false, true, FxVisualKind::limiter };
     return layout;
 }
 

@@ -23,13 +23,18 @@ public:
     }
 
     // enabledAtomic の実体は TrackParams（Trackが所有）。bind対象が変わるたびに差し替えること
-    void configure (const juce::String& nameToUse, std::atomic<bool>* enabledAtomic, bool grayedToUse)
+    // kind は固有色（LED・選択枠・ミニGRバー）用。neutral（Instrument・Ext）はLEDを描かない
+    void configure (const juce::String& nameToUse, std::atomic<bool>* enabledAtomic, bool grayedToUse,
+                    FxVisualKind kindToUse = FxVisualKind::neutral)
     {
         name = nameToUse;
         enabled = enabledAtomic;
         grayed = grayedToUse;
+        kind = kindToUse;
         repaint();
     }
+
+    FxVisualKind visualKind() const { return kind; }
 
     // 下部詳細エディタで開いているスロットの白枠（FXパネルのみ使用）
     void setActiveOutline (bool shouldOutline)
@@ -61,11 +66,15 @@ public:
         const bool isOn = enabled == nullptr || enabled->load();
         const bool hovered = ! grayed && isMouseOverOrDragging();
 
+        const auto hue = Theme::fxHue (kind);
+        const bool hasLed = kind != FxVisualKind::neutral;
+
         if (enabled != nullptr && hovered)
         {
-            // 電源｜エディタの2分割（Logicの3分割から、固定スロットに不要な差し替え矢印を除いた形）
-            const auto base = isOn ? Theme::accent : Theme::controlBg;
+            // 電源｜エディタの2分割（Logicの3分割から、固定スロットに不要な差し替え矢印を除いた形）。
+            // LED側（左）が電源、右がエディタ
             const bool hoverPower = getMouseXYRelative().x < getWidth() / 2;
+            StripParts::drawHardwareButton (g, bounds);
 
             juce::Graphics::ScopedSaveState save (g);
             juce::Path clip;
@@ -74,30 +83,27 @@ public:
 
             auto left = bounds;
             const auto right = left.removeFromRight (bounds.getWidth() * 0.5f);
-            g.setColour (hoverPower ? base.brighter (0.18f) : base);
-            g.fillRect (left);
-            g.setColour (hoverPower ? base : base.brighter (0.18f));
-            g.fillRect (right);
-            g.setColour (juce::Colours::black.withAlpha (0.35f)); // 分割線
+            g.setColour (juce::Colours::white.withAlpha (0.10f));
+            g.fillRect (hoverPower ? left : right);
+            g.setColour (juce::Colours::black.withAlpha (0.45f)); // 分割線
             g.fillRect (juce::Rectangle<float> (right.getX() - 0.5f, bounds.getY(),
                                                 1.0f, bounds.getHeight()));
 
-            g.setColour (juce::Colours::white.withAlpha (0.95f));
-            drawPowerIcon (g, left);
+            if (hasLed)
+                StripParts::drawLed (g, bounds, hue, isOn);
+            g.setColour (Theme::hwValue);
+            drawPowerIcon (g, hasLed ? left.withTrimmedLeft (14.0f) : left);
             drawEditIcon (g, right);
         }
         else if (hovered)
         {
-            const auto base = isOn ? Theme::accent : Theme::controlBg;
-            g.setColour (base.brighter (0.1f));
+            StripParts::drawSlotPill (g, getLocalBounds(), name, isOn, grayed, kind);
+            g.setColour (juce::Colours::white.withAlpha (0.08f));
             g.fillRoundedRectangle (bounds, 5.0f);
-            g.setColour (juce::Colours::white.withAlpha (isOn ? 0.95f : 0.75f));
-            g.setFont (Fonts::forText (Fonts::smallStrong(), name)); // 自由入力（サンプル名）のCJK補正
-            g.drawText (name, getLocalBounds(), juce::Justification::centred);
         }
         else
         {
-            StripParts::drawSlotPill (g, getLocalBounds(), name, isOn, grayed);
+            StripParts::drawSlotPill (g, getLocalBounds(), name, isOn, grayed, kind);
         }
 
         // ミニGRバー: 下端2pxを右から左へ伸ばす（GR=下げている量。スケールは0〜24dBで
@@ -106,14 +112,14 @@ public:
         {
             const float fraction = juce::jmin (grDb, 24.0f) / 24.0f;
             const float barWidth = (bounds.getWidth() - 8.0f) * fraction;
-            g.setColour (juce::Colour (0xffd9a13c).withAlpha (0.9f));
+            g.setColour (hue.withAlpha (0.9f));
             g.fillRect (juce::Rectangle<float> (bounds.getRight() - 4.0f - barWidth,
                                                 bounds.getBottom() - 4.0f, barWidth, 2.0f));
         }
 
         if (activeOutline)
         {
-            g.setColour (juce::Colours::white.withAlpha (0.85f));
+            g.setColour (hasLed ? hue : juce::Colours::white.withAlpha (0.85f));
             g.drawRoundedRectangle (bounds.reduced (0.75f), 5.0f, 1.5f);
         }
     }
@@ -170,6 +176,7 @@ private:
     juce::String name;
     std::atomic<bool>* enabled = nullptr;
     bool grayed = false;
+    FxVisualKind kind = FxVisualKind::neutral;
     bool activeOutline = false;
     float grDb = -1.0f; // ミニGRバー（負=非表示。Compピルのみ配布を受ける）
 

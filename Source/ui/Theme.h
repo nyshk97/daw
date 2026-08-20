@@ -2,6 +2,8 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "FxVisualKind.h"
+
 // アプリ全体の配色定義。UIの色はここを経由し、各コンポーネントに16進リテラルを直書きしない。
 // 命名は「どこで使うか（役割）」基準。同じ値でも役割が違えば別名にする
 // （例: markerLaneBg と gridLineSub は同値だが、片方だけ変えられるよう分けている）。
@@ -100,13 +102,64 @@ inline const juce::Colour meterOrange    { 0xffd98f3e };  // -4dB付近
 inline const juce::Colour meterRed       { 0xffd94a43 };  // 0dBFS直下（recordRedと同値だが役割が別）
 
 // ---- FXパネル ----
-inline const juce::Colour eqThumbCurve { 0xff7a9ede };  // EQサムネイルのカーブ線（暗い地の上で読めるようaccentより明るい青）
 // PanノブはLogicのストリップ準拠: シルバーのノブ本体（knobTop/Bottom）の外周に暗色リングを敷き、
 // センター起点の緑アークをリング上に重ねる。緑はplayGreenより彩度高め（Logicのパンゲージの見え方に合わせる）
 inline const juce::Colour panRing     { 0xff3a3a40 };
 inline const juce::Colour panArcGreen { 0xff55b85c };
-// FXパネルのSends小ノブの値アーク（Logicのsendポットの緑。panArcGreenと同値だが役割が別）
-inline const juce::Colour sendArcGreen { 0xff55b85c };
+
+// ---- FX（Illustrated hardware × 1FX 1色）----
+// FX周り（左ラック・下部詳細パネル・ノブ）はトラック画面と別の文法で描く（docs/plans/2026-08-20-1836）。
+// エフェクト固有色を使ってよいのは ①処理を表す線（伝達カーブ・GR・倍音・EQカーブ）②ノブの点灯目盛り
+// ③ラックLEDと選択枠 の3箇所のみ。地・ノブ本体・ラベル・数値・タイトルには使わない。
+// 数値の意味を色で伝えるメーター（LUFSの緑黄赤・相関の正負・クリップ赤）は既存の意味色を維持する。
+// 彩度は Comp のアンバー基準で一段落としてある（10色に増えても地の質感が勝つように）
+inline const juce::Colour fxEq       { 0xff7fa6d6 };  // スチールブルー（現accent青の系譜）
+inline const juce::Colour fxComp     { 0xffe8c27a };  // アンバー
+inline const juce::Colour fxSat      { 0xffe0845a };  // 銅（歪み＝熱）
+inline const juce::Colour fxLofi     { 0xffb08ad6 };  // 紫（テープ/VHS）
+inline const juce::Colour fxReverbA  { 0xff6fc3b8 };  // ティール（空間系は寒色）
+inline const juce::Colour fxReverbB  { 0xff5fa7d0 };  // 空色（Aと明度差で区別）
+inline const juce::Colour fxDelay    { 0xff8ccf7a };  // 緑（Sendsの旧緑の系譜）
+inline const juce::Colour fxLimiter  { 0xffe06a6a };  // 赤（天井＝警告色）
+inline const juce::Colour fxNeutral  { 0xff9a958a };  // 固有色なし（Instrument・Ext）。中立の暖色グレー
+// 予備（新FX追加時はここから割り当て、上に1行足す。未使用）
+inline const juce::Colour fxSpareRose { 0xffd98aa8 };
+inline const juce::Colour fxSpareYellow { 0xffd9d06a };
+inline const juce::Colour fxSpareIce  { 0xff9fb8c8 };
+
+inline juce::Colour fxHue (FxVisualKind kind)
+{
+    switch (kind)
+    {
+        case FxVisualKind::eq:      return fxEq;
+        case FxVisualKind::comp:    return fxComp;
+        case FxVisualKind::sat:     return fxSat;
+        case FxVisualKind::lofi:    return fxLofi;
+        case FxVisualKind::reverbA: return fxReverbA;
+        case FxVisualKind::reverbB: return fxReverbB;
+        case FxVisualKind::delay:   return fxDelay;
+        case FxVisualKind::limiter: return fxLimiter;
+        case FxVisualKind::neutral: break;
+    }
+    return fxNeutral;
+}
+
+// ハードウェア質感（FXパネルの地・ノブ・メーター窓・ラベル）
+inline const juce::Colour hwPanelTop      { 0xff2a2a2e };  // パネル地（上端。上からの照明で下端よりわずかに明るい）
+inline const juce::Colour hwPanelBottom   { 0xff222226 };  // パネル地（下端）
+inline const juce::Colour hwKnobRimTop    { 0xff4c4c54 };  // ノブ円盤の縁グラデ（上・ハイライト側）
+inline const juce::Colour hwKnobRimMid    { 0xff2c2c31 };  // 同（中）
+inline const juce::Colour hwKnobRimBottom { 0xff1e1e22 };  // 同（下・影側）
+inline const juce::Colour hwKnobCapLight  { 0xff3b3b42 };  // ノブ内側キャップの放射グラデ（光源側）
+inline const juce::Colour hwKnobCapDark   { 0xff232327 };  // 同（外周）
+inline const juce::Colour hwKnobPointer   { 0xfff0ece2 };  // 針（わずかに暖色の白）
+inline const juce::Colour hwTickOff       { 0x29ffffff };  // 消灯した目盛り・小径ノブの溝アーク
+inline const juce::Colour hwMeterBg       { 0xff141416 };  // メーター窓の地
+inline const juce::Colour hwLabel         { 0xffb8b2a4 };  // ラベル（THRESHOLD等。暖色寄りのグレー）
+inline const juce::Colour hwValue         { 0xffece8dd };  // 数値・タイトル（暖色寄りの白）
+inline const juce::Colour hwButtonFace    { 0xff26262b };  // ラックのピル（FXスロット・Sends）の面。フラット・LEDが主役
+inline const juce::Colour hwButtonOff     { 0xff2f2f35 };  // パネル内の押しボタン（Delay の Time / Ping-pong）OFF
+inline const juce::Colour hwButtonOn      { 0xff5a5a63 };  // 同 ON（固有色は使わず明度で示す）
 
 // ---- コントロール（ボタン・スライダー・LCD）----
 inline const juce::Colour controlBg     { 0xff3f3f46 };  // M/Sボタン・スライダー溝

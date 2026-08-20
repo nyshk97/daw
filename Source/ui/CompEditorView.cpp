@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "Fonts.h"
+#include "HardwarePanelStyle.h"
 #include "Theme.h"
 #include "../shared/CompParams.h"
 
@@ -14,7 +15,6 @@ constexpr float pointHideBelowDb = -60.0f;  // 無音時は光点を出さない
 constexpr float pointDecayPerTick = 1.5f;   // 光点の減衰（30Hzで約45dB/s。メーターの落ちと同程度）
 
 // GR表示の色（掛かり具合の注意喚起。メーターの黄と同系でLogicのGR表示の読み方に合わせる）
-const juce::Colour grColour { 0xffd9a13c };
 
 juce::String msText (float ms)
 {
@@ -59,7 +59,7 @@ void CompEditorView::configureKnob (juce::Slider& slider, double min, double max
     slider.setScrollWheelEnabled (false); // 変更経路を増やさない（GainSliderと同じ流儀）
     slider.setWantsKeyboardFocus (false);
     slider.setMouseClickGrabsKeyboardFocus (false);
-    slider.setColour (juce::Slider::rotarySliderFillColourId, Theme::accent);
+    slider.setColour (juce::Slider::rotarySliderFillColourId, Theme::fxHue (FxVisualKind::comp));
     slider.setColour (juce::Slider::rotarySliderOutlineColourId, Theme::controlBg);
     slider.onValueChange = [this]
     {
@@ -171,17 +171,18 @@ void CompEditorView::paint (juce::Graphics& g)
     const auto values = hasTrack ? Comp::load (track->params->comp) : Comp::Values {};
     const float dim = enabled ? 1.0f : 0.4f; // バイパス中は沈める（EQのカーブと同じ扱い）
 
-    // ---- 伝達カーブ ----
+    const auto hue = Theme::fxHue (FxVisualKind::comp);
+
+    // ---- 伝達カーブ（メーター窓）----
     {
-        const auto area = curveArea.toFloat();
-        g.setColour (Theme::timelineBg);
-        g.fillRoundedRectangle (area, 4.0f);
+        HardwarePanelStyle::paintMeterWindow (g, curveArea.toFloat());
+        const auto area = HardwarePanelStyle::meterWindowInner (curveArea.toFloat());
 
         auto xForDb = [&] (float db) { return area.getX() + (db - axisMinDb) / (0.0f - axisMinDb) * area.getWidth(); };
         auto yForDb = [&] (float db) { return area.getBottom() - (db - axisMinDb) / (0.0f - axisMinDb) * area.getHeight(); };
 
         // グリッド（12dB刻み）＋ユニティ対角線（圧縮なしの基準）
-        g.setColour (juce::Colours::white.withAlpha (0.06f));
+        g.setColour (HardwarePanelStyle::gridColour (hue));
         for (float db = axisMinDb + 12.0f; db < 0.0f; db += 12.0f)
         {
             g.drawVerticalLine ((int) xForDb (db), area.getY(), area.getBottom());
@@ -209,7 +210,7 @@ void CompEditorView::paint (juce::Graphics& g)
                 else
                     curve.lineTo (p);
             }
-            g.setColour (Theme::eqThumbCurve.withAlpha (dim));
+            g.setColour (hue.withAlpha (dim));
             g.strokePath (curve, juce::PathStrokeType (2.0f));
 
             // 光点: 検波レベルのカーブ上の現在位置（-60dB未満＝無音は非表示）
@@ -224,20 +225,19 @@ void CompEditorView::paint (juce::Graphics& g)
         }
 
         // 軸ラベル（実量スケールであることが読めるように最小限）
-        g.setColour (juce::Colours::white.withAlpha (0.35f));
+        g.setColour (HardwarePanelStyle::captionColour());
         g.setFont (Fonts::small());
         g.drawText ("in dB",
-                    curveArea.withTrimmedTop (curveArea.getHeight() - 14).reduced (4, 0),
+                    curveArea.withTrimmedTop (curveArea.getHeight() - 18).reduced (8, 4),
                     juce::Justification::centredRight);
     }
 
-    // ---- GR履歴（0〜-24dB・約5秒窓。右端が現在）----
+    // ---- GR履歴（0〜-24dB・約5秒窓。右端が現在。メーター窓）----
     {
-        const auto area = historyArea.toFloat();
-        g.setColour (Theme::timelineBg);
-        g.fillRoundedRectangle (area, 4.0f);
+        HardwarePanelStyle::paintMeterWindow (g, historyArea.toFloat());
+        const auto area = HardwarePanelStyle::meterWindowInner (historyArea.toFloat());
 
-        g.setColour (juce::Colours::white.withAlpha (0.06f));
+        g.setColour (HardwarePanelStyle::gridColour (hue));
         for (float db = 6.0f; db < historyRangeDb; db += 6.0f)
             g.drawHorizontalLine ((int) (area.getY() + db / historyRangeDb * area.getHeight()),
                                   area.getX(), area.getRight());
@@ -254,31 +254,30 @@ void CompEditorView::paint (juce::Graphics& g)
                                 + juce::jmin (gr, historyRangeDb) / historyRangeDb * area.getHeight();
                 trace.lineTo (area.getX() + stepX * (float) i, y);
             }
-            g.setColour (grColour.withAlpha (0.9f * dim));
+            g.setColour (hue.withAlpha (0.9f * dim));
             g.strokePath (trace, juce::PathStrokeType (1.5f));
             // 上（0dB）から下がる面で「下げている量」を見せる
             trace.lineTo (area.getRight(), area.getY());
             trace.closeSubPath();
-            g.setColour (grColour.withAlpha (0.18f * dim));
+            g.setColour (hue.withAlpha (0.18f * dim));
             g.fillPath (trace);
         }
 
-        g.setColour (juce::Colours::white.withAlpha (0.45f));
+        g.setColour (HardwarePanelStyle::captionColour());
         g.setFont (Fonts::small());
         g.drawText ("GR " + juce::String (-currentGrDb, 1) + " dB",
-                    historyArea.reduced (6, 3), juce::Justification::topRight);
+                    historyArea.reduced (9, 6), juce::Justification::topRight);
     }
 
-    // ---- GRメーター（現在値の縦バー。上=0dBから下へ伸びる）----
+    // ---- GRメーター（現在値の縦バー。上=0dBから下へ伸びる。メーター窓）----
     {
-        const auto area = meterArea.toFloat();
-        g.setColour (Theme::timelineBg);
-        g.fillRoundedRectangle (area, 3.0f);
+        HardwarePanelStyle::paintMeterWindow (g, meterArea.toFloat());
+        const auto area = HardwarePanelStyle::meterWindowInner (meterArea.toFloat());
         if (hasTrack && currentGrDb > 0.02f)
         {
             const float h = juce::jmin (currentGrDb, historyRangeDb) / historyRangeDb * area.getHeight();
-            g.setColour (grColour.withAlpha (dim));
-            g.fillRoundedRectangle (area.withHeight (h), 3.0f);
+            g.setColour (hue.withAlpha (dim));
+            g.fillRect (area.withHeight (h));
         }
     }
 
@@ -292,19 +291,10 @@ void CompEditorView::paint (juce::Graphics& g)
         { &makeupSlider, "MAKE UP", "+" + juce::String (makeupSlider.getValue(), 1) + " dB" },
     };
     for (const auto& text : texts)
-    {
-        const auto bounds = text.slider->getBounds();
-        g.setColour (juce::Colours::white.withAlpha (0.5f));
-        g.setFont (Fonts::small());
-        g.drawText (text.name, bounds.getX() - 12, bounds.getY() - 13, bounds.getWidth() + 24, 12,
-                    juce::Justification::centred);
-        g.setColour (juce::Colours::white.withAlpha (0.85f));
-        g.drawText (text.value, bounds.getX() - 12, bounds.getBottom() + 2, bounds.getWidth() + 24, 13,
-                    juce::Justification::centred);
-    }
+        HardwarePanelStyle::drawKnobLabel (g, text.slider->getBounds(), text.name, text.value);
 
     // Kneeは固定値＋静的ラベルで概念だけ見せる（EQの「12dB/oct」と同じパターン）
-    g.setColour (juce::Colours::white.withAlpha (0.5f));
+    g.setColour (HardwarePanelStyle::captionColour());
     g.setFont (Fonts::small());
     g.drawText ("Knee: 6dB (soft)",
                 hpfToggle.getBounds().withY (hpfToggle.getBottom() + 4).withHeight (14),
