@@ -45,6 +45,7 @@ FxEditorView::FxEditorView()
     {
         addChildComponent (row);
         row.onChanged = [this] { if (onSendOrPanChanged) onSendOrPanChanged(); };
+        row.onOpenBus = [this, &row] { if (onOpenSendBus) onOpenSendBus ((int) (&row - sendRows)); };
     }
 
     // Panノブ（Logicのストリップと同じ「Sendsの下・フェーダーの上」。描画はAppLookAndFeel）

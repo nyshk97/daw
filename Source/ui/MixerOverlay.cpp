@@ -45,6 +45,7 @@ MixerStrip::MixerStrip (Kind kindToUse, juce::String fxSlotNameToUse, FxVisualKi
         {
             addAndMakeVisible (row);
             row.onChanged = [this] { if (onChanged) onChanged(); };
+            row.onOpenBus = [this, &row] { if (onOpenSendBus) onOpenSendBus ((int) (&row - sendRows)); };
         }
         setupKnob (panKnob, -1.0, 1.0, 0.0);
         panKnob.getProperties().set ("logicKnob", true); // FXパネルと同じLogic風ノブ（値はノブ中央に出る）
@@ -343,6 +344,7 @@ void MixerOverlay::rebuildTrackStrips()
         strip->onSelect = [this, i] { if (onSelectTrack) onSelectTrack (i); };
         strip->onChanged = [this] { if (onChanged) onChanged(); };
         strip->onOpenSlot = [this, i] (int slot) { if (onOpenTrackSlot) onOpenTrackSlot (i, slot); };
+        strip->onOpenSendBus = [this] (int bus) { if (onOpenSendBus) onOpenSendBus (bus); };
         strip->getSampleRate = getSampleRate;
         stripRow.addAndMakeVisible (*strip);
         trackStrips.push_back (std::move (strip));

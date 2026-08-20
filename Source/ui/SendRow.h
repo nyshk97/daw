@@ -63,6 +63,16 @@ public:
     }
 
     std::function<void()> onChanged;
+    std::function<void()> onOpenBus; // ピル（バス名）クリック: 送り先バスのエディタを開く（Logicのsend→Auxジャンプ相当）
+
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+    void mouseMove (const juce::MouseEvent&) override { repaint(); }
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (pillArea.contains (e.getPosition()) && onOpenBus)
+            onOpenBus();
+    }
 
     void resized() override
     {
@@ -79,6 +89,12 @@ public:
         const bool active = params != nullptr && params->sends[bus].load() > 0.001f;
         StripParts::drawSlotPill (g, pillArea, SendBuses::names[bus], active, false,
                                   FxSlots::busVisualKind (bus));
+        // hoverで明るく（SlotPillのenabledなし＝バスのReverb等と同じ表現。押せることを示す）
+        if (onOpenBus && isMouseOver() && pillArea.contains (getMouseXYRelative()))
+        {
+            g.setColour (juce::Colours::white.withAlpha (0.08f));
+            g.fillRoundedRectangle (pillArea.toFloat(), 5.0f);
+        }
     }
 
 private:

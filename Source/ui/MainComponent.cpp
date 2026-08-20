@@ -189,12 +189,22 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         fxEditor.showTrack (selectedTrack);
         toggleFxDetailSlot (slot);
     };
+    // バスのFXは常在1個なので、Sendsのバス名ピルからも中間段なしで同じ詳細へ飛ぶ（Logicのsend→Auxジャンプ＋プラグインを開く、を1クリックに畳む）
+    auto openBusDetail = [this] (int bus)
+    {
+        openFxEditor();
+        fxEditor.showBus (bus);
+        if (! (fxDetail.isOpen() && fxDetailSlot == 0 && fxDetailKey == fxEditor.targetKey()))
+            toggleFxDetailSlot (0); // 既に開いていれば閉じずに維持（ジャンプ操作なのでトグルにしない）
+    };
     mixerWindow.content().onOpenBusSlot = [this] (int bus)
     {
         openFxEditor();
         fxEditor.showBus (bus);
         toggleFxDetailSlot (0);
     };
+    mixerWindow.content().onOpenSendBus = openBusDetail;
+    fxEditor.onOpenSendBus = openBusDetail;
     mixerWindow.content().onOpenMasterSlot = [this]
     {
         openFxEditor();

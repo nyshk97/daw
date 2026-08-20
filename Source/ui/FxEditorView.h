@@ -81,6 +81,7 @@ public:
             repaint (eqThumbArea);
     }
 
+    std::function<void (int)> onOpenSendBus; // Sendsのバス名ピルクリック（bus index）→ 送り先バスのエディタへ
     std::function<void (int)> onSlotClicked;  // 空きスロット以外の「エディタを開く」操作（行クリック・EQサムネイル）
     std::function<void()> onCloseRequested;   // ✕ボタン
     // send/pan/EQ・CompのON/OFFはいずれもミキサーと同じatomicの表示なので相互refreshが要る。

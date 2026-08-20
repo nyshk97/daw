@@ -33,6 +33,7 @@ public:
     std::function<void()> onSelect;      // ストリップクリック
     std::function<void()> onChanged;     // 値変更（dirtyマーク用）
     std::function<void (int)> onOpenSlot; // スロットのエディタ側クリック・EQサムネイルクリック（引数=スロットindex）
+    std::function<void (int)> onOpenSendBus; // Sendsのバス名ピルクリック（引数=bus index）
     std::function<double()> getSampleRate; // EQサムネイルのカーブ計算用（MixerOverlayが配る）
 
     // EQ編集（下部エディタのドラッグ等）にサムネイルを追従させる
@@ -112,6 +113,7 @@ public:
     std::function<void()> onChanged; // 値変更（dirtyマーク用）
     // スロットのエディタ側クリック（チャンネル選択＋下部詳細エディタを開く。MainComponentが配線）
     std::function<void (int trackIndex, int slot)> onOpenTrackSlot;
+    std::function<void (int bus)> onOpenSendBus; // トラックストリップのSendsピルクリック → 送り先バスのエディタへ
     std::function<void (int busIndex)> onOpenBusSlot;
     std::function<void()> onOpenMasterSlot;
     // ミキサーウィンドウにフォーカスがあるときのキー転送先（MainComponent::keyPressed）
