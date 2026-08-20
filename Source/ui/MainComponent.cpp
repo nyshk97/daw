@@ -594,11 +594,16 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     headers.onReorderRequested = [this] (int from, int to) { reorderTrack (from, to); };
 
     // ---- トランスポートバー ----
+    // 3ボタンとも枠なし（右上の補助ボタンと同じ流儀。枠付きだけがヘッダーの中でフォーム部品に
+    // 見えて浮いていた）。状態は色で示す: 再生中=緑アイコン・録音中=赤地＋明滅・クリックON=accent地
     playButton.onClick = [this] { togglePlay(); };
     playButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::playStop));
+    playButton.setBorderless (true, true);
 
     recordButton.setIconColour (Theme::recordRed); // 待機中も録音ボタンと分かる赤
-    recordButton.setColour (juce::TextButton::buttonOnColourId, Theme::recordActiveBg);
+    recordButton.setColour (juce::TextButton::buttonOnColourId, Theme::recordRed);
+    recordButton.setToggleIconColour (Theme::recordGlow);
+    recordButton.setBorderless (true, true);
     recordButton.onClick = [this] { toggleRecord(); };
     recordButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::record));
 
@@ -657,6 +662,8 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
 
     clickButton.setClickingTogglesState (true); // ONで点灯（Logicのメトロノームボタン風）
     clickButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
+    clickButton.setToggleIconColour (Theme::panelToggleOn);
+    clickButton.setBorderless (true);
     clickButton.onClick = [this] { transport.clickEnabled.store (clickButton.getToggleState()); };
     clickButton.setTooltip (jp (u8"メトロノーム")); // ショートカットなし
 
@@ -5346,7 +5353,7 @@ void MainComponent::updateTransportButtons()
     playButton.setIconColour (playing ? Theme::playGreen  // 再生中は緑（メーターと同色）
                                       : juce::Colours::white.withAlpha (0.85f));
     recordButton.setToggleState (recording, juce::dontSendNotification); // 録音中は赤点灯
-    recordButton.setIconColour (recording ? juce::Colours::white : Theme::recordRed);
+    recordButton.setIconColour (Theme::recordRed); // 録音中のアイコン色はtoggleIconColour側
     if (recording)
     {
         // 録音中はアイコンの周りに赤いハローをゆっくり明滅させる（Timer 30Hzから毎tick呼ばれる）。
@@ -5406,8 +5413,8 @@ void MainComponent::resized()
     auto area = getLocalBounds();
 
     auto topRow = area.removeFromTop (topBarHeight).reduced (12, 8);
-    // トランスポートボタンは行の高さいっぱいだと大きすぎるので一回り小さくして縦中央に置く
-    auto transportButton = [&topRow] { return topRow.removeFromLeft (38).withSizeKeepingCentre (38, 26); };
+    // トランスポートボタンは枠なしなので、ホバー地が正方形に近く見える寸法にする
+    auto transportButton = [&topRow] { return topRow.removeFromLeft (34).withSizeKeepingCentre (34, 30); };
     playButton.setBounds (transportButton());
     topRow.removeFromLeft (6);
     recordButton.setBounds (transportButton());

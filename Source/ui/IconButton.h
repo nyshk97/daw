@@ -43,11 +43,14 @@ public:
 
     // 枠・背景を描かない（右上の補助ボタン用）。ホバー/押下時は薄い背景で反応を示し、
     // ON状態はアクセント色を薄く敷いた地＋色付きアイコンで示す（ベタ塗りより一段沈める）
-    void setBorderless (bool shouldBeBorderless)
+    // useIconColour=true にすると、枠なしでも setIconColour の色でアイコンを描く
+    // （トランスポート用: 録音の赤・再生中の緑を保ったまま枠だけ外す）
+    void setBorderless (bool shouldBeBorderless, bool useIconColour = false)
     {
-        if (borderless != shouldBeBorderless)
+        if (borderless != shouldBeBorderless || borderlessUsesIconColour != useIconColour)
         {
             borderless = shouldBeBorderless;
+            borderlessUsesIconColour = useIconColour;
             repaint();
         }
     }
@@ -106,6 +109,10 @@ public:
         {
             if (getToggleState())
                 g.setColour (isEnabled() ? toggleIconColour : toggleIconColour.withAlpha (0.35f));
+            else if (borderlessUsesIconColour)
+                g.setColour (iconColour.withMultipliedAlpha (! isEnabled()         ? 0.35f
+                                                              : (highlighted || down) ? 1.0f
+                                                                                      : 0.85f));
             else
                 g.setColour (juce::Colours::white.withAlpha (! isEnabled()         ? 0.30f
                                                              : (highlighted || down) ? 0.92f
@@ -120,8 +127,9 @@ public:
         const bool strokeIcon = icon == Icon::notes || icon == Icon::folder || icon == Icon::gear
                                 || icon == Icon::speaker || icon == Icon::speakerMuted
                                 || icon == Icon::sort || icon == Icon::dice || icon == Icon::inspector;
+        // 塗り図形は枠なしだと小さく見えるので一回り大きくする（枠付きは従来寸法）
         const float side = juce::jmin (bounds.getWidth(), bounds.getHeight())
-                           * (strokeIcon ? 0.57f : 0.42f);
+                           * (strokeIcon ? 0.57f : (borderless ? 0.50f : 0.42f));
         const auto r = juce::Rectangle<float> (side, side).withCentre (bounds.getCentre());
 
         switch (icon)
@@ -341,6 +349,7 @@ private:
 
     Icon icon;
     bool borderless = false;
+    bool borderlessUsesIconColour = false;
     float glowAmount = 0.0f;
     juce::Colour glowColour;
     juce::Colour iconColour { juce::Colours::white.withAlpha (0.85f) };
