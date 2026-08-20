@@ -27,7 +27,11 @@ inline const juce::Colour recordActiveBg { 0xff8e2a26 };  // 録音中の録音�
 inline const juce::Colour recordGlow     { 0xffff5a4d };  // 録音中の明滅ハロー（recordActiveBgに埋もれない明るめの赤）
 
 // ---- パネル背景・境界 ----
-inline const juce::Colour windowBg          { 0xff2e2e33 };  // 上部バー・ウィンドウの地（LookAndFeel_V4デフォルトの青みグレーを無彩色に置き換え）
+inline const juce::Colour windowBg          { 0xff2e2e33 };
+inline const juce::Colour topBarTop         { 0xffa7a7ab };  // 上部バー（シルバー。Logicのツールバーと同じ明度で、暗いLCDと作業面を浮かせる）
+inline const juce::Colour topBarBottom      { 0xff9a9a9e };
+inline const juce::Colour topBarIcon        { 0xff2f2f34 };  // 上部バーのアイコン（明るい地なので濃灰）
+inline const juce::Colour metronomeOn       { 0xff7b3fbf };  // メトロノームON（Logicと同じ紫）  // 上部バー・ウィンドウの地（LookAndFeel_V4デフォルトの青みグレーを無彩色に置き換え）
 inline const juce::Colour timelineBg        { 0xff1e1e22 };  // タイムライン・ピアノロールの地
 inline const juce::Colour rulerBg           { 0xff2a2a2e };  // 小節ルーラー
 inline const juce::Colour markerLaneBg      { 0xff2a2a2e };  // セクションマーカーレーン（ルーラーと同色にして一枚のナビ帯に見せる）

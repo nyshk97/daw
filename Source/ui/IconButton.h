@@ -8,7 +8,7 @@ class IconButton : public juce::Button
 {
 public:
     enum class Icon { play, stop, record, metronome, gear, plus, notes, folder, speaker,
-                      speakerMuted, sort, dice, inspector };
+                      speakerMuted, sort, dice, inspector, cycle };
 
     IconButton (Icon initialIcon, const juce::String& accessibleName)
         : juce::Button (accessibleName), icon (initialIcon) {}
@@ -55,6 +55,17 @@ public:
         }
     }
 
+    // 明るい地（シルバーのヘッダー）に置く枠なしボタン: OFFのアイコンは濃灰、ホバーは黒の
+    // オーバーレイ、ONは buttonOnColourId のベタ塗り＋toggleIconColour（Logicのツールバーの読み方）
+    void setOnLightBackground (bool shouldBe)
+    {
+        if (onLightBackground != shouldBe)
+        {
+            onLightBackground = shouldBe;
+            repaint();
+        }
+    }
+
     // アイコン中心からの放射グロー（録音中の明滅表示用）。amount 0で消灯
     void setGlow (float amount, juce::Colour colour)
     {
@@ -74,11 +85,21 @@ public:
             if (on || highlighted || down)
             {
                 // ONはアクセント地（hover/押下でさらに濃く）、OFFのhoverは明るいオーバーレイ、
-                // 押下は暗いオーバーレイで「沈む」表現に揃える
-                g.setColour (on ? findColour (juce::TextButton::buttonOnColourId)
-                                      .withAlpha (highlighted || down ? 0.32f : 0.24f)
-                                : (down ? juce::Colours::black.withAlpha (0.25f)
-                                        : juce::Colours::white.withAlpha (0.07f)));
+                // 押下は暗いオーバーレイで「沈む」表現に揃える。明るい地ではONをベタ塗りにし、
+                // hoverも黒のオーバーレイ（白では地に溶ける）
+                juce::Colour fill;
+                if (on)
+                {
+                    auto c = findColour (juce::TextButton::buttonOnColourId);
+                    fill = onLightBackground ? (highlighted || down ? c.brighter (0.08f) : c)
+                                             : c.withAlpha (highlighted || down ? 0.32f : 0.24f);
+                }
+                else if (down)
+                    fill = juce::Colours::black.withAlpha (0.25f);
+                else
+                    fill = onLightBackground ? juce::Colours::black.withAlpha (0.09f)
+                                             : juce::Colours::white.withAlpha (0.07f);
+                g.setColour (fill);
                 g.fillRoundedRectangle (getLocalBounds().toFloat(), 7.0f);
             }
         }
@@ -113,6 +134,10 @@ public:
                 g.setColour (iconColour.withMultipliedAlpha (! isEnabled()         ? 0.35f
                                                               : (highlighted || down) ? 1.0f
                                                                                       : 0.85f));
+            else if (onLightBackground)
+                g.setColour (juce::Colour (0xff2f2f34).withAlpha (! isEnabled()         ? 0.30f
+                                                                  : (highlighted || down) ? 1.0f
+                                                                                          : 0.82f));
             else
                 g.setColour (juce::Colours::white.withAlpha (! isEnabled()         ? 0.30f
                                                              : (highlighted || down) ? 0.92f
@@ -126,10 +151,11 @@ public:
         // 線画アイコン（メモ・フォルダ・歯車）は塗り図形と同じ寸法だと軽く見えるので一回り大きくする
         const bool strokeIcon = icon == Icon::notes || icon == Icon::folder || icon == Icon::gear
                                 || icon == Icon::speaker || icon == Icon::speakerMuted
-                                || icon == Icon::sort || icon == Icon::dice || icon == Icon::inspector;
+                                || icon == Icon::sort || icon == Icon::dice || icon == Icon::inspector
+                                || icon == Icon::cycle;
         // 塗り図形は枠なしだと小さく見えるので一回り大きくする（枠付きは従来寸法）
         const float side = juce::jmin (bounds.getWidth(), bounds.getHeight())
-                           * (strokeIcon ? 0.57f : (borderless ? 0.50f : 0.42f));
+                           * (strokeIcon ? 0.57f : (borderless ? 0.46f : 0.42f));
         const auto r = juce::Rectangle<float> (side, side).withCentre (bounds.getCentre());
 
         switch (icon)
@@ -202,6 +228,33 @@ public:
                                                     juce::PathStrokeType::rounded));
                 g.drawEllipse (juce::Rectangle<float> (rHole * 2.0f, rHole * 2.0f).withCentre (centre),
                                stroke);
+                break;
+            }
+            case Icon::cycle:
+            {
+                // 上下2本の矢印が向かい合う（Logicのサイクルボタンと同じ記号）
+                const float stroke = strokeWidth (side) * 1.15f;
+                juce::Path p;
+                p.startNewSubPath (at (r, 3.5f, 11.0f));
+                p.lineTo (at (r, 3.5f, 9.0f));
+                p.addArc (design (side, 3.5f) + r.getX(), design (side, 5.0f) + r.getY(),
+                          design (side, 8.0f), design (side, 8.0f),
+                          juce::MathConstants<float>::pi * 1.5f, juce::MathConstants<float>::twoPi, false);
+                p.lineTo (at (r, 21.0f, 5.0f));
+                p.startNewSubPath (at (r, 17.0f, 1.5f));
+                p.lineTo (at (r, 21.0f, 5.0f));
+                p.lineTo (at (r, 17.0f, 8.5f));
+                p.startNewSubPath (at (r, 20.5f, 13.0f));
+                p.lineTo (at (r, 20.5f, 15.0f));
+                p.addArc (design (side, 12.5f) + r.getX(), design (side, 11.0f) + r.getY(),
+                          design (side, 8.0f), design (side, 8.0f),
+                          juce::MathConstants<float>::halfPi, juce::MathConstants<float>::pi, false);
+                p.lineTo (at (r, 3.0f, 19.0f));
+                p.startNewSubPath (at (r, 7.0f, 15.5f));
+                p.lineTo (at (r, 3.0f, 19.0f));
+                p.lineTo (at (r, 7.0f, 22.5f));
+                g.strokePath (p, juce::PathStrokeType (stroke, juce::PathStrokeType::curved,
+                                                       juce::PathStrokeType::rounded));
                 break;
             }
             case Icon::inspector:
@@ -350,6 +403,7 @@ private:
     Icon icon;
     bool borderless = false;
     bool borderlessUsesIconColour = false;
+    bool onLightBackground = false;
     float glowAmount = 0.0f;
     juce::Colour glowColour;
     juce::Colour iconColour { juce::Colours::white.withAlpha (0.85f) };

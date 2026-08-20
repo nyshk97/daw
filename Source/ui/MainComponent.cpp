@@ -117,6 +117,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     addAndMakeVisible (filesButton);
     addAndMakeVisible (gachaButton);
     addAndMakeVisible (fxButton);
+    addAndMakeVisible (cycleButton);
     addAndMakeVisible (clickButton);
     addChildComponent (addTrackOverlay); // トラック追加メニュー表示中のみ可視
     addChildComponent (shortcutOverlay); // ⌘?表示中のみ可視
@@ -602,8 +603,21 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
 
     recordButton.setIconColour (Theme::recordRed); // 待機中も録音ボタンと分かる赤
     recordButton.setColour (juce::TextButton::buttonOnColourId, Theme::recordRed);
-    recordButton.setToggleIconColour (Theme::recordGlow);
+    recordButton.setToggleIconColour (juce::Colours::white);
     recordButton.setBorderless (true, true);
+
+    // サイクル（Cキーと同じ。範囲が無いときは押しても何も起きない＝toggleCycle側の判定）
+    cycleButton.setClickingTogglesState (false); // 表示状態は project->cycleEnabled から毎tick同期
+    cycleButton.onClick = [this] { toggleCycle(); };
+    cycleButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::toggleCycle));
+    cycleButton.setColour (juce::TextButton::buttonOnColourId, Theme::cycleOn);
+    cycleButton.setToggleIconColour (juce::Colour (0xff2a2a2e));
+    cycleButton.setBorderless (true);
+
+    // 上部バーはシルバーなので、載せるボタンは全部「明るい地」配色にする
+    for (auto* b : { &playButton, &recordButton, &cycleButton, &clickButton, &fxButton,
+                     &settingsButton, &notesButton, &filesButton, &gachaButton })
+        b->setOnLightBackground (true);
     recordButton.onClick = [this] { toggleRecord(); };
     recordButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::record));
 
@@ -614,25 +628,25 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     settingsButton.onClick = [this] { toggleDeviceSettings ("button"); };
     settingsButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::audioSettings));
     settingsButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
-    settingsButton.setToggleIconColour (Theme::panelToggleOn);
+    settingsButton.setToggleIconColour (juce::Colours::white);
     settingsButton.setBorderless (true);
 
     notesButton.onClick = [this] { toggleRightPanel (RightPanel::Mode::notes); };
     notesButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::toggleNotes));
     notesButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
-    notesButton.setToggleIconColour (Theme::panelToggleOn);
+    notesButton.setToggleIconColour (juce::Colours::white);
     notesButton.setBorderless (true);
 
     filesButton.onClick = [this] { toggleRightPanel (RightPanel::Mode::files); };
     filesButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::toggleFiles));
     filesButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
-    filesButton.setToggleIconColour (Theme::panelToggleOn);
+    filesButton.setToggleIconColour (juce::Colours::white);
     filesButton.setBorderless (true);
 
     gachaButton.onClick = [this] { toggleRightPanel (RightPanel::Mode::gacha); };
     gachaButton.setTooltip (jp (u8"ドラムガチャ")); // ショートカットなし（ボタンのみ）
     gachaButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
-    gachaButton.setToggleIconColour (Theme::panelToggleOn);
+    gachaButton.setToggleIconColour (juce::Colours::white);
     gachaButton.setBorderless (true);
 
     // 左のFXパネルを×で閉じた後の戻り口（Iキーと同じ動作）。パネルが開いている間は
@@ -661,8 +675,8 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     };
 
     clickButton.setClickingTogglesState (true); // ONで点灯（Logicのメトロノームボタン風）
-    clickButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
-    clickButton.setToggleIconColour (Theme::panelToggleOn);
+    clickButton.setColour (juce::TextButton::buttonOnColourId, Theme::metronomeOn); // ONは紫（Logic）
+    clickButton.setToggleIconColour (juce::Colours::white);
     clickButton.setBorderless (true);
     clickButton.onClick = [this] { transport.clickEnabled.store (clickButton.getToggleState()); };
     clickButton.setTooltip (jp (u8"メトロノーム")); // ショートカットなし
@@ -679,7 +693,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     // Space（再生/停止）をボタンに奪わせない
     for (auto* c : std::initializer_list<juce::Component*> {
              &playButton, &recordButton, &addTrackButton, &settingsButton, &notesButton,
-             &filesButton, &gachaButton, &clickButton, &fxButton })
+             &filesButton, &gachaButton, &clickButton, &fxButton, &cycleButton })
     {
         c->setWantsKeyboardFocus (false);
         c->setMouseClickGrabsKeyboardFocus (false);
@@ -5350,8 +5364,10 @@ void MainComponent::updateTransportButtons()
     // シーク後の再開待ち中も見かけ上は「再生中」として表示する
     const bool playing = transport.isPlaying.load() || seekResumePending;
     playButton.setIcon (playing ? IconButton::Icon::stop : IconButton::Icon::play);
-    playButton.setIconColour (playing ? Theme::playGreen  // 再生中は緑（メーターと同色）
-                                      : juce::Colours::white.withAlpha (0.85f));
+    playButton.setIconColour (playing ? Theme::playGreen.darker (0.25f) // 再生中は緑（シルバー地で読める濃さ）
+                                      : Theme::topBarIcon);
+    cycleButton.setToggleState (project->cycleEnabled && project->hasCycleRange(),
+                                juce::dontSendNotification);
     recordButton.setToggleState (recording, juce::dontSendNotification); // 録音中は赤点灯
     recordButton.setIconColour (Theme::recordRed); // 録音中のアイコン色はtoggleIconColour側
     if (recording)
@@ -5398,13 +5414,19 @@ void MainComponent::paint (juce::Graphics& g)
 {
     g.fillAll (getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId));
 
-    // 上部バー: 上端の1pxハイライトのみ。下との区切りは境界線でなく背景の明度差に任せる
+    // 上部バー: シルバーの縦グラデーション（Logicのツールバー）。上端にハイライト、下端に影を
+    // 1pxずつ置いて「天板」の厚みを出す。暗い作業面との区切りは明度差そのもの
     auto bar = getLocalBounds().removeFromTop (topBarHeight).toFloat();
-    g.setColour (juce::Colours::white.withAlpha (0.05f));
+    g.setGradientFill (juce::ColourGradient (Theme::topBarTop, 0.0f, bar.getY(),
+                                             Theme::topBarBottom, 0.0f, bar.getBottom(), false));
+    g.fillRect (bar);
+    g.setColour (juce::Colours::white.withAlpha (0.35f));
     g.fillRect (bar.removeFromTop (1.0f));
+    g.setColour (juce::Colours::black.withAlpha (0.35f));
+    g.fillRect (bar.removeFromBottom (1.0f));
 
     // 右上: パネルトグル（メモ・ファイル）と設定を隔てる区切り線
-    g.setColour (juce::Colours::white.withAlpha (0.10f));
+    g.setColour (juce::Colours::black.withAlpha (0.22f));
     g.fillRect (topBarSeparator);
 }
 
@@ -5413,15 +5435,7 @@ void MainComponent::resized()
     auto area = getLocalBounds();
 
     auto topRow = area.removeFromTop (topBarHeight).reduced (12, 8);
-    // トランスポートボタンは枠なしなので、ホバー地が正方形に近く見える寸法にする
-    auto transportButton = [&topRow] { return topRow.removeFromLeft (34).withSizeKeepingCentre (34, 30); };
-    playButton.setBounds (transportButton());
-    topRow.removeFromLeft (6);
-    recordButton.setBounds (transportButton());
-    topRow.removeFromLeft (14);
-    clickButton.setBounds (transportButton());
-    topRow.removeFromLeft (10);
-    // FXパネルのトグルは左パネルの真上＝左端側に置く（右パネルのトグルが右端にあるのと対称）
+    // FXパネルの戻り口は左パネルの真上＝左端（右パネルのトグルが右端にあるのと対称）
     fxButton.setBounds (topRow.removeFromLeft (30).withSizeKeepingCentre (30, 30));
     topRow.removeFromLeft (10);
 
@@ -5442,17 +5456,28 @@ void MainComponent::resized()
     notesButton.setBounds (auxButton());
     topRow.removeFromRight (10);
 
-    // LCDはウィンドウ中央に置く（Logicの配置）。狭いときは左のボタン群を優先して右へ逃がす
-    auto lcdArea = juce::Rectangle<int> (TransportLcd::preferredWidth, topRow.getHeight())
+    // 中央クラスタ: [再生 録音 サイクル] LCD [メトロノーム] をひとまとまりでウィンドウ中央に置く
+    // （Logicの配置: トランスポートはLCDの左、メトロノームは右）。狭いときは左端のボタンを優先して右へ逃がす
+    constexpr int tBtn = 30, tGap = 2, lcdGap = 10;
+    const int clusterWidth = tBtn * 3 + tGap * 2 + lcdGap + TransportLcd::preferredWidth + lcdGap + tBtn;
+    auto cluster = juce::Rectangle<int> (clusterWidth, topRow.getHeight())
                        .withCentre ({ getWidth() / 2, topRow.getCentreY() });
-    lcdArea.setX (juce::jlimit (topRow.getX(),
-                                juce::jmax (topRow.getX(),
-                                            topRow.getRight() - TransportLcd::preferredWidth),
-                                lcdArea.getX()));
+    cluster.setX (juce::jlimit (topRow.getX(), juce::jmax (topRow.getX(), topRow.getRight() - clusterWidth),
+                                cluster.getX()));
+    auto clusterButton = [&cluster, tBtn] { return cluster.removeFromLeft (tBtn).withSizeKeepingCentre (tBtn, tBtn); };
+    playButton.setBounds (clusterButton());
+    cluster.removeFromLeft (tGap);
+    recordButton.setBounds (clusterButton());
+    cluster.removeFromLeft (tGap);
+    cycleButton.setBounds (clusterButton());
+    cluster.removeFromLeft (lcdGap);
+    auto lcdArea = cluster.removeFromLeft (TransportLcd::preferredWidth);
     lcd.setBounds (lcdArea);
+    cluster.removeFromLeft (lcdGap);
+    clickButton.setBounds (clusterButton());
 
     auto warnArea = topRow;
-    warnArea.setLeft (juce::jmin (warnArea.getRight(), lcdArea.getRight() + 10));
+    warnArea.setLeft (juce::jmin (warnArea.getRight(), clickButton.getRight() + 10));
     srWarningLabel.setBounds (warnArea);
 
     // 右ドックは上部バー直下の全高。先に右側を取ることで、下部エディタも
