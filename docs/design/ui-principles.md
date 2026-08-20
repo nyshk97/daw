@@ -40,7 +40,7 @@
 
 - バーに載せるボタンは全部枠なし・濃灰アイコン（`IconButton::setOnLightBackground`）。ON状態はベタ塗り＋白アイコン（メトロノーム=紫・サイクル=黄・録音=赤・パネルトグル=accent）。暗い地で使っていた「薄く敷いた地＋色付きアイコン」はシルバーでは読めない
 - 配置は Logic と同じ: 中央クラスタ＝[再生 録音 サイクル] LCD [メトロノーム]。左端はFXパネルの戻り口、右端は右パネルのトグルと設定
-- macOS のタイトルバーは暗いまま（ネイティブ）。揃えるなら NSWindow の appearance を触る必要があり、今は見送り
+- macOS のタイトルバーも同色にする（`Source/mac/TitleBarStyle.mm`: `titlebarAppearsTransparent`＋`backgroundColor`＋ウィンドウ単位の aqua appearance）。選択画面では既定の暗いタイトルバーに戻す
 
 ## 開閉するUIは「開いたのと同じ操作」で閉じられる
 

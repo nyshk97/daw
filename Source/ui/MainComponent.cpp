@@ -5414,14 +5414,12 @@ void MainComponent::paint (juce::Graphics& g)
 {
     g.fillAll (getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId));
 
-    // 上部バー: シルバーの縦グラデーション（Logicのツールバー）。上端にハイライト、下端に影を
-    // 1pxずつ置いて「天板」の厚みを出す。暗い作業面との区切りは明度差そのもの
+    // 上部バー: シルバーの縦グラデーション（Logicのツールバー）。タイトルバーも同色
+    // （TitleBarStyle）なので上端に線は引かず一枚に見せ、下端の影1pxで「天板」の厚みを出す
     auto bar = getLocalBounds().removeFromTop (topBarHeight).toFloat();
     g.setGradientFill (juce::ColourGradient (Theme::topBarTop, 0.0f, bar.getY(),
                                              Theme::topBarBottom, 0.0f, bar.getBottom(), false));
     g.fillRect (bar);
-    g.setColour (juce::Colours::white.withAlpha (0.35f));
-    g.fillRect (bar.removeFromTop (1.0f));
     g.setColour (juce::Colours::black.withAlpha (0.35f));
     g.fillRect (bar.removeFromBottom (1.0f));
 

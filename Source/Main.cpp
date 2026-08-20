@@ -2,6 +2,8 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "mac/AboutPanel.h"
+#include "mac/TitleBarStyle.h"
+#include "ui/Theme.h"
 #include "mac/SparkleBridge.h"
 #include "shared/Log.h"
 #include "ui/AppLookAndFeel.h"
@@ -508,12 +510,21 @@ private:
             const bool fullScreen = isFullScreen();
             setContentOwned (chooser, ! fullScreen);
             setName (DAW_APP_NAME);
+            applyTitleBarStyle (false);
             if (! fullScreen)
                 centreWithSize (getWidth(), getHeight());
 
             // 選択画面ではFileメニューをdisabledにする（enable判定の引き直し）
             if (auto* model = juce::MenuBarModel::getMacMainMenu())
                 model->menuItemsChanged();
+        }
+
+        void applyTitleBarStyle (bool silver)
+        {
+            if (auto* peer = getPeer())
+                TitleBarStyle::apply (peer->getNativeHandle(), silver,
+                                      Theme::topBarTop.getFloatRed(), Theme::topBarTop.getFloatGreen(),
+                                      Theme::topBarTop.getFloatBlue());
         }
 
         void openPendingProject()
@@ -526,6 +537,7 @@ private:
             const bool fullScreen = isFullScreen();
             setContentOwned (component, ! fullScreen);
             setName (component->windowTitle());
+            applyTitleBarStyle (true); // 上部バーのシルバーとタイトルバーを一枚に見せる
             if (! fullScreen)
                 centreWithSize (getWidth(), getHeight());
             flowPending = false;
