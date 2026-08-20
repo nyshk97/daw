@@ -538,6 +538,8 @@ private:
             setContentOwned (component, ! fullScreen);
             setName (component->windowTitle());
             applyTitleBarStyle (true); // 上部バーのシルバーとタイトルバーを一枚に見せる
+            component->resized();      // fullSizeContentView 化でタイトルバー分の inset が変わるので引き直す
+            component->repaint();
             if (! fullScreen)
                 centreWithSize (getWidth(), getHeight());
             flowPending = false;

@@ -1,4 +1,5 @@
 #include "MainComponent.h"
+#include "../mac/TitleBarStyle.h"
 
 #include <algorithm>
 #include <cmath>
@@ -4626,6 +4627,7 @@ void MainComponent::setDirty (bool nowDirty)
     dirty = nowDirty;
     if (onTitleChanged)
         onTitleChanged (windowTitle());
+    repaint (0, 0, getWidth(), titleBarInset); // 自前描画のタイトル（●の有無）
 }
 
 void MainComponent::pushSnapshot()
@@ -5414,12 +5416,20 @@ void MainComponent::paint (juce::Graphics& g)
 {
     g.fillAll (getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId));
 
-    // 上部バー: シルバーの縦グラデーション（Logicのツールバー）。タイトルバーも同色
-    // （TitleBarStyle）なので上端に線は引かず一枚に見せ、下端の影1pxで「天板」の厚みを出す
-    auto bar = getLocalBounds().removeFromTop (topBarHeight).toFloat();
+    // 上部バー: シルバーの縦グラデーション（Logicのツールバー）。タイトルバー領域まで一枚で塗り
+    // （TitleBarStyle で fullSizeContentView）、下端の影1pxで「天板」の厚みを出す
+    auto bar = getLocalBounds().removeFromTop (titleBarInset + topBarHeight).toFloat();
     g.setGradientFill (juce::ColourGradient (Theme::topBarTop, 0.0f, bar.getY(),
                                              Theme::topBarBottom, 0.0f, bar.getBottom(), false));
     g.fillRect (bar);
+    if (titleBarInset > 0)
+    {
+        // ネイティブのタイトルは左寄せ固定（macOS 26）なので隠して自前で中央に描く
+        g.setColour (Theme::topBarIcon.withAlpha (0.85f));
+        g.setFont (Fonts::bodyStrong());
+        g.drawText (windowTitle(), bar.removeFromTop ((float) titleBarInset).toNearestInt(),
+                    juce::Justification::centred, true);
+    }
     g.setColour (juce::Colours::black.withAlpha (0.35f));
     g.fillRect (bar.removeFromBottom (1.0f));
 
@@ -5431,6 +5441,9 @@ void MainComponent::paint (juce::Graphics& g)
 void MainComponent::resized()
 {
     auto area = getLocalBounds();
+    if (auto* peer = getPeer())
+        titleBarInset = TitleBarStyle::titleBarInset (peer->getNativeHandle());
+    area.removeFromTop (titleBarInset);
 
     auto topRow = area.removeFromTop (topBarHeight).reduced (12, 8);
     // FXパネルの戻り口は左パネルの真上＝左端（右パネルのトグルが右端にあるのと対称）
