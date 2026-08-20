@@ -37,4 +37,26 @@ int titleBarInset (void* nsView)
     return (int) std::lround (window.contentView.frame.size.height - window.contentLayoutRect.size.height);
 }
 
+void beginWindowDrag (void* nsView)
+{
+    NSView* view = (__bridge NSView*) nsView;
+    NSWindow* window = view.window;
+    NSEvent* event = NSApp.currentEvent;
+    if (window != nil && event != nil && event.type == NSEventTypeLeftMouseDown)
+        [window performWindowDragWithEvent: event];
+}
+
+void titleBarDoubleClicked (void* nsView)
+{
+    NSView* view = (__bridge NSView*) nsView;
+    NSWindow* window = view.window;
+    if (window == nil)
+        return;
+    NSString* action = [NSUserDefaults.standardUserDefaults stringForKey: @"AppleActionOnDoubleClick"];
+    if ([action isEqualToString: @"Minimize"])
+        [window performMiniaturize: nil];
+    else if (action == nil || [action isEqualToString: @"Maximize"])
+        [window performZoom: nil];
+}
+
 } // namespace TitleBarStyle

@@ -12,4 +12,9 @@ void apply (void* nsView, bool silver, float r, float g, float b);
 // コンテンツ上端のうちタイトルバーに隠れる高さ（fullSizeContentView 時のみ > 0。
 // フルスクリーンでタイトルバーが消えている間は 0）
 int titleBarInset (void* nsView);
+
+// fullSizeContentView 時はタイトルバー領域にも JUCE のビューが被さり、ネイティブのドラッグ／
+// ダブルクリック（ズーム）が届かない。MainComponent のマウスイベントから転送する
+void beginWindowDrag (void* nsView);   // mouseDown から呼ぶ（現在の NSEvent でドラッグ開始）
+void titleBarDoubleClicked (void* nsView); // システム設定「ダブルクリックで〜」に従って zoom/minimize
 }

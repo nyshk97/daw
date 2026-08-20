@@ -389,6 +389,10 @@ view の両端・分割境界・再生 offset は**絶対境界の差**（`Rende
 
 `setContentOwned()` 時点で `resized()` は済んでおり、その後 `TitleBarStyle::apply()` で `fullSizeContentView` を立ててもコンテンツビューの frame は変わらない（`contentLayoutRect` だけ変わる）ので再レイアウトが起きない。`TitleBarStyle::titleBarInset()` を `resized()` で読む設計なら、apply の直後に `component->resized(); component->repaint();` を明示的に呼ぶ。症状は「帯はタイトルバー下まで伸びたのにタイトルが描かれず、ボタン群がタイトルバーに食い込む」。
 
+### fullSizeContentView にするとタイトルバーのドラッグ／ダブルクリックが効かなくなる
+
+コンテンツビューがタイトルバー領域まで被さるため、そこでのマウスイベントは NSWindow でなく JUCE の NSView に届く。JUCE は `mouseDownCanMoveWindow` を NO にしているので `movableByWindowBackground` でも動かない。`MainComponent::mouseDown` で `y < titleBarInset` なら `TitleBarStyle::beginWindowDrag()`（`[window performWindowDragWithEvent: NSApp.currentEvent]`）へ転送し、`mouseDoubleClick` は `AppleActionOnDoubleClick` の設定に従って zoom/minimize する。検証は CGEvent 合成ドラッグ（タイトル文字の位置で down→drag→up）の前後で `System Events` の `position of window 1` が移動量ぶんズレているかを見る。
+
 ### 非ASCIIの文字列リテラルは必ず `juce::String::fromUTF8(u8"...")` を通す
 
 `juce::String(const char*)` はUTF-8を解釈しない。日本語に限らず em-dash（—）や ● などの記号も対象で、生リテラルのまま `String` と連結すると文字化けする（`"daw — "` が「daw â」になった実例あり）。UI文言・タイトル・ダイアログの全てで `fromUTF8` を徹底する。

@@ -5465,6 +5465,20 @@ void MainComponent::paint (juce::Graphics& g)
     g.fillRect (topBarSeparator);
 }
 
+void MainComponent::mouseDown (const juce::MouseEvent& e)
+{
+    if (titleBarInset > 0 && e.y < titleBarInset && e.mods.isLeftButtonDown())
+        if (auto* peer = getPeer())
+            TitleBarStyle::beginWindowDrag (peer->getNativeHandle());
+}
+
+void MainComponent::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    if (titleBarInset > 0 && e.y < titleBarInset && e.mods.isLeftButtonDown())
+        if (auto* peer = getPeer())
+            TitleBarStyle::titleBarDoubleClicked (peer->getNativeHandle());
+}
+
 void MainComponent::resized()
 {
     auto area = getLocalBounds();

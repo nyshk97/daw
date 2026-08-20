@@ -429,6 +429,9 @@ private:
 
     static constexpr int topBarHeight = 54; // paint（グラデーション帯）とresizedで共有
     int titleBarInset = 0; // タイトルバーに潜り込んでいる高さ（TitleBarStyle::titleBarInset。resizedで更新）
+    // タイトルバー領域（fullSizeContentView で JUCE が被さっている帯）のドラッグ／ダブルクリックをネイティブへ転送
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
     juce::Rectangle<float> topBarSeparator; // 右上ボタン群の区切り線（resizedで算出しpaintで描く）
 
     // ⌘C/⌘V のクリップボード（アプリ内メモリ・セッション内のみ。システムのクリップボードとは無関係）。
