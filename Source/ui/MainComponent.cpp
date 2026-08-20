@@ -116,6 +116,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     addAndMakeVisible (notesButton);
     addAndMakeVisible (filesButton);
     addAndMakeVisible (gachaButton);
+    addAndMakeVisible (fxButton);
     addAndMakeVisible (clickButton);
     addChildComponent (addTrackOverlay); // トラック追加メニュー表示中のみ可視
     addChildComponent (shortcutOverlay); // ⌘?表示中のみ可視
@@ -629,6 +630,13 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     gachaButton.setToggleIconColour (Theme::panelToggleOn);
     gachaButton.setBorderless (true);
 
+    // 左のFXパネルのトグル。×で閉じた後の戻り口（Iキーと同じ動作・開いている間はON表示）
+    fxButton.onClick = [this] { toggleFxEditor(); };
+    fxButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::toggleFxEditor));
+    fxButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
+    fxButton.setToggleIconColour (Theme::panelToggleOn);
+    fxButton.setBorderless (true);
+
     bounceOverlay.onCancel = [this]
     {
         Log::info ("bounce.cancel_requested", "source=overlay");
@@ -665,7 +673,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     // Space（再生/停止）をボタンに奪わせない
     for (auto* c : std::initializer_list<juce::Component*> {
              &playButton, &recordButton, &addTrackButton, &settingsButton, &notesButton,
-             &filesButton, &gachaButton, &clickButton })
+             &filesButton, &gachaButton, &clickButton, &fxButton })
     {
         c->setWantsKeyboardFocus (false);
         c->setMouseClickGrabsKeyboardFocus (false);
@@ -1501,6 +1509,7 @@ void MainComponent::openFxEditor()
         return;
     Log::info ("fxeditor.open");
     fxEditor.openView();
+    fxButton.setToggleState (true, juce::dontSendNotification);
     resized();
 }
 
@@ -1511,6 +1520,7 @@ void MainComponent::closeFxEditor()
     Log::info ("fxeditor.close");
     closeFxDetail(); // 概要が消えたら詳細も道連れ（詳細だけ残ると対象の手掛かりを失う）
     fxEditor.closeView();
+    fxButton.setToggleState (false, juce::dontSendNotification);
     resized();
 }
 
@@ -5403,6 +5413,9 @@ void MainComponent::resized()
     recordButton.setBounds (transportButton());
     topRow.removeFromLeft (14);
     clickButton.setBounds (transportButton());
+    topRow.removeFromLeft (10);
+    // FXパネルのトグルは左パネルの真上＝左端側に置く（右パネルのトグルが右端にあるのと対称）
+    fxButton.setBounds (topRow.removeFromLeft (30).withSizeKeepingCentre (30, 30));
     topRow.removeFromLeft (10);
 
     // 右上の補助ボタン。パネルトグル（メモ・ファイル）は隣接させて一組に見せ、

@@ -8,7 +8,7 @@ class IconButton : public juce::Button
 {
 public:
     enum class Icon { play, stop, record, metronome, gear, plus, notes, folder, speaker,
-                      speakerMuted, sort, dice };
+                      speakerMuted, sort, dice, inspector };
 
     IconButton (Icon initialIcon, const juce::String& accessibleName)
         : juce::Button (accessibleName), icon (initialIcon) {}
@@ -119,7 +119,7 @@ public:
         // 線画アイコン（メモ・フォルダ・歯車）は塗り図形と同じ寸法だと軽く見えるので一回り大きくする
         const bool strokeIcon = icon == Icon::notes || icon == Icon::folder || icon == Icon::gear
                                 || icon == Icon::speaker || icon == Icon::speakerMuted
-                                || icon == Icon::sort || icon == Icon::dice;
+                                || icon == Icon::sort || icon == Icon::dice || icon == Icon::inspector;
         const float side = juce::jmin (bounds.getWidth(), bounds.getHeight())
                            * (strokeIcon ? 0.57f : 0.42f);
         const auto r = juce::Rectangle<float> (side, side).withCentre (bounds.getCentre());
@@ -194,6 +194,18 @@ public:
                                                     juce::PathStrokeType::rounded));
                 g.drawEllipse (juce::Rectangle<float> (rHole * 2.0f, rHole * 2.0f).withCentre (centre),
                                stroke);
+                break;
+            }
+            case Icon::inspector:
+            {
+                // ◯に「i」（Logicのインスペクタと同じ記号。左のFXパネル＝選択トラックの詳細を開く）
+                const float stroke = strokeWidth (side);
+                const auto centre = bounds.getCentre();
+                const float rad = design (side, 9.0f);
+                g.drawEllipse (juce::Rectangle<float> (rad * 2.0f, rad * 2.0f).withCentre (centre), stroke);
+                g.drawLine ({ at (r, 12.0f, 10.6f), at (r, 12.0f, 16.8f) }, stroke);
+                g.fillEllipse (juce::Rectangle<float> (stroke * 1.5f, stroke * 1.5f)
+                                   .withCentre (at (r, 12.0f, 7.6f)));
                 break;
             }
             case Icon::plus:

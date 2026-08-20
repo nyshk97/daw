@@ -406,6 +406,7 @@ private:
     IconButton playButton { IconButton::Icon::play, juce::String::fromUTF8 (u8"再生") };
     IconButton recordButton { IconButton::Icon::record, juce::String::fromUTF8 (u8"録音") };
     IconButton clickButton { IconButton::Icon::metronome, juce::String::fromUTF8 (u8"クリック") };
+    IconButton fxButton { IconButton::Icon::inspector, juce::String::fromUTF8 (u8"FXパネル") };
     IconButton settingsButton { IconButton::Icon::gear, juce::String::fromUTF8 (u8"オーディオ設定") };
     IconButton notesButton { IconButton::Icon::notes, juce::String::fromUTF8 (u8"プロジェクトメモ") };
     IconButton filesButton { IconButton::Icon::folder, juce::String::fromUTF8 (u8"オーディオファイル") };
