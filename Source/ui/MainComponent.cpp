@@ -630,11 +630,10 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     gachaButton.setToggleIconColour (Theme::panelToggleOn);
     gachaButton.setBorderless (true);
 
-    // 左のFXパネルのトグル。×で閉じた後の戻り口（Iキーと同じ動作・開いている間はON表示）
+    // 左のFXパネルを×で閉じた後の戻り口（Iキーと同じ動作）。パネルが開いている間は
+    // 閉じる役を×が担うので、ボタンは出さない（常時出すとヘッダーのノイズになる）
     fxButton.onClick = [this] { toggleFxEditor(); };
     fxButton.setTooltip (Shortcuts::tooltipText (Shortcuts::ID::toggleFxEditor));
-    fxButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
-    fxButton.setToggleIconColour (Theme::panelToggleOn);
     fxButton.setBorderless (true);
 
     bounceOverlay.onCancel = [this]
@@ -681,9 +680,9 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
 
     selectTrack (project->tracks.empty() ? -1 : 0);
 
-    // FXパネルは基本常設（Iで開閉）。開閉状態はヘッダーのトグルボタンにも映す
+    // FXパネルは基本常設（Iで開閉）。開いている間はヘッダーの戻り口ボタンを隠す
     fxEditor.openView();
-    fxButton.setToggleState (true, juce::dontSendNotification);
+    fxButton.setVisible (false);
     fxEditor.showTrack (selectedTrack);
 
     // 読込時の一括再生成: 移調・伸縮の値が入ったクリップをまとめてキューへ。activeDomain は
@@ -1510,7 +1509,7 @@ void MainComponent::openFxEditor()
         return;
     Log::info ("fxeditor.open");
     fxEditor.openView();
-    fxButton.setToggleState (true, juce::dontSendNotification);
+    fxButton.setVisible (false);
     resized();
 }
 
@@ -1521,7 +1520,7 @@ void MainComponent::closeFxEditor()
     Log::info ("fxeditor.close");
     closeFxDetail(); // 概要が消えたら詳細も道連れ（詳細だけ残ると対象の手掛かりを失う）
     fxEditor.closeView();
-    fxButton.setToggleState (false, juce::dontSendNotification);
+    fxButton.setVisible (true);
     resized();
 }
 
