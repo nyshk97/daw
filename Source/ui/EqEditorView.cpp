@@ -380,6 +380,9 @@ void EqEditorView::mouseDrag (const juce::MouseEvent& e)
     value.freqHz = freqForX (e.position.x);
     if (dragBand != Eq::highpass)
         value.gainDb = dbForY (e.position.y); // HPは横のみ（ゲイン概念なし）
+    else
+        value.enabled = true; // OFFのHPを掴んで動かしたら自動でON（LogicのChannel EQと同じ。
+                              // OFFのまま動かすと周波数だけ変わりカーブに何も出ず「効かない」に見える）
     applyBand (dragBand, value);
     dragMoved = true;
 }
