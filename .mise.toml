@@ -287,6 +287,16 @@ run = 'open build/daw_artefacts/Debug/LaLa-dev.app'
 description = 'dev版アプリ（LaLa-dev.app）を停止する'
 run = 'pkill -f "LaLa-dev.app/Contents/MacOS/LaLa-dev" || true'
 
+# --- ピッチ補正ラボ（tools/pitchlab/README.md） ---
+
+[tasks."pitchlab:setup"]
+description = 'ピッチ補正ラボの venv と signalsmith CLI を作り直す（初回・依存を変えたとき）'
+run = 'tools/pitchlab/setup.sh'
+
+[tasks."pitchlab:run"]
+description = 'ピッチ補正ラボ Phase 0 の全工程（合成素材→検出比較→再合成→ブラインド試聴セット。約10分）'
+run = 'tools/pitchlab/run_all.sh'
+
 # --- Salva（apps/salva/。LaLaとbuildディレクトリを共有する別ターゲット） ---
 
 [tasks."build:salva"]

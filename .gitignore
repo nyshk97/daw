@@ -28,3 +28,11 @@ __pycache__/
 /tools/noiselab/models/
 /tools/noiselab/logs/
 /tools/noiselab/*.log
+
+# ピッチ補正ラボ（tools/pitchlab/）の生成物。スクリプト・requirements だけコミットする
+# （本人の声・未公開曲を PUBLIC リポジトリに入れない）
+/tools/pitchlab/.venv/
+/tools/pitchlab/work/
+/tools/pitchlab/listen/
+/tools/pitchlab/logs/
+/tools/pitchlab/*.log

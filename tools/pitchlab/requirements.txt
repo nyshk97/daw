@@ -1,0 +1,12 @@
+# pitchlab（ピッチ補正ラボ）の依存。Python 3.12（.mise.toml）
+numpy>=1.26
+scipy>=1.11
+soundfile>=0.12
+soxr>=0.4
+librosa>=0.10          # pyin（自作 YIN/pYIN の参照実装）
+torch>=2.2             # torchcrepe の土台（CPU で十分）
+torchcrepe>=0.0.23     # CREPE（検出の比較対象。正解にはしない）
+pyworld>=0.3.4         # WORLD ボコーダー（再合成候補）
+setuptools<81          # pyworld が import する pkg_resources は setuptools 81 で削除された
+matplotlib>=3.8        # 重ね描き PNG
+pyloudnorm>=0.1        # ブラインド用のラウドネス合わせ

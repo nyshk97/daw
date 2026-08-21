@@ -1,0 +1,126 @@
+{
+ "date": "2026-08-21",
+ "entries": [
+  {
+   "material": "rap-seg",
+   "case": "Z",
+   "assign": {
+    "W": "world",
+    "X": "rubberband",
+    "Y": "psola",
+    "Z": "signalsmith"
+   },
+   "voice_gain_db": 11.39,
+   "oke_gain_db": -6.03
+  },
+  {
+   "material": "rap-seg",
+   "case": "A",
+   "assign": {
+    "W": "psola",
+    "X": "world",
+    "Y": "rubberband",
+    "Z": "signalsmith"
+   },
+   "voice_gain_db": 11.39,
+   "oke_gain_db": -6.03
+  },
+  {
+   "material": "rap-seg",
+   "case": "B",
+   "assign": {
+    "W": "rubberband",
+    "X": "psola",
+    "Y": "signalsmith",
+    "Z": "world"
+   },
+   "voice_gain_db": 11.39,
+   "oke_gain_db": -6.03
+  },
+  {
+   "material": "rap-seg",
+   "case": "C",
+   "assign": {
+    "W": "world",
+    "X": "psola",
+    "Y": "signalsmith",
+    "Z": "rubberband"
+   },
+   "voice_gain_db": 11.39,
+   "oke_gain_db": -6.03
+  },
+  {
+   "material": "rap-seg",
+   "case": "D",
+   "assign": {
+    "W": "rubberband",
+    "X": "psola",
+    "Y": "signalsmith",
+    "Z": "world"
+   },
+   "voice_gain_db": 11.39,
+   "oke_gain_db": -6.03
+  },
+  {
+   "material": "uta-seg",
+   "case": "Z",
+   "assign": {
+    "W": "psola",
+    "X": "world",
+    "Y": "rubberband",
+    "Z": "signalsmith"
+   },
+   "voice_gain_db": 10.61,
+   "oke_gain_db": -5.83
+  },
+  {
+   "material": "uta-seg",
+   "case": "A",
+   "assign": {
+    "W": "signalsmith",
+    "X": "world",
+    "Y": "rubberband",
+    "Z": "psola"
+   },
+   "voice_gain_db": 10.61,
+   "oke_gain_db": -5.83
+  },
+  {
+   "material": "uta-seg",
+   "case": "B",
+   "assign": {
+    "W": "world",
+    "X": "psola",
+    "Y": "rubberband",
+    "Z": "signalsmith"
+   },
+   "voice_gain_db": 10.61,
+   "oke_gain_db": -5.83
+  },
+  {
+   "material": "uta-seg",
+   "case": "C",
+   "assign": {
+    "W": "world",
+    "X": "signalsmith",
+    "Y": "rubberband",
+    "Z": "psola"
+   },
+   "voice_gain_db": 10.61,
+   "oke_gain_db": -5.83
+  },
+  {
+   "material": "uta-seg",
+   "case": "D",
+   "assign": {
+    "W": "signalsmith",
+    "X": "psola",
+    "Y": "rubberband",
+    "Z": "world"
+   },
+   "voice_gain_db": 10.61,
+   "oke_gain_db": -5.83
+  }
+ ],
+ "note": "回答完了まで開かない。W/X/Y/Z → エンジン名の対応表"
+}
