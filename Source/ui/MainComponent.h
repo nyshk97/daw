@@ -459,6 +459,7 @@ private:
     VocalNoteAudition noteAudition;      // 上下ドラッグ中に「その音」を合成して鳴らす（分解はドラッグ開始時に1回）
     std::optional<ClipDomains::Request> pitchPreviewRequest; // 現在要求中のプレビュー（digest で照合）
     ContentDigest pitchPreviewDigest;
+    RenderFingerprint pitchPreviewFingerprint; // 現在要求中/装着中のプレビューの指紋（recipe 無しの signalsmith プレビューも照合できる）
     juce::uint64 pitchAnalysisGeneration = 0; // ワーカーへ渡す generation（切替・再解析で進む）
     bool pitchReanalyzing = false;            // 再解析（確定状態から）の結果待ち
     juce::String pitchBlockedMessage;

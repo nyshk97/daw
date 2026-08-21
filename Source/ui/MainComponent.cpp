@@ -375,6 +375,10 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         // 完了は装着だけで dirty にしない（値の変更時に dirty 済み。音は同じで再生成できる）
         if (ClipDomains::attachRenderResult (*project, renderSampleRate(), domain))
         {
+            // ピッチエディタのジェスチャー後に残していた previewDomain は、本レンダーが追いついたここで外す（音飛びなし）
+            if (auto* target = pitchTargetClip(); target != nullptr && ! pitchPreviewActive() && target->previewDomain != nullptr
+                && ! target->renderPending (renderSampleRate()))
+                pitchClearPreview();
             pushAudioValueSnapshot();
             timeline.refresh();
         }

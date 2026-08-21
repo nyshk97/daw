@@ -645,6 +645,11 @@
   スライダー途中のプレビューは clip を書かず previewDomain 経路（`pitchPreviewActive()` = 初回/変更プレビュー or 編集
   ジェスチャー中の committed）で鳴りだけ追従し、終了時に必ず外す。undo/redo は receiver（performUndo/Redo）がジェスチャー中は
   無視（View 側もスライダー中を飲む）。dead state 削除
+- 2026-08-21 /code-review 16 回目（previewDomain 経路化の聴こえ方）: 中立 working のプレビューは「activeDomain に補正が無ければ外す／
+  補正付きでレンダー済みなら補正なしの鳴り（無加工は中立ドメインを即時・移調伸縮ありは recipe 無しの signalsmith をプレビュー
+  経路に）」に分岐。previewDomain を外すのは「取消（pitchEndEdit）」と「本レンダーの装着（renderCache.onRenderReady）」の 2 箇所
+  だけにして、確定直後に旧音へ戻る音飛びを無くした。外部置換で終わったジェスチャーは変更プレビューを鳴らし直す。
+  プレビューの照合は recipe digest でなく指紋全体。残課題: 同じ recipe を preview/本レンダーで二重合成（preview 結果の seed）
 - 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
   自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
   検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、

@@ -265,9 +265,12 @@ void MainComponent::wirePitchEditor()
     pitchPreviewCache.onRenderReady = [this] (const std::shared_ptr<const RenderedDomain>& domain)
     {
         auto* clip = pitchTargetClip();
-        if (domain == nullptr || clip == nullptr || ! pitchPreviewActive() || domain->recipeDigest != pitchPreviewDigest
-            || domain->sourceAudio.get() != clip->audio.get())
-            return; // 遅着・不一致は捨てる（generation はモード変更のたびに digest が変わることで代替）
+        if (domain == nullptr || clip == nullptr || ! pitchPreviewActive())
+            return;
+        const RenderFingerprint got { domain->sourceAudio.get(), domain->domainOffset, domain->domainLength, domain->semitones,
+                                      domain->ratio, domain->sampleRate, domain->recipeDigest };
+        if (got != pitchPreviewFingerprint || domain->sourceAudio.get() != clip->audio.get())
+            return; // 遅着・不一致は捨てる（指紋はモード変更のたびに変わるので generation の代わりになる）
         clip->previewDomain = domain;
         pitchSuppressPreviewFailDigest = {}; // 成功したら抑止は外す
         pushAudioValueSnapshot();
@@ -455,18 +458,52 @@ void MainComponent::pitchRequestPreview (bool suppressFailToast)
         pitchPreviewRequest.reset();
         return;
     }
+    const auto sr = renderSampleRate();
     if (pitchSession.working().isAudiblyNeutral())
     {
-        // 開いた直後（Strength 0%・タイミング未編集）: 補正としては中立。WORLD を通さず previewDomain を外す
-        //（移調・伸縮があれば activeDomain = signalsmith の音がそのまま鳴る。確定時の requestedRecipeDigest と同じ規則）
-        const bool had = clip->previewDomain != nullptr;
-        clip->previewDomain = nullptr;
-        pitchPreviewRequest.reset();
+        // 中立（Strength 0%・タイミング未編集）: 確定時の requestedRecipeDigest と同じく recipe を出さない。
+        // activeDomain に補正が入っていなければ外すだけでよい（無加工 or signalsmith の音がそのまま鳴る）。
+        // 補正付きでレンダー済みなら、外すと旧補正が鳴ってしまうので「補正なしの鳴り」をプレビューに載せる
+        const bool activeHasCorrection = clip->activeDomain != nullptr && clip->activeDomain->correction != nullptr;
+        if (! activeHasCorrection)
+        {
+            const bool had = clip->previewDomain != nullptr;
+            clip->previewDomain = nullptr;
+            pitchPreviewRequest.reset();
+            pitchPreviewDigest = {};
+            pitchPreviewFingerprint = {};
+            if (had) { pushAudioValueSnapshot(); timeline.refresh(); }
+            return;
+        }
+        if (clip->transposeSemitones == 0 && juce::exactlyEqual (clip->stretchRatio, 1.0))
+        {
+            clip->previewDomain = ClipDomains::makeNeutralDomain (clip->audio, clip->offsetSamples, clip->lengthSamples, sr); // 即座
+            pitchPreviewRequest.reset();
+            pitchPreviewDigest = {};
+            pitchPreviewFingerprint = {};
+            pushAudioValueSnapshot();
+            timeline.refresh();
+            return;
+        }
+        // 移調・伸縮あり: recipe 無し（signalsmith）の要求をプレビュー経路に積む
+        ClipDomains::Request request;
+        request.fingerprint = { clip->audio.get(), clip->offsetSamples, clip->lengthSamples, clip->transposeSemitones,
+                                clip->stretchRatio, sr, ContentDigest{} };
+        request.sourceAudio = clip->audio;
         pitchPreviewDigest = {};
-        if (had) { pushAudioValueSnapshot(); timeline.refresh(); }
+        pitchPreviewFingerprint = request.fingerprint;
+        if (auto cached = pitchPreviewCache.lookup (request.fingerprint))
+        {
+            clip->previewDomain = cached;
+            pitchPreviewRequest.reset();
+            pushAudioValueSnapshot();
+            timeline.refresh();
+            return;
+        }
+        pitchPreviewRequest = std::move (request);
+        pitchPreviewCache.syncNow();
         return;
     }
-    const auto sr = renderSampleRate();
     auto recipe = std::make_shared<RenderRecipe>();
     recipe->sourceAudio = clip->audio;
     recipe->sampleRate = sr;
@@ -482,6 +519,7 @@ void MainComponent::pitchRequestPreview (bool suppressFailToast)
     request.sourceAudio = clip->audio;
     request.recipe = recipe;
     pitchPreviewDigest = request.fingerprint.recipe;
+    pitchPreviewFingerprint = request.fingerprint;
     if (auto cached = pitchPreviewCache.lookup (request.fingerprint))
     {
         clip->previewDomain = cached;
@@ -508,6 +546,7 @@ void MainComponent::pitchClearPreview()
             }
     pitchPreviewRequest.reset();
     pitchPreviewDigest = {};
+    pitchPreviewFingerprint = {};
     if (changed)
     {
         pushAudioValueSnapshot();
@@ -564,14 +603,25 @@ void MainComponent::pitchEndEdit()
         return;
     const auto edit = std::move (*pitchEdit);
     pitchEdit.reset(); // トークンは使い捨て（古いトークンで別の begin を消さない）
-    // ジェスチャー途中のプレビュー（previewDomain）はここで必ず外す（確定なら activeDomain が追従、取消なら元の音）
-    pitchClearPreview();
     const bool replaced = pitchSession.revision() != edit.revisionAtBegin; // 外部置換（巻き戻し・再解析の着地）はユーザーの編集ではない
     const bool changed = pitchSession.isOpen() && ! replaced && ! (pitchSession.working() == edit.before);
+    // previewDomain を外すのは「取消（ここ）」か「本レンダーの装着（renderCache.onRenderReady）」の 2 箇所だけ。
+    // 確定時に先に外すと本レンダー（debounce＋合成）が着くまで旧音へ戻る
     if (changed)
+    {
         pitchApplyWorking();
-    else if (! edit.committedInitial)
-        undoStack.abandon (edit.token); // 変化なし or 外部置換: undo も dirty も無し（判定はここ 1 箇所）
+        if (auto* clip = pitchTargetClip(); clip != nullptr && ! clip->renderPending (renderSampleRate()))
+            pitchClearPreview(); // 本レンダー不要（中立確定など）なら今すぐ activeDomain の音
+    }
+    else
+    {
+        if (! edit.committedInitial)
+            undoStack.abandon (edit.token); // 変化なし or 外部置換: undo も dirty も無し（判定はここ 1 箇所）
+        if (replaced && pitchSession.hasPreview())
+            pitchRequestPreview(); // 置換後のプレビュー（変更プレビューの着地）を鳴らし直す
+        else if (! replaced)
+            pitchClearPreview();   // 取消: 元の音へ
+    }
     if (replaced)
         Log::info ("pitch.edit_replaced", "clip=" + juce::String (pitchSession.clipId()));
 }
