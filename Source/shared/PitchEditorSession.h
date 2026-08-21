@@ -75,9 +75,9 @@ public:
     void analysisFinished (std::shared_ptr<const PitchCurve> curve, juce::int64 domainOffset, juce::int64 domainLength,
                            const std::optional<ProjectKey>& projectKey, bool sidecarWritten)
     {
-        ++currentRevision;
         if (currentMode != Mode::analyzing)
             return;
+        ++currentRevision;
         workingCurve = std::move (curve);
         detectedNotes = PitchNotes::detect (*workingCurve);
         workingState = PitchCorrections::autoSnap (*workingCurve, detectedNotes, domainOffset, domainLength,
@@ -100,9 +100,9 @@ public:
     // 変更プレビューの開始（キーに合わせ直す・再解析の結果を working に）。committed からのみ
     bool beginChangePreview (const PitchCorrection& proposal, std::shared_ptr<const PitchCurve> proposalCurve)
     {
-        ++currentRevision;
         if (currentMode != Mode::committed)
             return false;
+        ++currentRevision;
         backupState = workingState;
         backupCurve = workingCurve;
         workingState = proposal;
@@ -113,9 +113,9 @@ public:
     }
     std::optional<PitchCorrection> applyChange()
     {
-        ++currentRevision;
         if (currentMode != Mode::changePreview)
             return std::nullopt;
+        ++currentRevision;
         currentMode = Mode::committed;
         backupState.reset();
         backupCurve = nullptr;
@@ -123,9 +123,9 @@ public:
     }
     bool cancelChange()
     {
-        ++currentRevision;
         if (currentMode != Mode::changePreview)
             return false;
+        ++currentRevision;
         workingState = backupState.value_or (workingState);
         workingCurve = backupCurve != nullptr ? backupCurve : workingCurve;
         detectedNotes = workingCurve != nullptr ? PitchNotes::detect (*workingCurve) : std::vector<DetectedPitchNote>{};
@@ -152,14 +152,18 @@ public:
     // undo 等で永続モデルが変わったときの再同期（committed のときだけ。working を永続値で置き換える）
     void syncCommitted (const PitchCorrection& committed, std::shared_ptr<const PitchCurve> curve)
     {
-        ++currentRevision;
         if (currentMode != Mode::committed)
             return;
-        workingState = committed;
+        if (! (workingState == committed))
+        {
+            workingState = committed;
+            ++currentRevision; // 実際に置き換わったときだけ（no-op 同期で進行中のドラッグを殺さない）
+        }
         if (curve != workingCurve)
         {
             workingCurve = std::move (curve);
             detectedNotes = workingCurve != nullptr ? PitchNotes::detect (*workingCurve) : std::vector<DetectedPitchNote>{};
+            ++currentRevision;
         }
     }
 

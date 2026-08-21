@@ -16135,7 +16135,7 @@ void testVocalNoteAudition()
 
 void testUndoAbandonLast()
 {
-    beginTest ("UndoStack abandonLast (begin without edit leaves no entry, redo preserved)");
+    beginTest ("UndoStack abandon (token-checked; redo and evicted entry restored)");
     Project project;
     project.sampleRate = 48000.0;
     Track track; track.id = project.allocateId(); project.tracks.push_back (track);
@@ -16145,17 +16145,28 @@ void testUndoAbandonLast()
     UndoStack::EditKind kind;
     expect (undo.undo (project, kind) && project.tracks[0].name != "a", "1件 undo");
     expect (undo.canRedo(), "redo あり");
-    undo.begin (project);          // 編集が不成立だった begin
+    const auto t1 = undo.begin (project); // 編集が不成立だった begin
     expect (! undo.canRedo(), "begin で redo は一旦消える");
-    undo.abandonLast();
-    expect (undo.canRedo(), "abandonLast で redo が戻る");
-    expect (! undo.canUndo(), "空の begin は残らない");
+    undo.abandon (t1);
+    expect (undo.canRedo() && ! undo.canUndo(), "abandon で redo が戻り、空の begin は残らない");
     expect (undo.redo (project, kind) && project.tracks[0].name == "a", "redo が効く");
-    // 間に undo が入ったら abandonLast は効かない
-    undo.begin (project); project.tracks[0].name = "b";
+    // 古いトークン／0 では何も消えない（深さが同じでも）
+    const auto t2 = undo.begin (project); project.tracks[0].name = "b"; // 本物の編集
+    undo.abandon (0);
+    undo.abandon (t2 - 1);
+    expect (undo.canUndo(), "無効トークンでは本物の undo を消さない");
+    // 間に undo が入ったら abandon は効かない
     undo.undo (project, kind);
-    undo.abandonLast();
-    expect (undo.canRedo() && project.tracks[0].name == "a", "undo 後の abandonLast は no-op");
+    undo.abandon (t2);
+    expect (undo.canRedo() && project.tracks[0].name == "a", "undo 後の abandon は no-op");
+    // maxDepth 境界: 押し出した 1 件が abandon で戻る
+    UndoStack deep;
+    for (int i = 0; i < 100; ++i) { deep.begin (project); project.tracks[0].name = juce::String (i); }
+    int depth = 0; { UndoStack probe = deep; Project p2 = project; while (probe.undo (p2, kind)) ++depth; }
+    const auto t3 = deep.begin (project);
+    deep.abandon (t3);
+    int depthAfter = 0; { Project p2 = project; while (deep.undo (p2, kind)) ++depthAfter; }
+    expect (depth == 100 && depthAfter == 100, "maxDepth で押し出された 1 件も戻る（到達範囲が減らない）");
 }
 
 } // namespace

@@ -631,6 +631,11 @@
   split・merge が false、の経路は begin を取り消す（初回確定を伴った begin は実変更なので残す）。差し替え検出は
   `PitchEditorSession::revision()`（O(1)・両モード）。範囲チェックと差し替え検出を mode 決定の前に移し、中断時は試聴も止める。
   `setNoteTarget` は bypass なら拒否（UI/debug 共通）、digest は bypass 中の pinned を含めない（旧 JSON 正規化で指紋不変）
+- 2026-08-21 /code-review 13 回目: abandon の対象確認を「深さ」から **begin のトークン**へ（`begin()` がトークンを返し
+  `abandon(token)`。無効トークン・間に undo/redo/pushCommitted があれば no-op。maxDepth で押し出した 1 件も退避して戻す。
+  退避分は abandon 不可になった時点で捨てる）。`pitchBeginEdit` は begin しない早期 return でもトークンを 0 に。
+  `revision` は working が実際に置き換わったときだけ進める（no-op 同期でドラッグを殺さない）。スライダーのクリックだけ・
+  bypass が 1 つも変わらない経路も onCancelEdit。選択は revision 変化でクリア。mouseUp の moved は各ステップの結果を使う
 - 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
   自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
   検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、

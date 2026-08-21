@@ -83,8 +83,13 @@ PitchEditorView::PitchEditorView()
         s.setPopupDisplayEnabled (true, false, this);
         s.setRange (lo, hi, step);
         s.setScrollWheelEnabled (false);
-        s.onDragStart = [this] { if (canEdit() && onBeginEdit) { sliderEditing = true; onBeginEdit(); } };
-        s.onDragEnd = [this] { sliderEditing = false; };
+        s.onDragStart = [this, &s] { if (canEdit() && onBeginEdit) { sliderEditing = true; sliderValueAtStart = s.getValue(); onBeginEdit(); } };
+        s.onDragEnd = [this, &s]
+        {
+            sliderEditing = false;
+            if (juce::exactlyEqual (s.getValue(), sliderValueAtStart) && onCancelEdit)
+                onCancelEdit(); // クリックだけ・元の値で離した: 区切りを取り消す（全経路で揃える）
+        };
         addAndMakeVisible (s);
     };
     setupSlider (strengthSlider, 0.0, 100.0, 1.0);
@@ -880,8 +885,8 @@ void PitchEditorView::showContextMenu (juce::Point<int> at)
         else if (result == 11 && safe->canEdit() && noteUnder >= 0)
         {
             if (safe->onBeginEdit) safe->onBeginEdit();
-            PitchCorrections::toggleNoteBypass (safe->session->mutableWorking(), noteUnder);
-            if (safe->onEdited) safe->onEdited();
+            if (PitchCorrections::toggleNoteBypass (safe->session->mutableWorking(), noteUnder)) { if (safe->onEdited) safe->onEdited(); }
+            else if (safe->onCancelEdit) safe->onCancelEdit();
             safe->repaint();
         }
         else if (result == 1 && safe->onReset) safe->onReset();
@@ -1051,13 +1056,7 @@ void PitchEditorView::mouseUp (const juce::MouseEvent& e)
         // working が差し替わっていたらユーザーが置いていない値なので適用しない
         const bool valid = canEdit() && session->revision() == d.revisionAtStart && d.noteIndex >= 0
                         && d.noteIndex < (int) session->working().notes.size();
-        if (d.mode == Drag::Mode::pitch)
-        {
-            const auto& n = valid ? session->working().notes[(size_t) d.noteIndex] : PitchNote{};
-            d.moved = valid && (n.targetMidi != d.targetAtStart || n.pinned != d.pinnedAtStart);
-        }
-        else
-            d.moved = valid && d.appliedDelta != 0;
+        d.moved = valid && d.moved; // moved は各ステップの setNoteTarget / appliedDelta で確定済み
         if (d.began && ! d.moved && onCancelEdit)
             onCancelEdit(); // begin は変更前に積むしかないので、不成立は後から取り消す
     }
@@ -1084,9 +1083,12 @@ void PitchEditorView::mouseDoubleClick (const juce::MouseEvent& e)
     const int idx = noteAt (computeGeometry (*clip), e.getPosition());
     if (idx < 0) return;
     if (onBeginEdit) onBeginEdit();
-    PitchCorrections::toggleNoteBypass (session->mutableWorking(), idx);
-    Log::info ("pitch.bypass", "note=" + juce::String (idx) + " on=" + juce::String ((int) session->working().notes[(size_t) idx].bypass));
-    if (onEdited) onEdited();
+    if (PitchCorrections::toggleNoteBypass (session->mutableWorking(), idx))
+    {
+        Log::info ("pitch.bypass", "note=" + juce::String (idx) + " on=" + juce::String ((int) session->working().notes[(size_t) idx].bypass));
+        if (onEdited) onEdited();
+    }
+    else if (onCancelEdit) onCancelEdit();
     repaint();
 }
 
@@ -1102,10 +1104,11 @@ bool PitchEditorView::keyPressed (const juce::KeyPress& key)
     if (Shortcuts::matches (key, Shortcuts::ID::pitchBypass) && canEdit() && ! selected.empty())
     {
         if (onBeginEdit) onBeginEdit();
+        bool any = false;
         for (int idx : selected)
-            if (idx >= 0 && idx < (int) session->working().notes.size())
-                PitchCorrections::toggleNoteBypass (session->mutableWorking(), idx);
-        if (onEdited) onEdited();
+            any = PitchCorrections::toggleNoteBypass (session->mutableWorking(), idx) || any;
+        if (any) { if (onEdited) onEdited(); }
+        else if (onCancelEdit) onCancelEdit();
         repaint();
         return true;
     }

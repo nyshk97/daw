@@ -108,6 +108,7 @@ private:
 
     void timerCallback() override
     {
+        if (session != nullptr && session->revision() != seenRevision) { seenRevision = session->revision(); selected.clear(); }
         if (statusText.isNotEmpty() && juce::Time::getMillisecondCounterHiRes() > statusUntil) { statusText.clear(); updateBar(); }
         repaint();
     }
@@ -128,6 +129,8 @@ private:
     bool bannerVisible = false;
     juce::String bannerText;
     bool sliderEditing = false;
+    double sliderValueAtStart = 0.0;
+    juce::uint64 seenRevision = 0; // working が差し替わったら選択をクリア（index が無効になる）
 
     // ---- ドラッグ状態 ----
     struct Drag

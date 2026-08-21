@@ -150,7 +150,7 @@ void resnap (PitchCorrection& pc, const PitchCurve& curve, juce::int64 domainOff
 bool setNoteTarget (PitchCorrection& pc, int noteIndex, int targetMidi, int targetAtStart, bool pinnedAtStart);
 // バイパスの切替。bypass = 素に戻す、なので pinned も外す（解除しても戻らない）
 void setNoteBypass (PitchCorrection& pc, int noteIndex, bool bypass);
-void toggleNoteBypass (PitchCorrection& pc, int noteIndex);
+bool toggleNoteBypass (PitchCorrection& pc, int noteIndex); // 範囲外なら false
 
 // 横ドラッグ: ノート i の開始/終了ノードを同量 Δ（render 座標）動かす。両隣の区間が吸収。
 // 端点（domainStart/End）を参照するノートは動かせない。区間別下限を下回る Δ はクランプ。

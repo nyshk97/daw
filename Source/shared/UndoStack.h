@@ -37,33 +37,43 @@ public:
     // フック内から begin()/undo()/redo() を呼び返さないこと（再入は想定しない）
     std::function<void()> willBegin;
 
-    // 編集操作の直前に呼ぶ。redo履歴は破棄される（直後に abandonLast() で取り消すまでは退避しておく）
-    void begin (const Project& project, EditKind kind = EditKind::structure)
+    // begin() の識別トークン。不成立だった編集の取り消し（abandon）に使う。0 = 無効
+    using BeginToken = juce::uint64;
+
+    // 編集操作の直前に呼ぶ。redo履歴は破棄される（直後に abandon() で取り消すまでは退避しておく）。
+    // 戻り値のトークンを呼び出し側が持ち、編集が不成立ならそのトークンで abandon() する
+    BeginToken begin (const Project& project, EditKind kind = EditKind::structure)
     {
         if (willBegin != nullptr)
             willBegin();
+        dropAbandonable();
         undoStates.push_back ({ project.tracks, project.markers,
                                 project.fadeOutStartSixteenths, project.fadeOutEndSixteenths,
                                 project.bpm, project.key, project.loopAnchor, kind });
         stripClipDomains (undoStates.back().tracks);
         if ((int) undoStates.size() > maxDepth)
+        {
+            evicted = std::move (undoStates.front()); // abandon で戻せるように退避
             undoStates.erase (undoStates.begin());
+        }
         abandonedRedo = std::move (redoStates);
         redoStates.clear();
-        lastBeginDepth = undoStates.size();
+        return lastToken = ++tokenCounter;
     }
 
     // 直前の begin() の取り消し。begin は変更**前**の状態を積むしかないので、その後に編集が不成立だった
     //（往復ドラッグで同じ段に戻った・クランプで動かなかった・split/merge が false）経路は後からこれで捨てる。
-    // 呼び出し側が「モデルは begin 時点から変わっていない」ことを保証する。退避していた redo 履歴も戻す
-    void abandonLast()
+    // 呼び出し側が「モデルは begin 時点から変わっていない」ことを保証する。対象はトークンで確認し
+    //（深さの一致だと無関係な undo を消す）、退避した redo 履歴と maxDepth で押し出した 1 件も戻す
+    void abandon (BeginToken token)
     {
-        if (undoStates.empty() || undoStates.size() != lastBeginDepth)
-            return; // 間に別の begin / undo が入っていたら触らない
+        if (token == 0 || token != lastToken || undoStates.empty())
+            return; // 間に別の begin / undo / redo が入っていたら触らない
         undoStates.pop_back();
+        if (evicted.has_value())
+            undoStates.insert (undoStates.begin(), std::move (*evicted));
         redoStates = std::move (abandonedRedo);
-        abandonedRedo.clear();
-        lastBeginDepth = 0;
+        dropAbandonable();
     }
 
     // ガチャ「残す」の確定: 呼び出し側が保持していた**仮配置前の tracks / BPM / キー / アンカー**を
@@ -82,12 +92,13 @@ public:
         if ((int) undoStates.size() > maxDepth)
             undoStates.erase (undoStates.begin());
         redoStates.clear();
+        dropAbandonable();
     }
 
     // kind には「復元した編集の種類」が入る（往復で同じ値。呼び出し側の同期範囲の判断に使う）
     bool undo (Project& project, EditKind& kind)
     {
-        lastBeginDepth = 0; // 以後 abandonLast は効かない
+        dropAbandonable(); // 以後 abandon は効かない
         if (undoStates.empty())
             return false;
         kind = undoStates.back().kind;
@@ -101,7 +112,7 @@ public:
 
     bool redo (Project& project, EditKind& kind)
     {
-        lastBeginDepth = 0;
+        dropAbandonable();
         if (redoStates.empty())
             return false;
         kind = redoStates.back().kind;
@@ -191,7 +202,14 @@ private:
 
     std::vector<State> undoStates, redoStates;
 
-    std::vector<State> abandonedRedo; // 直前の begin で捨てた redo（abandonLast で戻す）
-
-    size_t lastBeginDepth = 0;        // 直前の begin 直後の undoStates.size()（abandonLast の対象確認）
+    std::vector<State> abandonedRedo; // 直前の begin で捨てた redo（abandon で戻す）
+    std::optional<State> evicted;     // 直前の begin が maxDepth で押し出した 1 件（abandon で戻す）
+    BeginToken lastToken = 0, tokenCounter = 0;
+    // abandon 可能な状態を捨てる（退避分のメモリを次の begin まで抱えない）
+    void dropAbandonable()
+    {
+        lastToken = 0;
+        abandonedRedo.clear();
+        evicted.reset();
+    }
 };

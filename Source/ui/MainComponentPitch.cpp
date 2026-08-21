@@ -71,9 +71,10 @@ void MainComponent::wirePitchEditor()
     view.onEdited = [this] { pitchApplyWorking(); };
     view.onCancelEdit = [this]
     {
-        // begin の後に編集が不成立（往復ドラッグ・クランプ・split/merge 失敗）。初回確定を伴った begin は実変更なので残す
-        if (! pitchLastBeginCommitted)
-            undoStack.abandonLast();
+        // begin の後に編集が不成立（往復ドラッグ・クランプ・split/merge 失敗・値の変わらないスライダー）。
+        // 対象はトークンで確認（初回確定を伴った begin は実変更なので 0 にしてあり取り消さない）
+        undoStack.abandon (pitchBeginToken);
+        pitchBeginToken = 0;
     };
     view.onEnable = [this]
     {
@@ -535,17 +536,17 @@ void MainComponent::pitchWriteWorkingToClip (Clip& clip)
 
 void MainComponent::pitchBeginEdit()
 {
+    pitchBeginToken = 0; // begin しない早期 return でも古いトークンを残さない
     auto* clip = pitchTargetClip();
     if (clip == nullptr || ! pitchSession.editable())
         return;
-    pitchLastBeginCommitted = false;
     if (pitchSession.mode() == PitchEditorSession::Mode::initialPreview)
     {
         // 最初の明示編集で初回プレビューを確定（以後の編集は永続モデルへ直接）。undo はここで 1 件
-        undoStack.begin (*project);
+        const auto token = undoStack.begin (*project);
         if (pitchSession.commitInitial().has_value())
         {
-            pitchLastBeginCommitted = true;
+            (void) token; // 確定＝実変更なので abandon の対象にしない（pitchBeginToken は 0 のまま）
             clip->previewDomain = nullptr;
             pitchPreviewRequest.reset();
             pitchApplyWorking(); // 編集が成立しなくても（同じ段で離す等）確定は起きている: 書き込み・dirty・レンダー同期
@@ -553,7 +554,7 @@ void MainComponent::pitchBeginEdit()
         }
         return;
     }
-    undoStack.begin (*project); // 1 操作 = 1 件（ドラッグ開始・クリック列の先頭で区切る）
+    pitchBeginToken = undoStack.begin (*project); // 1 操作 = 1 件（最初の実変更・クリック列の先頭で区切る）
 }
 
 void MainComponent::pitchApplyWorking()

@@ -514,11 +514,12 @@ bool PitchCorrections::setNoteTarget (PitchCorrection& pc, int noteIndex, int ta
     return targetMidi != targetAtStart || n.pinned != pinnedAtStart;
 }
 
-void PitchCorrections::toggleNoteBypass (PitchCorrection& pc, int noteIndex)
+bool PitchCorrections::toggleNoteBypass (PitchCorrection& pc, int noteIndex)
 {
     if (noteIndex < 0 || noteIndex >= (int) pc.notes.size())
-        return;
+        return false;
     setNoteBypass (pc, noteIndex, ! pc.notes[(size_t) noteIndex].bypass);
+    return true;
 }
 
 void PitchCorrections::setNoteBypass (PitchCorrection& pc, int noteIndex, bool bypass)
