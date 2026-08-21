@@ -624,7 +624,8 @@
   dirty も undo も無し）、mouseUp は状態差で moved を決めるだけに。bypass 中はピッチドラッグを開始しない・`setNoteTarget` は
   bypass なら pin しない・読込/結合で bypass ⇒ pinned=false に正規化。ドラッグ中に working が差し替わったら（期待 digest 不一致）
   捨てる。`toggleNoteBypass`・digest 1 回計算・debug の no-op ガード・抑止クリアを `pitchRequestPreview` 先頭へ。
-  Re-analyze は「ゼロから」で割り切り、手で置いた音が戻る旨を状態表示（Cancel で戻せる）
+  Re-analyze は「ゼロから」で割り切り、手で置いた音が戻る旨を状態表示（Cancel で戻せる）。ドラッグの undo 区切り（onBeginEdit）は
+  モード決定時でなく**最初の実変更の直前**に（往復して同じ段で離す／クランプで動かないドラッグは undo を積まない）
 - 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
   自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
   検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、

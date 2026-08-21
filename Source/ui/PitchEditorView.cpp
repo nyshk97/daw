@@ -958,7 +958,7 @@ void PitchEditorView::mouseDrag (const juce::MouseEvent& e)
             drag.reset(); // bypass 中は音程を動かさない（聞こえないまま動かして解除時に跳ぶのを防ぐ）。横移動は可
             return;
         }
-        if (onBeginEdit) onBeginEdit(); // 1ドラッグ = 1件（区切りはドラッグの開始）
+        // undo の区切り（onBeginEdit）は最初の**実変更**の直前に呼ぶ（下）。往復して同じ段で離したドラッグは何も積まない
         if (d.mode == Drag::Mode::pitch && onDragAuditionStart) onDragAuditionStart (d.noteIndex);
     }
     auto& w = session->mutableWorking();
@@ -975,6 +975,13 @@ void PitchEditorView::mouseDrag (const juce::MouseEvent& e)
         const int target = juce::jlimit (0, 127, d.targetAtStart - (int) std::lround ((double) dy / geo.rowHeight));
         if (target != w.notes[(size_t) d.noteIndex].targetMidi)
         {
+            if (! d.began)
+            {
+                d.began = true;
+                if (onBeginEdit) onBeginEdit(); // 1ドラッグ = 1件（区切りは最初の実変更）。初回プレビューならここで確定
+                if (! canEdit() || d.noteIndex >= (int) session->working().notes.size()) { drag.reset(); return; }
+                d.workingDigestAtStart = session->working().digest(); // 確定で working は変わらないが念のため揃える
+            }
             // 各ステップで規則そのものを通す（途中状態＝確定状態。往復して戻れば pinned も戻り、聴いた音と残る音が一致する）
             d.moved = PitchCorrections::setNoteTarget (w, d.noteIndex, target, d.targetAtStart, d.pinnedAtStart);
             d.workingDigestAtStart = w.digest(); // 自分の編集を「期待する状態」として更新
@@ -999,6 +1006,16 @@ void PitchEditorView::mouseDrag (const juce::MouseEvent& e)
         if (step != 0)
         {
             const double sr = getSampleRate ? getSampleRate() : 48000.0;
+            if (! d.began)
+            {
+                // 実際に動くときだけ区切る（クランプで 0 なら積まない）
+                auto trial = w;
+                if (PitchCorrections::moveNote (trial, d.noteIndex, step, geo.domainOffset, geo.domainLength, geo.stretchRatio, sr) == 0)
+                    return;
+                d.began = true;
+                if (onBeginEdit) onBeginEdit();
+                if (! canEdit() || d.noteIndex >= (int) session->working().notes.size()) { drag.reset(); return; }
+            }
             const auto applied = PitchCorrections::moveNote (w, d.noteIndex, step, geo.domainOffset, geo.domainLength, geo.stretchRatio, sr);
             if (applied != 0)
             {

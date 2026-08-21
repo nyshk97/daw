@@ -139,6 +139,7 @@ private:
         juce::int64 appliedDelta = 0;   // 横移動の累積（render）
         juce::int64 prevEndAtStart = 0, nextStartAtStart = 0, startAtStart = 0, endAtStart = 0; // 斜線用（render）
         bool moved = false;
+        bool began = false; // onBeginEdit（undo の区切り・初回確定）を呼んだか。最初の実変更の直前に呼ぶ（往復で戻せば空の undo を積まない）
         bool snap = true;
         ContentDigest workingDigestAtStart; // ドラッグ中に working が差し替わった（巻き戻し・再解析の着地）ら確定しない
     };
