@@ -197,16 +197,16 @@
   ノート数の 10% 未満かつ連続しない、をすべて満たせば自作 YIN/pYIN で進む
 
 ### Phase 0 の耳判定 [人間👨‍💻]
-- [ ] ブラインドで聴いて回答を埋める（8010AM と MDR-7506 の両方）
-- [ ] 結果を見てエンジンを確定する。**足切り: 候補3エンジン（signalsmith / PSOLA ハイブリッド /
+- [x] ブラインドで聴いて回答を埋める（8010AM と MDR-7506 の両方）
+- [x] 結果を見てエンジンを確定する（**WORLD を採用**・2026-08-21）。**足切り: 候補3エンジン（signalsmith / PSOLA ハイブリッド /
   WORLD）はケース D を通過すること**（出力サンプル数が入力と一致・子音境界にクリック/二重化なし・
   耳で3以上）。通過者を **A → C → B** の順で順位付け。Rubber Band は天井参照で順位付け・採用対象外。
   全滅なら lab にその旨を書いて設計に戻る（タイミング編集の方式を見直す）
 
 ### Phase 0 の結論の記録 [AI🤖]
-- [ ] `docs/labs/pitch-correction.md` に結論・数値・回答へのリンクを追記。
+- [x] `docs/labs/pitch-correction.md` に結論・数値・回答へのリンクを追記。
   回答を `docs/labs/reference-beat-human-answers/` にコピー
-- [ ] 採用エンジンに応じて Phase 2 の手順を書き換える（ログ > 方針変更）
+- [x] 採用エンジンに応じて Phase 2 の手順を書き換える（ログ > 方針変更）
 
 ### Phase 1: 解析（ピッチ検出）とサイドカー [AI🤖]
 - [ ] `Source/audio/PitchAnalyzer.{h,cpp}`: YIN（lab の結論次第で pYIN の平滑化も）。
@@ -327,8 +327,11 @@
 - [ ] `Source/shared/RenderRecipe.h`: 不変のレンダー入力（ピッチカーブの対象部分・解決済み目標
   カーブ・時間写像・transpose・エンジン設定・digest）。`ClipDomains::Request` が強参照で持ち、
   ワーカーはこれだけを読む。`RenderedDomain` に同じ digest を保存
-- [ ] `ClipStretcher` を拡張（または `VocalResynth` を並置・lab の結論次第）: `RenderRecipe` を受けて
-  レンダー。フォルマント保持は常時ON。失敗は nullptr（原音でごまかさない）
+- [ ] `Source/audio/VocalResynth.{h,cpp}`（WORLD。`ClipStretcher` と並置）: `RenderRecipe` を受けてレンダー。
+  CheapTrick / D4C は原音から、f0 は自作 YIN のカーブ × 目標シフト（無声は 0）、時間写像は出力フレームごとに
+  入力フレームを最近傍参照して synthesize。フォルマント保持は WORLD の構造上自動（スペクトル包絡を触らない）。
+  WORLD は `mmorise/World` を FetchContent（SHA pin・BSD-3）で取得しソース直接コンパイル。
+  補正なしクリップは従来の `ClipStretcher`（signalsmith）のまま（無加工ビット一致の原則）。失敗は nullptr
 - [ ] `RenderFingerprint` に recipe digest を追加。`ClipDomains::collectRequests` で補正付き
   クリップの要求（recipe 生成）を作る。`Clip` に `PitchCorrection` を持たせ、**分割では丸ごとコピー
   （子の初回編集時に自範囲へ detach）**・複製でコピー。**プロジェクトキーの変更では再レンダーしない**（固定方式。`targetMidi` が真実の源）。
@@ -500,6 +503,10 @@
   `docs/labs/reference-beat-human-answers/2026-08-21-pitchlab-blind-answers.md`（目視ラベル節を含む）
 
 ### 方針変更
+- 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
+  自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
+  検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、
+  f0 は harvest でなく YIN のカーブを渡す。詳細は `docs/labs/pitch-correction.md` の「Phase 2 への含意」
 - 2026-08-21: 実声の目視ラベルはフレーム単位でなく「明らかな誤りの時刻と種類」を回答テンプレートの表に
   書く形式にした（plan どおり）。ブラインドの素材は実声 2 区間（rap 4–12s・uta 7.5–15.5s）に絞り、
   合成素材は数値評価のみ（耳で聴く意味が薄い）

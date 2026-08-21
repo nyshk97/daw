@@ -113,3 +113,41 @@ YIN が語頭・語尾を数フレーム短めに取る傾向（`pitch-correctio
 - PSOLA の「次の入力マークへ同期」は同じ有声区間（1.5 周期以内）に限る。隣の区間の先頭マークへ飛ぶと
   間の無声区間（子音バースト）が丸ごと欠ける
 - pyworld 0.3.5 は `pkg_resources` を import するため setuptools<81 が要る
+
+### 耳判定（人間・2026-08-21・8010AM / MDR-7506）
+
+回答: `reference-beat-human-answers/2026-08-21-pitchlab-blind-answers.md`（メモ形式。点数表は未記入で、
+順位と不具合の所見で判定）。対応表: 同 `-blind-map.json`。
+
+| ケース | rap-seg | uta-seg |
+|---|---|---|
+| Z 無加工 | 4つとも差なし | 4つとも差なし |
+| A 小補正 | PSOLA プツプツ・signalsmith こもる（WORLD / Rubber Band は可） | WORLD = Rubber Band > signalsmith > PSOLA |
+| B +3半音 | PSOLA プツプツ・残りでは WORLD が最も自然 | WORLD が頭1つ抜けて良い |
+| C ケロケロ | WORLD だけ使える（PSOLA プツプツ・signalsmith 変・Rubber Band さらに変） | signalsmith / Rubber Band は使えない・WORLD > PSOLA |
+| D 横移動 | PSOLA プツプツ・signalsmith わずかに同傾向 | Rubber Band 最良・他3つ同等 |
+
+### 結論
+
+- **再合成エンジン = WORLD を採用**（BSD-3。C++ は `mmorise/World`）。全ケースで上位か最上位、ケロケロは
+  唯一/最良。無加工（Z）は数値で原音と 0.25〜0.73 の差があったが耳では区別がつかず、「再合成臭」は
+  実用上の問題にならない。ケース D 通過（長さ一致・境界の指摘なし）
+- **自作 TD-PSOLA は不採用**: 両素材・補正のある全ケースで「プツプツ」。ケース D 固有でなく A/B/C でも
+  出るので境界処理ではなく周期処理（ピッチマークの位置精度・グレインの継ぎ目）の実装欠陥。数値
+  （達成誤差・クリック比）では見えなかった＝クリック比の検出器は周期単位の不連続を拾えない。
+  WORLD が既に全条件を満たすので直して再戦はしない
+- **位相ボコーダー系（signalsmith / Rubber Band R3）はケロケロで脱落**。数値（中央値 36〜57cent・
+  平らにならない）と耳が一致。小補正では Rubber Band は良い（uta A で同率1位・D で最良）が GPL で
+  採用対象外。signalsmith は A で「こもる」
+- **検出 = 自作 YIN を採用**（合格線クリア・目視ラベルで致命的な誤りの申告なし）。CREPE は不要
+
+### Phase 2 への含意
+
+- `ClipStretcher`（signalsmith）は v20 の移調・伸縮用に残し、補正付きクリップは **WORLD 経路
+  （`VocalResynth`）で1パス**（補正＋transpose＋時間写像）。補正なしクリップは従来どおり signalsmith
+  （耳で差がないとはいえ、無加工ビット一致の原則は既存経路で守る）
+- WORLD の f0 入力は **harvest でなく自作 YIN のカーブ**を渡す（harvest は Python で 8s に 2〜6s。解析は
+  1回で済ませる）。CheapTrick（スペクトル包絡）と D4C（非周期性）は原音から、f0 だけ目標カーブへ差し替えて
+  synthesize。時間写像は lab と同じく出力フレームごとに入力フレームを引く（sp/ap/f0 を最近傍で参照）
+- 無声フレームは f0=0 のまま（WORLD は f0=0 を無声として合成）。有声度マスクは f0 側で表現できる
+- WORLD の取得は signalsmith と同じ FetchContent（commit SHA pin・ヘッダ＋ソース直接コンパイル）
