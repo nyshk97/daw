@@ -15876,6 +15876,7 @@ void testPitchProjectRoundtrip()
         // previewDomain の寿命規則: 活動中 or 要求未達なら残す・それ以外は外す
         {
             Clip c = live;
+            c.pitchCorrection.reset(); // activeDomain（中立）と要求を一致させる
             c.previewDomain = c.activeDomain;
             expect (! c.dropPreviewIfCurrent (sr, /*previewActive=*/ true), "活動中は残す");
             c.transposeSemitones = 3; // 要求が実効に追いついていない
