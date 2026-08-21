@@ -589,6 +589,10 @@
   changePreview 同期／`applyStretchRequest` の4箇所をそこへ ③ 中立補正はレンダー失敗の巻き戻しで保持 ④ 初回確定の枝で
   dirty＋requestSync。軽微: `Clip::cloneForNewId()` で複製 5 経路を統一・重複行削除・「有効」は音に出ているときだけ。
   見送り: 変更プレビュー中の移調ホイール連打（最大 2 件で実害小）・再解析提案とタイミング編集の食い違い（同一検出器では到達しない）
+- 2026-08-21 /code-review 3 回目: ① `Clip::resetRenderDomainToSelf()` 自体が「共有中の補正を自範囲へ写してから戻す」
+  ようにして API で塞いだ（reconcile・巻き戻し・読込・ガチャ・applyStretchRequest の全呼び出しが自動で従う。2 回続けて
+  同じ型の漏れが出たため呼び出し側の規律をやめた）② 巻き戻しの「中立補正は保持」を `hasNeutralPitchCorrection()` で両枝に
+  統一 ③ 保存経路の述語・初回確定の重複・debug の同一分岐を整理。「（有効）」は補正データを持てば出し、中立は「編集あり・0%」
 - 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
   自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
   検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、

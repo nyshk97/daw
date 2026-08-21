@@ -2555,8 +2555,8 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
         juce::PopupMenu::Item pitchItem (jp (u8"ピッチ補正…"));
         pitchItem.itemID = 10;
         pitchItem.isEnabled = onPitchEditRequested != nullptr;
-        if (clip.pitchCorrection.has_value() && ! clip.pitchCorrection->isAudiblyNeutral())
-            pitchItem.shortcutKeyDescription = jp (u8"有効");
+        if (clip.pitchCorrection.has_value())
+            pitchItem.shortcutKeyDescription = clip.pitchCorrection->isAudiblyNeutral() ? jp (u8"編集あり・0%") : jp (u8"有効");
         menu.addItem (pitchItem);
     }
     menu.addItem (itemWithKey (2, jp (u8"複製"), Shortcuts::ID::repeatItem, ! pendingClip));

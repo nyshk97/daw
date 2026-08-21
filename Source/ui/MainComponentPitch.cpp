@@ -523,13 +523,9 @@ void MainComponent::pitchBeginEdit()
         undoStack.begin (*project);
         if (pitchSession.commitInitial().has_value())
         {
-            pitchWriteWorkingToClip (*clip);
             clip->previewDomain = nullptr;
             pitchPreviewRequest.reset();
-            // 編集が成立しなくても（同じ段で離す等）確定は起きているので、ここで dirty とレンダー同期まで済ませる
-            setDirty (true);
-            renderCache.requestSync();
-            timeline.refresh();
+            pitchApplyWorking(); // 編集が成立しなくても（同じ段で離す等）確定は起きている: 書き込み・dirty・レンダー同期
             Log::info ("pitch.commit_initial", "clip=" + juce::String (clip->id));
         }
         return;
@@ -657,8 +653,7 @@ void MainComponent::debugPitchAction (const juce::String& action)
     else if (action == "bounce") startBounceFlow();
     else if (action == "kero")
     {
-        if (pitchSession.mode() == PitchEditorSession::Mode::initialPreview) { pitchBeginEdit(); }
-        else pitchBeginEdit();
+        pitchBeginEdit();
         pitchSession.mutableWorking().speedMs = PitchCorrection::keroSpeedMs;
         pitchApplyWorking();
     }

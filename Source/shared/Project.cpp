@@ -116,6 +116,14 @@ std::vector<PeakRange> buildFullPeakCache (const juce::AudioBuffer<float>& audio
     return peaks;
 }
 
+void Clip::resetRenderDomainToSelf()
+{
+    if (pitchCorrection.has_value() && sharesInheritedDomain())
+        pitchCorrection = pitchCorrectionInOwnDomain();
+    renderDomainOffset = offsetSamples;
+    renderDomainLength = lengthSamples;
+}
+
 std::optional<PitchCorrection> Clip::pitchCorrectionInOwnDomain() const
 {
     if (! pitchCorrection.has_value())
@@ -768,8 +776,7 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
                 if (! juce::exactlyEqual (clip.stretchRatio, 1.0))
                     clipObj->setProperty ("stretchRatio", clip.stretchRatio);
                 // レンダードメイン（v20）。自身の範囲と同じなら省略（未設定＝自範囲で読める）
-                if (clip.requestedDomainOffset() != clip.offsetSamples
-                    || clip.requestedDomainLength() != clip.lengthSamples)
+                if (clip.sharesInheritedDomain())
                 {
                     clipObj->setProperty ("renderDomainOffset", clip.requestedDomainOffset());
                     clipObj->setProperty ("renderDomainLength", clip.requestedDomainLength());

@@ -115,10 +115,15 @@ struct Clip
     {
         return renderDomainLength > 0 ? renderDomainLength : lengthSamples;
     }
-    void resetRenderDomainToSelf()
+    // レンダードメインをクリップ自身の範囲へ戻す。**親の domain を共有していた補正は先に自範囲へ写す**
+    //（写さずに戻すと、以後 sharesInheritedDomain() が false になり誰も detach しない＝親座標のノートが
+    // 自範囲で解釈されて誤った目標音・再読込で無効化。呼び出し側の規律でなくここで塞ぐ）。実装は Project.cpp
+    void resetRenderDomainToSelf();
+    // 現在の補正を保持すべきか（巻き戻し用）: 中立（Strength 0・Δ 0）の補正は音に出ていないだけでノートの手直しを
+    // 失う理由が無い。失敗した指紋の中身に関係なく両枝で同じ判定を使う
+    bool hasNeutralPitchCorrection() const
     {
-        renderDomainOffset = offsetSamples;
-        renderDomainLength = lengthSamples;
+        return pitchCorrection.has_value() && pitchCorrection->isAudiblyNeutral();
     }
 
     // 要求指紋（sampleRate は呼び出し側の実効SR）。RenderCache のキー・pending 判定に使う
