@@ -66,7 +66,8 @@ private:
     struct Geometry
     {
         juce::Rectangle<int> canvas;   // 鍵盤・ルーラーを除いたグリッド領域
-        juce::int64 viewStart = 0, viewEnd = 1; // render 座標（クリップ view）
+        juce::int64 viewStart = 0, viewEnd = 1; // 表示範囲（render 座標。ズーム・スクロール後）
+        juce::int64 clipRenderStart = 0;        // クリップ先頭の render 座標（タイムライン位置 = startSample に対応）
         double pxPerSample = 0.0;
         int midiLo = 48, midiHi = 84;  // 表示する音域 [lo, hi)
         float rowHeight = 1.0f;
@@ -77,6 +78,9 @@ private:
         float xForSource (juce::int64 source) const { return xForRender (timeMap.map (source)); }
         float yForMidi (double midi) const { return (float) canvas.getY() + (float) (midiHi - midi) * rowHeight; }
         juce::int64 renderForX (float x) const { return viewStart + (juce::int64) std::llround ((x - (float) canvas.getX()) / pxPerSample); }
+        // render 座標 ⇄ タイムライン位置（クリップの startSample 基準）
+        juce::int64 timelineForRender (juce::int64 render, juce::int64 clipStartSample) const { return clipStartSample + (render - clipRenderStart); }
+        juce::int64 renderForTimeline (juce::int64 timeline, juce::int64 clipStartSample) const { return clipRenderStart + (timeline - clipStartSample); }
     };
     Geometry computeGeometry (const Clip& clip) const;
     int noteAt (const Geometry& g, juce::Point<int> p) const; // -1 = 無し

@@ -311,6 +311,7 @@ PitchEditorView::Geometry PitchEditorView::computeGeometry (const Clip& clip) co
     const auto clipEnd = juce::jmax (clipStart + 1, g.timeMap.map (clip.offsetSamples + clip.lengthSamples));
     const auto visible = juce::jmax ((juce::int64) 1, (juce::int64) std::llround ((double) (clipEnd - clipStart) / zoom));
     const auto maxScroll = juce::jmax ((juce::int64) 0, clipEnd - clipStart - visible);
+    g.clipRenderStart = clipStart;
     g.viewStart = clipStart + juce::jlimit ((juce::int64) 0, maxScroll, scrollRender);
     g.viewEnd = g.viewStart + visible;
     g.pxPerSample = (double) juce::jmax (1, g.canvas.getWidth()) / (double) visible;
@@ -400,7 +401,7 @@ void PitchEditorView::drawGrid (juce::Graphics& g, const Geometry& geo, const Cl
     const double bpm = getBpm ? getBpm() : 120.0;
     const double beat = sr * 60.0 / juce::jmax (20.0, bpm);
     const double sixteenth = beat / 4.0;
-    const juce::int64 timelineStart = clip.startSample; // view 先頭のタイムライン位置
+    const juce::int64 timelineStart = geo.timelineForRender (geo.viewStart, clip.startSample); // 表示左端のタイムライン位置（スクロール込み）
     auto ruler = juce::Rectangle<int> (geo.canvas.getX(), geo.canvas.getY() - rulerHeight, geo.canvas.getWidth(), rulerHeight);
     g.setColour (Theme::rulerBg);
     g.fillRect (ruler);
@@ -582,7 +583,7 @@ void PitchEditorView::paint (juce::Graphics& g)
     // 再生ヘッド（メインと連動）
     if (getPlayheadSample)
     {
-        const auto render = geo.viewStart + (getPlayheadSample() - clip->startSample);
+        const auto render = geo.renderForTimeline (getPlayheadSample(), clip->startSample);
         if (render >= geo.viewStart && render <= geo.viewEnd)
         {
             g.setColour (Theme::playhead);
@@ -748,9 +749,9 @@ void PitchEditorView::mouseDrag (const juce::MouseEvent& e)
             const double sr = getSampleRate ? getSampleRate() : 48000.0;
             const double bpm = getBpm ? getBpm() : 120.0;
             const double sixteenth = sr * 60.0 / juce::jmax (20.0, bpm) / 4.0;
-            const double timelineStart = (double) clip->startSample + (double) (d.startAtStart + wantDelta - geo.viewStart);
-            const double snapped = std::round (timelineStart / sixteenth) * sixteenth;
-            wantDelta = (juce::int64) std::llround (snapped - (double) clip->startSample) + geo.viewStart - d.startAtStart;
+            const double timelinePos = (double) geo.timelineForRender (d.startAtStart + wantDelta, clip->startSample);
+            const double snapped = std::round (timelinePos / sixteenth) * sixteenth;
+            wantDelta = geo.renderForTimeline ((juce::int64) std::llround (snapped), clip->startSample) - d.startAtStart;
         }
         const auto step = wantDelta - d.appliedDelta;
         if (step != 0)
