@@ -36,6 +36,7 @@
 #include "../audio/BounceRenderer.h"
 #include "../audio/BufferAudition.h"
 #include "../audio/PitchAnalysisWorker.h"
+#include "../audio/VocalNoteAudition.h"
 #include "../audio/PlaybackEngine.h"
 #include "../audio/RenderCache.h"
 #include "../audio/ReferenceAnalyzer.h"
@@ -449,6 +450,7 @@ private:
     PitchAnalysisWorker pitchWorker;     // 解析ワーカー（pull 型）
     RenderCache pitchPreviewCache;       // プレビュー専用のレンダー経路（通常の装着・巻き戻しを通さない）
     BufferAudition bufferAudition;       // ブロブクリックの単独試聴
+    VocalNoteAudition noteAudition;      // 上下ドラッグ中に「その音」を合成して鳴らす（分解はドラッグ開始時に1回）
     std::optional<ClipDomains::Request> pitchPreviewRequest; // 現在要求中のプレビュー（digest で照合）
     ContentDigest pitchPreviewDigest;
     juce::uint64 pitchAnalysisGeneration = 0; // ワーカーへ渡す generation（切替・再解析で進む）

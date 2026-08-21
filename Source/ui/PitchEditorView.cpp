@@ -919,6 +919,7 @@ void PitchEditorView::mouseDrag (const juce::MouseEvent& e)
         if (std::abs (dx) < 4 && std::abs (dy) < 4) return;
         d.mode = std::abs (dy) > std::abs (dx) ? Drag::Mode::pitch : Drag::Mode::time;
         if (onBeginEdit) onBeginEdit(); // 1ドラッグ = 1件（区切りはドラッグの開始）
+        if (d.mode == Drag::Mode::pitch && onDragAuditionStart) onDragAuditionStart (d.noteIndex);
     }
     auto& w = session->mutableWorking();
     if (d.noteIndex < 0 || d.noteIndex >= (int) w.notes.size()) return;
@@ -929,6 +930,7 @@ void PitchEditorView::mouseDrag (const juce::MouseEvent& e)
         {
             w.notes[(size_t) d.noteIndex].targetMidi = target;
             d.moved = true;
+            if (onDragAuditionUpdate) onDragAuditionUpdate(); // 動かしながら、その音が鳴る
             repaint();
         }
     }
@@ -968,6 +970,7 @@ void PitchEditorView::mouseUp (const juce::MouseEvent& e)
         return;
     auto d = *drag;
     drag.reset();
+    if (d.mode == Drag::Mode::pitch && onDragAuditionEnd) onDragAuditionEnd();
     if (d.moved)
     {
         Log::info ("pitch.drag", juce::String (d.mode == Drag::Mode::pitch ? "pitch" : "time") + " note=" + juce::String (d.noteIndex)

@@ -153,6 +153,7 @@ target_sources(daw PRIVATE
     Source/audio/PitchAnalyzer.cpp
     Source/audio/PitchAnalysisWorker.cpp
     Source/audio/VocalResynth.cpp
+    Source/audio/VocalNoteAudition.cpp
     Source/audio/RenderCache.cpp
     Source/audio/BusDelay.cpp
     Source/audio/BusReverb.cpp
@@ -343,6 +344,7 @@ target_sources(daw_tests PRIVATE
     Source/audio/PitchAnalyzer.cpp
     Source/audio/PitchAnalysisWorker.cpp
     Source/audio/VocalResynth.cpp
+    Source/audio/VocalNoteAudition.cpp
     Source/audio/RenderCache.cpp
     Source/audio/BusDelay.cpp
     Source/audio/BusReverb.cpp

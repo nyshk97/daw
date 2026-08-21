@@ -43,6 +43,9 @@ public:
     std::function<void()> onRetrySidecar;
     std::function<void()> onSetProjectKey;       // 推定キーを「プロジェクトに設定」
     std::function<void (int noteIndex)> onAudition;
+    std::function<void (int noteIndex)> onDragAuditionStart; // 上下ドラッグ開始（その音の分解をキャッシュ）
+    std::function<void()> onDragAuditionUpdate;             // 目標音が変わった（合成して鳴らし直す）
+    std::function<void()> onDragAuditionEnd;
     std::function<bool (const juce::KeyPress&)> onKey; // メインへ転送（Space / ⌘Z / , .）
 
     void refresh(); // session の状態が変わったら呼ぶ（バーの表示を更新して再描画）

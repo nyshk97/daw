@@ -48,6 +48,7 @@ void operator delete[] (void* p, std::size_t) noexcept { std::free (p); }
 #include "shared/RenderRecipe.h"
 #include "shared/PitchEditorSession.h"
 #include "audio/VocalResynth.h"
+#include "audio/VocalNoteAudition.h"
 #include "audio/RenderCache.h"
 #include "audio/MasterLimiter.h"
 #include "audio/PlaybackEngine.h"
@@ -15977,6 +15978,40 @@ void testPitchEditorSession()
     expect (s.mode() == PitchEditorSession::Mode::committed && s.working() == proposal && s.editable(), "補正ありは確定状態のまま");
 }
 
+void testVocalNoteAudition()
+{
+    beginTest ("VocalNoteAudition: per-note prepare + render follows target (drag audition)");
+    const double sr = 48000.0;
+    auto voice = makeSynthVoice (sr);
+    auto curve = std::make_shared<const PitchCurve> (PitchAnalyzer::analyze (*voice.audio, sr));
+    const auto detected = PitchNotes::detect (*curve);
+    const auto total = (juce::int64) voice.audio->getNumSamples();
+    auto pc = PitchCorrections::autoSnap (*curve, detected, 0, total, std::nullopt, PitchScaleMode::chromatic, {});
+    expect (pc.notes.size() >= 3, "ノートがある");
+    const int idx = 2;
+    const auto s = pc.resolve (pc.notes[(size_t) idx].start, 0, total), e = pc.resolve (pc.notes[(size_t) idx].end, 0, total);
+    VocalNoteAudition au;
+    const auto t0 = juce::Time::getMillisecondCounterHiRes();
+    expect (au.prepare (*voice.audio, *curve, sr, s, e), "分解できる");
+    const auto prepMs = juce::Time::getMillisecondCounterHiRes() - t0;
+    pc.notes[(size_t) idx].targetMidi += 2; // ドラッグで +2
+    const auto t1 = juce::Time::getMillisecondCounterHiRes();
+    auto buf = au.render (pc, *curve, 0, total, 0);
+    const auto renderMs = juce::Time::getMillisecondCounterHiRes() - t1;
+    std::cout << "  prepare=" << prepMs << "ms render=" << renderMs << "ms len=" << (buf ? buf->getNumSamples() : 0) << std::endl;
+    expect (buf != nullptr && buf->getNumSamples() == (int) (e - s), "ノート範囲の長さで合成される");
+    expect (prepMs < 2000.0 && renderMs < 1000.0, "ドラッグ中に使える速さ（Debug で分解 ~170ms・合成 ~130ms。Release は数分の1）");
+    if (buf != nullptr)
+    {
+        const auto cy = PitchAnalyzer::analyze (*buf, sr);
+        std::vector<double> m;
+        for (int k = 4; k < cy.numFrames() - 4; ++k) if (cy.isVoiced (k)) m.push_back (cy.midiAt (k));
+        std::sort (m.begin(), m.end());
+        const double median = m.empty() ? 0 : m[m.size() / 2];
+        expect (std::abs (median - pc.notes[(size_t) idx].targetMidi) < 0.25, "再検出の中央値が新しい目標 ±25cent");
+    }
+}
+
 } // namespace
 
 int main (int argc, char** argv)
@@ -16157,6 +16192,7 @@ int main (int argc, char** argv)
     testVocalResynth();
     testPitchProjectRoundtrip();
     testPitchEditorSession();
+    testVocalNoteAudition();
 
 
     if (failureCount > 0)

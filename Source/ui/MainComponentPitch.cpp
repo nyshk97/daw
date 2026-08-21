@@ -203,6 +203,37 @@ void MainComponent::wirePitchEditor()
         Log::info ("pitch.audition", "note=" + juce::String (noteIndex) + " start=" + juce::String (r0) + " len=" + juce::String (r1 - r0));
     };
 
+    view.onDragAuditionStart = [this] (int noteIndex)
+    {
+        noteAudition.reset();
+        auto* clip = pitchTargetClip();
+        if (clip == nullptr || pitchSession.curve() == nullptr || transport.isPlaying.load() || engine.isRecording())
+            return;
+        const auto& w = pitchSession.working();
+        if (noteIndex < 0 || noteIndex >= (int) w.notes.size())
+            return;
+        const auto off = clip->requestedDomainOffset(), len = clip->requestedDomainLength();
+        const auto s = w.resolve (w.notes[(size_t) noteIndex].start, off, len);
+        const auto e = w.resolve (w.notes[(size_t) noteIndex].end, off, len);
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        const bool ok = noteAudition.prepare (*clip->audio, *pitchSession.curve(), renderSampleRate(), s, e);
+        Log::info ("pitch.drag_audition_prepare", "note=" + juce::String (noteIndex) + " ok=" + juce::String ((int) ok)
+                                                      + " ms=" + juce::String (juce::Time::getMillisecondCounterHiRes() - t0, 1));
+    };
+    view.onDragAuditionUpdate = [this]
+    {
+        auto* clip = pitchTargetClip();
+        if (clip == nullptr || ! noteAudition.isPrepared() || pitchSession.curve() == nullptr)
+            return;
+        auto buf = noteAudition.render (pitchSession.working(), *pitchSession.curve(), clip->requestedDomainOffset(),
+                                        clip->requestedDomainLength(), clip->transposeSemitones);
+        if (buf == nullptr)
+            return;
+        filePreview.stop();
+        bufferAudition.start (buf, 0, buf->getNumSamples(), renderSampleRate());
+    };
+    view.onDragAuditionEnd = [this] { noteAudition.reset(); };
+
     pitchWindow.onDismissed = [this]
     {
         bufferAudition.stop();
