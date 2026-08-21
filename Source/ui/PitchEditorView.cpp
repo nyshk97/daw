@@ -52,7 +52,8 @@ PitchEditorView::PitchEditorView()
         addAndMakeVisible (b);
     };
     setupButton (resnapButton, u8"Re-snap");
-    setupButton (keroButton, u8"Kero");
+    setupButton (keroButton, u8"Hard tune");
+    keroButton.setTooltip (jp (u8"ケロケロ（Auto-Tune のハードチューン）: Speed 0ms・Strength 100% にする"));
     setupButton (reanalyzeButton, u8"Re-analyze");
     setupButton (resetButton, u8"Reset");
     setupButton (enableButton, u8"Enable", true);
@@ -62,7 +63,7 @@ PitchEditorView::PitchEditorView()
     cancelButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white);
     setupButton (setKeyButton, u8"Set project key");
     setupButton (retryButton, u8"Retry");
-    setupButton (scaleHighlightButton, u8"Hl");
+    setupButton (scaleHighlightButton, u8"Show scale");
     scaleHighlightButton.setTooltip (jp (u8"スケール音の段をハイライト（キー未設定時は推定キー）"));
     scaleHighlightButton.setClickingTogglesState (true);
     scaleHighlightButton.setToggleState (highlightScale, juce::dontSendNotification);
@@ -271,14 +272,14 @@ void PitchEditorView::resized()
     // 左: 音の決め方
     scaleLabel.setBounds (bar.removeFromLeft (36));
     scaleBox.setBounds (bar.removeFromLeft (190).reduced (2, 0));
-    scaleHighlightButton.setBounds (bar.removeFromLeft (30).reduced (2, 4));
+    scaleHighlightButton.setBounds (bar.removeFromLeft (84).reduced (2, 4));
     resnapButton.setBounds (bar.removeFromLeft (64));
     bar.removeFromLeft (8);
     strengthLabel.setBounds (bar.removeFromLeft (52));
     strengthSlider.setBounds (bar.removeFromLeft (150));
     speedLabel.setBounds (bar.removeFromLeft (44));
     speedSlider.setBounds (bar.removeFromLeft (160));
-    keroButton.setBounds (bar.removeFromLeft (48));
+    keroButton.setBounds (bar.removeFromLeft (76));
     // 右: 確定系（右端＝確定）
     auto right = bar;
     const auto primary = right.removeFromRight (changingButtonsVisible() ? 64 : 110);
