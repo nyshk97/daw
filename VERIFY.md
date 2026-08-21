@@ -700,7 +700,8 @@ pkill -x LaLa-dev
 ```
 
 - GUI 側の操作: オーディオリージョン右クリック →「ピッチ補正…」（有効なら「有効」併記）。上部バーは左＝音の決め方
-  （Scale・Re-snap・Strength・Speed・Hard tune）／右＝確定系（Re-analyze・Reset・Enable｜Apply/Cancel）。未確定中は黄色いバナー
+  （Scale・Show scale・Re-snap｜Strength・Speed・Hard tune）／右端＝確定系（未確定中だけ Enable、変更プレビュー中だけ Apply/Cancel。確定後は何も出ない）。
+  Reset（自動スナップからやり直す）・再解析・推定キーの設定はグリッドの右クリックメニュー。キー未設定時はバナーに推定キーと「Use Dm」ボタン
 - ブロブ: 上下ドラッグ＝目標音（半音）／横ドラッグ＝タイミング（隣接が吸収・1/16 スナップ・⌥で解除・吸収区間に斜線＋ゴースト）／
   クリック＝単独試聴（メイン再生中は何もしない）／ダブルクリック or B＝バイパス／⌘クリック＝分割／隣接2つを選んで M＝結合
 - Scale の右の「Show scale」でスケール音の段のハイライトを ON/OFF（キー未設定なら推定キー）。Re-snap/Reset/Re-analyze の結果は上部バー右に数秒表示（「結果は同じ」等）

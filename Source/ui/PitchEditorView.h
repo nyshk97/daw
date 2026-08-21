@@ -108,14 +108,15 @@ private:
     // ---- 上部バー（左＝音の決め方 ／ 右＝確定系）----
     juce::Label scaleLabel, strengthLabel, speedLabel, statusLabel;
     juce::ComboBox scaleBox;
-    juce::TextButton resnapButton, keroButton, reanalyzeButton, resetButton, enableButton, applyButton, cancelButton,
-                     setKeyButton, retryButton, scaleHighlightButton;
+    juce::TextButton resnapButton, keroButton, enableButton, applyButton, cancelButton, retryButton, scaleHighlightButton;
     bool highlightScale = true;       // スケール音の段を明るく・外を暗く（ON/OFF）
     juce::String statusText;
     double statusUntil = 0.0;
     juce::Slider strengthSlider, speedSlider;
     juce::Label bannerLabel;
     juce::TextButton bannerButton;
+    juce::TextButton bannerKeyButton; // キー未設定時の「推定キーをプロジェクトに設定」（バナー側）
+    void showContextMenu (juce::Point<int> at); // 右クリック: Reset・Re-analyze・Set project key（頻度の低い保守操作）
     bool bannerVisible = false;
     juce::String bannerText;
     bool sliderEditing = false;

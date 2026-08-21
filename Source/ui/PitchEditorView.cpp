@@ -54,14 +54,11 @@ PitchEditorView::PitchEditorView()
     setupButton (resnapButton, u8"Re-snap");
     setupButton (keroButton, u8"Hard tune");
     keroButton.setTooltip (jp (u8"ケロケロ（Auto-Tune のハードチューン）: Speed 0ms・Strength 100% にする"));
-    setupButton (reanalyzeButton, u8"Re-analyze");
-    setupButton (resetButton, u8"Reset");
     setupButton (enableButton, u8"Enable", true);
     setupButton (applyButton, u8"Apply", true);
     setupButton (cancelButton, u8"Cancel");
     cancelButton.setColour (juce::TextButton::buttonColourId, Theme::recordRed);
     cancelButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white);
-    setupButton (setKeyButton, u8"Set project key");
     setupButton (retryButton, u8"Retry");
     setupButton (scaleHighlightButton, u8"Show scale");
     scaleHighlightButton.setTooltip (jp (u8"スケール音の段をハイライト（キー未設定時は推定キー）"));
@@ -125,12 +122,9 @@ PitchEditorView::PitchEditorView()
         if (onEdited) onEdited();
     };
     resnapButton.onClick = [this] { if (onResnap) onResnap(); };
-    reanalyzeButton.onClick = [this] { if (onReanalyze) onReanalyze(); };
-    resetButton.onClick = [this] { if (onReset) onReset(); };
     enableButton.onClick = [this] { if (onEnable) onEnable(); };
     applyButton.onClick = [this] { if (onApply) onApply(); };
     cancelButton.onClick = [this] { if (onCancel) onCancel(); };
-    setKeyButton.onClick = [this] { if (onSetProjectKey) onSetProjectKey(); };
     retryButton.onClick = [this] { if (onRetrySidecar) onRetrySidecar(); };
 
     bannerLabel.setFont (Fonts::small());
@@ -145,6 +139,11 @@ PitchEditorView::PitchEditorView()
         else if (session->sidecarBlocked() && onRetrySidecar) onRetrySidecar();
     };
     addChildComponent (bannerButton);
+    bannerKeyButton.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+    bannerKeyButton.setColour (juce::TextButton::textColourOffId, bannerTextColour);
+    bannerKeyButton.setColour (juce::ComboBox::outlineColourId, juce::Colour (0xff8a7a44));
+    bannerKeyButton.onClick = [this] { if (onSetProjectKey) onSetProjectKey(); };
+    addChildComponent (bannerKeyButton);
 
     startTimerHz (30); // 再生ヘッド追従・減光の更新（pull 型）
 }
@@ -176,14 +175,13 @@ void PitchEditorView::updateBar()
 
     scaleBox.setEnabled (editable);
     resnapButton.setEnabled (committed && editable);
-    reanalyzeButton.setEnabled (committed && editable);
-    resetButton.setEnabled (editable);
     keroButton.setEnabled (editable);
     strengthSlider.setEnabled (editable);
     speedSlider.setEnabled (editable);
-    enableButton.setVisible (! changing);
+    // 右端＝確定系。未確定プレビュー中だけ Enable、変更プレビュー中だけ Apply/Cancel。確定後は何も出さない
+    //（状態は ♪ バッジとバナーの有無で分かる。Reset / Re-analyze / Set project key は右クリックメニュー）
+    enableButton.setVisible (mode == Mode::initialPreview);
     enableButton.setEnabled (mode == Mode::initialPreview && editable);
-    enableButton.setButtonText (committed ? jp (u8"Correction ON") : jp (u8"Enable"));
     applyButton.setVisible (changing);
     cancelButton.setVisible (changing);
     retryButton.setVisible (false);
@@ -198,21 +196,16 @@ void PitchEditorView::updateBar()
         else if (w.scaleMode == PitchScaleMode::custom)
             item = scaleItemCustomBase + w.customKey.root * 2 + (w.customKey.mode == KeyMode::minor ? 1 : 0);
         scaleBox.setSelectedId (item, juce::dontSendNotification);
-        // プロジェクトキー未設定なら推定値を項目名に出し「Set project key」を出す
+        // プロジェクトキー未設定なら推定値を項目名に出す（設定はバナーのボタンか右クリック）
         const auto projectKey = getProjectKey ? getProjectKey() : std::nullopt;
         if (projectKey.has_value())
-        {
             scaleBox.changeItemText (scaleItemProjectKey, jp (u8"Project key: ") + ProjectKeys::displayName (*projectKey));
-            setKeyButton.setVisible (false);
-        }
         else
         {
             const auto est = PitchNotes::estimateKey (session->detected());
             scaleBox.changeItemText (scaleItemProjectKey,
-                                     est.valid ? jp (u8"Project key: unset (guess ") + ProjectKeys::displayName (est.key)
-                                                     + " r=" + juce::String (est.correlation, 2) + ")"
+                                     est.valid ? jp (u8"Project key: unset (guess ") + ProjectKeys::displayName (est.key) + ")"
                                                : jp (u8"Project key: unset"));
-            setKeyButton.setVisible (est.valid && editable);
         }
     }
 
@@ -233,6 +226,23 @@ void PitchEditorView::updateBar()
         bannerText = jp (u8"未確定のプレビュー（自動スナップ）— Space で試聴・最初の編集か Enable で確定");
         bannerButton.setButtonText (jp (u8"Enable"));
         bannerButton.setVisible (true);
+    }
+    bannerKeyButton.setVisible (false);
+    if (session != nullptr && (mode == Mode::initialPreview || committed) && getProjectKey && ! getProjectKey().has_value())
+    {
+        // キー未設定: 推定キーを文で見せ、1クリックでプロジェクトに設定できるようにする
+        if (const auto est = PitchNotes::estimateKey (session->detected()); est.valid)
+        {
+            const auto keyText = ProjectKeys::displayName (est.key);
+            if (! bannerVisible)
+                bannerText = juce::String();
+            bannerVisible = true;
+            bannerText = (bannerText.isNotEmpty() ? bannerText + jp (u8"　｜　") : juce::String())
+                       + jp (u8"プロジェクトキー未設定。推定: ") + keyText
+                       + (est.correlation < 0.5 ? jp (u8"（確度は低め）") : juce::String());
+            bannerKeyButton.setButtonText (jp (u8"Use ") + keyText);
+            bannerKeyButton.setVisible (editable);
+        }
     }
     else if (changing)
         bannerText = jp (u8"変更のプレビュー中 — Apply で確定・Cancel で元に戻す（この間は編集できません）");
@@ -282,16 +292,12 @@ void PitchEditorView::resized()
     keroButton.setBounds (bar.removeFromLeft (76));
     // 右: 確定系（右端＝確定）
     auto right = bar;
-    const auto primary = right.removeFromRight (changingButtonsVisible() ? 64 : 110);
+    const auto primary = right.removeFromRight (changingButtonsVisible() ? 64 : 90);
     applyButton.setBounds (primary);
     enableButton.setBounds (primary);
     if (cancelButton.isVisible())
         cancelButton.setBounds (right.removeFromRight (64).reduced (2, 0));
     right.removeFromRight (8);
-    resetButton.setBounds (right.removeFromRight (52));
-    reanalyzeButton.setBounds (right.removeFromRight (78));
-    if (setKeyButton.isVisible())
-        setKeyButton.setBounds (right.removeFromRight (110));
     statusLabel.setBounds (right);
 
     if (bannerVisible)
@@ -299,6 +305,8 @@ void PitchEditorView::resized()
         auto banner = getLocalBounds().withTop (barHeight).removeFromTop (bannerHeight).reduced (10, 3);
         if (bannerButton.isVisible())
             bannerButton.setBounds (banner.removeFromRight (64));
+        if (bannerKeyButton.isVisible())
+            bannerKeyButton.setBounds (banner.removeFromRight (84).reduced (4, 0));
         bannerLabel.setBounds (banner);
     }
 }
@@ -669,12 +677,38 @@ void PitchEditorView::mouseMove (const juce::MouseEvent& e)
     if (h != hoverNote) { hoverNote = h; repaint(); }
 }
 
+void PitchEditorView::showContextMenu (juce::Point<int>)
+{
+    if (session == nullptr || ! session->isOpen())
+        return;
+    const bool committed = session->mode() == PitchEditorSession::Mode::committed && session->editable();
+    juce::PopupMenu menu;
+    menu.addItem (1, jp (u8"自動スナップからやり直す（手直しを捨てる）"), committed);
+    menu.addItem (2, jp (u8"再解析（検出をやり直す。検出器が同じなら変わらない）"), committed);
+    if (getProjectKey && ! getProjectKey().has_value())
+        if (const auto est = PitchNotes::estimateKey (session->detected()); est.valid)
+            menu.addItem (3, jp (u8"推定キー ") + ProjectKeys::displayName (est.key) + jp (u8" をプロジェクトに設定"), session->editable());
+    juce::Component::SafePointer<PitchEditorView> safe (this);
+    menu.showMenuAsync (juce::PopupMenu::Options(), [safe] (int result)
+    {
+        if (safe == nullptr) return;
+        if (result == 1 && safe->onReset) safe->onReset();
+        else if (result == 2 && safe->onReanalyze) safe->onReanalyze();
+        else if (result == 3 && safe->onSetProjectKey) safe->onSetProjectKey();
+    });
+}
+
 void PitchEditorView::mouseDown (const juce::MouseEvent& e)
 {
     grabKeyboardFocus();
     const Clip* clip = getClip ? getClip() : nullptr;
     if (clip == nullptr || session == nullptr || ! session->isOpen())
         return;
+    if (e.mods.isPopupMenu())
+    {
+        showContextMenu (e.getPosition());
+        return;
+    }
     const auto geo = computeGeometry (*clip);
     if (! geo.canvas.contains (e.getPosition()))
         return;
