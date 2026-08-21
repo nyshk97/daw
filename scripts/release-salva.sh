@@ -372,3 +372,46 @@ echo "==> Feed URL:        ${FEED_URL}"
 echo "==> Download URL:    ${DOWNLOAD_URL}"
 echo "==> SHA256:          $SHA256"
 echo "==> EdDSA signed:    ${ED_SIG:0:24}..."
+
+# === Step 10: Homebrew cask（nyshk97/homebrew-tap/Casks/salva.rb）===
+# 新規インストール導線。日々の更新は Sparkle なので cask は auto_updates true
+case "${MIN_OS%%.*}" in
+  13) CASK_MACOS=":ventura" ;; 14) CASK_MACOS=":sonoma" ;; 15) CASK_MACOS=":sequoia" ;; 26) CASK_MACOS=":tahoe" ;;
+  *) CASK_MACOS=":sonoma" ;;
+esac
+TAP_REPO="nyshk97/homebrew-tap"
+CASK_PATH="Casks/salva.rb"
+echo "==> Updating Homebrew cask ${TAP_REPO}/${CASK_PATH}..."
+CASK_CONTENT="$(cat <<CASK
+cask "salva" do
+  version "$VERSION"
+  sha256 "$SHA256"
+
+  url "https://github.com/nyshk97/salva-releases/releases/download/salva-v#{version}/Salva.dmg"
+  name "Salva"
+  desc "自分専用のステム分離・ノイズ除去ツール"
+  homepage "https://github.com/nyshk97/daw"
+
+  auto_updates true
+  depends_on macos: $CASK_MACOS
+
+  app "Salva.app"
+
+  uninstall quit: "local.d0ne1s.salva"
+end
+CASK
+)"
+ENCODED=$(printf '%s' "$CASK_CONTENT" | base64)
+EXISTING_SHA=$(gh api "repos/$TAP_REPO/contents/$CASK_PATH" --jq '.sha' 2>/dev/null || true)
+if [ -n "$EXISTING_SHA" ]; then
+  gh api "repos/$TAP_REPO/contents/$CASK_PATH" --method PUT \
+    --field message="chore: salva $VERSION" --field content="$ENCODED" --field sha="$EXISTING_SHA" --silent
+else
+  gh api "repos/$TAP_REPO/contents/$CASK_PATH" --method PUT \
+    --field message="feat: add salva $VERSION" --field content="$ENCODED" --silent
+fi
+TAP_DIR=$(brew --repository "$TAP_REPO" 2>/dev/null || true)
+if [ -n "$TAP_DIR" ] && [ -d "$TAP_DIR/.git" ]; then
+  git -C "$TAP_DIR" pull --ff-only --quiet origin main || true
+fi
+echo "==> Cask updated:    ${TAP_REPO}/${CASK_PATH} → ${VERSION}"
