@@ -211,8 +211,9 @@ void PitchEditorView::updateBar()
         }
     }
 
-    // バナー
+    // バナー（毎回組み立て直す。前回の文字列に追記しない）
     bannerVisible = true;
+    bannerText.clear();
     bannerButton.setVisible (false);
     if (session != nullptr && session->sidecarBlocked())
     {
@@ -236,8 +237,6 @@ void PitchEditorView::updateBar()
         if (const auto est = PitchNotes::estimateKey (session->detected()); est.valid)
         {
             const auto keyText = ProjectKeys::displayName (est.key);
-            if (! bannerVisible)
-                bannerText = juce::String();
             bannerVisible = true;
             bannerText = (bannerText.isNotEmpty() ? bannerText + jp (u8"　｜　") : juce::String())
                        + jp (u8"プロジェクトキー未設定。推定: ") + keyText
