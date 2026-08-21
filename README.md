@@ -91,3 +91,5 @@ mise run release 1.2.3     # 明示指定
 ```
 
 叩く前に `docs/CHANGELOG.md` の `[Unreleased]` を埋めて commit しておく（空なら止まる。Claude Code のセッションが `git log` を読んで書く）。Claude Code のセッションから叩いてよい（画面ロック中だけ preflight で止まる）。
+
+新規インストールは `brew install --cask nyshk97/tap/lala`（Salva は `nyshk97/tap/salva`。Brewfile に記載済み）。release.sh が末尾で cask の version / sha256 を更新する。日々の更新は Sparkle なので cask は `auto_updates true`（`brew upgrade` で上げたいときは `--greedy`）。
