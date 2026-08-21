@@ -58,8 +58,13 @@ def detect_notes(curve: Curve) -> list[dict]:
                 if away_since < 0:
                     away_since = j
                 if j - away_since + 1 >= hold_n:
-                    close(start, away_since)
-                    start = away_since
+                    # 平滑化の遅れぶん境界を巻き戻す: 生の値が「新しい音」に近い限り手前へ
+                    new_ref = np.median(midi[away_since: j + 1])
+                    cut = away_since
+                    while cut > start + 1 and abs(midi[cut - 1] - new_ref) < abs(midi[cut - 1] - ref):
+                        cut -= 1
+                    close(start, cut)
+                    start = cut
                     away_since = -1
             else:
                 away_since = -1
@@ -74,6 +79,8 @@ def detect_notes(curve: Curve) -> list[dict]:
                 prev = merged[-1]
                 prev["endFrame"] = nt["endFrame"]
                 prev["medianMidi"] = float(np.median(midi[prev["startFrame"]:prev["endFrame"]]))
+                if prev.get("_short") and prev["endFrame"] - prev["startFrame"] >= min_n:
+                    del prev["_short"]  # 短い2つが合わさって十分な長さになれば残す
                 continue
             # 直後へ吸収するため保留: 次のノートが隣接していれば次に結合
             nt["_short"] = True

@@ -40,6 +40,10 @@ void operator delete[] (void* p, std::size_t) noexcept { std::free (p); }
 #include "audio/AudioFilePreview.h"
 #include "audio/BounceRenderer.h"
 #include "audio/ClipStretcher.h"
+#include "audio/PitchAnalyzer.h"
+#include "audio/PitchAnalysisWorker.h"
+#include "shared/PitchCurve.h"
+#include "shared/PitchNotes.h"
 #include "audio/RenderCache.h"
 #include "audio/MasterLimiter.h"
 #include "audio/PlaybackEngine.h"
@@ -10139,9 +10143,9 @@ bool parseSmf (const juce::MemoryBlock& data, MidiImport::Result& result, juce::
 void testMidiFileTypes()
 {
     beginTest ("MidiFileTypes filter");
-    expect (MidiFileTypes::isSupported (juce::String ("/tmp/a.mid")), "midを受理");
-    expect (MidiFileTypes::isSupported (juce::String ("/tmp/a.MIDI")), "MIDI(大文字)を受理");
-    expect (! MidiFileTypes::isSupported (juce::String ("/tmp/a.wav")), "wavは対象外");
+    expect (MidiFileTypes::isSupported (juce::String::fromUTF8 (u8"/tmp/a.mid")), "midを受理");
+    expect (MidiFileTypes::isSupported (juce::String::fromUTF8 (u8"/tmp/a.MIDI")), "MIDI(大文字)を受理");
+    expect (! MidiFileTypes::isSupported (juce::String::fromUTF8 (u8"/tmp/a.wav")), "wavは対象外");
     expect (! AudioFileTypes::isSupported ("/tmp/a.mid"), "AudioFileTypesにmidは足さない");
 }
 
@@ -14824,8 +14828,436 @@ void testGachaLoopStretchValues()
     }
 }
 
-} // namespace
 
+
+// ---- ボーカルのピッチ補正 Phase 1: 検出・サイドカー・ノート（docs/plans/2026-08-20-2244-vocal-pitch-correction.md）----
+
+// 合成ボーカル風の素材: のこぎり波＋ビブラート・無音・ノイズバースト。真値 f0（フレーム単位）を返す。
+// 決定論的（乱数は固定シード）。実声はコミットしない（PUBLIC リポジトリ）
+struct SynthVoice
+{
+    std::shared_ptr<juce::AudioBuffer<float>> audio;
+    std::vector<double> truthF0; // フレーム k の真値（無声 = 0）
+    std::vector<std::pair<int, double>> notes; // (開始フレーム, midi) 期待ノート
+};
+
+SynthVoice makeSynthVoice (double sr)
+{
+    // (midi, 秒, デチューン cent, ビブラート深さ cent)
+    const std::vector<std::tuple<double, double, double, double>> melody = {
+        { 62, 0.55, 25, 0 }, { 64, 0.45, -30, 0 }, { 65, 0.70, 15, 40 }, { 67, 0.50, -20, 0 },
+        { 69, 0.90, 35, 50 }, { 62, 1.10, 10, 60 }, { 57, 0.50, -40, 0 }, { 60, 0.80, 20, 0 } };
+    std::vector<float> samples;
+    std::vector<double> f0PerSample;
+    juce::Random rng (7);
+    auto addSilence = [&] (double sec)
+    {
+        const int n = (int) (sec * sr);
+        samples.insert (samples.end(), (size_t) n, 0.0f);
+        f0PerSample.insert (f0PerSample.end(), (size_t) n, 0.0);
+    };
+    auto addNoise = [&] (double sec, float level)
+    {
+        const int n = (int) (sec * sr);
+        float prev = 0.0f;
+        for (int i = 0; i < n; ++i)
+        {
+            const float white = (rng.nextFloat() * 2.0f - 1.0f) * level;
+            const float hp = white - 0.95f * prev; // 高域寄り（s 音っぽく）
+            prev = white;
+            const float env = 0.5f - 0.5f * (float) std::cos (juce::MathConstants<double>::twoPi * i / juce::jmax (1, n - 1));
+            samples.push_back (hp * env);
+            f0PerSample.push_back (0.0);
+        }
+    };
+    SynthVoice out;
+    addSilence (0.3);
+    int idx = 0;
+    for (const auto& [midi, dur, cents, vib] : melody)
+    {
+        if (idx % 3 == 1)
+            addNoise (0.06, 0.08f);
+        const int n = (int) (dur * sr);
+        const int startFrame = (int) samples.size() / PitchCurve::hopSamplesFor (sr);
+        out.notes.push_back ({ startFrame, midi + cents / 100.0 });
+        double phase = 0.0;
+        // 簡易フォルマント（2共振）
+        double y1[2] = {}, y2[2] = {};
+        const double fc[2] = { 700, 1200 }, bw[2] = { 130, 160 };
+        for (int i = 0; i < n; ++i)
+        {
+            const double t = i / sr;
+            double m = midi + cents / 100.0;
+            if (vib > 0)
+                m += (vib / 100.0) * juce::jlimit (0.0, 1.0, t / 0.15) * std::sin (juce::MathConstants<double>::twoPi * 5.5 * t);
+            const double f0 = 440.0 * std::pow (2.0, (m - 69.0) / 12.0);
+            phase += f0 / sr;
+            phase -= std::floor (phase);
+            double v = 2.0 * phase - 1.0;
+            for (int r = 0; r < 2; ++r)
+            {
+                const double rr = std::exp (-juce::MathConstants<double>::pi * bw[r] / sr);
+                const double a1 = -2.0 * rr * std::cos (juce::MathConstants<double>::twoPi * fc[r] / sr);
+                const double a2 = rr * rr;
+                const double yy = (1.0 - rr) * v - a1 * y1[r] - a2 * y2[r];
+                y2[r] = y1[r]; y1[r] = yy; v = yy;
+            }
+            double env = 1.0;
+            const int aN = (int) (0.02 * sr), rN = (int) (0.06 * sr);
+            if (i < aN) env = (double) i / aN;
+            else if (i >= n - rN) env = (double) (n - i) / rN;
+            samples.push_back ((float) (v * env * 0.25));
+            f0PerSample.push_back (f0);
+        }
+        addSilence (0.12);
+        ++idx;
+    }
+    addNoise (0.25, 0.02f);
+    addSilence (0.3);
+
+    float peak = 0.0f;
+    for (auto v : samples) peak = juce::jmax (peak, std::abs (v));
+    out.audio = std::make_shared<juce::AudioBuffer<float>> (1, (int) samples.size());
+    for (size_t i = 0; i < samples.size(); ++i)
+        out.audio->setSample (0, (int) i, samples[i] / peak * 0.5f);
+    const int hop = PitchCurve::hopSamplesFor (sr);
+    const int frames = ((int) samples.size() + hop - 1) / hop;
+    for (int k = 0; k < frames; ++k)
+        out.truthF0.push_back (f0PerSample[(size_t) juce::jmin ((int) f0PerSample.size() - 1, k * hop)]);
+    return out;
+}
+
+void testPitchAnalyzerYin()
+{
+    beginTest ("PitchAnalyzer YIN vs known f0 (GPE / voicing P-R)");
+    const double sr = 48000.0;
+    auto voice = makeSynthVoice (sr);
+    const auto curve = PitchAnalyzer::analyze (*voice.audio, sr);
+    expect (curve.numFrames() == (int) voice.truthF0.size(), "フレーム数が真値と一致");
+    expect (curve.hopSamples == 240, "48kHz の hop は 240 サンプル（5ms）");
+    expect (curve.algoId == PitchAnalyzer::algoId, "algoId が入る");
+    expect (curve.source.frames == voice.audio->getNumSamples() && curve.source.channels == 1,
+            "source 識別子が原音と一致");
+    expect (curve.validate(), "解析結果が validate を通る");
+
+    int bothVoiced = 0, gross = 0, detVoiced = 0, truthVoiced = 0, hit = 0;
+    std::vector<double> fineCents;
+    for (int k = 0; k < curve.numFrames(); ++k)
+    {
+        const bool tv = voice.truthF0[(size_t) k] > 0.0;
+        const bool dv = curve.isVoiced (k);
+        truthVoiced += tv; detVoiced += dv; hit += (tv && dv);
+        if (tv && dv)
+        {
+            ++bothVoiced;
+            const double tm = 69.0 + 12.0 * std::log2 (voice.truthF0[(size_t) k] / 440.0);
+            const double diff = std::abs (tm - curve.midiAt (k));
+            if (diff >= 1.0) ++gross; else fineCents.push_back (diff * 100.0);
+        }
+    }
+    const double gpe = bothVoiced > 0 ? (double) gross / bothVoiced : 1.0;
+    const double precision = detVoiced > 0 ? (double) hit / detVoiced : 0.0;
+    const double recall = truthVoiced > 0 ? (double) hit / truthVoiced : 0.0;
+    std::sort (fineCents.begin(), fineCents.end());
+    const double medianCents = fineCents.empty() ? 999.0 : fineCents[fineCents.size() / 2];
+    std::cout << "  GPE=" << gpe << " P=" << precision << " R=" << recall << " median=" << medianCents << "c" << std::endl;
+    // 合格線は plan（GPE<3%・P≥0.95・R≥0.90）。lab の Python 原型は GPE 0 / P 0.992 / R 0.994 / 1.4c
+    expect (gpe < 0.03, "GPE < 3%");
+    expect (precision >= 0.95, "voicing precision >= 0.95");
+    expect (recall >= 0.90, "voicing recall >= 0.90");
+    expect (medianCents < 5.0, "微小誤差の中央値 < 5 cent");
+
+    // 先頭の無音は全フレーム無声
+    bool headSilent = true;
+    for (int k = 0; k < 50; ++k) headSilent = headSilent && ! curve.isVoiced (k);
+    expect (headSilent, "先頭の無音は無声");
+
+    // ステレオ（L=信号, R=無音）は Mid で解析され、モノと同じ有声フレーム数±2%
+    juce::AudioBuffer<float> stereo (2, voice.audio->getNumSamples());
+    stereo.clear();
+    stereo.copyFrom (0, 0, *voice.audio, 0, 0, voice.audio->getNumSamples());
+    const auto stereoCurve = PitchAnalyzer::analyze (stereo, sr);
+    int sv = 0;
+    for (int k = 0; k < stereoCurve.numFrames(); ++k) sv += stereoCurve.isVoiced (k);
+    expect (std::abs (sv - detVoiced) <= detVoiced / 50 + 2, "ステレオは Mid で解析される");
+
+    // 決定論: 2回解析して digest が一致
+    expect (PitchAnalyzer::analyze (*voice.audio, sr).digest() == curve.digest(), "同じ入力で同じ digest");
+
+    // キャンセル: 最初から true なら空
+    expect (PitchAnalyzer::analyze (*voice.audio, sr, [] { return true; }).numFrames() == 0, "キャンセルで空");
+}
+
+void testPitchCmndfBruteForce()
+{
+    beginTest ("PitchAnalyzer CMNDF fft == brute force");
+    const int length = PitchAnalyzer::frameLength;
+    const int tauMax = 800;
+    std::vector<float> frame ((size_t) length);
+    juce::Random rng (3);
+    for (int i = 0; i < length; ++i)
+        frame[(size_t) i] = (float) std::sin (i * 0.0314) * 0.5f + (rng.nextFloat() - 0.5f) * 0.05f;
+    const auto fast = PitchAnalyzer::cumulativeMeanNormalizedDifference (frame.data(), length, tauMax);
+    const int w = length - tauMax;
+    std::vector<double> d ((size_t) tauMax + 1, 0.0);
+    for (int t = 1; t <= tauMax; ++t)
+        for (int n = 0; n < w; ++n)
+        {
+            const double diff = (double) frame[(size_t) n] - frame[(size_t) (n + t)];
+            d[(size_t) t] += diff * diff;
+        }
+    double run = 0.0, maxErr = 0.0;
+    for (int t = 1; t <= tauMax; ++t)
+    {
+        run += d[(size_t) t];
+        const double cm = run > 0 ? d[(size_t) t] * t / run : 1.0;
+        maxErr = juce::jmax (maxErr, std::abs (cm - fast[(size_t) t]));
+    }
+    expect (fast.size() == (size_t) tauMax + 1 && juce::exactlyEqual (fast[0], 1.0), "τ=0 は 1");
+    expect (maxErr < 1e-3, "FFT 版と総当たりの差 < 1e-3");
+}
+
+void testPitchSidecar()
+{
+    beginTest ("PitchSidecar immutable generations / validation / atomic");
+    const double sr = 48000.0;
+    auto voice = makeSynthVoice (sr);
+    auto curve = PitchAnalyzer::analyze (*voice.audio, sr);
+    auto dir = makeTempDir();
+    auto wav = dir.getChildFile ("clip-003.wav");
+    expect (writeBufferWav (wav, *voice.audio, sr), "WAV を書ける");
+
+    const auto digest = curve.digest();
+    expect (digest.toHex().length() == 32, "digest は 32 文字の hex");
+    expect (ContentDigest::fromHex (digest.toHex()).value_or (ContentDigest{}) == digest, "hex の往復");
+    expect (! ContentDigest::fromHex ("zz").has_value(), "不正 hex は nullopt");
+
+    juce::String err;
+    expect (PitchSidecar::write (curve, wav, &err), (juce::String::fromUTF8 (u8"書き出し成功: ") + err).toRawUTF8());
+    const auto file = PitchSidecar::fileFor (wav, digest);
+    expect (file.existsAsFile(), "clip-003.<digest>.pitch ができる");
+    expect (file.getFileName() == "clip-003." + digest.toHex() + ".pitch", "ファイル名の形式");
+    expect (PitchSidecar::digestFromFile (file).value_or (ContentDigest{}) == digest, "ファイル名から digest を復元");
+    const auto mtime = file.getLastModificationTime();
+    expect (PitchSidecar::listFor (wav).size() == 1, "listFor が1件");
+
+    auto back = PitchSidecar::read (file, &err);
+    expect (back.has_value(), (juce::String::fromUTF8 (u8"読み戻せる: ") + err).toRawUTF8());
+    if (back.has_value())
+    {
+        expect (back->digest() == digest && back->source == curve.source && back->f0 == curve.f0
+                && back->voicing == curve.voicing && back->rms == curve.rms && back->algoId == curve.algoId,
+                "内容が完全一致");
+    }
+    expect (PitchSidecar::readFor (wav, digest, curve.source, &err).has_value(), "readFor で世代を引ける");
+
+    // 同一内容の再書き出しはファイルを触らない（世代不変）
+    juce::Thread::sleep (20);
+    expect (PitchSidecar::write (curve, wav, &err), "同一内容の再書き出し");
+    expect (file.getLastModificationTime() == mtime, "同一内容なら書き直さない");
+
+    // 内容が変わる再解析 = 別世代が**追加**される（旧世代は残る）
+    auto curve2 = curve;
+    curve2.algoId = "yin-test";
+    expect (PitchSidecar::write (curve2, wav, &err), "別世代の書き出し");
+    expect (PitchSidecar::listFor (wav).size() == 2 && file.existsAsFile(), "旧世代を残して2世代になる");
+
+    // WAV が差し替わった（識別子不一致）→ readFor は nullopt
+    SourceIdentity other = curve.source;
+    other.frames += 1;
+    expect (! PitchSidecar::readFor (wav, digest, other, &err).has_value(), "WAV と食い違えば未解析扱い");
+    // 無い世代
+    ContentDigest missing { 1, 2 };
+    expect (! PitchSidecar::readFor (wav, missing, curve.source, &err).has_value(), "無い世代は nullopt");
+
+    // 途中まで書かれたファイル（切り詰め）は読まない
+    juce::MemoryBlock data;
+    file.loadFileAsData (data);
+    auto truncated = dir.getChildFile ("clip-003.00000000000000000000000000000001.pitch");
+    truncated.replaceWithData (data.getData(), data.getSize() / 2);
+    expect (! PitchSidecar::read (truncated, &err).has_value(), (juce::String::fromUTF8 (u8"切り詰めファイルは拒否: ") + err).toRawUTF8());
+    // 1バイト壊す → digest 不一致で拒否
+    auto corrupt = dir.getChildFile ("clip-003.00000000000000000000000000000002.pitch");
+    auto* bytes = static_cast<unsigned char*> (data.getData());
+    bytes[data.getSize() / 2] ^= 0xff;
+    corrupt.replaceWithData (data.getData(), data.getSize());
+    expect (! PitchSidecar::read (corrupt, &err).has_value(), (juce::String::fromUTF8 (u8"内容改変は digest 不一致で拒否: ") + err).toRawUTF8());
+
+    // validate: 値域外・非有限
+    auto bad = curve;
+    bad.f0[100] = 5.0f;
+    expect (! bad.validate(), "f0 が値域外なら不正");
+    bad = curve;
+    bad.voicing[0] = std::numeric_limits<float>::quiet_NaN();
+    expect (! bad.validate(), "NaN は不正");
+    bad = curve;
+    bad.rms.pop_back();
+    expect (! bad.validate(), "配列長不一致は不正");
+    expect (! PitchSidecar::write (bad, wav, &err), "不正なカーブは書かない");
+
+    dir.deleteRecursively();
+}
+
+void testPitchNotesRules()
+{
+    beginTest ("PitchNotes split rules (vibrato / jump / short merge)");
+    const double sr = 48000.0;
+    auto makeCurve = [&] (const std::vector<double>& midi)
+    {
+        PitchCurve c;
+        c.algoId = "test"; c.sampleRate = sr; c.hopSamples = PitchCurve::hopSamplesFor (sr);
+        c.source.frames = 1; c.source.channels = 1; c.source.sampleRate = sr;
+        for (auto m : midi)
+        {
+            const bool v = m > 0;
+            c.f0.push_back (v ? (float) (440.0 * std::pow (2.0, (m - 69.0) / 12.0)) : 0.0f);
+            c.voicing.push_back (v ? 0.9f : 0.0f);
+            c.rms.push_back (v ? 0.1f : 0.0f);
+        }
+        return c;
+    };
+    // 1) ビブラート ±0.6 半音（5.5Hz）を 1 秒 → 1 ノート
+    {
+        std::vector<double> m;
+        for (int k = 0; k < 200; ++k)
+            m.push_back (60.0 + 0.6 * std::sin (juce::MathConstants<double>::twoPi * 5.5 * k * 0.005));
+        const auto notes = PitchNotes::detect (makeCurve (m));
+        expect (notes.size() == 1, "ビブラートでは割れない");
+        if (! notes.empty())
+            expect (std::abs (notes[0].medianMidi - 60.0f) < 0.1f, "中央値はビブラートの中心");
+    }
+    // 2) 60 → 62 のジャンプ（隙間なし）→ 2 ノート・境界はジャンプ位置
+    {
+        std::vector<double> m (100, 60.0);
+        m.insert (m.end(), 100, 62.0);
+        const auto notes = PitchNotes::detect (makeCurve (m));
+        expect (notes.size() == 2, "半音以上のジャンプで切れる");
+        if (notes.size() == 2)
+        {
+            expect (notes[0].startFrame == 0 && notes[0].endFrame == 100 && notes[1].startFrame == 100
+                    && notes[1].endFrame == 200, "境界がジャンプ位置");
+            expect (std::abs (notes[0].medianMidi - 60.0f) < 0.01f && std::abs (notes[1].medianMidi - 62.0f) < 0.01f,
+                    "各ノートの中央値");
+        }
+    }
+    // 3) 0.3 半音のずれはジャンプではない → 1 ノート
+    {
+        std::vector<double> m (100, 60.0);
+        m.insert (m.end(), 100, 60.3);
+        expect (PitchNotes::detect (makeCurve (m)).size() == 1, "半音の半分未満では切れない");
+    }
+    // 4) 無声の隙間で分かれる・無声はノートにならない
+    {
+        std::vector<double> m (60, 60.0);
+        m.insert (m.end(), 20, 0.0);
+        m.insert (m.end(), 60, 64.0);
+        const auto notes = PitchNotes::detect (makeCurve (m));
+        expect (notes.size() == 2 && notes[0].endFrame == 60 && notes[1].startFrame == 80, "無声の隙間で分かれる");
+    }
+    // 5) 短い（40ms = 8 フレーム）ノートは直前へ吸収。先頭なら直後へ
+    {
+        std::vector<double> m (100, 60.0);
+        m.insert (m.end(), 8, 66.0);   // 短い跳ね
+        m.insert (m.end(), 100, 60.0);
+        const auto notes = PitchNotes::detect (makeCurve (m));
+        expect (notes.size() == 1 && notes[0].startFrame == 0 && notes[0].endFrame == 208, "短い跳ねは吸収される");
+        std::vector<double> m2 (8, 66.0);
+        m2.insert (m2.end(), 100, 60.0);
+        const auto notes2 = PitchNotes::detect (makeCurve (m2));
+        expect (notes2.size() == 1 && notes2[0].startFrame == 0, "先頭の短い音は直後へ吸収");
+        std::vector<double> m3 (8, 66.0); // 孤立した短い音（吸収先なし）は捨てる
+        m3.insert (m3.end(), 20, 0.0);
+        m3.insert (m3.end(), 100, 60.0);
+        const auto notes3 = PitchNotes::detect (makeCurve (m3));
+        expect (notes3.size() == 1 && notes3[0].startFrame == 28, "孤立した短い音は捨てる");
+    }
+    // 6) 合成ボーカルで期待ノート数と中央値
+    {
+        auto voice = makeSynthVoice (sr);
+        const auto curve = PitchAnalyzer::analyze (*voice.audio, sr);
+        const auto notes = PitchNotes::detect (curve);
+        expect (notes.size() == voice.notes.size(), (juce::String::fromUTF8 (u8"合成ボーカルのノート数 = メロディ数 (") + juce::String ((int) notes.size()) + ")").toRawUTF8());
+        if (notes.size() == voice.notes.size())
+            for (size_t i = 0; i < notes.size(); ++i)
+            {
+                expect (std::abs (notes[i].startFrame - voice.notes[i].first) <= 6, "開始位置 ±30ms");
+                expect (std::abs (notes[i].medianMidi - voice.notes[i].second) < 0.12, "中央値 ±12cent（ビブラート・しゃくり込み）");
+            }
+    }
+}
+
+void testPitchKeyEstimate()
+{
+    beginTest ("PitchNotes key estimate (Krumhansl)");
+    auto notesFor = [] (std::initializer_list<int> midis)
+    {
+        std::vector<DetectedPitchNote> v;
+        int f = 0;
+        for (auto m : midis) { v.push_back ({ f, f + 40, (float) m }); f += 50; }
+        return v;
+    };
+    auto c = PitchNotes::estimateKey (notesFor ({ 60, 62, 64, 65, 67, 69, 71, 72, 67, 64, 60 }));
+    expect (c.valid && c.key.root == 0 && c.key.mode == KeyMode::major, "C major の音階 → C major");
+    expect (c.correlation > 0.7, "明確な音階なら相関 0.7 超");
+    auto a = PitchNotes::estimateKey (notesFor ({ 69, 71, 72, 74, 76, 77, 79, 81, 76, 72, 69 }));
+    expect (a.valid && a.key.root == 9 && a.key.mode == KeyMode::minor, "A natural minor → A minor");
+    expect (! PitchNotes::estimateKey ({}).valid, "ノート無しは無効");
+}
+
+void testPitchAnalysisWorker()
+{
+    beginTest ("PitchAnalysisWorker generation / cancel / sidecar");
+    const double sr = 48000.0;
+    auto voice = makeSynthVoice (sr);
+    auto dir = makeTempDir();
+    auto wav = dir.getChildFile ("clip-007.wav");
+    expect (writeBufferWav (wav, *voice.audio, sr), "WAV を書ける");
+
+    PitchAnalysisWorker worker;
+    // A を開始 → すぐ切替（cancel＋join）→ B（generation 2）を開始 → B の結果だけが着地する
+    expect (worker.start ({ voice.audio, sr, juce::File(), 1 }), "A 開始");
+    expect (! worker.start ({ voice.audio, sr, juce::File(), 99 }), "実行中は start できない");
+    worker.cancelAndWait();
+    expect (worker.status() != PitchAnalysisWorker::Status::running, "cancel 後は running でない");
+    auto a = worker.takeResult();
+    expect (a.generation == 1, "A の結果は generation 1");
+    expect (worker.status() == PitchAnalysisWorker::Status::idle, "take 後は idle");
+
+    expect (worker.start ({ voice.audio, sr, wav, 2 }), "B 開始");
+    const auto deadline = juce::Time::getMillisecondCounter() + 30000;
+    while (worker.status() == PitchAnalysisWorker::Status::running && juce::Time::getMillisecondCounter() < deadline)
+        juce::Thread::sleep (10);
+    expect (worker.status() == PitchAnalysisWorker::Status::success, "B が成功で終わる");
+    auto b = worker.takeResult();
+    expect (b.generation == 2 && b.curve.numFrames() == (int) voice.truthF0.size(), "B の結果が generation 2 で着地");
+    expect (b.sidecarWritten && b.sidecarFile.existsAsFile(), (juce::String::fromUTF8 (u8"サイドカーが書かれる: ") + b.errorMessage).toRawUTF8());
+    expect (b.sidecarFile == PitchSidecar::fileFor (wav, b.curve.digest()), "サイドカー名は digest 由来");
+    expect (worker.progress() >= 1.0f, "完了時の進捗は 1");
+
+    // 再解析連打: 同じ内容なら同じファイル（世代が増えない）
+    expect (worker.start ({ voice.audio, sr, wav, 3 }), "再解析");
+    while (worker.status() == PitchAnalysisWorker::Status::running) juce::Thread::sleep (10);
+    auto c = worker.takeResult();
+    expect (c.generation == 3 && c.curve.digest() == b.curve.digest(), "同一内容なら同じ digest");
+    expect (PitchSidecar::listFor (wav).size() == 1, "同一内容の再解析では世代が増えない");
+
+    // WAV が消えていたら孤児サイドカーを書かない
+    auto gone = dir.getChildFile ("clip-008.wav");
+    expect (worker.start ({ voice.audio, sr, gone, 4 }), "消えた WAV 向け");
+    while (worker.status() == PitchAnalysisWorker::Status::running) juce::Thread::sleep (10);
+    auto d = worker.takeResult();
+    expect (d.status == PitchAnalysisWorker::Status::success && ! d.sidecarWritten, "解析は成功するがサイドカーは書かない");
+    expect (PitchSidecar::listFor (gone).empty(), "孤児 .pitch が無い");
+
+    // 空の原音は failed で終わる（running のまま残らない）
+    expect (worker.start ({ std::make_shared<juce::AudioBuffer<float>> (1, 0), sr, juce::File(), 5 }), "空原音の start");
+    while (worker.status() == PitchAnalysisWorker::Status::running) juce::Thread::sleep (10);
+    expect (worker.takeResult().status == PitchAnalysisWorker::Status::failed, "空原音は failed");
+
+    dir.deleteRecursively();
+}
+
+} // namespace
 
 int main (int argc, char** argv)
 {
@@ -14990,6 +15422,12 @@ int main (int argc, char** argv)
     testRenderCachePipeline();
     testStretchSplitSaveReload();
     testGachaLoopStretchValues();
+    testPitchAnalyzerYin();
+    testPitchCmndfBruteForce();
+    testPitchSidecar();
+    testPitchNotesRules();
+    testPitchKeyEstimate();
+    testPitchAnalysisWorker();
 
 
     if (failureCount > 0)

@@ -209,10 +209,10 @@
 - [x] 採用エンジンに応じて Phase 2 の手順を書き換える（ログ > 方針変更）
 
 ### Phase 1: 解析（ピッチ検出）とサイドカー [AI🤖]
-- [ ] `Source/audio/PitchAnalyzer.{h,cpp}`: YIN（lab の結論次第で pYIN の平滑化も）。
+- [x] `Source/audio/PitchAnalyzer.{h,cpp}`: YIN（lab の結論次第で pYIN の平滑化も）。
   入力: モノ化した原音バッファ＋SR。出力: `PitchCurve`（ホップ 5〜10ms ごとの f0[Hz]・有声度・
   RMS）。**オフライン専用**（`ClipStretcher` と同じ但し書き）。ステレオは Mid で解析
-- [ ] `Source/shared/PitchCurve.h`: 構造体と**サイドカーの読み書き**（`clip-NNN.<curveDigest>.pitch`・
+- [x] `Source/shared/PitchCurve.h`: 構造体と**サイドカーの読み書き**（GC は Phase 2 の `PitchCorrection` 実装時に行う — 保持対象の `curveDigest` 集合がそれまで存在しない）（`clip-NNN.<curveDigest>.pitch`・
   バイナリ・**世代ごとに不変**。再解析は**解析内容が変わった場合のみ**新ファイルを追加し、同一内容
   なら同じ digest＝既存ファイルを再利用。旧世代は消さない）。WAV と同じディレクトリ。
   整合性の規則（レビュー指摘5）:
@@ -231,7 +231,7 @@
     まま ⌘S→確定でサイドカーが残っている／**内容が変わる再解析**のプレビュー中に ⌘S→適用で新世代が
     残り、キャンセルで旧世代が残っている／**同一内容の再解析**では新ファイルが作られず既存世代が
     そのまま残る
-- [ ] `Source/shared/PitchNotes.{h,cpp}`: `PitchCurve` → **検出ノート列**（lab の `notes.py` を移植）。
+- [x] `Source/shared/PitchNotes.{h,cpp}`: `PitchCurve` → **検出ノート列**（lab の `notes.py` を移植）。
   `DetectedPitchNote { startFrame, endFrame, medianMidi(float) }` **だけ**（目標音・バイパス・
   タイミングは持たない。編集状態は Phase 2 の `PitchCorrection` が唯一の持ち主で、タイミングは
   `TimeNode` に分離済み＝二重化しない）。**フレームは WAV 先頭基準の絶対座標**（解析はソース WAV
@@ -242,15 +242,15 @@
   隣接ノートの終了と次の開始が同じ sourceSample なら1つの共有ノードにまとめ、`Note { start, end: BoundaryRef, targetMidi = スケール
   スナップ(medianMidi), bypass = false }` を構築する。domain 端に一致する境界は `domainStart/End` を
   参照。**判断ロジックは shared/ に置く**（UI に書かない・`daw_tests` で固定）
-- [ ] スケール推定: ノート列の音高分布から最尤キー（Krumhansl 系の相関でよい。数値の読み方を
+- [x] スケール推定: ノート列の音高分布から最尤キー（Krumhansl 系の相関でよい。数値の読み方を
   コメントに書く）。プロジェクトキー未設定時の提案に使う
-- [ ] ワーカー: クリップの「ピッチ補正…」初回オープン時に解析を走らせる（`juce::Thread`＋atomic
+- [x] ワーカー（`Source/audio/PitchAnalysisWorker`。エディタからの起動は Phase 3）: クリップの「ピッチ補正…」初回オープン時に解析を走らせる（`juce::Thread`＋atomic
   status の pull 型。`GOTCHAS.md`「pull型ワーカー」の3点）。進捗はエディタ内に表示。
   **古い結果の着地規則**: リクエストは原音の強参照・WAV digest・generation を持つ。
   UI へ反映するのは現在の generation/source と一致する結果だけ。対象切替・再解析・ウィンドウ破棄・
   プロジェクト切替では cancel＋join。サイドカー書き出しは完了時に WAV の存在と digest を再確認して
   から（削除済み WAV の孤児 `.pitch` を書かない）。テスト: A 解析中→B へ切替・閉じる・再解析連打
-- [ ] テスト: 合成サイン/のこぎり波（既知 f0・ビブラート付き・無音挟み）で検出誤差とノート分割を
+- [x] テスト: 合成サイン/のこぎり波（既知 f0・ビブラート付き・無音挟み）で検出誤差とノート分割を
   固定。**自動テストは決定論的な合成音のみ**（実声は `daw` が PUBLIC リポジトリなのでコミットしない。
   本人の声・未公開曲は `~/Music/daw/` と gitignore 済みの `tools/pitchlab/work/` に留める）
 
@@ -499,7 +499,14 @@
   無加工でも 0.25〜0.73 の差（再合成臭）。全エンジン ケース D の長さ一致・クリック比 1.1 以下
 - 罠: signalsmith `wav.h` の `length()` は offset を引いた残量／PSOLA の次マーク同期は同じ有声区間に限る／
   pyworld は setuptools<81（詳細は lab 記録）
-- 人間の耳判定待ち: `tools/pitchlab/listen/`（rap-seg / uta-seg × Z/A/B/C/D × W/X/Y/Z）と
+- 2026-08-21 Phase 1 実装: `PitchCurve`（128bit FNV 内容 digest・`clip-NNN.<hex32>.pitch` 世代不変・
+  atomic replace・読込検証）/ `PitchAnalyzer`（YIN 移植。合成素材で Python 原型と同じ GPE 0 / P 0.993 /
+  R 0.994 / 1.43cent）/ `PitchNotes`（分割規則＋Krumhansl キー推定）/ `PitchAnalysisWorker`（pull 型・
+  generation 着地・孤児サイドカー防止）。テスト 6 本追加・全通過
+- ノート分割の境界は平滑化の遅れで 20ms 遅れていた（C++ テストで露見）→ 分割決定後に「生の値が新しい音に
+  近い限り手前へ巻き戻す」を C++/Python 両方に追加。短い音同士が合わさって十分な長さになる場合に捨てていた
+  バグも両方で修正（Python 原型の結果は不変: synth 10 音・rap 33・uta 27）
+- 人間の耳判定（完了）: `tools/pitchlab/listen/`（rap-seg / uta-seg × Z/A/B/C/D × W/X/Y/Z）と
   `docs/labs/reference-beat-human-answers/2026-08-21-pitchlab-blind-answers.md`（目視ラベル節を含む）
 
 ### 方針変更

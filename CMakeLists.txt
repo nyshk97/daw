@@ -125,6 +125,8 @@ target_sources(daw PRIVATE
     Source/audio/AudioFilePreview.cpp
     Source/audio/BounceRenderer.cpp
     Source/audio/ClipStretcher.cpp
+    Source/audio/PitchAnalyzer.cpp
+    Source/audio/PitchAnalysisWorker.cpp
     Source/audio/RenderCache.cpp
     Source/audio/BusDelay.cpp
     Source/audio/BusReverb.cpp
@@ -144,6 +146,8 @@ target_sources(daw PRIVATE
     Source/shared/Log.cpp
     Source/shared/LoudnessMeter.cpp
     Source/shared/MidiImport.cpp
+    Source/shared/PitchCurve.cpp
+    Source/shared/PitchNotes.cpp
     Source/shared/Project.cpp
     Source/shared/ReferenceAlign.cpp
     Source/shared/ReferenceExport.cpp
@@ -304,6 +308,8 @@ target_sources(daw_tests PRIVATE
     Source/audio/AudioFilePreview.cpp
     Source/audio/BounceRenderer.cpp
     Source/audio/ClipStretcher.cpp
+    Source/audio/PitchAnalyzer.cpp
+    Source/audio/PitchAnalysisWorker.cpp
     Source/audio/RenderCache.cpp
     Source/audio/BusDelay.cpp
     Source/audio/BusReverb.cpp
@@ -323,6 +329,8 @@ target_sources(daw_tests PRIVATE
     Source/shared/Log.cpp
     Source/shared/LoudnessMeter.cpp
     Source/shared/MidiImport.cpp
+    Source/shared/PitchCurve.cpp
+    Source/shared/PitchNotes.cpp
     Source/shared/Project.cpp
     Source/shared/ReferenceAlign.cpp
     Source/shared/ReferenceExport.cpp
