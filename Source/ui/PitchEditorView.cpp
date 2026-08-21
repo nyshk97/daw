@@ -359,17 +359,35 @@ PitchEditorView::Geometry PitchEditorView::computeGeometry (const Clip& clip) co
 
 int PitchEditorView::noteAt (const Geometry& g, juce::Point<int> p) const
 {
-    if (session == nullptr || ! session->isOpen())
+    if (session == nullptr || ! session->isOpen() || session->curve() == nullptr)
         return -1;
     const auto& w = session->working();
+    const auto& curve = *session->curve();
+    const int hop = curve.hopSamples;
     for (int i = 0; i < (int) w.notes.size(); ++i)
     {
         const auto& n = w.notes[(size_t) i];
         const auto s = w.resolve (n.start, g.domainOffset, g.domainLength), e = w.resolve (n.end, g.domainOffset, g.domainLength);
         const float x0 = g.xForSource (s), x1 = g.xForSource (e);
+        if ((float) p.x < x0 || (float) p.x > x1)
+            continue;
+        // 目標の段（枠）
         const float y0 = g.yForMidi (n.targetMidi + 0.5);
-        if ((float) p.x >= x0 && (float) p.x <= x1 && (float) p.y >= y0 && (float) p.y <= y0 + g.rowHeight)
+        if ((float) p.y >= y0 && (float) p.y <= y0 + g.rowHeight)
             return i;
+        // 帯（声の実体）: カーソル位置のフレームの補正後ピッチの近く
+        if (hop > 0)
+        {
+            const int k = (int) (g.timeMap.inverse (g.renderForX ((float) p.x)) / hop);
+            if (curve.isVoiced (k))
+            {
+                const int ti = k - cachedTarget.firstFrame;
+                const float sh = ti >= 0 && ti < (int) cachedTarget.shiftSemitones.size() ? cachedTarget.shiftSemitones[(size_t) ti] : 0.0f;
+                const float yc = g.yForMidi (curve.midiAt (k) + sh);
+                if (std::abs ((float) p.y - yc) <= juce::jmax (g.rowHeight * 0.8f, 6.0f))
+                    return i;
+            }
+        }
     }
     return -1;
 }
@@ -563,8 +581,8 @@ void PitchEditorView::drawBlobs (juce::Graphics& g, const Geometry& geo, const C
         const bool sel = selected.count (i) > 0;
 
         // 目標の段: 枠だけ（選択は白・ホバーは太く）
-        g.setColour ((sel ? juce::Colours::white : blobBorder).withAlpha ((sel ? 0.9f : 0.5f) * alpha));
-        g.drawRect (juce::Rectangle<float> (x0, y, x1 - x0, geo.rowHeight), sel || hoverNote == i ? 1.5f : 1.0f);
+        g.setColour ((sel ? juce::Colours::white : blobBorder).withAlpha ((sel ? 0.9f : n.pinned ? 0.85f : 0.5f) * alpha));
+        g.drawRect (juce::Rectangle<float> (x0, y, x1 - x0, geo.rowHeight), sel || hoverNote == i || n.pinned ? 1.5f : 1.0f);
 
         // 帯: 有声フレームごとに台形を繋ぐ（補正後ピッチを中心・RMS で太さ・移動量で色）
         const int ks = (int) ((s + hop - 1) / hop), ke = juce::jmin (curve.numFrames(), (int) ((e + hop - 1) / hop));
@@ -937,6 +955,7 @@ void PitchEditorView::mouseDrag (const juce::MouseEvent& e)
         if (target != w.notes[(size_t) d.noteIndex].targetMidi)
         {
             w.notes[(size_t) d.noteIndex].targetMidi = target;
+            w.notes[(size_t) d.noteIndex].pinned = true; // 手で置いた音は Strength に関係なく目標へ
             d.moved = true;
             if (onDragAuditionUpdate) onDragAuditionUpdate(); // 動かしながら、その音が鳴る
             repaint();

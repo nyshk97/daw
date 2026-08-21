@@ -383,17 +383,18 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     {
         // 「永続状態＝鳴っている音」を保つ: 要求値を実効値へ巻き戻す。保存後に失敗すると
         // ディスクは新しい値・メモリは旧値になるので、巻き戻しは必ず dirty 化する（undoには積まない）
+        // quiet 判定は巻き戻しの**前**に（巻き戻し後は要求値が戻って一致しない）。audio のアドレス比較だと分割兄弟の
+        // 失敗を自分の失敗と誤認するので、rollbackFailedRequest と同じ「要求指紋の一致」で判定する
+        const auto* target = pitchTargetClip();
+        const bool ownFailure = target != nullptr && target->requestedFingerprint (renderSampleRate()) == failed;
         if (ClipDomains::rollbackFailedRequest (*project, renderSampleRate(), failed))
         {
             setDirty (true);
             pushAudioValueSnapshot();
             timeline.refresh();
             // 失敗の種別で文言を分ける（recipe 付き = ピッチ補正の WORLD レンダー）。トーストは単一スロットの後勝ちなので、
-            // エディタ側の同期は quiet で呼び、赤の失敗トースト（dirty 化の事実）だけを残す
-            // 巻き戻しは補正も上書きする → エディタの working を同期（古い編集を書き戻して同じ失敗を繰り返さない）。
+            // エディタ側の同期は quiet で呼び、赤の失敗トースト（dirty 化の事実）だけを残す。
             // quiet は失敗がエディタ対象クリップのものだったときだけ（他クリップの失敗で対象のトーストを黙らせない）
-            const auto* target = pitchTargetClip();
-            const bool ownFailure = target != nullptr && target->audio.get() == failed.source;
             const bool droppedChangePreview = pitchSyncAfterModelChange (/*quiet=*/ ownFailure);
             toast.show ((failed.hasRecipe() ? jp (u8"ピッチ補正の処理に失敗したため、編集を元に戻しました")
                                             : jp (u8"移調・伸縮の処理に失敗したため、値を元に戻しました"))

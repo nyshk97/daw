@@ -52,10 +52,13 @@ struct PitchNote
     BoundaryRef start, end;
     int targetMidi = 60;  // 半音単位（セントは持たない）
     bool bypass = false;  // しゃくり・話し声区間を素に戻す
+    // 手で目標音を置いた印。pinned のノートはクリップ全体の Strength に関係なく 100% で目標へ寄せる
+    //（「開いた直後は Strength 0%」でも、ドラッグした音は動かした先で鳴る＝メロダインの挙動）。自動スナップ分は Strength に従う
+    bool pinned = false;
 
     bool operator== (const PitchNote& o) const
     {
-        return start == o.start && end == o.end && targetMidi == o.targetMidi && bypass == o.bypass;
+        return start == o.start && end == o.end && targetMidi == o.targetMidi && bypass == o.bypass && pinned == o.pinned;
     }
 };
 
@@ -82,7 +85,7 @@ struct PitchCorrection
     static std::optional<PitchCorrection> fromJson (const juce::var& v);
 
     ContentDigest digest() const; // 内容ハッシュ（レンダー指紋に入れる。音に関係しない scaleMode/customKey は含めない）
-    // 鳴りが原音と同じか（強さ 0 かつタイミングのずれ無し）。開いた直後の「何も動かさない」状態の判定に使う
+    // 鳴りが原音と同じか（強さ 0・pinned ノート無し・タイミングのずれ無し）。開いた直後の「何も動かさない」状態の判定に使う
     bool isAudiblyNeutral() const;
 
     // BoundaryRef → 原音サンプル座標

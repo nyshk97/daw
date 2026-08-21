@@ -611,6 +611,11 @@
   別要求で自然に無効）、quiet は失敗がエディタ対象クリップのものだったときだけ、committed 枝の巻き戻しもエディタ内に状態表示、
   `pitchSyncAfterModelChange` が「変更プレビューを取り消したか」を返す（文言の併記を推定でなく事実で）、
   dismiss 直前の状態表示は出さず open 時にクリア
+- 2026-08-21 本人レビュー（Strength 0% 起点の副作用）: 目標を動かしても Strength 0 では音も帯も動かず、掴めるのも枠だけ
+  だった → `PitchNote::pinned`（手で目標音を置いた印。JSON "pinned"・digest に含む）を追加し、pinned のノートは Strength に
+  関係なく 100% で目標へ（メロダインの挙動）。自動スナップ分だけがつまみに従う。中立判定も pinned を考慮。帯（声の実体）
+  でも掴めるようヒットテストを帯まで広げた。/code-review 9 回目: ownFailure は巻き戻し前に要求指紋で判定・undo で補正が消えて
+  changePreview を畳むときのトースト復活・プレビュー成功/キャッシュ命中で抑止 digest をクリア
 - 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
   自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
   検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、

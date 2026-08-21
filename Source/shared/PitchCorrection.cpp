@@ -92,6 +92,8 @@ juce::var PitchCorrection::toJson() const
         o->setProperty ("target", n.targetMidi);
         if (n.bypass)
             o->setProperty ("bypass", true);
+        if (n.pinned)
+            o->setProperty ("pinned", true);
         ns.add (juce::var (o));
     }
     obj->setProperty ("notes", ns);
@@ -168,7 +170,7 @@ std::optional<PitchCorrection> PitchCorrection::fromJson (const juce::var& v)
             const auto target = o->getProperty ("target");
             if (! s.has_value() || ! e.has_value() || ! target.isInt()) return std::nullopt;
             if ((int) target < 0 || (int) target > 127) return std::nullopt;
-            pc.notes.push_back ({ *s, *e, (int) target, (bool) o->getProperty ("bypass") });
+            pc.notes.push_back ({ *s, *e, (int) target, (bool) o->getProperty ("bypass"), (bool) o->getProperty ("pinned") });
         }
     }
     return pc;
@@ -196,6 +198,7 @@ ContentDigest PitchCorrection::digest() const
         d.add ((std::int32_t) n.end.kind); d.add ((std::int32_t) n.end.index);
         d.add ((std::int32_t) n.targetMidi);
         d.add ((std::int32_t) (n.bypass ? 1 : 0));
+        d.add ((std::int32_t) (n.pinned ? 1 : 0));
     }
     return d.finish();
 }
@@ -204,6 +207,9 @@ bool PitchCorrection::isAudiblyNeutral() const
 {
     if (strength > 0.0f)
         return false;
+    for (const auto& n : notes)
+        if (n.pinned && ! n.bypass)
+            return false;
     for (const auto& n : timeNodes)
         if (n.timingDeltaSamples != 0)
             return false;
@@ -419,6 +425,7 @@ PitchCorrections::TargetCurve PitchCorrections::targetCurve (const PitchCorrecti
         const auto median = noteMedianMidi (curve, s, e);
         if (! median.has_value())
             continue;
+        const double noteStrength = note.pinned ? 1.0 : (double) pc.strength; // 手で置いた音は常に 100%
         double state = note.targetMidi - *median; // 初期値 = 中心のずれ（速さ∞ならこれ一定）
         const int ks = juce::jmax (k0, (int) ((s + hop - 1) / hop));
         const int ke = juce::jmin (k1, (int) ((e + hop - 1) / hop));
@@ -428,7 +435,7 @@ PitchCorrections::TargetCurve PitchCorrections::targetCurve (const PitchCorrecti
                 continue; // 有声マスク: 無声フレームは transpose のみ
             const double err = note.targetMidi - curve.midiAt (k);
             state += alpha * (err - state);
-            out.shiftSemitones[(size_t) (k - k0)] = (float) (pc.strength * state + transposeSemitones);
+            out.shiftSemitones[(size_t) (k - k0)] = (float) (noteStrength * state + transposeSemitones);
         }
     }
     return out;
@@ -561,12 +568,14 @@ bool PitchCorrections::mergeNotes (PitchCorrection& pc, int leftIndex, juce::int
     const auto rightLength = e - pc.resolve (right.start, domainOffset, domainLength);
     const int target = rightLength > leftLength ? right.targetMidi : left.targetMidi;
     const bool bypass = left.bypass && right.bypass;
+    const bool pinned = left.pinned || right.pinned;
     const auto endRef = right.end;
     pc.notes.erase (pc.notes.begin() + leftIndex + 1);
     auto& merged = pc.notes[(size_t) leftIndex];
     merged.end = endRef;
     merged.targetMidi = target;
     merged.bypass = bypass;
+    merged.pinned = pinned;
     // (s, e) の開区間にあるノードをすべて削除（後ろから消して index を付け替える）
     for (int i = (int) pc.timeNodes.size(); i-- > 0;)
     {
@@ -585,7 +594,7 @@ void PitchCorrections::detachToDomain (PitchCorrection& pc, juce::int64 oldOffse
 {
     const auto newEnd = newOffset + newLength;
     // ノートを解決済み座標に展開してから範囲へ切る
-    struct Resolved { juce::int64 s, e; int target; bool bypass; };
+    struct Resolved { juce::int64 s, e; int target; bool bypass; bool pinned; };
     std::vector<Resolved> resolved;
     for (const auto& n : pc.notes)
     {
@@ -594,7 +603,7 @@ void PitchCorrections::detachToDomain (PitchCorrection& pc, juce::int64 oldOffse
         s = juce::jmax (s, newOffset);
         e = juce::jmin (e, newEnd);
         if (e > s)
-            resolved.push_back ({ s, e, n.targetMidi, n.bypass });
+            resolved.push_back ({ s, e, n.targetMidi, n.bypass, n.pinned });
     }
     // ノードは開区間内だけ残す
     std::vector<TimeNode> kept;
@@ -617,7 +626,7 @@ void PitchCorrections::detachToDomain (PitchCorrection& pc, juce::int64 oldOffse
     };
     pc.notes.clear();
     for (const auto& r : resolved)
-        pc.notes.push_back ({ refFor (r.s), refFor (r.e), r.target, r.bypass });
+        pc.notes.push_back ({ refFor (r.s), refFor (r.e), r.target, r.bypass, r.pinned });
     // refFor がノードを足した場合に備えて index を付け直す（昇順なので再解決で一意）
     std::vector<PitchNote> fixed;
     for (auto& n : pc.notes)

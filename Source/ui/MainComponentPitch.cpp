@@ -267,6 +267,7 @@ void MainComponent::wirePitchEditor()
             || domain->sourceAudio.get() != clip->audio.get())
             return; // 遅着・不一致は捨てる（generation はモード変更のたびに digest が変わることで代替）
         clip->previewDomain = domain;
+        pitchSuppressPreviewFailDigest = {}; // 成功したら抑止は外す
         pushAudioValueSnapshot();
         timeline.refresh();
         pitchWindow.content().refresh();
@@ -475,6 +476,7 @@ void MainComponent::pitchRequestPreview()
     if (auto cached = pitchPreviewCache.lookup (request.fingerprint))
     {
         clip->previewDomain = cached;
+        pitchSuppressPreviewFailDigest = {}; // キャッシュ命中も成功扱い
         pitchPreviewRequest.reset();
         pushAudioValueSnapshot();
         timeline.refresh();
@@ -586,15 +588,15 @@ bool MainComponent::pitchSyncAfterModelChange (bool quiet)
                     pitchSession.cancelChange();
                     pitchClearPreview();
                     droppedChangePreview = true;
+                    if (! quiet)
+                        toast.show (jp (u8"モデルが変わったためピッチ補正の変更プレビューを取り消しました"), false, nullptr); // トーストは持ち越さないので dismiss 前でよい
                     if (! current.has_value())
                     {
-                        pitchWindow.dismiss(); // 表示は閉じるので状態表示は出さない（次のクリップに残さない）
+                        pitchWindow.dismiss(); // 閉じるのでエディタ内の状態表示は出さない（次のクリップに残さない）
                         break;
                     }
                     pitchSession.syncCommitted (*current, clip->pitchCurve);
-                    if (! quiet)
-                        toast.show (jp (u8"モデルが変わったためピッチ補正の変更プレビューを取り消しました"), false, nullptr);
-                    else
+                    if (quiet)
                         pitchWindow.content().showStatus (jp (u8"変更プレビューを取り消しました（レンダー失敗）"));
                     break;
                 }
@@ -714,6 +716,7 @@ void MainComponent::debugPitchAction (const juce::String& action)
         {
             pitchBeginEdit();
             pitchSession.mutableWorking().notes[(size_t) idx].targetMidi += delta;
+            pitchSession.mutableWorking().notes[(size_t) idx].pinned = true;
             pitchApplyWorking();
         }
     }

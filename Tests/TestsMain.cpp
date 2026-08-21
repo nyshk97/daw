@@ -15561,6 +15561,20 @@ void testPitchTargetCurve()
         for (int k = 20; k < 200; ++k) { const double v = c.midiAt (k) + at (t, k); mn = juce::jmin (mn, v); mx = juce::jmax (mx, v); }
         expect (mx - mn > 0.3 && std::abs ((mx + mn) / 2 - 60.0) < 0.05, "速さ大 = 中心だけ寄せてビブラートは残る");
     }
+    // pinned（手で置いた音）は Strength 0 でも 100% で目標へ寄る。中立判定からも外れる
+    {
+        auto p2 = pc; p2.strength = 0.0f; p2.notes[1].pinned = true;
+        expect (! p2.isAudiblyNeutral(), "pinned があれば中立でない");
+        const auto t = PitchCorrections::targetCurve (p2, c, 0, dom, 0);
+        bool first = true;
+        for (int k = 0; k < 200; ++k) first = first && juce::exactlyEqual (at (t, k), 0.0f);
+        expect (first, "pinned でないノートは Strength 0 で動かない");
+        bool second = true;
+        for (int k = 240; k < 320; ++k) second = second && std::abs (c.midiAt (k) + at (t, k) - 64.0) < 0.2;
+        expect (second, "pinned のノートは 100% で目標（64）へ");
+        auto back = PitchCorrection::fromJson (p2.toJson());
+        expect (back.has_value() && back->notes[1].pinned && *back == p2, "pinned が JSON 往復する");
+    }
     // バイパス → そのノートは transpose のみ
     {
         auto b = pc; b.notes[1].bypass = true;
