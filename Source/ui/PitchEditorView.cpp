@@ -60,12 +60,13 @@ PitchEditorView::PitchEditorView()
     cancelButton.setColour (juce::TextButton::buttonColourId, Theme::recordRed);
     cancelButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white);
     setupButton (retryButton, u8"Retry");
-    setupButton (scaleHighlightButton, u8"Show scale");
     scaleHighlightButton.setTooltip (jp (u8"スケール音の段をハイライト（キー未設定時は推定キー）"));
     scaleHighlightButton.setClickingTogglesState (true);
     scaleHighlightButton.setToggleState (highlightScale, juce::dontSendNotification);
+    scaleHighlightButton.setOnLightBackground (true);
     scaleHighlightButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
     scaleHighlightButton.onClick = [this] { highlightScale = scaleHighlightButton.getToggleState(); repaint(); };
+    addAndMakeVisible (scaleHighlightButton);
 
     scaleBox.addItem (jp (u8"Project key"), scaleItemProjectKey);
     scaleBox.addItem (jp (u8"Chromatic"), scaleItemChromatic);
@@ -282,7 +283,7 @@ void PitchEditorView::resized()
     // 左: 音の決め方
     scaleLabel.setBounds (bar.removeFromLeft (36));
     scaleBox.setBounds (bar.removeFromLeft (190).reduced (2, 0));
-    scaleHighlightButton.setBounds (bar.removeFromLeft (84).reduced (2, 4));
+    scaleHighlightButton.setBounds (bar.removeFromLeft (28).reduced (2, 1));
     resnapButton.setBounds (bar.removeFromLeft (64));
     bar.removeFromLeft (8);
     strengthLabel.setBounds (bar.removeFromLeft (52));

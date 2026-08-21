@@ -5,6 +5,7 @@
 #include <set>
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "IconButton.h"
 #include "../shared/PitchEditorSession.h"
 #include "../shared/Project.h"
 
@@ -108,7 +109,8 @@ private:
     // ---- 上部バー（左＝音の決め方 ／ 右＝確定系）----
     juce::Label scaleLabel, strengthLabel, speedLabel, statusLabel;
     juce::ComboBox scaleBox;
-    juce::TextButton resnapButton, keroButton, enableButton, applyButton, cancelButton, retryButton, scaleHighlightButton;
+    juce::TextButton resnapButton, keroButton, enableButton, applyButton, cancelButton, retryButton;
+    IconButton scaleHighlightButton { IconButton::Icon::keys, juce::String::fromUTF8 (u8"スケール音を表示") };
     bool highlightScale = true;       // スケール音の段を明るく・外を暗く（ON/OFF）
     juce::String statusText;
     double statusUntil = 0.0;

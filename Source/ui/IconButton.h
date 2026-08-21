@@ -8,7 +8,7 @@ class IconButton : public juce::Button
 {
 public:
     enum class Icon { play, stop, record, metronome, gear, plus, notes, folder, speaker,
-                      speakerMuted, sort, dice, inspector, cycle };
+                      speakerMuted, sort, dice, inspector, cycle, keys };
 
     IconButton (Icon initialIcon, const juce::String& accessibleName)
         : juce::Button (accessibleName), icon (initialIcon) {}
@@ -229,6 +229,23 @@ public:
                                                     juce::PathStrokeType::rounded));
                 g.drawEllipse (juce::Rectangle<float> (rHole * 2.0f, rHole * 2.0f).withCentre (centre),
                                stroke);
+                break;
+            }
+            case Icon::keys:
+            {
+                // 小さな鍵盤（白鍵3＋黒鍵2）。ピッチエディタの「スケール音を示す」トグル
+                const float stroke = strokeWidth (side);
+                const auto box = juce::Rectangle<float> (at (r, 3.0f, 5.0f), at (r, 21.0f, 19.0f));
+                g.drawRoundedRectangle (box, design (side, 1.5f), stroke);
+                juce::Path p;
+                for (float x : { 9.0f, 15.0f }) // 白鍵の区切り
+                {
+                    p.startNewSubPath (at (r, x, 12.0f));
+                    p.lineTo (at (r, x, 19.0f));
+                }
+                g.strokePath (p, juce::PathStrokeType (stroke));
+                for (float x : { 7.0f, 13.0f }) // 黒鍵（塗り）
+                    g.fillRect (juce::Rectangle<float> (at (r, x, 5.0f), at (r, x + 4.0f, 12.5f)));
                 break;
             }
             case Icon::cycle:
