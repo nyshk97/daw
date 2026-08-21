@@ -113,7 +113,7 @@ void MainComponent::wirePitchEditor()
                                   PitchCorrections::effectiveScale (proposal, project->key));
         if (proposal == pitchSession.working())
         {
-            toast.show (jp (u8"キーに合わせ直しても変わる音はありません"), false, nullptr);
+            pitchWindow.content().showStatus (jp (u8"Re-snap: 変わる音はありません"));
             return;
         }
         Log::info ("pitch.resnap_preview", "clip=" + juce::String (clip->id));
@@ -133,7 +133,7 @@ void MainComponent::wirePitchEditor()
                                                     w.scaleMode, w.customKey);
         if (proposal == w)
         {
-            toast.show (jp (u8"既に自動スナップの状態です"), false, nullptr);
+            pitchWindow.content().showStatus (jp (u8"Reset: 既に自動スナップの状態です"));
             return;
         }
         Log::info ("pitch.reset_preview", "clip=" + juce::String (clip->id));
@@ -233,6 +233,7 @@ void MainComponent::wirePitchEditor()
             return;
         Log::warn ("pitch.preview_failed", "clip=" + juce::String (pitchSession.clipId()));
         toast.show (jp (u8"ピッチ補正のプレビューを作れませんでした（原音で鳴っています）"), true, nullptr);
+        pitchWindow.content().showStatus (jp (u8"プレビューのレンダーに失敗（原音で鳴っています）"));
         // 永続値の巻き戻しも dirty 化もしない（エディタ内表示のみ）
     };
 
@@ -303,8 +304,12 @@ void MainComponent::pitchStartAnalysis (const Clip& clip, bool reanalyze)
         pitchReanalyzing = false;
     }
     else
+    {
         Log::info (reanalyze ? "pitch.reanalyze" : "pitch.analyze", "clip=" + juce::String (clip.id)
                                                                          + " gen=" + juce::String (pitchAnalysisGeneration));
+        if (reanalyze)
+            pitchWindow.content().showStatus (jp (u8"Re-analyze: 解析中…"));
+    }
 }
 
 void MainComponent::pitchEditorTick()
@@ -343,7 +348,7 @@ void MainComponent::pitchEditorTick()
             return;
         if (curve->digest() == pitchSession.working().curveDigest)
         {
-            toast.show (jp (u8"再解析しましたが結果は同じでした"), false, nullptr);
+            pitchWindow.content().showStatus (jp (u8"Re-analyze: 結果は同じでした（解析器が同じなので変わりません）"));
             return;
         }
         // 内容が変わった: 新しいカーブで自動スナップし直した案を変更プレビューとして見せる

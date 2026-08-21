@@ -45,6 +45,7 @@ public:
     std::function<bool (const juce::KeyPress&)> onKey; // メインへ転送（Space / ⌘Z / , .）
 
     void refresh(); // session の状態が変わったら呼ぶ（バーの表示を更新して再描画）
+    void showStatus (const juce::String& text); // 上部バー右側に数秒だけ出す通知（再解析の結果など。メインのトーストはエディタからは見えない）
 
     void paint (juce::Graphics& g) override;
     void resized() override;
@@ -98,13 +99,20 @@ private:
     double zoom = 1.0;
     juce::int64 scrollRender = 0;
 
-    void timerCallback() override { repaint(); }
+    void timerCallback() override
+    {
+        if (statusText.isNotEmpty() && juce::Time::getMillisecondCounterHiRes() > statusUntil) { statusText.clear(); updateBar(); }
+        repaint();
+    }
 
     // ---- 上部バー（左＝音の決め方 ／ 右＝確定系）----
     juce::Label scaleLabel, strengthLabel, speedLabel, statusLabel;
     juce::ComboBox scaleBox;
     juce::TextButton resnapButton, keroButton, reanalyzeButton, resetButton, enableButton, applyButton, cancelButton,
-                     setKeyButton, retryButton;
+                     setKeyButton, retryButton, scaleHighlightButton;
+    bool highlightScale = true;       // スケール音の段を明るく・外を暗く（ON/OFF）
+    juce::String statusText;
+    double statusUntil = 0.0;
     juce::Slider strengthSlider, speedSlider;
     juce::Label bannerLabel;
     juce::TextButton bannerButton;

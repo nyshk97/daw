@@ -62,6 +62,12 @@ PitchEditorView::PitchEditorView()
     cancelButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white);
     setupButton (setKeyButton, u8"Set project key");
     setupButton (retryButton, u8"Retry");
+    setupButton (scaleHighlightButton, u8"Hl");
+    scaleHighlightButton.setTooltip (jp (u8"スケール音の段をハイライト（キー未設定時は推定キー）"));
+    scaleHighlightButton.setClickingTogglesState (true);
+    scaleHighlightButton.setToggleState (highlightScale, juce::dontSendNotification);
+    scaleHighlightButton.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
+    scaleHighlightButton.onClick = [this] { highlightScale = scaleHighlightButton.getToggleState(); repaint(); };
 
     scaleBox.addItem (jp (u8"Project key"), scaleItemProjectKey);
     scaleBox.addItem (jp (u8"Chromatic"), scaleItemChromatic);
@@ -144,6 +150,14 @@ PitchEditorView::PitchEditorView()
 
 PitchEditorView::~PitchEditorView() { stopTimer(); }
 
+
+void PitchEditorView::showStatus (const juce::String& text)
+{
+    statusText = text;
+    statusUntil = juce::Time::getMillisecondCounterHiRes() + 4000.0;
+    statusLabel.setText (text, juce::dontSendNotification);
+}
+
 void PitchEditorView::refresh()
 {
     updateBar();
@@ -225,7 +239,8 @@ void PitchEditorView::updateBar()
         bannerVisible = false;
     bannerLabel.setText (bannerText, juce::dontSendNotification);
     bannerLabel.setVisible (bannerVisible);
-    statusLabel.setText (mode == Mode::closed ? jp (u8"No clip") : juce::String(), juce::dontSendNotification);
+    if (juce::Time::getMillisecondCounterHiRes() > statusUntil)
+        statusLabel.setText (mode == Mode::closed ? jp (u8"No clip") : juce::String(), juce::dontSendNotification);
 }
 
 void PitchEditorView::applyScaleSelection()
@@ -256,6 +271,7 @@ void PitchEditorView::resized()
     // 左: 音の決め方
     scaleLabel.setBounds (bar.removeFromLeft (36));
     scaleBox.setBounds (bar.removeFromLeft (190).reduced (2, 0));
+    scaleHighlightButton.setBounds (bar.removeFromLeft (30).reduced (2, 4));
     resnapButton.setBounds (bar.removeFromLeft (64));
     bar.removeFromLeft (8);
     strengthLabel.setBounds (bar.removeFromLeft (52));
@@ -385,13 +401,19 @@ void PitchEditorView::drawKeyboard (juce::Graphics& g, const Geometry& geo) cons
 void PitchEditorView::drawGrid (juce::Graphics& g, const Geometry& geo, const Clip& clip) const
 {
     // 段（スケール外を薄く）
+    // スケール音の段を明るく・外を暗く（Hl トグル）。キー未設定・プロジェクトキー追従なら推定キーで示す
     std::optional<ProjectKey> scale;
-    if (session != nullptr && session->isOpen())
+    if (highlightScale && session != nullptr && session->isOpen())
+    {
         scale = PitchCorrections::effectiveScale (session->working(), getProjectKey ? getProjectKey() : std::nullopt);
+        if (! scale.has_value() && session->working().scaleMode == PitchScaleMode::projectKey)
+            if (const auto est = PitchNotes::estimateKey (session->detected()); est.valid)
+                scale = est.key;
+    }
     for (int m = geo.midiLo; m < geo.midiHi; ++m)
     {
         const bool inScale = ! scale.has_value() || PitchCorrections::snapToScale (m, scale) == m;
-        g.setColour (inScale ? Theme::timelineBg : juce::Colour (0xff191a1e));
+        g.setColour (! scale.has_value() ? Theme::timelineBg : inScale ? juce::Colour (0xff2a2b33) : juce::Colour (0xff17171b));
         g.fillRect ((float) geo.canvas.getX(), geo.yForMidi (m + 1), (float) geo.canvas.getWidth(), geo.rowHeight);
         g.setColour (Theme::gridLineBeat);
         g.fillRect ((float) geo.canvas.getX(), geo.yForMidi (m), (float) geo.canvas.getWidth(), 1.0f);
