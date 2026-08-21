@@ -116,6 +116,16 @@ std::vector<PeakRange> buildFullPeakCache (const juce::AudioBuffer<float>& audio
     return peaks;
 }
 
+std::optional<PitchCorrection> Clip::pitchCorrectionInOwnDomain() const
+{
+    if (! pitchCorrection.has_value())
+        return std::nullopt;
+    auto own = *pitchCorrection;
+    if (sharesInheritedDomain())
+        PitchCorrections::detachToDomain (own, requestedDomainOffset(), requestedDomainLength(), offsetSamples, lengthSamples);
+    return own;
+}
+
 bool splitClip (const Clip& clip, juce::int64 splitSample, Clip& left, Clip& right)
 {
     // 判定は**見かけ（実効）座標**の本体1反復の内側のみ。伸縮中（ratio != 1）は
@@ -168,9 +178,7 @@ bool splitClip (const Clip& clip, juce::int64 splitSample, Clip& left, Clip& rig
     left.fadeOutSamples = 0;
     left.clampFades(); // 継承した fadeIn を左の長さへ収める（原音座標）
 
-    right = clip;
-    right.id = 0; // 右側は新しい id（呼び出し側の reconcile → ensureUniqueIds が採番）
-    right.previewDomain = nullptr; // 未確定プレビューはエディタの対象（id）にだけ付く。別 id へ持ち越さない
+    right = clip.cloneForNewId(); // 右側は新しい id（呼び出し側の reconcile → ensureUniqueIds が採番）・プレビューは持ち越さない
     // ピッチ補正（pitchCorrection / pitchCurve）は左右とも**丸ごと**継承する（構造体コピー）。
     // 親の domain で表現されたノート列を切らないので親子の recipe digest が一致し、分割直後は再レンダーが
     // 起きない。子を編集するときにエディタ側が detachToDomain で自範囲へ写す

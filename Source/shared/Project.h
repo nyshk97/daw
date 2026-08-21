@@ -89,6 +89,23 @@ struct Clip
     {
         return previewDomain != nullptr ? previewDomain.get() : activeDomain.get();
     }
+    // 分割で親のレンダードメインを共有したままか（補正のノート列も親の domain 座標で表現されている）
+    bool sharesInheritedDomain() const
+    {
+        return requestedDomainOffset() != offsetSamples || requestedDomainLength() != lengthSamples;
+    }
+    // 補正をクリップ自身の範囲で表現したもの（共有中なら detach した複製、そうでなければそのまま）。
+    // エディタの working はこれを起点にする（「working は常に自範囲」の不変条件）。実装は Project.cpp
+    std::optional<PitchCorrection> pitchCorrectionInOwnDomain() const;
+    // 複製・ペースト・分割の右側など「新しい id のクリップ」を作るときの複製。id と未確定プレビューを落とす
+    // （音・波形・補正・ドメイン共有は構造体コピーで継承）。新しい複製経路はこれを通すこと
+    Clip cloneForNewId() const
+    {
+        Clip c = *this;
+        c.id = 0;
+        c.previewDomain = nullptr;
+        return c;
+    }
 
     juce::int64 requestedDomainOffset() const
     {

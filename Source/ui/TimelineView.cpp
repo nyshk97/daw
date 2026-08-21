@@ -2229,10 +2229,7 @@ void TimelineView::handleLaneMouseDrag (const juce::MouseEvent& e)
             }
             else
             {
-                Clip copy = sourceTrack.clips[(size_t) regionDrag.item]; // fileName/audioは共有参照
-                copy.id = 0; // 複製は新しい id（reconcile の ensureUniqueIds が採番）
-        copy.previewDomain = nullptr;
-                copy.previewDomain = nullptr;
+                Clip copy = sourceTrack.clips[(size_t) regionDrag.item].cloneForNewId(); // fileName/audioは共有参照・新 id
                 sourceTrack.clips.push_back (std::move (copy));
                 regionDrag.item = (int) sourceTrack.clips.size() - 1;
                 selection = { regionDrag.track, regionDrag.item };
@@ -2558,7 +2555,7 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
         juce::PopupMenu::Item pitchItem (jp (u8"ピッチ補正…"));
         pitchItem.itemID = 10;
         pitchItem.isEnabled = onPitchEditRequested != nullptr;
-        if (clip.pitchCorrection.has_value())
+        if (clip.pitchCorrection.has_value() && ! clip.pitchCorrection->isAudiblyNeutral())
             pitchItem.shortcutKeyDescription = jp (u8"有効");
         menu.addItem (pitchItem);
     }
@@ -2858,9 +2855,7 @@ void TimelineView::duplicateAt (int trackIndex, int itemIndex)
             return; // レンダリング待ち: 「終端直後」が旧長のままで重なりを作るため無効
         if (onWillEditModel)
             onWillEditModel();
-        Clip copy = track.clips[(size_t) itemIndex]; // fileName/audio/activeDomainは共有参照
-        copy.id = 0; // 複製は新しい id（reconcile の ensureUniqueIds が採番）
-        copy.previewDomain = nullptr;
+        Clip copy = track.clips[(size_t) itemIndex].cloneForNewId(); // fileName/audio/activeDomainは共有参照・新 id
         // 元の終端直後（Logicのリピート相当）。ループ中はループ終端の直後＝重ならない位置へ
         copy.startSample += copy.renderedTotalLengthSamples();
         track.clips.push_back (std::move (copy));

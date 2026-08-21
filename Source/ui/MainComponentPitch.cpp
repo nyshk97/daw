@@ -328,11 +328,7 @@ void MainComponent::openPitchEditor (int trackIndex, int itemIndex)
         // 保存済みの手直しを隠さない。分割子（親の domain を共有）は**開いた時点で**自範囲へ写した作業コピーにする —
         // 編集中に detach するとノート index が途中でずれる（レビュー指摘）。クリップ側は最初の書き込みまで親の
         // domain を共有したまま（再レンダーしない）
-        auto working = *clip.pitchCorrection;
-        if (clip.requestedDomainOffset() != clip.offsetSamples || clip.requestedDomainLength() != clip.lengthSamples)
-            PitchCorrections::detachToDomain (working, clip.requestedDomainOffset(), clip.requestedDomainLength(),
-                                              clip.offsetSamples, clip.lengthSamples);
-        pitchSession.openCommitted (clip.id, working, clip.pitchCurve);
+        pitchSession.openCommitted (clip.id, *clip.pitchCorrectionInOwnDomain(), clip.pitchCurve);
     }
     else
     {
@@ -507,7 +503,7 @@ void MainComponent::pitchClearPreview()
 // 親とのドメイン共有が終わる（親子の digest がここで分かれる＝再レンダーはこのとき初めて）
 void MainComponent::pitchWriteWorkingToClip (Clip& clip)
 {
-    if (clip.requestedDomainOffset() != clip.offsetSamples || clip.requestedDomainLength() != clip.lengthSamples)
+    if (clip.sharesInheritedDomain())
     {
         clip.resetRenderDomainToSelf();
         Log::info ("pitch.detach", "clip=" + juce::String (clip.id));
@@ -530,6 +526,10 @@ void MainComponent::pitchBeginEdit()
             pitchWriteWorkingToClip (*clip);
             clip->previewDomain = nullptr;
             pitchPreviewRequest.reset();
+            // 編集が成立しなくても（同じ段で離す等）確定は起きているので、ここで dirty とレンダー同期まで済ませる
+            setDirty (true);
+            renderCache.requestSync();
+            timeline.refresh();
             Log::info ("pitch.commit_initial", "clip=" + juce::String (clip->id));
         }
         return;
@@ -564,7 +564,7 @@ void MainComponent::pitchSyncAfterModelChange()
     {
         case PitchEditorSession::Mode::committed:
             if (clip->pitchCorrection.has_value() && clip->pitchCurve != nullptr)
-                pitchSession.syncCommitted (*clip->pitchCorrection, clip->pitchCurve);
+                pitchSession.syncCommitted (*clip->pitchCorrectionInOwnDomain(), clip->pitchCurve); // working は常に自範囲
             else
                 pitchWindow.dismiss(); // undo で「補正なし」へ戻った
             break;
@@ -572,9 +572,7 @@ void MainComponent::pitchSyncAfterModelChange()
             // undo で永続値が変わっていたら backup が陳腐化している → 変更プレビューは破棄（Cancel 相当）
             if (const auto& bk = pitchSession.backup(); bk.has_value())
             {
-                auto current = clip->pitchCorrection;
-                if (current.has_value() && (clip->requestedDomainOffset() != clip->offsetSamples || clip->requestedDomainLength() != clip->lengthSamples))
-                    PitchCorrections::detachToDomain (*current, clip->requestedDomainOffset(), clip->requestedDomainLength(), clip->offsetSamples, clip->lengthSamples);
+                const auto current = clip->pitchCorrectionInOwnDomain();
                 if (! current.has_value() || ! (*current == *bk))
                 {
                     pitchSession.cancelChange();

@@ -584,6 +584,11 @@
   backup が陳腐化したら変更プレビューを破棄 ⑩ 分解キャッシュは対象切替・閉じるで解放＋原音解放で無効。
   軽微: cachedTarget に transpose/domain、null InputStream、オクターブ表記 C3=60、B/M を Shortcuts 経由、切替時の試聴停止、
   WORLD の BSD-3 を Resources に同梱、ensureUniqueIds を set で O(n log n)、BufferAudition の範囲クランプ
+- 2026-08-21 /code-review 2 回目（前回 18 件は全件クローズ。修正が持ち込んだ 4 件＋軽微）を反映: ①② 「補正を自範囲で」の
+  判断を `Clip::pitchCorrectionInOwnDomain()` / `sharesInheritedDomain()`（Project.h・テストあり）に集約し、open／committed 同期／
+  changePreview 同期／`applyStretchRequest` の4箇所をそこへ ③ 中立補正はレンダー失敗の巻き戻しで保持 ④ 初回確定の枝で
+  dirty＋requestSync。軽微: `Clip::cloneForNewId()` で複製 5 経路を統一・重複行削除・「有効」は音に出ているときだけ。
+  見送り: 変更プレビュー中の移調ホイール連打（最大 2 件で実害小）・再解析提案とタイミング編集の食い違い（同一検出器では到達しない）
 - 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
   自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
   検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、

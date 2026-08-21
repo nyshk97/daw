@@ -184,10 +184,11 @@ bool ClipDomains::rollbackFailedRequest (Project& project, double sampleRate,
                 clip.stretchRatio = d.ratio;
                 clip.renderDomainOffset = d.domainOffset;
                 clip.renderDomainLength = d.domainLength;
-                // 補正も「鳴っている音」の状態へ（補正なしで鳴っていたなら補正を捨てる）
+                // 補正も「鳴っている音」の状態へ。中立（Strength 0）の補正はドメインに記録されない
+                // （recipe を出さない）が、ノートの手直しは音に出ていないだけで失う理由が無いので保持する
                 if (d.correction != nullptr)
                     clip.pitchCorrection = *d.correction;
-                else
+                else if (! (clip.pitchCorrection.has_value() && clip.pitchCorrection->isAudiblyNeutral()))
                     clip.pitchCorrection.reset();
             }
             else
@@ -196,7 +197,8 @@ bool ClipDomains::rollbackFailedRequest (Project& project, double sampleRate,
                 // 値も 0 / 1.0 に戻すので「永続状態＝鳴っている音」は保たれる）
                 clip.transposeSemitones = 0;
                 clip.stretchRatio = 1.0;
-                clip.pitchCorrection.reset();
+                if (! (clip.pitchCorrection.has_value() && clip.pitchCorrection->isAudiblyNeutral()))
+                    clip.pitchCorrection.reset();
                 clip.resetRenderDomainToSelf();
                 clip.activeDomain = makeNeutralDomain (clip.audio, clip.offsetSamples,
                                                        clip.lengthSamples, sampleRate);
@@ -220,7 +222,10 @@ bool ClipDomains::applyStretchRequest (Clip& clip, int semitones, double ratio)
     clip.transposeSemitones = semitones;
     clip.stretchRatio = ratio;
     // 値を変えたらドメインをクリップ自身の範囲へリセットする（1小節のチョップのために
-    // 8小節を再レンダーしない。音が変わる瞬間なので境界の連続性が切れても違和感にならない）
+    // 8小節を再レンダーしない。音が変わる瞬間なので境界の連続性が切れても違和感にならない）。
+    // 補正が親の domain 座標のままだと自範囲で誤った目標音になるので、先に自範囲へ写す
+    if (clip.sharesInheritedDomain())
+        clip.pitchCorrection = clip.pitchCorrectionInOwnDomain();
     clip.resetRenderDomainToSelf();
     return true;
 }

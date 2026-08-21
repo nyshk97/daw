@@ -15874,6 +15874,31 @@ void testPitchProjectRoundtrip()
                 for (int i = 0; i < whole.getNumSamples(); ++i) same = same && juce::exactlyEqual (joined[(size_t) i], whole.getSample (0, i));
             expect (same, "分割の左右をつなげると分割前と一致（隙間・重なりなし）");
         }
+        // ヘルパ: 共有中の子は pitchCorrectionInOwnDomain() が detach した複製を返し、クリップ自体は変えない
+        {
+            auto& child0 = clips[1];
+            expect (child0.sharesInheritedDomain(), "分割直後の右側は親のドメインを共有");
+            const auto own = child0.pitchCorrectionInOwnDomain();
+            auto manual = *child0.pitchCorrection;
+            PitchCorrections::detachToDomain (manual, child0.requestedDomainOffset(), child0.requestedDomainLength(), child0.offsetSamples, child0.lengthSamples);
+            expect (own.has_value() && *own == manual && own->validate (child0.offsetSamples, child0.lengthSamples), "pitchCorrectionInOwnDomain は detach と同じ結果");
+            expect (child0.sharesInheritedDomain() && ! (*child0.pitchCorrection == manual), "クリップ自体は触らない");
+            // 共有中の子に移調を受け付けると補正も自範囲へ写ってから domain が戻る（親座標の取り残しが無い）
+            Clip stretched = child0;
+            expect (ClipDomains::applyStretchRequest (stretched, 1, 1.0), "移調を受理");
+            expect (! stretched.sharesInheritedDomain() && stretched.pitchCorrection.has_value() && *stretched.pitchCorrection == manual,
+                    "applyStretchRequest は補正を自範囲へ写してから domain を自範囲に");
+            // 中立補正（Strength 0）はレンダー失敗の巻き戻しで消えない
+            Clip neutral = stretched;
+            neutral.pitchCorrection->strength = 0.0f;
+            neutral.activeDomain = nullptr;
+            Project tmp; tmp.sampleRate = sr;
+            Track t; t.clips.push_back (neutral); tmp.tracks.push_back (t);
+            auto& nc = tmp.tracks[0].clips[0];
+            const auto failed = nc.requestedFingerprint (sr);
+            expect (ClipDomains::rollbackFailedRequest (tmp, sr, failed), "巻き戻し");
+            expect (nc.pitchCorrection.has_value() && nc.transposeSemitones == 0, "中立補正は保持したまま移調だけ戻る");
+        }
         // 子を detach すると digest が分かれる
         auto& child = clips[1];
         PitchCorrections::detachToDomain (*child.pitchCorrection, child.requestedDomainOffset(), child.requestedDomainLength(),
