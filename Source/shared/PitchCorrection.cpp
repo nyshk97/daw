@@ -170,7 +170,8 @@ std::optional<PitchCorrection> PitchCorrection::fromJson (const juce::var& v)
             const auto target = o->getProperty ("target");
             if (! s.has_value() || ! e.has_value() || ! target.isInt()) return std::nullopt;
             if ((int) target < 0 || (int) target > 127) return std::nullopt;
-            pc.notes.push_back ({ *s, *e, (int) target, (bool) o->getProperty ("bypass"), (bool) o->getProperty ("pinned") });
+            const bool bypass = (bool) o->getProperty ("bypass");
+            pc.notes.push_back ({ *s, *e, (int) target, bypass, ! bypass && (bool) o->getProperty ("pinned") }); // bypass ⇒ pinned=false に正規化
         }
     }
     return pc;
@@ -506,10 +507,16 @@ bool PitchCorrections::setNoteTarget (PitchCorrection& pc, int noteIndex, int ta
         return false;
     auto& n = pc.notes[(size_t) noteIndex];
     targetMidi = juce::jlimit (0, 127, targetMidi);
-    const bool changedTarget = n.targetMidi != targetMidi;
     n.targetMidi = targetMidi;
-    n.pinned = pinnedAtStart || targetMidi != targetAtStart;
-    return changedTarget || n.pinned != pinnedAtStart;
+    n.pinned = ! n.bypass && (pinnedAtStart || targetMidi != targetAtStart);
+    return targetMidi != targetAtStart || n.pinned != pinnedAtStart;
+}
+
+void PitchCorrections::toggleNoteBypass (PitchCorrection& pc, int noteIndex)
+{
+    if (noteIndex < 0 || noteIndex >= (int) pc.notes.size())
+        return;
+    setNoteBypass (pc, noteIndex, ! pc.notes[(size_t) noteIndex].bypass);
 }
 
 void PitchCorrections::setNoteBypass (PitchCorrection& pc, int noteIndex, bool bypass)
@@ -601,7 +608,7 @@ bool PitchCorrections::mergeNotes (PitchCorrection& pc, int leftIndex, juce::int
     merged.end = endRef;
     merged.targetMidi = target;
     merged.bypass = bypass;
-    merged.pinned = pinned;
+    merged.pinned = pinned && ! bypass;
     // (s, e) の開区間にあるノードをすべて削除（後ろから消して index を付け替える）
     for (int i = (int) pc.timeNodes.size(); i-- > 0;)
     {

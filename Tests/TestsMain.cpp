@@ -15587,6 +15587,15 @@ void testPitchTargetCurve()
         expect (p3.notes[0].bypass && ! p3.notes[0].pinned, "bypass で pinned が外れる");
         PitchCorrections::setNoteBypass (p3, 0, false);
         expect (! p3.notes[0].pinned, "解除しても pinned は戻らない");
+        PitchCorrections::setNoteBypass (p3, 0, true);
+        PitchCorrections::setNoteTarget (p3, 0, 65, 62, false);
+        expect (p3.notes[0].targetMidi == 65 && ! p3.notes[0].pinned, "bypass 中は目標を変えても pinned にならない");
+        auto json = p3.toJson();
+        json.getDynamicObject()->getProperty ("notes").getArray()->getReference (0).getDynamicObject()->setProperty ("pinned", true);
+        auto loaded = PitchCorrection::fromJson (json);
+        expect (loaded.has_value() && loaded->notes[0].bypass && ! loaded->notes[0].pinned, "読込で bypass ⇒ pinned=false に正規化");
+        PitchCorrections::toggleNoteBypass (p3, 0);
+        expect (! p3.notes[0].bypass, "toggleNoteBypass");
         // resnap は pinned を飛ばす
         auto p4 = pc; p4.notes[0].pinned = true; p4.notes[0].targetMidi = 61; // スケール外に手で置いた
         PitchCorrections::resnap (p4, c, 0, dom, ProjectKey { 0, KeyMode::major });

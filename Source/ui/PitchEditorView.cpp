@@ -362,11 +362,12 @@ void PitchEditorView::ensureTargetCache (const Geometry& geo, const Clip& clip)
     if (session == nullptr || session->curve() == nullptr)
         return;
     const auto& w = session->working();
-    if (cachedTargetDigest != w.digest() || cachedTargetTranspose != clip.transposeSemitones
+    const auto digest = w.digest(); // hover のたびに呼ばれるので 1 回だけ
+    if (cachedTargetDigest != digest || cachedTargetTranspose != clip.transposeSemitones
         || cachedTargetDomain != std::make_pair (geo.domainOffset, geo.domainLength))
     {
         cachedTarget = PitchCorrections::targetCurve (w, *session->curve(), geo.domainOffset, geo.domainLength, clip.transposeSemitones);
-        cachedTargetDigest = w.digest();
+        cachedTargetDigest = digest;
         cachedTargetTranspose = clip.transposeSemitones;
         cachedTargetDomain = { geo.domainOffset, geo.domainLength };
     }
@@ -868,7 +869,7 @@ void PitchEditorView::showContextMenu (juce::Point<int> at)
         else if (result == 11 && safe->canEdit() && noteUnder >= 0)
         {
             if (safe->onBeginEdit) safe->onBeginEdit();
-            PitchCorrections::setNoteBypass (safe->session->mutableWorking(), noteUnder, ! safe->session->working().notes[(size_t) noteUnder].bypass);
+            PitchCorrections::toggleNoteBypass (safe->session->mutableWorking(), noteUnder);
             if (safe->onEdited) safe->onEdited();
             safe->repaint();
         }
@@ -918,7 +919,7 @@ void PitchEditorView::mouseDown (const juce::MouseEvent& e)
     d.targetAtStart = w.notes[(size_t) idx].targetMidi;
     d.pinnedAtStart = w.notes[(size_t) idx].pinned;
     d.snap = ! e.mods.isAltDown();
-    d.stateAtStart = w;
+    d.workingDigestAtStart = w.digest();
     const auto s = w.resolve (w.notes[(size_t) idx].start, geo.domainOffset, geo.domainLength);
     const auto en = w.resolve (w.notes[(size_t) idx].end, geo.domainOffset, geo.domainLength);
     d.startAtStart = geo.timeMap.map (s);
@@ -952,20 +953,31 @@ void PitchEditorView::mouseDrag (const juce::MouseEvent& e)
     {
         if (std::abs (dx) < 4 && std::abs (dy) < 4) return;
         d.mode = std::abs (dy) > std::abs (dx) ? Drag::Mode::pitch : Drag::Mode::time;
+        if (d.mode == Drag::Mode::pitch && session->working().notes[(size_t) d.noteIndex].bypass)
+        {
+            drag.reset(); // bypass 中は音程を動かさない（聞こえないまま動かして解除時に跳ぶのを防ぐ）。横移動は可
+            return;
+        }
         if (onBeginEdit) onBeginEdit(); // 1ドラッグ = 1件（区切りはドラッグの開始）
         if (d.mode == Drag::Mode::pitch && onDragAuditionStart) onDragAuditionStart (d.noteIndex);
     }
     auto& w = session->mutableWorking();
     if (d.noteIndex < 0 || d.noteIndex >= (int) w.notes.size()) return;
+    if (d.mode == Drag::Mode::pitch && w.digest() != d.workingDigestAtStart)
+    {
+        // 自分の直前の編集以外で working が変わった（巻き戻し・再解析の着地）: このドラッグは捨てる
+        drag.reset();
+        repaint();
+        return;
+    }
     if (d.mode == Drag::Mode::pitch)
     {
         const int target = juce::jlimit (0, 127, d.targetAtStart - (int) std::lround ((double) dy / geo.rowHeight));
         if (target != w.notes[(size_t) d.noteIndex].targetMidi)
         {
-            // 途中は pinned 扱いで鳴らす・描く（手で動かしている最中はその先で聴きたい）。確定は mouseUp の setNoteTarget
-            w.notes[(size_t) d.noteIndex].targetMidi = target;
-            w.notes[(size_t) d.noteIndex].pinned = true;
-            d.moved = true;
+            // 各ステップで規則そのものを通す（途中状態＝確定状態。往復して戻れば pinned も戻り、聴いた音と残る音が一致する）
+            d.moved = PitchCorrections::setNoteTarget (w, d.noteIndex, target, d.targetAtStart, d.pinnedAtStart);
+            d.workingDigestAtStart = w.digest(); // 自分の編集を「期待する状態」として更新
             if (onDragAuditionUpdate) onDragAuditionUpdate(); // 動かしながら、その音が鳴る
             repaint();
         }
@@ -1009,17 +1021,11 @@ void PitchEditorView::mouseUp (const juce::MouseEvent& e)
     if (d.mode == Drag::Mode::pitch && onDragAuditionEnd) onDragAuditionEnd();
     if (d.mode == Drag::Mode::pitch && session != nullptr && d.noteIndex >= 0 && d.noteIndex < (int) session->working().notes.size())
     {
-        // 確定: 開始時と違う目標になったときだけ pinned（往復して戻せば付かない）
-        auto& w = session->mutableWorking();
-        const int finalTarget = w.notes[(size_t) d.noteIndex].targetMidi;
-        w.notes[(size_t) d.noteIndex].pinned = d.pinnedAtStart; // 途中で立てた分を戻してから
-        PitchCorrections::setNoteTarget (w, d.noteIndex, finalTarget, d.targetAtStart, d.pinnedAtStart);
-        d.moved = finalTarget != d.targetAtStart;
-        if (! d.moved && onEdited && w.notes[(size_t) d.noteIndex].pinned == d.pinnedAtStart)
-        {
-            // 同じ段で離した: モデルは変わっていないが途中でプレビューを要求したかもしれないので戻す
-            onEdited();
-        }
+        // 確定は各ステップで済んでいる。moved は「開始時と状態が違うか」（往復して戻せば false ＝ 何も起きない）。
+        // working が差し替わっていたら（期待する digest と不一致）ユーザーが置いていない値なので適用しない
+        const auto& w = session->working();
+        const auto& n = w.notes[(size_t) d.noteIndex];
+        d.moved = canEdit() && w.digest() == d.workingDigestAtStart && (n.targetMidi != d.targetAtStart || n.pinned != d.pinnedAtStart);
     }
     if (d.moved)
     {
@@ -1044,7 +1050,7 @@ void PitchEditorView::mouseDoubleClick (const juce::MouseEvent& e)
     const int idx = noteAt (computeGeometry (*clip), e.getPosition());
     if (idx < 0) return;
     if (onBeginEdit) onBeginEdit();
-    PitchCorrections::setNoteBypass (session->mutableWorking(), idx, ! session->working().notes[(size_t) idx].bypass);
+    PitchCorrections::toggleNoteBypass (session->mutableWorking(), idx);
     Log::info ("pitch.bypass", "note=" + juce::String (idx) + " on=" + juce::String ((int) session->working().notes[(size_t) idx].bypass));
     if (onEdited) onEdited();
     repaint();
@@ -1064,7 +1070,7 @@ bool PitchEditorView::keyPressed (const juce::KeyPress& key)
         if (onBeginEdit) onBeginEdit();
         for (int idx : selected)
             if (idx >= 0 && idx < (int) session->working().notes.size())
-                PitchCorrections::setNoteBypass (session->mutableWorking(), idx, ! session->working().notes[(size_t) idx].bypass);
+                PitchCorrections::toggleNoteBypass (session->mutableWorking(), idx);
         if (onEdited) onEdited();
         repaint();
         return true;

@@ -424,9 +424,15 @@ void MainComponent::pitchEditorTick()
                                                     PitchCorrections::effectiveScale (w, project->key), w.scaleMode, w.customKey);
         proposal.strength = w.strength;
         proposal.speedMs = w.speedMs;
+        int pinnedCount = 0;
+        for (const auto& n : pitchSession.working().notes) pinnedCount += n.pinned ? 1 : 0;
         pitchSession.beginChangePreview (proposal, curve);
         pitchSession.setSidecarWritten (result.sidecarWritten);
         pitchRequestPreview();
+        // Re-analyze はゼロから（新しい検出結果でノート境界が変わるため手で置いた目標は引き継がない）。Cancel で戻せる
+        pitchWindow.content().showStatus (pinnedCount > 0
+            ? jp (u8"Re-analyze: 検出が変わりました。手で置いた ") + juce::String (pinnedCount) + jp (u8" 音も自動スナップに戻ります（Cancel で元へ）")
+            : jp (u8"Re-analyze: 検出が変わりました（Apply で確定・Cancel で元へ）"));
     }
     else
     {
@@ -440,6 +446,7 @@ void MainComponent::pitchEditorTick()
 
 void MainComponent::pitchRequestPreview (bool suppressFailToast)
 {
+    pitchSuppressPreviewFailDigest = {}; // 全出口で「前の抑止」を持ち越さない（成功・早期 return・別要求）
     auto* clip = pitchTargetClip();
     if (clip == nullptr || ! pitchSession.hasPreview() || pitchSession.curve() == nullptr)
     {
@@ -614,7 +621,6 @@ bool MainComponent::pitchSyncAfterModelChange (bool quiet)
                 // 巻き戻し直後の再プレビューが同じ原因で失敗したときだけ青トーストを出さない。抑止対象は
                 // これから出す要求の digest に限る。pitchRequestPreview が成功（キャッシュ命中）や早期 return で
                 // 終わった場合はその中でクリアされるので、代入は呼び出しの**前**
-                pitchSuppressPreviewFailDigest = {};
                 pitchRequestPreview (quiet);
             }
             break;
@@ -691,7 +697,7 @@ void MainComponent::debugPitchAction (const juce::String& action)
         if (idx >= 0 && idx < (int) pitchSession.working().notes.size())
         {
             pitchBeginEdit();
-            PitchCorrections::setNoteBypass (pitchSession.mutableWorking(), idx, ! pitchSession.working().notes[(size_t) idx].bypass);
+            PitchCorrections::toggleNoteBypass (pitchSession.mutableWorking(), idx);
             pitchApplyWorking();
         }
     }
@@ -700,6 +706,10 @@ void MainComponent::debugPitchAction (const juce::String& action)
         const int idx = action.substring (4).getIntValue();
         if (auto* clip = pitchTargetClip(); clip != nullptr && idx >= 0 && idx < (int) pitchSession.working().notes.size())
         {
+            auto trial = pitchSession.working();
+            if (PitchCorrections::moveNote (trial, idx, (juce::int64) (renderSampleRate() * 0.04), clip->offsetSamples, clip->lengthSamples,
+                                            clip->stretchRatio, renderSampleRate()) == 0)
+                return; // クランプで動かない → undo も dirty も作らない
             pitchBeginEdit();
             const auto d = PitchCorrections::moveNote (pitchSession.mutableWorking(), idx, (juce::int64) (renderSampleRate() * 0.04),
                                                        clip->offsetSamples, clip->lengthSamples,
@@ -715,10 +725,14 @@ void MainComponent::debugPitchAction (const juce::String& action)
         const int delta = action.fromFirstOccurrenceOf (":", false, false).getIntValue();
         if (idx >= 0 && idx < (int) pitchSession.working().notes.size())
         {
-            pitchBeginEdit();
-            auto& n = pitchSession.mutableWorking().notes[(size_t) idx];
-            PitchCorrections::setNoteTarget (pitchSession.mutableWorking(), idx, n.targetMidi + delta, n.targetMidi, n.pinned);
-            pitchApplyWorking();
+            const auto before = pitchSession.working().notes[(size_t) idx];
+            auto trial = pitchSession.working();
+            if (PitchCorrections::setNoteTarget (trial, idx, before.targetMidi + delta, before.targetMidi, before.pinned))
+            {
+                pitchBeginEdit();
+                PitchCorrections::setNoteTarget (pitchSession.mutableWorking(), idx, before.targetMidi + delta, before.targetMidi, before.pinned);
+                pitchApplyWorking();
+            }
         }
     }
     view.refresh();
