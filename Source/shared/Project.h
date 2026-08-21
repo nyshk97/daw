@@ -5,7 +5,9 @@
 #include <vector>
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include "PitchCorrection.h"
 #include "PlaybackSnapshot.h"
+#include "ProjectKey.h"
 #include "Ppq.h"
 #include "RenderedDomain.h"
 
@@ -67,6 +69,17 @@ struct Clip
     // （「完了までは古い音」を守るため）
     std::shared_ptr<const RenderedDomain> activeDomain;
 
+    // ---- ボーカルのピッチ補正（v21・非破壊）----
+    // 設計の真実の源: docs/plans/2026-08-20-2244-vocal-pitch-correction.md
+    // 安定 ID（v21。MidiRegion::id と同じ採番 Project::allocateId）。独立ウィンドウのエディタは index でなく
+    // この id でクリップを毎回引き直す。分割の右側・複製・ペーストは 0 にして ensureUniqueIds で採番する
+    juce::uint64 id = 0;
+    // 編集状態（永続化）。nullopt = 補正なし。分割では丸ごとコピーし表示だけ範囲で絞る（親子で digest が一致し
+    // 分割直後は再レンダーしない）。子を編集した瞬間に detachToDomain で自範囲へ写す
+    std::optional<PitchCorrection> pitchCorrection;
+    // 解析カーブ（永続化しない。読込時に pitchCorrection->curveDigest のサイドカーから読む。分割・複製で共有）
+    std::shared_ptr<const PitchCurve> pitchCurve;
+
     juce::int64 requestedDomainOffset() const
     {
         return renderDomainLength > 0 ? renderDomainOffset : offsetSamples;
@@ -85,7 +98,13 @@ struct Clip
     RenderFingerprint requestedFingerprint (double sampleRate) const
     {
         return { audio.get(), requestedDomainOffset(), requestedDomainLength(),
-                 transposeSemitones, stretchRatio, sampleRate };
+                 transposeSemitones, stretchRatio, sampleRate, requestedRecipeDigest() };
+    }
+    // 補正の要求 digest（補正なし・カーブ未解決なら null）。補正は「サイドカー（カーブ）が読めている」
+    // ときだけ鳴らせる — カーブ無しでは目標カーブを計算できない（有声マスク・元ピッチが要る）
+    ContentDigest requestedRecipeDigest() const
+    {
+        return pitchCorrection.has_value() && pitchCurve != nullptr ? pitchCorrection->digest() : ContentDigest{};
     }
 
     // 要求と実効の不一致（レンダリング待ち）。この間は長さ依存操作（分割・終端直後へ複製）を
@@ -98,7 +117,7 @@ struct Clip
         const RenderFingerprint active { activeDomain->sourceAudio.get(),
                                          activeDomain->domainOffset, activeDomain->domainLength,
                                          activeDomain->semitones, activeDomain->ratio,
-                                         activeDomain->sampleRate };
+                                         activeDomain->sampleRate, activeDomain->recipeDigest };
         return requestedFingerprint (sampleRate) != active;
     }
 
@@ -323,40 +342,6 @@ namespace SectionMarkers
     juce::String displayName (const std::vector<SectionMarker>& markers, int index);
 }
 
-// プロジェクトのキー（曲の調）。生成MIDI（ベースガチャ等）は常にこのキーで作る。
-// キーは「曲がどの音を中心に回るか」の宣言で、BPMと同格の基本情報として扱う
-// （BPMがグリッドの座標系なら、キーは音高の座標系）。拍子4/4固定と同じ引き算で
-// モードは major / minor の2択（教会旋法は扱わない）
-enum class KeyMode { major, minor };
-
-struct ProjectKey
-{
-    int root = 0;                    // ピッチクラス 0..11（0=C）
-    KeyMode mode = KeyMode::minor;
-
-    bool operator== (const ProjectKey& other) const { return root == other.root && mode == other.mode; }
-    bool operator!= (const ProjectKey& other) const { return ! (*this == other); }
-};
-
-namespace ProjectKeys
-{
-    juce::String modeName (KeyMode mode);                        // "major" / "minor"（JSON・CLI用）
-    bool modeFromName (const juce::String& name, KeyMode& out);  // 未知名は false
-
-    juce::String rootName (int root);                            // 表示用 "C" "C♯" …（♯表記固定）
-    bool rootFromName (const juce::String& name, int& out);      // "C#"/"Db"/"F♯" 等（カードの値）を受ける
-
-    // 表示名。Logic等の慣例に合わせ major は素の音名、minor は m を付ける（例: "F♯" / "F♯m"）
-    juce::String displayName (const ProjectKey& key);
-
-    // bass.py の --key 形式（ASCII。例: "F#:minor"）
-    juce::String cliText (const ProjectKey& key);
-
-    // カードの表示テキスト "F# major"（ReferenceAnalyzer::Result::keyText）→ ProjectKey。
-    // 読めなければ nullopt（キーのゲート落ちで空のことがある）
-    std::optional<ProjectKey> fromCardText (const juce::String& text);
-}
-
 // 採用ループ（ハーモニーのアンカー。v14）。上モノのループが進行とキーを決め、ベースガチャは
 // これに従う（docs/design/reference-beat.md「音色の調達」）。
 // - **Project 所有でクリップとは独立**: 由来クリップを全部消しても残り、消えるのは Loops タブ
@@ -495,7 +480,11 @@ public:
     //      stretchRatio / renderDomainOffset / renderDomainLength。欠損＝無加工・クリップ
     //      自身の範囲）。値のみ保存し、加工済みバッファは読込時に再生成する（WAV永続化しない）。
     //      旧LaLaが開いて保存すると値が黙って消えるため版を上げる
-    static constexpr int currentVersion = 20;
+    // v21: ボーカルのピッチ補正（clips[].id = 安定ID・clips[].pitchCorrection = 編集状態。欠損＝補正なし。
+    //      解析カーブはサイドカー clip-NNN.<curveDigest>.pitch に世代不変で保存し、project.json には
+    //      curveDigest だけを持つ。サイドカーが無い／壊れている／WAVと食い違う場合は補正を無効化して
+    //      警告＋dirty 化（「永続状態＝鳴っている音」）。id=0・重複は読込時に再採番）
+    static constexpr int currentVersion = 21;
 
     juce::File directory;
     double bpm = 120.0;
@@ -552,10 +541,18 @@ public:
 
     // トラック・リージョン・ノートのIDを採番する（メッセージスレッド専用）
     juce::uint64 allocateId() { return nextId++; }
+    void ensureUniqueIds(); // 読込後・構造変更後（ClipDomains::reconcile）に未採番(0)・重複IDを振り直す
+    // 読込時にモデルを書き換えた（補正の無効化など）＝開いた直後から保存が必要。MainComponent が dirty に写す
+    bool modifiedOnLoad = false;
 
     // project.json 書き出し＋未参照 clip-*.wav のGC。失敗時は error にメッセージ。
     // keepReferencedWavs: undo履歴が参照するファイル名（GCから保護する。Phase 3で使用）
-    bool save (juce::String& error, const juce::StringArray& keepReferencedWavs = {});
+    // keepReferencedWavs: undo/redo 履歴・クリップボードが参照する WAV（redo 復元に備えて消さない）
+    // keepSidecars: 同じく保持するピッチ解析サイドカーのファイル名（undo 履歴・クリップボード・開いている
+    //   エディタのプレビューが乗っている世代）。project 自身が参照する世代は常に残す。
+    //   それ以外の `clip-*.<digest>.pitch` と、WAV ごと消えたものを削除する
+    bool save (juce::String& error, const juce::StringArray& keepReferencedWavs = {},
+               const juce::StringArray& keepSidecars = {});
 
     static std::unique_ptr<Project> load (const juce::File& dir,
                                           juce::StringArray& warnings,
@@ -616,5 +613,5 @@ private:
         return params;
     }
 
-    void ensureUniqueIds(); // 読込後に未採番(0)・重複IDを振り直す
+
 };

@@ -5,6 +5,10 @@
 #include <vector>
 #include <juce_audio_basics/juce_audio_basics.h>
 
+#include "PitchCorrection.h"
+#include "PitchCurve.h" // ContentDigest
+#include "TimeMap.h"
+
 // オーディオクリップの移調・タイムストレッチ（非破壊）の共有データ構造。
 // 設計の真実の源: docs/plans/2026-08-18-1028-audio-transpose-stretch.md
 //
@@ -54,8 +58,12 @@ struct RenderFingerprint
     int semitones = 0;
     double ratio = 1.0;
     double sampleRate = 0.0;
+    // ピッチ補正の内容ハッシュ（PitchCorrection::digest。補正なし = null）。補正付きクリップは
+    // 同じ semitones/ratio でも補正内容が違えば別の要求になる
+    ContentDigest recipe;
 
-    bool isNeutral() const { return semitones == 0 && juce::exactlyEqual (ratio, 1.0); }
+    bool isNeutral() const { return semitones == 0 && juce::exactlyEqual (ratio, 1.0) && recipe.isNull(); }
+    bool hasRecipe() const { return ! recipe.isNull(); }
 
     bool operator== (const RenderFingerprint& other) const
     {
@@ -63,7 +71,8 @@ struct RenderFingerprint
         return source == other.source && domainOffset == other.domainOffset
             && domainLength == other.domainLength && semitones == other.semitones
             && juce::exactlyEqual (ratio, other.ratio)
-            && juce::exactlyEqual (sampleRate, other.sampleRate);
+            && juce::exactlyEqual (sampleRate, other.sampleRate)
+            && recipe == other.recipe;
     }
     bool operator!= (const RenderFingerprint& other) const { return ! (*this == other); }
 
@@ -75,7 +84,8 @@ struct RenderFingerprint
         if (domainLength != other.domainLength) return domainLength < other.domainLength;
         if (semitones != other.semitones) return semitones < other.semitones;
         if (! juce::exactlyEqual (ratio, other.ratio)) return ratio < other.ratio;
-        return sampleRate < other.sampleRate;
+        if (! juce::exactlyEqual (sampleRate, other.sampleRate)) return sampleRate < other.sampleRate;
+        return recipe < other.recipe;
     }
 };
 
@@ -97,8 +107,15 @@ struct RenderedDomain
     juce::int64 domainOffset = 0;
     juce::int64 domainLength = 0;
     int semitones = 0;
-    double ratio = 1.0;
+    double ratio = 1.0; // 表示用（倍率バッジ）。座標計算には使わない — timeMap が真実
     double sampleRate = 0.0;
+    // ピッチ補正の内容ハッシュ（補正なし = null）。指紋の一致判定に使う
+    ContentDigest recipeDigest;
+    // レンダーに使った補正状態のコピー（失敗巻き戻しで「直前に成功していた値」へ戻すため。補正なし = nullptr）
+    std::shared_ptr<const PitchCorrection> correction;
+    // 原音座標 → render 座標の区分線形写像。一様 ratio はノード 2 点。空なら ratio の一様写像として振る舞う
+    // （v20 由来の生成箇所との互換。新しい生成箇所は必ず埋める）
+    TimeMap timeMap;
     // ドメイン全体の描画用ピークキャッシュ（Clip::samplesPerPeak 単位・render座標に整列）。
     // クリップは部分範囲を参照して描く（チョップを何個作ってもピークの再計算が起きない）
     std::vector<float> peakCache;
@@ -108,6 +125,10 @@ struct RenderedDomain
     // 直接使うと、隣接 view の境界が一致せずバッファ終端を越えて読む（planの退化ケース参照）
     juce::int64 mapBoundary (juce::int64 srcPos) const
     {
+        // 一様（ノード 2 点以下）は v20 と同じ丸め式（ノード間を傾き round(L×ratio)/L で補間すると
+        // 中間点が ±1 ずれ、v20 の分割・ループ境界の計算と食い違う）。折れのある写像だけ timeMap
+        if (timeMap.nodes.size() > 2)
+            return timeMap.map (srcPos);
         return (juce::int64) std::llround ((double) (srcPos - domainOffset) * ratio);
     }
 
@@ -118,6 +139,8 @@ struct RenderedDomain
     // renderPos が到達可能な値なら mapBoundary(戻り値) == renderPos が保証される
     juce::int64 sourceForBoundary (juce::int64 renderPos) const
     {
+        if (timeMap.nodes.size() > 2)
+            return timeMap.inverse (renderPos);
         const auto safeRatio = ratio > 0.0 && std::isfinite (ratio) ? ratio : 1.0;
         auto candidate = domainOffset + (juce::int64) std::llround ((double) renderPos / safeRatio);
         candidate = juce::jlimit (domainOffset, domainOffset + domainLength, candidate);

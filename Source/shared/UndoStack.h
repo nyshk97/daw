@@ -101,6 +101,20 @@ public:
 
     // undo/redo履歴が参照するWAV（録音・取り込みクリップ＋サンプル音源）のファイル名。
     // 保存時のGCから保護する（undo/redoで復元したときにWAVが消えている事故を防ぐ）
+    // undo/redo 履歴が参照するピッチ解析サイドカーのファイル名（保存時の GC で残す世代）
+    juce::StringArray referencedSidecars() const
+    {
+        juce::StringArray files;
+        for (const auto* states : { &undoStates, &redoStates })
+            for (const auto& state : *states)
+                for (const auto& track : state.tracks)
+                    for (const auto& clip : track.clips)
+                        if (clip.pitchCorrection.has_value())
+                            files.addIfNotAlreadyThere (
+                                PitchSidecar::fileNameFor (clip.fileName, clip.pitchCorrection->curveDigest));
+        return files;
+    }
+
     juce::StringArray referencedWavs() const
     {
         juce::StringArray files;

@@ -3,7 +3,7 @@
 #include <vector>
 
 #include "PitchCurve.h"
-#include "Project.h"
+#include "ProjectKey.h"
 
 // ピッチカーブ → 検出ノート列（tools/pitchlab/notes.py の移植。判断ロジックは shared/ に置き
 // daw_tests で固定する）。検出ノートは「有声フレームに対する目標のまとまり」で、目標音・バイパス・

@@ -255,7 +255,7 @@
   本人の声・未公開曲は `~/Music/daw/` と gitignore 済みの `tools/pitchlab/work/` に留める）
 
 ### Phase 2: 補正カーブの生成とレンダー（1パス合算） [AI🤖]
-- [ ] `Source/shared/PitchCorrection.h`: クリップが持つ編集状態
+- [x] `Source/shared/PitchCorrection.h`: クリップが持つ編集状態
   `{ curveDigest, scaleOverride(optional ProjectKey | chromatic), strength(0..1), speedMs,
   timeNodes[], notes[] }`、`TimeNode = { sourceSample, timingDeltaSamples }`（**原音サンプル座標**。
   カーブのフレーム＝ホップ単位だと分割境界を表せない）、
@@ -282,10 +282,10 @@
   `TimeNode::timingDeltaSamples` は**初期配置（現在の `stretchRatio` による一様写像）からの render
   座標のずれ**で、初期配置自体は保存せず毎回再計算する。テスト: 複数世代のサイドカーが存在する状態で
   保存→再読込→undo/redo で各状態が自分の世代を引く
-- [ ] `PitchCorrection::targetCurve()`: 元カーブ＋ノート列＋強さ・速さ＋スケール →
+- [x] `PitchCorrection::targetCurve()`: 元カーブ＋ノート列＋強さ・速さ＋スケール →
   各フレームの移動量[半音]（＋時間写像）。**ここに transposeSemitones を足して1パス**。
   判断ロジックは shared/・テストで固定（強さ0=無変化・速さ0=ノート内で一定・バイパス=そのノートは0）
-- [ ] **時間写像の不変条件**（横ドラッグの規則。shared/ に置きテストで固定）:
+- [x] **時間写像の不変条件**（横ドラッグの規則。shared/ に置きテストで固定）:
   - ノードは「各ノートの開始・終了境界」。**無声区間（隙間）は独立の区間**で、隣接ノートの境界が
     動いた分だけ一様に伸縮する（＝隙間が吸収する。どちらの隣接ノートにも属さない）
   - **`timeMap` に v20 の `stretchRatio` を合成する**（外側で別途掛けない＝二重適用を防ぐ）:
@@ -318,37 +318,37 @@
     変わるが、同じ入力なら常に同じ timeMap になる。テスト: 保存済み Δ が新しい ratio の下限を破る
     ケースで、再読込・undo/redo・ratio 往復のいずれでも同じ timeMap が得られる
   - テスト: 連続する2音を逆方向へ動かす・端までドラッグ・無声区間をまたぐドラッグ・隙間0の2音
-- [ ] **`RenderedDomain` の時間写像を区分線形化**: `timeMap`（原音座標→render座標の単調ノード列。
+- [x] **`RenderedDomain` の時間写像を区分線形化**: `timeMap`（原音座標→render座標の単調ノード列。
   一様 ratio はノード2点＝`stretchRatio` だけのクリップ）を持ち、`mapBoundary()` / `sourceForBoundary()` /
   `renderedDomainLength()` / `peakBetween()` をマップ対応にする。`ratio` フィールドは timeMap から
   導出する表示用（倍率バッジ）に格下げし、座標計算には使わない。`Project::splitClip`・フェード・ループ・描画・単独試聴は
   すべてこの経由（`GOTCHAS.md`「× ratio / ÷ ratio 直書き禁止」の規則を拡張）。分割後は子クリップが
   同じドメインを共有し再レンダーしない
-- [ ] `Source/shared/RenderRecipe.h`: 不変のレンダー入力（ピッチカーブの対象部分・解決済み目標
+- [x] `Source/shared/RenderRecipe.h`: 不変のレンダー入力（ピッチカーブの対象部分・解決済み目標
   カーブ・時間写像・transpose・エンジン設定・digest）。`ClipDomains::Request` が強参照で持ち、
   ワーカーはこれだけを読む。`RenderedDomain` に同じ digest を保存
-- [ ] `Source/audio/VocalResynth.{h,cpp}`（WORLD。`ClipStretcher` と並置）: `RenderRecipe` を受けてレンダー。
+- [x] `Source/audio/VocalResynth.{h,cpp}`（WORLD。`ClipStretcher` と並置）: `RenderRecipe` を受けてレンダー。
   CheapTrick / D4C は原音から、f0 は自作 YIN のカーブ × 目標シフト（無声は 0）、時間写像は出力フレームごとに
   入力フレームを最近傍参照して synthesize。フォルマント保持は WORLD の構造上自動（スペクトル包絡を触らない）。
   WORLD は `mmorise/World` を FetchContent（SHA pin・BSD-3）で取得しソース直接コンパイル。
   補正なしクリップは従来の `ClipStretcher`（signalsmith）のまま（無加工ビット一致の原則）。失敗は nullptr
-- [ ] `RenderFingerprint` に recipe digest を追加。`ClipDomains::collectRequests` で補正付き
+- [x] `RenderFingerprint` に recipe digest を追加。`ClipDomains::collectRequests` で補正付き
   クリップの要求（recipe 生成）を作る。`Clip` に `PitchCorrection` を持たせ、**分割では丸ごとコピー
   （子の初回編集時に自範囲へ detach）**・複製でコピー。**プロジェクトキーの変更では再レンダーしない**（固定方式。`targetMidi` が真実の源）。
   分割は「丸ごとコピー＋表示範囲で絞る」（上記細部）。テスト: **分割直後 `renderPending()==false`・
   親子の recipe digest が一致・子の初回編集で detach され digest が分かれる**
-- [ ] project.json **v21**: `clips[].id` を保存（採番は既存の `Project::allocateId()` / `nextId`
+- [x] project.json **v21**: `clips[].id` を保存（採番は既存の `Project::allocateId()` / `nextId`
   （`Project.h:554,596`）を MidiRegion と共用）。読込時に id=0（旧版）・重複 id は再採番し `nextId` を
   更新（`nextId` はすべての id より大きくなるよう補正）。補正状態の保存・読込（欠損=補正なし）。**サイドカーが無い/壊れている/
   WAV と食い違う場合は補正を無効化**（補正状態を捨てて原音を鳴らす・読込時に警告トースト・
   dirty 化）。ノート編集の座標は原音サンプルで自立しているが、目標カーブの計算には元カーブ（有声度
   マスク・元ピッチ）が必須なので、カーブ無しでは補正を鳴らせない。
   「永続状態＝鳴っている音」（v20 の失敗巻き戻しと同じ規則）を守る
-- [ ] 読込時: **project.json から `PitchCorrection`（ノート・タイミング・つまみ）を復元し、その
+- [x] 読込時: **project.json から `PitchCorrection`（ノート・タイミング・つまみ）を復元し、その
   `curveDigest` に対応するサイドカーから `PitchCurve` を読み、両者で recipe を構築** → 既存の
   「読込時に再生成」経路で一括レンダー。検出ノートの再生成はしない（保存済みの `targetMidi`・分割結合・
   バイパス・タイミングを失わない）
-- [ ] テスト: 合成音で「目標通りに f0 が動いたか」を再検出で検証（±20セント以内）。
+- [x] テスト: 合成音で「目標通りに f0 が動いたか」を再検出で検証（±20セント以内）。
   無加工（補正なし・移調0）は **wet==dry のビット一致**（`GOTCHAS.md` 中立境界の規則）。
   **タイミング補正済みクリップの分割・フェード・ループ・保存→再読込**で境界と音が一致すること
   （区分線形マップの退化ケース: ノード上で割る・ノード間で割る・ループ境界）。
@@ -503,6 +503,18 @@
   atomic replace・読込検証）/ `PitchAnalyzer`（YIN 移植。合成素材で Python 原型と同じ GPE 0 / P 0.993 /
   R 0.994 / 1.43cent）/ `PitchNotes`（分割規則＋Krumhansl キー推定）/ `PitchAnalysisWorker`（pull 型・
   generation 着地・孤児サイドカー防止）。テスト 6 本追加・全通過
+- 2026-08-21 Phase 2 実装: `PitchCorrection`（TimeNode/BoundaryRef/Note・JSON・検証・digest）/ `TimeMap`（区分
+  線形写像。`RenderedDomain::mapBoundary` は折れのある写像だけ timeMap を使い、一様は v20 の丸め式のまま＝
+  既存の分割・ループ計算と食い違わない）/ `PitchCorrections`（buildTimeMap の決定的射影・targetCurve・
+  autoSnap・resnap・moveNote/splitNote/mergeNotes/detachToDomain）/ `RenderRecipe` / `VocalResynth`（WORLD を
+  FetchContent・SHA pin・6 ファイル直コンパイル・f0 は YIN カーブ）/ `RenderCache` の分岐 / `Clip::id`・
+  `pitchCorrection`・`pitchCurve` / project.json v21 / サイドカー GC（`save(keepSidecars)`・UndoStack の参照世代）。
+  テスト 8 本追加・全通過: WORLD は合成音で目標との差 中央値 1.2 cent（A/B/C/D とも）・横移動で長さ不変・
+  同 recipe でビット一致・分割は親子 digest 一致で再レンダーなし＋左右結合が分割前とビット一致・
+  保存→再読込でビット一致・サイドカー欠損/不正 JSON は無効化＋警告＋modifiedOnLoad
+- WORLD のメモリ: CheapTrick/D4C のスペクトログラムが 48kHz・f0_floor 60Hz（fft 4096）で 32KB/フレーム。
+  `maxRenderBytes`（768MB）で約 2 分の domain が上限（超えると失敗＝巻き戻し）。フルテイク 3 分を補正したく
+  なったらフレーム分割処理が要る（Phase 4 以降の課題として残す）
 - ノート分割の境界は平滑化の遅れで 20ms 遅れていた（C++ テストで露見）→ 分割決定後に「生の値が新しい音に
   近い限り手前へ巻き戻す」を C++/Python 両方に追加。短い音同士が合わさって十分な長さになる場合に捨てていた
   バグも両方で修正（Python 原型の結果は不変: synth 10 音・rap 33・uta 27）

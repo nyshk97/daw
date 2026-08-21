@@ -8,7 +8,7 @@ namespace
 RenderFingerprint activeFingerprint (const RenderedDomain& domain)
 {
     return { domain.sourceAudio.get(), domain.domainOffset, domain.domainLength,
-             domain.semitones, domain.ratio, domain.sampleRate };
+             domain.semitones, domain.ratio, domain.sampleRate, domain.recipeDigest };
 }
 } // namespace
 
@@ -28,6 +28,7 @@ std::shared_ptr<const RenderedDomain> ClipDomains::makeNeutralDomain (
     domain->semitones = 0;
     domain->ratio = 1.0;
     domain->sampleRate = sampleRate;
+    domain->timeMap = TimeMap::uniform (domainOffset, domainLength, 1.0);
     domain->peakCache = buildDomainPeakCache (*audio, domainOffset, domainLength,
                                               Clip::samplesPerPeak);
     return domain;
@@ -54,6 +55,9 @@ bool ClipDomains::domainValidFor (const Clip& clip, double sampleRate)
 
 bool ClipDomains::reconcile (Project& project, double sampleRate)
 {
+    // 構造が変わった直後の入口なので、ここで未採番・重複のクリップ id も振り直す（分割の右側・複製・
+    // ペーストは id=0 で入ってくる）。既存 id は変わらないのでエディタの参照は保たれる
+    project.ensureUniqueIds();
     bool changed = false;
     for (auto& track : project.tracks)
     {
@@ -81,7 +85,7 @@ std::vector<ClipDomains::Request> ClipDomains::collectRequests (
     bool& attachedAny)
 {
     attachedAny = false;
-    std::map<RenderFingerprint, std::shared_ptr<juce::AudioBuffer<float>>> wanted;
+    std::map<RenderFingerprint, Request> wanted;
 
     for (auto& track : project.tracks)
     {
@@ -110,14 +114,31 @@ std::vector<ClipDomains::Request> ClipDomains::collectRequests (
                 }
             }
             // 同じ指紋のクリップ同士（複製）は1件の要求にまとまり、結果の1本を共有する
-            wanted.emplace (fingerprint, clip.audio);
+            if (wanted.count (fingerprint) > 0)
+                continue;
+            Request request { fingerprint, clip.audio, nullptr };
+            if (fingerprint.hasRecipe())
+            {
+                // 補正付き: ワーカーへ渡す不変の入力をここで固める（以後の編集はこの要求に影響しない）
+                auto recipe = std::make_shared<RenderRecipe>();
+                recipe->sourceAudio = clip.audio;
+                recipe->sampleRate = sampleRate;
+                recipe->domainOffset = fingerprint.domainOffset;
+                recipe->domainLength = fingerprint.domainLength;
+                recipe->transposeSemitones = fingerprint.semitones;
+                recipe->stretchRatio = fingerprint.ratio;
+                recipe->curve = clip.pitchCurve;
+                recipe->correction = *clip.pitchCorrection;
+                request.recipe = std::move (recipe);
+            }
+            wanted.emplace (fingerprint, std::move (request));
         }
     }
 
     std::vector<Request> requests;
     requests.reserve (wanted.size());
-    for (auto& [fingerprint, audio] : wanted)
-        requests.push_back ({ fingerprint, audio });
+    for (auto& [fingerprint, request] : wanted)
+        requests.push_back (request);
     return requests;
 }
 
@@ -163,6 +184,11 @@ bool ClipDomains::rollbackFailedRequest (Project& project, double sampleRate,
                 clip.stretchRatio = d.ratio;
                 clip.renderDomainOffset = d.domainOffset;
                 clip.renderDomainLength = d.domainLength;
+                // 補正も「鳴っている音」の状態へ（補正なしで鳴っていたなら補正を捨てる）
+                if (d.correction != nullptr)
+                    clip.pitchCorrection = *d.correction;
+                else
+                    clip.pitchCorrection.reset();
             }
             else
             {
@@ -170,6 +196,7 @@ bool ClipDomains::rollbackFailedRequest (Project& project, double sampleRate,
                 // 値も 0 / 1.0 に戻すので「永続状態＝鳴っている音」は保たれる）
                 clip.transposeSemitones = 0;
                 clip.stretchRatio = 1.0;
+                clip.pitchCorrection.reset();
                 clip.resetRenderDomainToSelf();
                 clip.activeDomain = makeNeutralDomain (clip.audio, clip.offsetSamples,
                                                        clip.lengthSamples, sampleRate);

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "Project.h"
+#include "RenderRecipe.h"
 #include "RenderedDomain.h"
 
 // オーディオクリップの移調・タイムストレッチの「要求値 ⇄ 実効値（activeDomain）」を
@@ -40,6 +41,8 @@ struct Request
 {
     RenderFingerprint fingerprint;
     std::shared_ptr<juce::AudioBuffer<float>> sourceAudio;
+    // ピッチ補正付きの要求だけが持つ不変の入力（ワーカーはこれだけを読む）。補正なし = nullptr
+    std::shared_ptr<const RenderRecipe> recipe;
 };
 
 // 要求集合を作る（待機キューの真実の源。「全クリップの要求指紋の集合」を毎回作り直す）。

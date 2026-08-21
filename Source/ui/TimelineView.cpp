@@ -2207,6 +2207,7 @@ void TimelineView::handleLaneMouseDrag (const juce::MouseEvent& e)
             else
             {
                 Clip copy = sourceTrack.clips[(size_t) regionDrag.item]; // fileName/audioは共有参照
+                copy.id = 0; // 複製は新しい id（reconcile の ensureUniqueIds が採番）
                 sourceTrack.clips.push_back (std::move (copy));
                 regionDrag.item = (int) sourceTrack.clips.size() - 1;
                 selection = { regionDrag.track, regionDrag.item };
@@ -2823,6 +2824,7 @@ void TimelineView::duplicateAt (int trackIndex, int itemIndex)
         if (onWillEditModel)
             onWillEditModel();
         Clip copy = track.clips[(size_t) itemIndex]; // fileName/audio/activeDomainは共有参照
+        copy.id = 0; // 複製は新しい id（reconcile の ensureUniqueIds が採番）
         // 元の終端直後（Logicのリピート相当）。ループ中はループ終端の直後＝重ならない位置へ
         copy.startSample += copy.renderedTotalLengthSamples();
         track.clips.push_back (std::move (copy));

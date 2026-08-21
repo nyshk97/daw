@@ -142,7 +142,20 @@ juce::String wavStem (const juce::File& wavFile) { return wavFile.getFileNameWit
 
 juce::File PitchSidecar::fileFor (const juce::File& wavFile, const ContentDigest& curveDigest)
 {
-    return wavFile.getSiblingFile (wavStem (wavFile) + "." + curveDigest.toHex() + extension);
+    return wavFile.getSiblingFile (fileNameFor (wavFile.getFileName(), curveDigest));
+}
+
+juce::String PitchSidecar::fileNameFor (const juce::String& wavFileName, const ContentDigest& curveDigest)
+{
+    return wavFileName.upToLastOccurrenceOf (".", false, false) + "." + curveDigest.toHex() + extension;
+}
+
+juce::String PitchSidecar::wavNameFor (const juce::File& sidecar)
+{
+    if (! digestFromFile (sidecar).has_value())
+        return {};
+    const auto stem = sidecar.getFileNameWithoutExtension(); // "clip-001.<hex32>"
+    return stem.upToLastOccurrenceOf (".", false, false) + ".wav";
 }
 
 std::vector<juce::File> PitchSidecar::listFor (const juce::File& wavFile)

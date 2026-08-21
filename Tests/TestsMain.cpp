@@ -44,6 +44,9 @@ void operator delete[] (void* p, std::size_t) noexcept { std::free (p); }
 #include "audio/PitchAnalysisWorker.h"
 #include "shared/PitchCurve.h"
 #include "shared/PitchNotes.h"
+#include "shared/PitchCorrection.h"
+#include "shared/RenderRecipe.h"
+#include "audio/VocalResynth.h"
 #include "audio/RenderCache.h"
 #include "audio/MasterLimiter.h"
 #include "audio/PlaybackEngine.h"
@@ -15257,6 +15260,679 @@ void testPitchAnalysisWorker()
     dir.deleteRecursively();
 }
 
+// ---- ボーカルのピッチ補正 Phase 2: 時間写像・編集状態・目標カーブ・WORLD レンダー・永続化 ----
+
+// ms → サンプル（48kHz）
+juce::int64 msSamples (double ms) { return (juce::int64) std::llround (ms / 1000.0 * 48000.0); }
+
+// 3ノート A=[0,500ms] B=[500,900] C=[1000,1400]（A-B 隙間0・B-C 隙間100）。domain = [0, 1500ms)
+PitchCorrection makeThreeNotes()
+{
+    PitchCorrection pc;
+    pc.curveDigest = { 1, 2 };
+    pc.timeNodes = { { msSamples (500), 0 }, { msSamples (900), 0 }, { msSamples (1000), 0 }, { msSamples (1400), 0 } };
+    pc.notes = { { BoundaryRef::domainStart(), BoundaryRef::node (0), 60, false },
+                 { BoundaryRef::node (0), BoundaryRef::node (1), 62, false },
+                 { BoundaryRef::node (2), BoundaryRef::node (3), 64, false } };
+    return pc;
+}
+
+void testTimeMapBasics()
+{
+    beginTest ("TimeMap uniform / piecewise / inverse");
+    const auto u = TimeMap::uniform (1000, 24000, 1.25);
+    expect (u.isUniform() && u.outputLength() == 30000, "一様写像の出力長");
+    expect (u.map (1000) == 0 && u.map (25000) == 30000 && u.map (13000) == 15000, "一様写像のノード上と中点");
+    // RenderedDomain 経由の一様写像は v20 の mapBoundary（round((src-offset)×ratio)）と全点一致
+    {
+        RenderedDomain d;
+        d.domainOffset = 1000; d.domainLength = 24000; d.ratio = 1.25;
+        d.timeMap = u;
+        bool same = true;
+        for (juce::int64 s = 1000; s <= 25000; s += 7)
+            same = same && d.mapBoundary (s) == (juce::int64) std::llround ((double) (s - 1000) * 1.25);
+        expect (same, "一様写像は v20 の mapBoundary と一致");
+    }
+    // inverse: map(inverse(r)) は r に最も近い到達可能値（差 ≤ 1）
+    bool inv = true;
+    for (juce::int64 r = 0; r <= 30000; r += 11)
+        inv = inv && std::llabs (u.map (u.inverse (r)) - r) <= 1;
+    expect (inv, "一様写像の逆変換");
+
+    TimeMap pw;
+    pw.nodes = { { 0, 0 }, { 1000, 1200 }, { 3000, 3200 }, { 4000, 4000 } };
+    expect (pw.map (500) == 600 && pw.map (2000) == 2200 && pw.map (3500) == 3600, "区分線形の補間");
+    expect (pw.inverse (600) == 500 && pw.inverse (3600) == 3500 && pw.inverse (4000) == 4000, "区分線形の逆変換");
+    bool mono = true;
+    for (juce::int64 s = 1; s <= 4000; ++s) mono = mono && pw.map (s) >= pw.map (s - 1);
+    expect (mono, "単調非減少");
+    expect (pw.map (5000) == 4800, "末尾より先は最後の傾き（0.8）で外挿");
+}
+
+void testPitchTimeMapRules()
+{
+    beginTest ("PitchCorrection timeMap: move / clamp / min segment / determinism");
+    const double sr = 48000.0;
+    const juce::int64 dom = msSamples (1500);
+    auto pc = makeThreeNotes();
+    juce::String why;
+    expect (pc.validate (0, dom, &why), (juce::String::fromUTF8 (u8"初期状態は valid: ") + why).toRawUTF8());
+    {
+        const auto m = PitchCorrections::buildTimeMap (pc, 0, dom, 1.0, sr);
+        expect (m.nodes.size() == 6 && m.map (msSamples (500)) == msSamples (500), "Δ=0 なら一様");
+    }
+    // B を +50ms → A=[0,550]・B=[550,950]・B-C 隙間 50・C 不動
+    {
+        auto moved = pc;
+        const auto d = PitchCorrections::moveNote (moved, 1, msSamples (50), 0, dom, 1.0, sr);
+        expect (d == msSamples (50), "+50ms がそのまま通る");
+        const auto m = PitchCorrections::buildTimeMap (moved, 0, dom, 1.0, sr);
+        expect (m.map (msSamples (500)) == msSamples (550) && m.map (msSamples (900)) == msSamples (950),
+                "B の両端が +50（A は伸び、B の長さ不変）");
+        expect (m.map (msSamples (1000)) == msSamples (1000) && m.map (msSamples (1400)) == msSamples (1400), "C は不動");
+        expect (m.outputLength() == dom, "クリップ長不変");
+        // 保存 Δ は共有ノードに1つ
+        expect (moved.timeNodes[0].timingDeltaSamples == msSamples (50) && moved.timeNodes[1].timingDeltaSamples == msSamples (50)
+                && moved.timeNodes[2].timingDeltaSamples == 0, "Δ は動かしたノードだけ");
+        // JSON 往復で timeMap が一致
+        auto back = PitchCorrection::fromJson (moved.toJson());
+        expect (back.has_value() && *back == moved, "JSON 往復で同一");
+        expect (back.has_value() && PitchCorrections::buildTimeMap (*back, 0, dom, 1.0, sr) == m, "往復後の timeMap 一致");
+    }
+    // B を −50ms → A=[0,450]・隙間 150
+    {
+        auto moved = pc;
+        expect (PitchCorrections::moveNote (moved, 1, -msSamples (50), 0, dom, 1.0, sr) == -msSamples (50), "-50ms");
+        const auto m = PitchCorrections::buildTimeMap (moved, 0, dom, 1.0, sr);
+        expect (m.map (msSamples (500)) == msSamples (450) && m.map (msSamples (1000)) == msSamples (1000), "A が縮み隙間が 150");
+    }
+    // A を +50: 先頭が domainStart（固定）なので動かない
+    {
+        auto moved = pc;
+        expect (PitchCorrections::moveNote (moved, 0, msSamples (50), 0, dom, 1.0, sr) == 0, "端点に接するノートは動かない");
+    }
+    // B を +200: B-C 隙間 100ms を 10ms 残す位置（+90）でクランプ
+    {
+        auto moved = pc;
+        expect (PitchCorrections::moveNote (moved, 1, msSamples (200), 0, dom, 1.0, sr) == msSamples (90), "交差直前（10ms）でクランプ");
+    }
+    // C を −200: 隙間 100 → 10ms までしか縮まない（−90）。+200 は末尾 100ms → +90
+    {
+        auto moved = pc;
+        expect (PitchCorrections::moveNote (moved, 2, -msSamples (200), 0, dom, 1.0, sr) == -msSamples (90), "逆方向のクランプ");
+        auto moved2 = pc;
+        expect (PitchCorrections::moveNote (moved2, 2, msSamples (200), 0, dom, 1.0, sr) == msSamples (90), "末尾側のクランプ");
+    }
+    // 2音を逆方向へ: B −50 のあと C +50 → 隙間 200
+    {
+        auto moved = pc;
+        PitchCorrections::moveNote (moved, 1, -msSamples (50), 0, dom, 1.0, sr);
+        PitchCorrections::moveNote (moved, 2, msSamples (50), 0, dom, 1.0, sr);
+        const auto m = PitchCorrections::buildTimeMap (moved, 0, dom, 1.0, sr);
+        expect (m.map (msSamples (900)) == msSamples (850) && m.map (msSamples (1000)) == msSamples (1050), "連続する2音を逆方向へ");
+    }
+    // ratio 0.25 で 5ms 隙間: 初期配置が下限を満たす（区間下限 = min(10ms, 初期長)）
+    {
+        PitchCorrection tiny;
+        tiny.curveDigest = { 1, 2 };
+        tiny.timeNodes = { { msSamples (100), 0 }, { msSamples (120), 0 } }; // 原音 20ms の隙間 → 出力 5ms
+        tiny.notes = { { BoundaryRef::domainStart(), BoundaryRef::node (0), 60, false },
+                       { BoundaryRef::node (1), BoundaryRef::domainEnd(), 60, false } };
+        const auto m = PitchCorrections::buildTimeMap (tiny, 0, msSamples (400), 0.25, sr);
+        expect (m.map (msSamples (120)) - m.map (msSamples (100)) == msSamples (5), "初期配置は実現可能（5ms の隙間）");
+        bool strict = true;
+        for (size_t i = 1; i < m.nodes.size(); ++i) strict = strict && m.nodes[i].output > m.nodes[i - 1].output;
+        expect (strict, "出力側は厳密昇順");
+    }
+    // 決定論: 保存 Δ が新しい ratio の下限を破っても同じ入力なら同じ timeMap（往復しても不変）
+    {
+        auto moved = pc;
+        PitchCorrections::moveNote (moved, 1, msSamples (90), 0, dom, 1.0, sr); // 隙間 10ms ぎりぎり
+        const auto a = PitchCorrections::buildTimeMap (moved, 0, dom, 0.5, sr);  // 縮めると Δ(=90ms) が下限を破る
+        const auto b = PitchCorrections::buildTimeMap (moved, 0, dom, 0.5, sr);
+        PitchCorrections::buildTimeMap (moved, 0, dom, 1.0, sr);
+        const auto c = PitchCorrections::buildTimeMap (moved, 0, dom, 0.5, sr);
+        expect (a == b && b == c, "同じ入力なら常に同じ timeMap");
+        expect (a.outputLength() == msSamples (750), "終点は round(length × ratio)");
+        bool ok = true;
+        for (size_t i = 1; i < a.nodes.size(); ++i) ok = ok && a.nodes[i].output > a.nodes[i - 1].output;
+        expect (ok, "射影後も厳密昇順");
+        expect (moved.timeNodes[0].timingDeltaSamples == msSamples (90), "保存値は書き換えない");
+    }
+}
+
+void testPitchCorrectionValidation()
+{
+    beginTest ("PitchCorrection JSON validation (bad inputs are rejected)");
+    const juce::int64 dom = msSamples (1500);
+    auto base = makeThreeNotes();
+    auto json = base.toJson();
+    {
+        auto bad = base; bad.notes[0].end = BoundaryRef::node (99);
+        expect (! bad.validate (0, dom), "範囲外 index");
+    }
+    {
+        auto bad = base; std::swap (bad.timeNodes[0], bad.timeNodes[1]);
+        expect (! bad.validate (0, dom), "逆順 node");
+    }
+    {
+        auto bad = base; bad.timeNodes.push_back ({ 0, 0 });
+        expect (! bad.validate (0, dom), "端点と同座標の node");
+    }
+    {
+        auto bad = base; bad.notes[1].start = BoundaryRef::domainStart();
+        expect (! bad.validate (0, dom), "重なるノート");
+    }
+    {
+        auto bad = base; bad.notes[0].start = BoundaryRef::node (1); bad.notes[0].end = BoundaryRef::node (0);
+        expect (! bad.validate (0, dom), "開始 >= 終了");
+    }
+    {
+        auto bad = base; bad.curveDigest = {};
+        expect (! bad.validate (0, dom), "curveDigest 必須");
+        auto* obj = json.getDynamicObject();
+        auto copy = juce::var (obj->clone().release());
+        copy.getDynamicObject()->setProperty ("curveDigest", "");
+        expect (! PitchCorrection::fromJson (copy).has_value(), "JSON に curveDigest が無ければ拒否");
+    }
+    {
+        // NaN Δ（JSON の double）は拒否
+        auto copy = juce::var (json.getDynamicObject()->clone().release());
+        auto nodes = copy.getDynamicObject()->getProperty ("timeNodes");
+        nodes.getArray()->getReference (0).getDynamicObject()->setProperty ("delta", std::numeric_limits<double>::quiet_NaN());
+        expect (! PitchCorrection::fromJson (copy).has_value(), "NaN Δ は拒否");
+    }
+    {
+        // 全域ノート・終点だけ端点に一致するノート
+        PitchCorrection whole; whole.curveDigest = { 1, 2 };
+        whole.notes = { { BoundaryRef::domainStart(), BoundaryRef::domainEnd(), 60, false } };
+        expect (whole.validate (0, dom), "全域ノート");
+        auto back = PitchCorrection::fromJson (whole.toJson());
+        expect (back.has_value() && *back == whole, "全域ノートの往復");
+        PitchCorrection tail; tail.curveDigest = { 1, 2 };
+        tail.timeNodes = { { msSamples (700), 0 } };
+        tail.notes = { { BoundaryRef::node (0), BoundaryRef::domainEnd(), 60, false } };
+        expect (tail.validate (0, dom), "終点一致のノート");
+    }
+    expect (PitchCorrection::fromJson (base.toJson()).value_or (PitchCorrection{}) == base, "往復で同一");
+    expect (base.digest() == PitchCorrection::fromJson (base.toJson())->digest(), "digest も一致");
+    auto other = base; other.notes[0].targetMidi = 61;
+    expect (other.digest() != base.digest(), "内容が違えば digest が違う");
+}
+
+void testPitchSplitMerge()
+{
+    beginTest ("PitchCorrection split / merge keep or change timeMap as specified");
+    const double sr = 48000.0;
+    const juce::int64 dom = msSamples (1500);
+    auto pc = makeThreeNotes();
+    PitchCorrections::moveNote (pc, 1, msSamples (50), 0, dom, 1.0, sr); // 折れを作る
+    const auto before = PitchCorrections::buildTimeMap (pc, 0, dom, 1.0, sr);
+    // ノート B（index 1）を 700ms で分割 → timeMap 不変・継承
+    expect (PitchCorrections::splitNote (pc, 1, msSamples (700), 0, dom, 1.0, sr), "分割できる");
+    expect (pc.notes.size() == 4 && pc.timeNodes.size() == 5, "ノート4・ノード5");
+    expect (pc.validate (0, dom), "分割後も valid");
+    {
+        // 補間ノードが増えるのでノード列は変わるが、写像としては一致（丸めの ±1 以内）
+        const auto after = PitchCorrections::buildTimeMap (pc, 0, dom, 1.0, sr);
+        bool same = after.nodes.size() == before.nodes.size() + 1;
+        for (juce::int64 x = 0; x <= dom; x += 97)
+            same = same && std::llabs (after.map (x) - before.map (x)) <= 1;
+        for (const auto& n : before.nodes)
+            same = same && after.map (n.source) == n.output;
+        expect (same, "分割前後で timeMap 一致（音が変わらない）");
+    }
+    expect (pc.notes[1].targetMidi == 62 && pc.notes[2].targetMidi == 62, "左右が targetMidi を継承");
+    expect (pc.notes[1].end == pc.notes[2].start, "分割境界は共有ノード");
+    // 結合で元に戻る（中間ノードが補間ノードだけ）
+    expect (PitchCorrections::mergeNotes (pc, 1, 0, dom), "結合できる");
+    expect (pc.notes.size() == 3 && pc.timeNodes.size() == 4, "元の構造");
+    expect (PitchCorrections::buildTimeMap (pc, 0, dom, 1.0, sr) == before, "分割→結合で timeMap が元と一致");
+    // 隙間ありの B と C を結合 → 2ノード消えて隙間を取り込む。target は長い方（B 400ms > C 400ms 同長→左）、bypass は両方 true のみ
+    {
+        auto m = makeThreeNotes();
+        m.notes[1].bypass = true; m.notes[2].bypass = true;
+        m.notes[2].targetMidi = 64;
+        m.timeNodes[3].sourceSample = msSamples (1450); // C を 450ms にして長い方にする
+        expect (PitchCorrections::mergeNotes (m, 1, 0, dom), "隙間ありの結合");
+        expect (m.notes.size() == 2 && m.timeNodes.size() == 2, "隙間の2ノードが消える");
+        expect (m.notes[1].start == BoundaryRef::node (0) && m.notes[1].end == BoundaryRef::node (1), "参照 index が付け替わる");
+        expect (m.notes[1].targetMidi == 64 && m.notes[1].bypass, "長い方の target・両方 true なら bypass");
+        expect (m.validate (0, dom), "結合後も valid");
+        auto m2 = makeThreeNotes(); m2.notes[1].bypass = true;
+        PitchCorrections::mergeNotes (m2, 1, 0, dom);
+        expect (! m2.notes[1].bypass, "片方だけ bypass なら false");
+    }
+}
+
+void testPitchTargetCurve()
+{
+    beginTest ("PitchCorrection targetCurve (strength / speed / bypass / mask / transpose)");
+    const double sr = 48000.0;
+    // 60.3 の音が 1 秒（ビブラート ±0.2）、途中 100ms 無声、その後 64.4 を 0.5 秒
+    PitchCurve c;
+    c.algoId = "test"; c.sampleRate = sr; c.hopSamples = 240;
+    c.source.frames = 48000 * 2; c.source.channels = 1; c.source.sampleRate = sr;
+    auto push = [&] (double midi)
+    {
+        const bool v = midi > 0;
+        c.f0.push_back (v ? (float) (440.0 * std::pow (2.0, (midi - 69.0) / 12.0)) : 0.0f);
+        c.voicing.push_back (v ? 0.9f : 0.0f); c.rms.push_back (v ? 0.1f : 0.0f);
+    };
+    for (int k = 0; k < 200; ++k) push (60.3 + 0.2 * std::sin (k * 0.2));
+    for (int k = 0; k < 20; ++k) push (0);
+    for (int k = 0; k < 100; ++k) push (64.4);
+    const juce::int64 dom = 320 * 240;
+    PitchCorrection pc;
+    pc.curveDigest = c.digest();
+    pc.timeNodes = { { 200 * 240, 0 }, { 220 * 240, 0 } };
+    pc.notes = { { BoundaryRef::domainStart(), BoundaryRef::node (0), 60, false },
+                 { BoundaryRef::node (1), BoundaryRef::domainEnd(), 64, false } };
+    expect (pc.validate (0, dom), "valid");
+
+    auto at = [] (const PitchCorrections::TargetCurve& t, int k) { return t.shiftSemitones[(size_t) (k - t.firstFrame)]; };
+    // 強さ 0 → 全フレーム transpose のみ
+    {
+        auto z = pc; z.strength = 0.0f;
+        const auto t = PitchCorrections::targetCurve (z, c, 0, dom, 2);
+        bool all = t.firstFrame == 0 && t.shiftSemitones.size() == 320;
+        for (auto v : t.shiftSemitones) all = all && juce::exactlyEqual (v, 2.0f);
+        expect (all, "強さ0 = 無変化（transpose のみ）");
+    }
+    // 速さ 0 → 各フレームで完全に目標（補正後 = target 一定）
+    {
+        auto k0 = pc; k0.speedMs = 0.0f;
+        const auto t = PitchCorrections::targetCurve (k0, c, 0, dom, 0);
+        bool flat = true;
+        for (int k = 0; k < 200; ++k) flat = flat && std::abs (c.midiAt (k) + at (t, k) - 60.0) < 1e-3;
+        for (int k = 220; k < 320; ++k) flat = flat && std::abs (c.midiAt (k) + at (t, k) - 64.0) < 1e-3;
+        expect (flat, "速さ0 = ノート内で平ら（ケロケロ）");
+        bool mask = true;
+        for (int k = 200; k < 220; ++k) mask = mask && juce::exactlyEqual (at (t, k), 0.0f);
+        expect (mask, "無声フレームは移動量 0（有声マスク）");
+    }
+    // 速さ∞相当（大きな時定数）→ 中心だけ寄せてビブラートが残る
+    {
+        auto slow = pc; slow.speedMs = 1e6f;
+        const auto t = PitchCorrections::targetCurve (slow, c, 0, dom, 0);
+        double mn = 1e9, mx = -1e9;
+        for (int k = 20; k < 200; ++k) { const double v = c.midiAt (k) + at (t, k); mn = juce::jmin (mn, v); mx = juce::jmax (mx, v); }
+        expect (mx - mn > 0.3 && std::abs ((mx + mn) / 2 - 60.0) < 0.05, "速さ大 = 中心だけ寄せてビブラートは残る");
+    }
+    // バイパス → そのノートは transpose のみ
+    {
+        auto b = pc; b.notes[1].bypass = true;
+        const auto t = PitchCorrections::targetCurve (b, c, 0, dom, 3);
+        bool ok = true;
+        for (int k = 220; k < 320; ++k) ok = ok && juce::exactlyEqual (at (t, k), 3.0f);
+        expect (ok, "バイパスは補正 0（transpose 3 のみ）");
+        bool other = true;
+        for (int k = 0; k < 200; ++k) other = other && std::abs (at (t, k) - 3.0f) > 0.1f;
+        expect (other, "他のノートは補正が掛かる");
+    }
+    // ドメインがカーブの一部だけ
+    {
+        const auto t = PitchCorrections::targetCurve (pc, c, 100 * 240, 100 * 240, 0);
+        expect (t.firstFrame == 100 && t.shiftSemitones.size() == 100, "部分 domain のフレーム範囲");
+    }
+}
+
+void testPitchAutoSnapAndDetach()
+{
+    beginTest ("PitchCorrection autoSnap (intersection / shared nodes) and detach");
+    const double sr = 48000.0;
+    auto voice = makeSynthVoice (sr);
+    const auto curve = PitchAnalyzer::analyze (*voice.audio, sr);
+    const auto detected = PitchNotes::detect (curve);
+    const auto total = (juce::int64) voice.audio->getNumSamples();
+    // 全域
+    auto pc = PitchCorrections::autoSnap (curve, detected, 0, total, std::nullopt, PitchScaleMode::chromatic, {});
+    expect (pc.curveDigest == curve.digest(), "curveDigest はカーブの内容ハッシュ");
+    expect (pc.notes.size() == detected.size(), "全域なら検出ノート数と一致");
+    expect (pc.validate (0, total), "valid");
+    expect (pc.timeNodes.size() == detected.size() * 2, "隙間ありのノートは境界2個ずつ");
+    for (size_t i = 0; i < detected.size(); ++i)
+        expect (pc.notes[i].targetMidi == (int) std::floor (detected[i].medianMidi + 0.5), "クロマチックの四捨五入");
+    // スケール: D minor（2, minor）→ F(65) は残り、E(64) も残り、F#(66) は F か G へ
+    {
+        ProjectKey dm { 2, KeyMode::minor };
+        expect (PitchCorrections::snapToScale (65.9, dm) == 65 || PitchCorrections::snapToScale (65.9, dm) == 67, "スケール外は隣へ");
+        expect (PitchCorrections::snapToScale (64.2, dm) == 64, "スケール内はそのまま");
+        expect (PitchCorrections::snapToScale (60.5, std::nullopt) == 61, "同距離なら上");
+    }
+    // 部分 domain: 2番目のノートの途中から4番目のノートの途中まで → 最初/最後は端点参照・外は除外
+    {
+        const auto& d1 = detected[1]; const auto& d3 = detected[3];
+        const juce::int64 off = ((juce::int64) d1.startFrame + 10) * curve.hopSamples;
+        const juce::int64 end = ((juce::int64) d3.endFrame - 10) * curve.hopSamples;
+        auto part = PitchCorrections::autoSnap (curve, detected, off, end - off, std::nullopt, PitchScaleMode::chromatic, {});
+        expect (part.notes.size() == 3, "交差する3ノートだけ");
+        expect (part.notes.front().start == BoundaryRef::domainStart() && part.notes.back().end == BoundaryRef::domainEnd(),
+                "domain 端に掛かる境界は端点参照");
+        expect (part.validate (off, end - off), "部分 domain でも valid");
+    }
+    // 隙間0の境界は共有ノード
+    {
+        std::vector<DetectedPitchNote> adj = { { 100, 200, 60.0f }, { 200, 300, 62.0f } };
+        auto a = PitchCorrections::autoSnap (curve, adj, 0, 400 * 240, std::nullopt, PitchScaleMode::chromatic, {});
+        expect (a.timeNodes.size() == 3 && a.notes[0].end == a.notes[1].start, "隙間0は共有ノード1個");
+    }
+    // detach: 親 domain の状態を子（後半）へ写す
+    {
+        auto child = pc;
+        const juce::int64 half = total / 2;
+        PitchCorrections::detachToDomain (child, 0, total, half, total - half);
+        expect (child.validate (half, total - half), "detach 後も valid");
+        // 全ノードが開区間内
+        bool inside = true;
+        for (const auto& n : child.timeNodes) inside = inside && n.sourceSample > half && n.sourceSample < total;
+        expect (inside, "範囲外ノードが消える");
+        expect (child.notes.size() < pc.notes.size() && child.digest() != pc.digest(), "範囲外ノートが消え digest が分かれる");
+        // 境界をまたぐノートは端点参照で残る（またがるノートがあるなら）
+        int crossing = 0;
+        for (const auto& n : pc.notes)
+        {
+            const auto s = pc.resolve (n.start, 0, total), e = pc.resolve (n.end, 0, total);
+            if (s < half && e > half) ++crossing;
+        }
+        if (crossing > 0)
+            expect (child.notes.front().start == BoundaryRef::domainStart(), "またぐノートは domainStart から");
+    }
+}
+
+// 合成ボーカルで「目標どおりに f0 が動いたか」を再検出で検証するヘルパ
+struct ResynthCheck
+{
+    double medianCents = 0, p95Cents = 0;
+    int compared = 0;
+};
+ResynthCheck checkResynth (const juce::AudioBuffer<float>& out, const RenderRecipe& recipe)
+{
+    const auto cy = PitchAnalyzer::analyze (out, recipe.sampleRate);
+    const auto target = recipe.target();
+    const auto tm = recipe.timeMap();
+    const auto& c = *recipe.curve;
+    std::vector<double> errs;
+    for (int j = 0; j < cy.numFrames(); ++j)
+    {
+        const auto srcPos = tm.inverse ((juce::int64) j * cy.hopSamples);
+        const int k = (int) ((srcPos + c.hopSamples / 2) / c.hopSamples);
+        if (k < target.firstFrame || k >= target.firstFrame + (int) target.shiftSemitones.size())
+            continue;
+        if (! c.isVoiced (k) || ! cy.isVoiced (j))
+            continue;
+        // 境界 ±15ms は除外
+        bool edge = false;
+        for (int d = -3; d <= 3; ++d) edge = edge || ! c.isVoiced (k + d);
+        if (edge) continue;
+        const double want = c.midiAt (k) + target.shiftSemitones[(size_t) (k - target.firstFrame)];
+        errs.push_back (std::abs (cy.midiAt (j) - want) * 100.0);
+    }
+    ResynthCheck r;
+    r.compared = (int) errs.size();
+    if (! errs.empty())
+    {
+        std::sort (errs.begin(), errs.end());
+        r.medianCents = errs[errs.size() / 2];
+        r.p95Cents = errs[(size_t) ((double) errs.size() * 0.95)];
+    }
+    return r;
+}
+
+void testVocalResynth()
+{
+    beginTest ("VocalResynth (WORLD): follows target within 20 cents, length, transpose, timing");
+    const double sr = 48000.0;
+    auto voice = makeSynthVoice (sr);
+    auto curve = std::make_shared<const PitchCurve> (PitchAnalyzer::analyze (*voice.audio, sr));
+    const auto detected = PitchNotes::detect (*curve);
+    const auto total = (juce::int64) voice.audio->getNumSamples();
+
+    RenderRecipe recipe;
+    recipe.sourceAudio = voice.audio;
+    recipe.sampleRate = sr;
+    recipe.domainOffset = 0;
+    recipe.domainLength = total;
+    recipe.curve = curve;
+    recipe.correction = PitchCorrections::autoSnap (*curve, detected, 0, total, std::nullopt, PitchScaleMode::chromatic, {});
+
+    // A: スナップ（速さ 120ms）
+    auto a = VocalResynth::render (recipe);
+    expect (a != nullptr, "レンダー成功");
+    if (a != nullptr)
+    {
+        expect (a->getNumSamples() == (int) total, "長さ = domain 長（ratio 1）");
+        const auto r = checkResynth (*a, recipe);
+        std::cout << "  A: median=" << r.medianCents << "c p95=" << r.p95Cents << "c n=" << r.compared << std::endl;
+        expect (r.compared > 500 && r.medianCents < 20.0, "目標との差の中央値 < 20 cent");
+    }
+    // C: ケロケロ（速さ 0）
+    {
+        auto kero = recipe; kero.correction.speedMs = 0.0f;
+        auto out = VocalResynth::render (kero);
+        expect (out != nullptr, "ケロケロのレンダー成功");
+        if (out != nullptr)
+        {
+            const auto r = checkResynth (*out, kero);
+            std::cout << "  C: median=" << r.medianCents << "c p95=" << r.p95Cents << "c" << std::endl;
+            expect (r.medianCents < 20.0, "ケロケロでも中央値 < 20 cent");
+        }
+    }
+    // B: 移調 +3 を合算（1パス）
+    {
+        auto up = recipe; up.transposeSemitones = 3;
+        auto out = VocalResynth::render (up);
+        expect (out != nullptr, "移調合算のレンダー成功");
+        if (out != nullptr)
+        {
+            const auto r = checkResynth (*out, up);
+            std::cout << "  B: median=" << r.medianCents << "c p95=" << r.p95Cents << "c" << std::endl;
+            expect (r.medianCents < 20.0, "移調 +3 込みで中央値 < 20 cent");
+        }
+    }
+    // D: 1音を横移動（隣接吸収）→ 長さ不変・追従
+    {
+        auto moved = recipe;
+        int idx = -1;
+        for (int i = 1; i + 1 < (int) moved.correction.notes.size(); ++i)
+            if (moved.correction.notes[(size_t) i].start.isNode() && moved.correction.notes[(size_t) i].end.isNode()) { idx = i; break; }
+        expect (idx >= 0, "動かせるノートがある");
+        if (idx >= 0)
+        {
+            const auto d = PitchCorrections::moveNote (moved.correction, idx, msSamples (40), 0, total, 1.0, sr);
+            expect (d == msSamples (40), "+40ms 移動");
+            auto out = VocalResynth::render (moved);
+            expect (out != nullptr && out->getNumSamples() == (int) total, "横移動しても出力長は不変");
+            if (out != nullptr)
+            {
+                const auto r = checkResynth (*out, moved);
+                std::cout << "  D: median=" << r.medianCents << "c p95=" << r.p95Cents << "c" << std::endl;
+                expect (r.medianCents < 20.0, "横移動後も追従");
+            }
+        }
+    }
+    // ストレッチ合成（ratio 1.25）→ 長さ round(len × 1.25)
+    {
+        auto st = recipe; st.stretchRatio = 1.25;
+        auto out = VocalResynth::render (st);
+        expect (out != nullptr && out->getNumSamples() == (int) std::llround ((double) total * 1.25), "ratio を timeMap に合成");
+    }
+    // 決定論: 同じ recipe で 2 回 → ビット一致
+    {
+        auto x = VocalResynth::render (recipe);
+        auto y = VocalResynth::render (recipe);
+        bool same = x != nullptr && y != nullptr && x->getNumSamples() == y->getNumSamples();
+        if (same)
+            for (int i = 0; i < x->getNumSamples(); ++i) same = same && juce::exactlyEqual (x->getSample (0, i), y->getSample (0, i));
+        expect (same, "同じ入力で同じ出力（固定シード）");
+    }
+    // 失敗経路: カーブ不整合・範囲外
+    {
+        auto bad = recipe; bad.curve = nullptr;
+        expect (VocalResynth::render (bad) == nullptr, "カーブ無しは失敗");
+        auto bad2 = recipe; bad2.domainLength = total + 10;
+        expect (VocalResynth::render (bad2) == nullptr, "範囲外は失敗");
+        auto bad3 = recipe; bad3.transposeSemitones = 13;
+        expect (VocalResynth::render (bad3) == nullptr, "±12 半音の外は失敗");
+    }
+}
+
+void testPitchProjectRoundtrip()
+{
+    beginTest ("pitch correction: project v21 save/reload, split shares digest, missing sidecar invalidates");
+    auto dir = makeTempDir();
+    const double sr = 48000.0;
+    auto voice = makeSynthVoice (sr);
+    expect (writeBufferWav (dir.getChildFile ("clip-001.wav"), *voice.audio, sr), "WAV");
+
+    Project project;
+    project.directory = dir;
+    project.sampleRate = sr;
+    Track track;
+    track.id = project.allocateId();
+    Clip clip;
+    clip.fileName = "clip-001.wav";
+    clip.audio = Project::loadWav (dir.getChildFile ("clip-001.wav"));
+    clip.lengthSamples = clip.audio->getNumSamples();
+    track.clips.push_back (clip);
+    project.tracks.push_back (std::move (track));
+    ClipDomains::reconcile (project, sr);
+    expect (project.tracks[0].clips[0].id != 0, "reconcile がクリップ id を採番");
+
+    // 解析 → サイドカー → 補正を付ける
+    auto& live = project.tracks[0].clips[0];
+    auto curve = std::make_shared<const PitchCurve> (PitchAnalyzer::analyze (*live.audio, sr));
+    juce::String err;
+    expect (PitchSidecar::write (*curve, dir.getChildFile ("clip-001.wav"), &err), "サイドカー書き出し");
+    live.pitchCurve = curve;
+    live.pitchCorrection = PitchCorrections::autoSnap (*curve, PitchNotes::detect (*curve), live.offsetSamples,
+                                                        live.lengthSamples, std::nullopt, PitchScaleMode::chromatic, {});
+    expect (live.renderPending (sr) && live.requestedFingerprint (sr).hasRecipe(), "補正を付けるとレンダー待ち");
+
+    const auto renderAll = [&sr] (Project& target)
+    {
+        RenderCache cache;
+        cache.collectRequests = [&target, &sr]
+        {
+            bool attached = false;
+            return ClipDomains::collectRequests (target, sr, nullptr, attached);
+        };
+        cache.onRenderReady = [&target, &sr] (const std::shared_ptr<const RenderedDomain>& d)
+        { ClipDomains::attachRenderResult (target, sr, d); };
+        cache.syncNow();
+        const bool done = cache.waitForRenders (60000);
+        cache.drainCompletedNow();
+        return done;
+    };
+    expect (renderAll (project), "補正レンダーが完了");
+    expect (! live.renderPending (sr) && live.activeDomain->recipeDigest == live.pitchCorrection->digest(),
+            "装着後は要求と実効が一致（recipe digest）");
+    expect (live.activeDomain->correction != nullptr && live.activeDomain->timeMap.nodes.size() > 2, "結果に補正のコピーと timeMap");
+
+    // 分割: 親子で digest 一致・再レンダー不要
+    {
+        auto& clips = project.tracks[0].clips;
+        Clip l, r;
+        expect (splitClip (clips[0], clips[0].startSample + clips[0].renderedLengthSamples() / 2, l, r), "分割");
+        clips[0] = l; clips.push_back (r);
+        ClipDomains::reconcile (project, sr);
+        expect (clips[0].id != clips[1].id && clips[1].id != 0, "右側は新しい id");
+        expect (! clips[0].renderPending (sr) && ! clips[1].renderPending (sr), "分割直後は再レンダーが起きない");
+        expect (clips[0].requestedRecipeDigest() == clips[1].requestedRecipeDigest(), "親子の recipe digest が一致");
+        expect (clips[0].activeDomain == clips[1].activeDomain, "同じドメインを共有");
+        // 左右をつなげた再生が分割前のドメイン全体とビット一致（区分線形マップでの分割境界）
+        {
+            std::vector<ClipPlayback> playbacks;
+            for (const auto& c : clips) appendClipPlaybacks (c, playbacks);
+            std::sort (playbacks.begin(), playbacks.end(), [] (const ClipPlayback& a, const ClipPlayback& b) { return a.startSample < b.startSample; });
+            std::vector<float> joined;
+            for (const auto& pb : playbacks)
+                for (juce::int64 i = 0; i < pb.lengthSamples; ++i)
+                    joined.push_back (pb.audio->getSample (0, (int) (pb.offsetSamples + i)));
+            const auto& whole = *clips[0].activeDomain->audio;
+            bool same = (int) joined.size() == whole.getNumSamples()
+                     && playbacks.size() == 2 && playbacks[1].startSample == playbacks[0].startSample + playbacks[0].lengthSamples;
+            if (same)
+                for (int i = 0; i < whole.getNumSamples(); ++i) same = same && juce::exactlyEqual (joined[(size_t) i], whole.getSample (0, i));
+            expect (same, "分割の左右をつなげると分割前と一致（隙間・重なりなし）");
+        }
+        // 子を detach すると digest が分かれる
+        auto& child = clips[1];
+        PitchCorrections::detachToDomain (*child.pitchCorrection, child.requestedDomainOffset(), child.requestedDomainLength(),
+                                          child.offsetSamples, child.lengthSamples);
+        child.resetRenderDomainToSelf();
+        expect (child.renderPending (sr) && child.requestedRecipeDigest() != clips[0].requestedRecipeDigest(),
+                "detach で digest が分かれレンダー待ちになる");
+        expect (renderAll (project), "子の再レンダー");
+        expect (! child.renderPending (sr), "子が装着される");
+    }
+
+    // 保存 → 再読込
+    expect (project.save (err), (juce::String::fromUTF8 (u8"保存: ") + err).toRawUTF8());
+    expect (PitchSidecar::listFor (dir.getChildFile ("clip-001.wav")).size() == 1, "参照中のサイドカーは残る");
+    {
+        juce::StringArray warnings; juce::String error;
+        auto loaded = Project::load (dir, warnings, error);
+        expect (loaded != nullptr && warnings.isEmpty(), (juce::String::fromUTF8 (u8"再読込に警告なし: ") + warnings.joinIntoString ("/")).toRawUTF8());
+        if (loaded != nullptr)
+        {
+            auto& lc = loaded->tracks[0].clips;
+            expect (lc.size() == 2 && lc[0].pitchCorrection.has_value() && lc[1].pitchCorrection.has_value(), "補正が復元される");
+            expect (lc[0].id == project.tracks[0].clips[0].id && lc[1].id == project.tracks[0].clips[1].id, "id が保存される");
+            expect (lc[0].pitchCurve != nullptr && lc[0].pitchCurve == lc[1].pitchCurve, "同じ世代のカーブは共有");
+            expect (*lc[0].pitchCorrection == *project.tracks[0].clips[0].pitchCorrection, "編集状態（targetMidi 等）が一致");
+            expect (! loaded->modifiedOnLoad, "正常読込は modifiedOnLoad でない");
+            // 再読込後のレンダーが元とビット一致
+            expect (renderAll (*loaded), "再読込後のレンダー");
+            const auto& a = *project.tracks[0].clips[0].activeDomain->audio;
+            const auto& b = *lc[0].activeDomain->audio;
+            bool same = a.getNumSamples() == b.getNumSamples();
+            if (same)
+                for (int i = 0; i < a.getNumSamples(); ++i) same = same && juce::exactlyEqual (a.getSample (0, i), b.getSample (0, i));
+            expect (same, "保存→再読込で同じ音（ビット一致）");
+        }
+    }
+    // サイドカーを消して読込 → 補正が無効化・警告・modifiedOnLoad
+    {
+        for (auto& f : PitchSidecar::listFor (dir.getChildFile ("clip-001.wav"))) f.deleteFile();
+        juce::StringArray warnings; juce::String error;
+        auto loaded = Project::load (dir, warnings, error);
+        expect (loaded != nullptr && ! warnings.isEmpty(), "サイドカー欠損は警告");
+        if (loaded != nullptr)
+        {
+            expect (! loaded->tracks[0].clips[0].pitchCorrection.has_value(), "補正は無効化される");
+            expect (loaded->modifiedOnLoad, "modifiedOnLoad = 保存が必要");
+            expect (! loaded->tracks[0].clips[0].renderPending (sr) || loaded->tracks[0].clips[0].requestedFingerprint (sr).isNeutral(),
+                    "原音を鳴らす");
+        }
+    }
+    // 不正な JSON（範囲外 index）→ 無効化
+    {
+        // 元の project をもう一度保存（サイドカーは消えているので write し直す）
+        PitchSidecar::write (*curve, dir.getChildFile ("clip-001.wav"), &err);
+        project.tracks[0].clips[0].pitchCorrection->notes[0].end = BoundaryRef::node (999);
+        expect (project.save (err), "壊れた状態でも保存自体はできる");
+        juce::StringArray warnings; juce::String error;
+        auto loaded = Project::load (dir, warnings, error);
+        expect (loaded != nullptr && ! loaded->tracks[0].clips[0].pitchCorrection.has_value() && loaded->modifiedOnLoad,
+                "構造が不正な補正は無効化＋dirty");
+    }
+    // GC: 参照されない世代は保存で消える
+    {
+        auto other = *curve; other.algoId = "old-gen";
+        PitchSidecar::write (other, dir.getChildFile ("clip-001.wav"), &err);
+        expect (PitchSidecar::listFor (dir.getChildFile ("clip-001.wav")).size() == 2, "2世代ある");
+        project.tracks[0].clips[0].pitchCorrection->notes[0].end = BoundaryRef::node (1); // 直す
+        project.save (err);
+        expect (PitchSidecar::listFor (dir.getChildFile ("clip-001.wav")).size() == 1, "未参照の世代は GC される");
+        // keepSidecars に入れた世代は残る
+        PitchSidecar::write (other, dir.getChildFile ("clip-001.wav"), &err);
+        project.save (err, {}, { PitchSidecar::fileNameFor ("clip-001.wav", other.digest()) });
+        expect (PitchSidecar::listFor (dir.getChildFile ("clip-001.wav")).size() == 2, "keepSidecars の世代は残る");
+    }
+    dir.deleteRecursively();
+}
+
 } // namespace
 
 int main (int argc, char** argv)
@@ -15428,6 +16104,14 @@ int main (int argc, char** argv)
     testPitchNotesRules();
     testPitchKeyEstimate();
     testPitchAnalysisWorker();
+    testTimeMapBasics();
+    testPitchTimeMapRules();
+    testPitchCorrectionValidation();
+    testPitchSplitMerge();
+    testPitchTargetCurve();
+    testPitchAutoSnapAndDetach();
+    testVocalResynth();
+    testPitchProjectRoundtrip();
 
 
     if (failureCount > 0)

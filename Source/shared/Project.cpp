@@ -1,4 +1,5 @@
 #include "Project.h"
+#include "PitchCurve.h"
 
 #include <algorithm>
 #include <cmath>
@@ -167,6 +168,10 @@ bool splitClip (const Clip& clip, juce::int64 splitSample, Clip& left, Clip& rig
     left.clampFades(); // 継承した fadeIn を左の長さへ収める（原音座標）
 
     right = clip;
+    right.id = 0; // 右側は新しい id（呼び出し側の reconcile → ensureUniqueIds が採番）
+    // ピッチ補正（pitchCorrection / pitchCurve）は左右とも**丸ごと**継承する（構造体コピー）。
+    // 親の domain で表現されたノート列を切らないので親子の recipe digest が一致し、分割直後は再レンダーが
+    // 起きない。子を編集するときにエディタ側が detachToDomain で自範囲へ写す
     right.startSample = clip.startSample + canonicalDelta; // canonical 境界＝左の実効終端と一致
     right.offsetSamples = srcBoundary;
     right.lengthSamples = clip.offsetSamples + clip.lengthSamples - srcBoundary;
@@ -606,7 +611,8 @@ juce::String LoopAnchors::rootsContractJson (const LoopAnchor& anchor)
     return juce::JSON::toString (juce::var (obj));
 }
 
-bool Project::save (juce::String& error, const juce::StringArray& keepReferencedWavs)
+bool Project::save (juce::String& error, const juce::StringArray& keepReferencedWavs,
+                    const juce::StringArray& keepSidecars)
 {
     directory.createDirectory();
 
@@ -756,6 +762,10 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
                     clipObj->setProperty ("renderDomainOffset", clip.requestedDomainOffset());
                     clipObj->setProperty ("renderDomainLength", clip.requestedDomainLength());
                 }
+                // 安定ID・ピッチ補正（v21）。補正なしはJSONを汚さない
+                clipObj->setProperty ("id", (juce::int64) clip.id);
+                if (clip.pitchCorrection.has_value())
+                    clipObj->setProperty ("pitchCorrection", clip.pitchCorrection->toJson());
                 clipsArray.add (juce::var (clipObj));
             }
             trackObj->setProperty ("clips", clipsArray);
@@ -909,6 +919,22 @@ bool Project::save (juce::String& error, const juce::StringArray& keepReferenced
             if (! referenced.contains (file.getFileName()))
                 file.deleteFile();
 
+    // ピッチ解析サイドカー（世代不変ファイル）の掃除。残すのは「project が参照する世代 ＋ keepSidecars
+    //（undo 履歴・クリップボード・開いているプレビュー）」。WAV ごと消えたものも消す
+    juce::StringArray keptSidecars (keepSidecars);
+    for (auto& track : tracks)
+        for (auto& clip : track.clips)
+            if (clip.pitchCorrection.has_value())
+                keptSidecars.addIfNotAlreadyThere (PitchSidecar::fileNameFor (clip.fileName, clip.pitchCorrection->curveDigest));
+    for (auto& file : directory.findChildFiles (juce::File::findFiles, false, "clip-*.pitch"))
+    {
+        const auto wavName = PitchSidecar::wavNameFor (file);
+        if (wavName.isEmpty())
+            continue; // 形式外のファイルには触らない
+        if (! referenced.contains (wavName) || ! keptSidecars.contains (file.getFileName()))
+            file.deleteFile();
+    }
+
     return true;
 }
 
@@ -1024,6 +1050,7 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
     // 同一WAVを参照する複数クリップ（分割・複製後）が別々の全量バッファを持たないよう、
     // fileName 単位でロード結果を共有する（読めなかったWAVも nullptr を記録して再デコードを避ける）
     std::map<juce::String, std::shared_ptr<juce::AudioBuffer<float>>> wavCache;
+    std::map<ContentDigest, std::shared_ptr<const PitchCurve>> curveCache; // 世代ごとに1回だけ読む
 
     if (auto* tracksArray = parsed.getProperty ("tracks", {}).getArray())
     {
@@ -1205,6 +1232,47 @@ std::unique_ptr<Project> Project::load (const juce::File& dir,
                             clip.resetRenderDomainToSelf();
                             if (viewLength (clip.renderDomainOffset) < 1)
                                 clip.stretchRatio = 1.0;
+                        }
+
+                        // 安定ID（v20以前は無い → 0 = ensureUniqueIds が採番）
+                        clip.id = (juce::uint64) juce::jmax ((juce::int64) 0, (juce::int64) clipVar.getProperty ("id", 0));
+
+                        // ピッチ補正（v21）。JSON → 構造検証 → サイドカー（対応世代）→ 両方揃って初めて有効。
+                        // どれかが欠ければ補正を捨てて警告＋modifiedOnLoad（「永続状態＝鳴っている音」）
+                        const auto pcVar = clipVar.getProperty ("pitchCorrection", juce::var());
+                        if (! pcVar.isVoid())
+                        {
+                            juce::String why;
+                            auto pc = PitchCorrection::fromJson (pcVar);
+                            if (! pc.has_value())
+                                why = jp (u8"形式が不正");
+                            else if (! pc->validate (clip.requestedDomainOffset(), clip.requestedDomainLength(), &why))
+                            {}
+                            else
+                            {
+                                const auto key = pc->curveDigest;
+                                auto cachedCurve = curveCache.find (key);
+                                std::shared_ptr<const PitchCurve> curve;
+                                if (cachedCurve != curveCache.end())
+                                    curve = cachedCurve->second;
+                                else
+                                {
+                                    const auto identity = SourceIdentity::of (*clip.audio, project->sampleRate);
+                                    if (auto read = PitchSidecar::readFor (dir.getChildFile (clip.fileName), key, identity, &why))
+                                        curve = std::make_shared<const PitchCurve> (std::move (*read));
+                                    curveCache[key] = curve; // 失敗（nullptr）も記録して同じ世代を何度も読まない
+                                }
+                                if (curve != nullptr)
+                                {
+                                    clip.pitchCorrection = std::move (*pc);
+                                    clip.pitchCurve = curve;
+                                }
+                            }
+                            if (! clip.pitchCorrection.has_value())
+                            {
+                                warnings.add (clip.fileName + jp (u8" のピッチ補正を無効化しました（") + why + jp (u8"）"));
+                                project->modifiedOnLoad = true;
+                            }
                         }
 
                         // 実効状態は当面「原音素通し」（見た目も音も原音のまま）。値が入った
@@ -1443,6 +1511,8 @@ void Project::ensureUniqueIds()
             for (auto& note : region.notes)
                 maxId = juce::jmax (maxId, note.id);
         }
+        for (auto& clip : track.clips)
+            maxId = juce::jmax (maxId, clip.id);
     }
     nextId = juce::jmax (nextId, maxId + 1);
 
@@ -1463,6 +1533,8 @@ void Project::ensureUniqueIds()
             for (auto& note : region.notes)
                 assignIfNeeded (note.id);
         }
+        for (auto& clip : track.clips)
+            assignIfNeeded (clip.id);
     }
 }
 

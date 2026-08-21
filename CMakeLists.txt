@@ -61,6 +61,30 @@ set(DAW_STRETCH_INCLUDE_DIRS
     "${signalsmith-linear_SOURCE_DIR}/include"
 )
 
+# ---- WORLD（ボーカルのピッチ補正の再合成エンジン。BSD-3）----
+# Phase 0 の lab（docs/labs/pitch-correction.md）で採用。上流の CMake は使わず、必要な .cpp だけを
+# 直接コンパイルする（signalsmith と同じ「取得のみ」の型）。SHA を上げるときは lab の聴き比べを再実施する
+FetchContent_Declare(
+    world-vocoder
+    GIT_REPOSITORY https://github.com/mmorise/World.git
+    GIT_TAG d625e7608ca23a870018f01e7c562ac683d9847f # 2026-08 時点の master
+)
+FetchContent_GetProperties(world-vocoder)
+if(NOT world-vocoder_POPULATED)
+    FetchContent_Populate(world-vocoder)
+endif()
+set(DAW_WORLD_INCLUDE_DIR "${world-vocoder_SOURCE_DIR}/src")
+set(DAW_WORLD_SOURCES
+    "${world-vocoder_SOURCE_DIR}/src/cheaptrick.cpp"
+    "${world-vocoder_SOURCE_DIR}/src/common.cpp"
+    "${world-vocoder_SOURCE_DIR}/src/d4c.cpp"
+    "${world-vocoder_SOURCE_DIR}/src/fft.cpp"
+    "${world-vocoder_SOURCE_DIR}/src/matlabfunctions.cpp"
+    "${world-vocoder_SOURCE_DIR}/src/synthesis.cpp"
+)
+# 上流ソースの警告は LaLa の警告ゼロ基準から除外する（サードパーティ）
+set_source_files_properties(${DAW_WORLD_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
+
 # Debug は dev 版として別アプリ扱いにする（名前・bundle id・アイコンを分離し、
 # Dock・⌘Tab・TCC 権限が常用版（Release）と独立する）。
 # bundle id が異なるため dev 版の初回起動時のみマイク許可の再付与が必要。
@@ -127,6 +151,7 @@ target_sources(daw PRIVATE
     Source/audio/ClipStretcher.cpp
     Source/audio/PitchAnalyzer.cpp
     Source/audio/PitchAnalysisWorker.cpp
+    Source/audio/VocalResynth.cpp
     Source/audio/RenderCache.cpp
     Source/audio/BusDelay.cpp
     Source/audio/BusReverb.cpp
@@ -146,8 +171,10 @@ target_sources(daw PRIVATE
     Source/shared/Log.cpp
     Source/shared/LoudnessMeter.cpp
     Source/shared/MidiImport.cpp
+    Source/shared/PitchCorrection.cpp
     Source/shared/PitchCurve.cpp
     Source/shared/PitchNotes.cpp
+    Source/shared/TimeMap.cpp
     Source/shared/Project.cpp
     Source/shared/ReferenceAlign.cpp
     Source/shared/ReferenceExport.cpp
@@ -176,7 +203,8 @@ target_sources(daw PRIVATE
 
 target_include_directories(daw PRIVATE Source)
 # SYSTEM: 上流ヘッダを警告ゼロ基準の対象から外す（juce_recommended_warning_flags と衝突させない）
-target_include_directories(daw SYSTEM PRIVATE ${DAW_STRETCH_INCLUDE_DIRS})
+target_include_directories(daw SYSTEM PRIVATE ${DAW_STRETCH_INCLUDE_DIRS} ${DAW_WORLD_INCLUDE_DIR})
+target_sources(daw PRIVATE ${DAW_WORLD_SOURCES})
 
 # ---- サードパーティのライセンス同梱（MIT の配布条件）----
 # signalsmith-stretch / Signalsmith Linear のライセンス文を名前を付けてコピーし、
@@ -310,6 +338,7 @@ target_sources(daw_tests PRIVATE
     Source/audio/ClipStretcher.cpp
     Source/audio/PitchAnalyzer.cpp
     Source/audio/PitchAnalysisWorker.cpp
+    Source/audio/VocalResynth.cpp
     Source/audio/RenderCache.cpp
     Source/audio/BusDelay.cpp
     Source/audio/BusReverb.cpp
@@ -329,8 +358,10 @@ target_sources(daw_tests PRIVATE
     Source/shared/Log.cpp
     Source/shared/LoudnessMeter.cpp
     Source/shared/MidiImport.cpp
+    Source/shared/PitchCorrection.cpp
     Source/shared/PitchCurve.cpp
     Source/shared/PitchNotes.cpp
+    Source/shared/TimeMap.cpp
     Source/shared/Project.cpp
     Source/shared/ReferenceAlign.cpp
     Source/shared/ReferenceExport.cpp
@@ -340,7 +371,8 @@ target_sources(daw_tests PRIVATE
 )
 
 target_include_directories(daw_tests PRIVATE Source)
-target_include_directories(daw_tests SYSTEM PRIVATE ${DAW_STRETCH_INCLUDE_DIRS})
+target_include_directories(daw_tests SYSTEM PRIVATE ${DAW_STRETCH_INCLUDE_DIRS} ${DAW_WORLD_INCLUDE_DIR})
+target_sources(daw_tests PRIVATE ${DAW_WORLD_SOURCES})
 
 target_compile_definitions(daw_tests PRIVATE
     JUCE_WEB_BROWSER=0

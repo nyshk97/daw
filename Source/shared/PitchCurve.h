@@ -101,6 +101,10 @@ namespace PitchSidecar
 {
 // `clip-001.wav` + digest → `clip-001.<hex32>.pitch`（WAV と同じディレクトリ）
 juce::File fileFor (const juce::File& wavFile, const ContentDigest& curveDigest);
+// ファイル名だけ（ディレクトリを知らない UndoStack 等が「保持する世代」を列挙するため）
+juce::String fileNameFor (const juce::String& wavFileName, const ContentDigest& curveDigest);
+// サイドカー名 → 元 WAV 名（"clip-001.<hex32>.pitch" → "clip-001.wav"。形式外は空）
+juce::String wavNameFor (const juce::File& sidecar);
 // WAV に紐づく既存サイドカーをすべて列挙（GC・世代探索用）
 std::vector<juce::File> listFor (const juce::File& wavFile);
 // ファイル名から digest を取り出す（形式外なら nullopt）

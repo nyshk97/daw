@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "ClipStretcher.h"
+#include "VocalResynth.h"
 #include "../shared/Log.h"
 #include "../shared/Project.h" // Clip::samplesPerPeak（peakCache の集約単位）
 
@@ -91,12 +92,18 @@ void RenderCache::workerLoop()
         std::shared_ptr<const RenderedDomain> domain;
         if (job.sourceAudio != nullptr)
         {
-            auto rendered = ClipStretcher::render (*job.sourceAudio,
-                                                   job.fingerprint.domainOffset,
-                                                   job.fingerprint.domainLength,
-                                                   job.fingerprint.semitones,
-                                                   job.fingerprint.ratio,
-                                                   job.fingerprint.sampleRate);
+            // 補正付きは WORLD（VocalResynth）、それ以外は signalsmith（ClipStretcher）。
+            // どちらも失敗は nullptr（原音でごまかさない）
+            std::unique_ptr<juce::AudioBuffer<float>> rendered;
+            if (job.recipe != nullptr)
+                rendered = VocalResynth::render (*job.recipe);
+            else
+                rendered = ClipStretcher::render (*job.sourceAudio,
+                                                  job.fingerprint.domainOffset,
+                                                  job.fingerprint.domainLength,
+                                                  job.fingerprint.semitones,
+                                                  job.fingerprint.ratio,
+                                                  job.fingerprint.sampleRate);
             if (rendered != nullptr)
             {
                 auto result = std::make_shared<RenderedDomain>();
@@ -110,6 +117,15 @@ void RenderCache::workerLoop()
                 result->semitones = job.fingerprint.semitones;
                 result->ratio = job.fingerprint.ratio;
                 result->sampleRate = job.fingerprint.sampleRate;
+                if (job.recipe != nullptr)
+                {
+                    result->recipeDigest = job.fingerprint.recipe;
+                    result->correction = std::make_shared<const PitchCorrection> (job.recipe->correction);
+                    result->timeMap = job.recipe->timeMap();
+                }
+                else
+                    result->timeMap = TimeMap::uniform (job.fingerprint.domainOffset, job.fingerprint.domainLength,
+                                                        job.fingerprint.ratio);
                 domain = std::move (result);
             }
         }

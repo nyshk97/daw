@@ -731,6 +731,8 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     // 読込時点で「原音素通し」なので見た目も音も原音のまま始まり、完了時に一斉に整う
     //（最初の描画を同期で待たない — 数百msを超える素材で起動が引っかかるため非同期のまま）
     reconcileClipRenderState (/*immediate=*/ true);
+    if (project->modifiedOnLoad)
+        setDirty (true); // 読込時に補正を無効化した＝開いた直後から保存が必要（「永続状態＝鳴っている音」）
     pushSnapshot();
     syncCycleToTransport(); // 保存済みサイクルを読み込んだ時点で反映（SR確定後はTimerが再同期する）
     updateTransportButtons();
@@ -4631,10 +4633,14 @@ bool MainComponent::trySave()
     // クリップボードのクリップも同じ「モデル外からの参照」なので保護する
     // （コピー → 元クリップを削除 → 保存、で実ファイルが消えるとペーストが壊れる）
     auto keepWavs = undoStack.referencedWavs();
+    auto keepSidecars = undoStack.referencedSidecars();
+    if (itemClipboard.kind == ItemClipboard::Kind::audioClip && itemClipboard.clip.pitchCorrection.has_value())
+        keepSidecars.addIfNotAlreadyThere (PitchSidecar::fileNameFor (itemClipboard.clip.fileName,
+                                                                       itemClipboard.clip.pitchCorrection->curveDigest));
     if (itemClipboard.kind == ItemClipboard::Kind::audioClip
         && itemClipboard.clip.fileName.isNotEmpty())
         keepWavs.addIfNotAlreadyThere (itemClipboard.clip.fileName);
-    if (! project->save (error, keepWavs))
+    if (! project->save (error, keepWavs, keepSidecars))
     {
         showAlert (jp (u8"保存に失敗しました"), error);
         return false;
@@ -5360,6 +5366,7 @@ bool MainComponent::pasteItemAtPlayhead()
     else
     {
         Clip pasted = itemClipboard.clip; // fileName/audio/activeDomainは共有参照
+        pasted.id = 0; // ペーストは新しい id（reconcile の ensureUniqueIds が採番）
         pasted.startSample = timeline.snapSampleToVisibleGrid (playhead);
         track.clips.push_back (std::move (pasted));
         pastedIndex = (int) track.clips.size() - 1;
