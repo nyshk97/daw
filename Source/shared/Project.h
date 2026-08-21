@@ -92,13 +92,18 @@ struct Clip
     // previewDomain の寿命規則（1 文）: 「プレビューが活動中」か「待っている本レンダーと同じ内容」なら残す。それ以外は外す。
     // activeDomain が変わりうる全経路（本レンダー装着・インライン装着・巻き戻し・reconcile・ジェスチャー終了）の後で呼ぶ。
     // 戻り値: 外したか（snapshot の再 push が要る）
+    // 「この指紋の内容が、いま待っている本レンダーそのものか」（プレビュー・in-flight 要求の寿命判定の共通述語）
+    bool awaitsRender (const RenderFingerprint& fingerprint, double sampleRate) const
+    {
+        return renderPending (sampleRate) && fingerprint == requestedFingerprint (sampleRate);
+    }
     bool dropPreviewIfCurrent (double sampleRate, bool previewActive)
     {
         if (previewDomain == nullptr || previewActive)
             return false;
         // 活動中でないなら、残してよいのは「待っている本レンダーと同じ内容のプレビュー」だけ
-        //（取り消した recipe のレンダー待ちに別内容のプレビューが便乗して残らない）
-        if (renderPending (sampleRate) && previewDomain->fingerprint() == requestedFingerprint (sampleRate))
+        //（取り消した recipe のレンダー待ちに別内容のプレビューが便乗して残らない。取消・閉じるでも同じ＝旧音へ戻す理由が無い）
+        if (awaitsRender (previewDomain->fingerprint(), sampleRate))
             return false;
         previewDomain = nullptr;
         return true;

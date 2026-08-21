@@ -657,12 +657,17 @@
 - 2026-08-21 /code-review 18 回目: 寿命規則を「活動中、または待っている本レンダーと同内容（指紋一致）なら残す」に強化
   （取り消した recipe のレンダー待ちに別内容のプレビューが便乗しない。テスト）。signalsmith プレビュー要求前の pre-clear を
   削除し、失敗処理を `pitchPreviewCache.onRenderFailed` の 1 箇所に（そこで外す・文言は「確定済みの音／原音で鳴っています」を
-  activeDomain で分岐）。非活動なら fingerprint/request を必ずリセット。reconcile 後にも寿命規則。push は各経路で 1 回。
+  activeDomain で分岐）。~~非活動なら fingerprint/request を必ずリセット~~（19 回目で「待っている本レンダーと別内容のときだけ」に修正）。reconcile 後にも寿命規則。push は各経路で 1 回。
   「対象外クリップの previewDomain」は warn ログに
 - 2026-08-21 /code-review 19 回目: 巻き戻し経路の push を drop の後に（外した結果を engine へ）。非活動時の要求リセットは
   「待っている本レンダーと別内容」のときだけ（ジェスチャー最後の in-flight を孤児にしない）。プレビュー失敗は
   `pitchClearPreview(keepMatchingPending)` で同内容は残す。失敗文言は 1 回組み立ててトーストとエディタ内表示へ。
   不変条件 sweep も dropped 扱い。reconcile 内の push は immediate のときだけ。仕様表の文言を更新
+- 2026-08-21 /code-review 20 回目: 「同内容なら残す」の呼び出し側フラグ（keepMatchingPending）を廃止し、`Clip::awaitsRender` /
+  `dropPreviewIfCurrent` を唯一の述語に。`pitchReconcilePreview(previewActive)` が全クリップ＋in-flight 要求へ同じ規則を適用し、
+  `pitchClearPreview`（取消・閉じる）も `pitchDropStalePreview` もそれを呼ぶだけ。失敗文言は effectiveDomain で判定。
+  undo 直後の本レンダー待ちはプレビューキャッシュの同内容で隙間を埋める。reconcile 内の push は削除（呼び出し元が push する契約）。
+  レビューの総括どおり、次はレビューでなく実機の耳確認（ドラッグ確定・Cancel・閉じるで音飛びが無いか）へ
 - 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
   自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
   検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、

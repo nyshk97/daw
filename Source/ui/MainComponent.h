@@ -324,7 +324,8 @@ private:
     // 指紋・reconcile が共有する実効SR（timeline.effectiveSampleRate と同じ値）
     double renderSampleRate() const;
     // ClipDomains::reconcile ＋ RenderCache の要求同期。構造変更後（pushSnapshot 内）と
-    // undo/redo 後・読込直後に通す。immediate = デバウンスを挟まず即同期（undo・読込）
+    // undo/redo 後・読込直後に通す。immediate = デバウンスを挟まず即同期（undo・読込）。
+    // snapshot の push は行わない（呼び出し元がこの直後に push する契約）
     void reconcileClipRenderState (bool immediate);
     void setDirty (bool nowDirty);
 
@@ -339,7 +340,8 @@ private:
     void pitchDiscardPreviewForExport();                    // ⌘B/⌘E の開始時: 未確定プレビューを自動破棄
     Clip* pitchTargetClip();                                // session の clipId で毎回引き直す（無ければ nullptr）
     void pitchRequestPreview (bool suppressFailToast = false); // working からプレビュー要求（専用 RenderCache）。suppress = この要求の失敗トーストを出さない
-    void pitchClearPreview (bool keepMatchingPending = false); // previewDomain を外して snapshot を再 push（keepMatchingPending = 待っている本レンダーと同内容は残す）
+    void pitchClearPreview();                               // = pitchReconcilePreview(false) ＋ push（取消・閉じる。寿命規則は同じ）
+    bool pitchReconcilePreview (bool previewActive);        // 寿命規則（Clip::dropPreviewIfCurrent）を全クリップと in-flight 要求に適用。戻り値: 外したか
     void pitchBeginEdit();                                  // 編集ジェスチャーの開始（初回プレビューの確定・undo 区切り）。進行中なら先に終える
     void pitchEndEdit();                                    // 終了: 変化なし → undo 取り消し／あり → 確定（dirty・レンダー要求）
     void pitchPreviewWorking();                             // ジェスチャー途中: previewDomain で鳴りだけ更新（clip は触らない）

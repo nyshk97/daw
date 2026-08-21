@@ -4727,10 +4727,7 @@ void MainComponent::reconcileClipRenderState (bool immediate)
     else
         renderCache.requestSync(); // 通常の編集はデバウンス（値が落ち着いてから積む）
     pitchSyncAfterModelChange(); // エディタの対象を id で引き直し、プレビューを現在の状態から作り直す
-    // reconcile も activeDomain を差し替える経路（包含が崩れて中立へ）。通常編集（immediate=false）は呼び出し元の
-    // pushSnapshot が直後に全体を push するので、ここで push するのは undo/読込（immediate）のときだけ
-    if (pitchDropStalePreview() && immediate)
-        pushAudioValueSnapshot();
+    pitchDropStalePreview();     // reconcile も activeDomain を差し替える経路（包含が崩れて中立へ）。snapshot は呼び出し元が push する
 }
 
 // ---- 曲末フェードアウト ----
