@@ -43,7 +43,7 @@ JUCE と Sparkle は自動取得なので手動インストール不要。Sparkl
 | `python3` | CHANGELOG の書き換え・appcast.xml へのアイテム挿入 |
 | `claude` CLI | CHANGELOG `[Unreleased]` の自動生成（任意。無ければ手動編集にフォールバック） |
 | Developer ID Application 証明書 | 配布用の再署名（hardened runtime） |
-| notarytool の keychain profile `nyshk97-notary` | 公証。App Store Connect の API キーで登録する（`.p8` は Dropbox の `secrets/`）。**環境によっては Claude Code の Bash から keychain に届かないため、リリースはユーザーのTerminalで実行する** |
+| notarytool の keychain profile `nyshk97-notary` | 公証。App Store Connect の API キーで登録する（`.p8` は Dropbox の `secrets/`）。画面ロック中だけ読めない（preflight で止まる）。Claude Code のセッションから叩いてよい |
 | Sparkle の EdDSA 秘密鍵（Keychain アカウント `daw`） | appcast の署名。バックアップは `~/Library/CloudStorage/Dropbox/secrets/sparkle-ed25519-daw-private.key` |
 | `mise`（任意） | `start` / `stop` / `release` タスクのランナー |
 
@@ -90,4 +90,4 @@ mise run release patch     # 刻み指定
 mise run release 1.2.3     # 明示指定
 ```
 
-notarytool が keychain を参照するため、**ユーザーのTerminalで実行すること**。
+叩く前に `docs/CHANGELOG.md` の `[Unreleased]` を埋めて commit しておく（空なら止まる。Claude Code のセッションが `git log` を読んで書く）。Claude Code のセッションから叩いてよい（画面ロック中だけ preflight で止まる）。

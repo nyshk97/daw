@@ -336,7 +336,7 @@ description = 'Salva dev版アプリ（Salva-dev.app）を停止する'
 run = 'pkill -f "Salva-dev.app/Contents/MacOS/Salva-dev" || true'
 
 [tasks."release:salva"]
-description = 'SalvaのいまのHEADをリリースする（バージョン自動bump→CHANGELOG自動生成(claude)→ビルド→notarize→署名→salva-releasesへGitHub Release。notarytoolがkeychainを使うためユーザーのTerminalで実行すること）'
+description = 'SalvaのいまのHEADをリリースする（バージョン自動bump→ビルド→notarize→署名→salva-releasesへGitHub Release）。叩く前に docs/CHANGELOG-salva.md の [Unreleased] を埋めて commit しておく（空なら止まる）。Claude Code から叩いてよい'
 usage = 'arg "<version>" default="auto" help="auto(既定)=リリース済みならminor bump / patch|minor|major=刻み指定 / 0.2.0等=明示指定"'
 run = '''
 #!/usr/bin/env bash
@@ -392,7 +392,7 @@ exec scripts/release-salva.sh "$v"
 '''
 
 [tasks.release]
-description = 'いまのHEADをリリースする（バージョン自動bump→CHANGELOG自動生成(claude)→ビルド→notarize→署名→GitHub Release。notarytoolがkeychainを使うためユーザーのTerminalで実行すること）'
+description = 'いまのHEADをリリースする（バージョン自動bump→ビルド→notarize→署名→GitHub Release）。叩く前に docs/CHANGELOG.md の [Unreleased] を埋めて commit しておく（空なら止まる）。Claude Code から叩いてよい'
 usage = 'arg "<version>" default="auto" help="auto(既定)=リリース済みならminor bump / patch|minor|major=刻み指定 / 0.3.0等=明示指定"'
 run = '''
 #!/usr/bin/env bash

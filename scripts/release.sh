@@ -8,7 +8,8 @@
 #
 # 注: このスクリプトは内部で build.sh を実行する（fresh build 込み）。
 #     事前に build.sh 単体を叩く必要は無い。
-# 注: notarytool が keychain を参照するため、ユーザーの Terminal で実行すること
+# 注: Claude Code のセッションから叩いてよい。notarytool の資格情報は画面ロック中だけ読めないので、
+#     preflight でロック中なら止める。CHANGELOG の [Unreleased] は叩く前にセッションが埋めて commit する
 #     （Claude Code の Bash からは動かない）。
 #
 # 前提:
@@ -66,6 +67,24 @@ if [ -n "$DIRTY" ]; then
   echo "$DIRTY"
   exit 1
 fi
+# origin/main より遅れていないこと（別クローンからリリース済みの古い main で二重リリースしない）。
+# mise の bump commit で HEAD が 1 つ先行するのは正常なので「origin/main が HEAD の祖先」で判定する
+if ! git merge-base --is-ancestor origin/main HEAD; then
+  echo "ERROR: HEAD が origin/main を含んでいません（pull 忘れ）。origin: $(git rev-parse --short origin/main) / local: $(git rev-parse --short HEAD)"
+  exit 1
+fi
+# 画面ロック中は notarytool の資格情報（data-protection keychain）が読めない。ビルドに数分かけてから落ちないよう先に見る
+CONSOLE_LOCKED=$(ioreg -n Root -d1 -a 2>/dev/null | plutil -extract IOConsoleLocked raw -o - - 2>/dev/null || true)
+if [ "$CONSOLE_LOCKED" = "true" ]; then
+  echo "ERROR: 画面がロックされています。解除してから再実行してください"
+  exit 1
+fi
+NOTARY_PROFILE="${NOTARY_PROFILE:-nyshk97-notary}"
+if ! notary_out=$(xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" 2>&1); then
+  echo "ERROR: notarize の keychain プロファイル '${NOTARY_PROFILE}' が使えません:"
+  echo "$notary_out" | head -3
+  exit 1
+fi
 # CMakeLists の VERSION bump し忘れをビルド前に検知する（ビルド後にも Info.plist で再検査）
 CMAKE_VERSION=$(sed -nE 's/^project\(daw VERSION ([0-9.]+).*/\1/p' "$PROJECT_ROOT/CMakeLists.txt")
 if [ "$CMAKE_VERSION" != "$VERSION" ]; then
@@ -107,7 +126,7 @@ if [ ! -x "$SIGN_UPDATE" ]; then
   exit 1
 fi
 
-# === Step 1: changelog (claude headless で自動生成 → レビュー用ポーズ) ===
+# === Step 1: changelog の確認 ===
 if [ ! -f "$CHANGELOG" ]; then
   echo "ERROR: $CHANGELOG が見つかりません"
   exit 1
@@ -134,42 +153,13 @@ else
   echo ""
 fi
 
-# [Unreleased] が空なら claude headless で自動生成する（手書き済みならそれを尊重）。
-# 生成失敗・claude 不在・前回タグ不明（リリース途中失敗からの再開時など）は手動編集に倒す。
-# 生成が CHANGELOG 以外に触った場合は直後の DIRTY_AFTER_PAUSE 検査が止める
+# [Unreleased] は叩く前に Claude Code のセッションが埋めて commit しておく（対話も claude -p の
+# 入れ子も無い）。空なら Step 2 で止まる。上の commit 一覧は参考表示。
 UNRELEASED_BODY=$(awk '/^## \[Unreleased\]/{f=1; next} /^## \[/{f=0} f' "$CHANGELOG" | grep -v '^[[:space:]]*$' || true)
-if [ -n "$UNRELEASED_BODY" ]; then
+if [ -z "$UNRELEASED_BODY" ]; then
   echo ""
-  echo "==> [Unreleased] に記入済みの内容があるため自動生成をスキップします"
-elif [ -z "$RANGE" ] || ! command -v claude >/dev/null 2>&1; then
-  echo ""
-  echo "WARN: 自動生成をスキップします (前回リリースタグ不明 or claude CLI なし)。手動で編集してください"
-else
-  echo ""
-  echo "==> claude で [Unreleased] を自動生成しています…"
-  if claude -p "docs/CHANGELOG.md の [Unreleased] セクションを、git の ${RANGE} のコミット内容から埋めてください。ファイル冒頭の『書き方』セクション（フォーマット・カテゴリ・文体）に厳密に従うこと。ユーザー目視で気づく変更だけ書き、内部リファクタ・ドキュメント・ビルド設定の変更は書かないこと。docs/CHANGELOG.md 以外のファイルを変更してはいけない。" \
-      --allowedTools "Read,Grep,Glob,Edit,Bash(git log:*),Bash(git show:*),Bash(git diff:*)"; then
-    echo ""
-    echo "==> 生成結果 (git diff):"
-    git --no-pager diff -- "$CHANGELOG"
-  else
-    echo "WARN: claude の自動生成に失敗しました。手動で編集してください"
-  fi
-fi
-
-echo ""
-echo "↑ $CHANGELOG の [Unreleased] を確認し、必要なら手直ししてください:"
-echo "    - ユーザー目視で気づく変更だけ書く (内部リファクタ・ドキュメント変更は除く)"
-echo "    - カテゴリは ✨ Added / 📝 Changed / 🐛 Fixed / 🗑️ Removed"
-echo ""
-read -r -p "  問題なければ Enter で続行 (Ctrl+C で中断): " _
-
-# ポーズ中に CHANGELOG 以外を編集していないか再検査する。ここで混入したソース変更は
-# ビルド（DMG）には入るのに Step 2 の commit（= タグの commit）には入らず乖離するため
-DIRTY_AFTER_PAUSE=$(git status --porcelain | grep -v '^?? docs/plans/' | grep -v 'docs/CHANGELOG\.md$' || true)
-if [ -n "$DIRTY_AFTER_PAUSE" ]; then
-  echo "ERROR: ポーズ中に CHANGELOG 以外が変更されています。commit してから再実行してください"
-  echo "$DIRTY_AFTER_PAUSE"
+  echo "ERROR: $CHANGELOG の [Unreleased] が空です。上の commit を読んで埋め、commit してから再実行してください"
+  echo "       （書き方は CHANGELOG 冒頭。ユーザー目視で気づく変更だけ／無ければ '- 内部的な変更のみ'）"
   exit 1
 fi
 
@@ -206,11 +196,21 @@ path.write_text(new)
 print(f"  CHANGELOG.md: [Unreleased] の下に [{version}] - {date} を挿入")
 PY
 
+CHANGELOG_COMMITTED=0
 if ! git diff --quiet "$CHANGELOG"; then
   git add "$CHANGELOG"
   git commit -m "docs(changelog): release ${VERSION}"
   echo "  CHANGELOG.md を commit (release ${VERSION})"
+  CHANGELOG_COMMITTED=1
 fi
+# push までに失敗したらこの commit を巻き戻す（preflight で clean を保証しているので消えるのはこれだけ）
+rollback_changelog_commit() {
+  if [ "$CHANGELOG_COMMITTED" -eq 1 ]; then
+    echo "↩️  失敗したので CHANGELOG の commit を巻き戻します（remote は未変更）"
+    git reset -q --hard HEAD~1
+  fi
+}
+trap 'rollback_changelog_commit' ERR
 
 # === Step 3: 該当 section から release notes (md) と Sparkle description (HTML) を生成 ===
 python3 - "$CHANGELOG" "$VERSION" "$RELEASE_NOTES_MD" "$SPARKLE_DESC_HTML" <<'PY'
@@ -288,6 +288,8 @@ fi
 # === Step 5: push（タグは Release 作成成功後に打つ） ===
 echo "==> Pushing main to origin..."
 git push origin main
+CHANGELOG_COMMITTED=0
+trap - ERR
 
 # === Step 6: EdDSA 署名 ===
 echo "==> Signing dmg with EdDSA (keychain account: $SPARKLE_ACCOUNT)..."

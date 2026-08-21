@@ -8,7 +8,7 @@ LaLa（旧名 daw）の更新履歴。形式は [Keep a Changelog](https://keepa
 
 ## 書き方
 
-このセクションは AI が release.sh の pause 中に `[Unreleased]` を埋めるときの判断基準でもある。
+このセクションは Claude Code のセッションが `mise run release` を叩く前に `[Unreleased]` を埋めるときの判断基準でもある（`git log <前回タグ>..HEAD` を読んで書き、commit してから叩く。release.sh に pause は無く、空なら止まる）。
 
 ### フォーマット
 

@@ -735,7 +735,7 @@ pkill -x LaLa-dev
   ```
 - **配布用再署名の確認（notarize 手前まではAIで自動確認可）**: scripts/build.sh の codesign 部分を実行後、
   `codesign -dvvv --entitlements - /tmp/daw-export/LaLa.app` で ①`flags=...(runtime)` ②`Timestamp=` あり ③entitlements が audio-input のみ（get-task-allow 不在）の3点を確認
-- **notarize 以降とリリース本番**: `scripts/release.sh <version>` を**ユーザーの Terminal で**実行（notarytool は Claude Code の Bash から keychain に届かない）
+- **notarize 以降とリリース本番**: `docs/CHANGELOG.md` の `[Unreleased]` を埋めて commit → `mise run release`（Claude Code のセッションから叩いてよい。notarytool の資格情報は画面ロック中だけ読めず、preflight で止まる。push 前に失敗したら CHANGELOG の commit は trap で巻き戻る）
 - **アップデート一連の確認**: 低い VERSION でビルドした dmg の .app を `/Applications` にコピーして起動（Translocation 回避）→ Check for Updates → 新版が offer → 更新完走後に `plutil -extract CFBundleVersion raw /Applications/LaLa.app/Contents/Info.plist` と `codesign --verify --strict /Applications/LaLa.app` を確認
 - **旧名 daw からの初回アップデート（0.2.x 以前 → LaLa 初版）**: Sparkle は既存 `.app` のパスへ置き換えるため、更新後も `/Applications` のファイル名が `daw.app` のまま残る可能性がある（メニューバー・タイトルバーの表示名は Info.plist 由来で LaLa になる）。残っていたら Finder で `LaLa.app` に手動リネームする（bundle id 不変なので TCC・Sparkle の連続性に影響なし）。この確認は初回リリース時に一度だけ必要
 

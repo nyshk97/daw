@@ -8,7 +8,7 @@ Salva（レコード/ローカル音源のサンプリング素材化アプリ�
 
 ## 書き方
 
-このセクションは AI が release-salva.sh の pause 中に `[Unreleased]` を埋めるときの判断基準でもある。
+このセクションは Claude Code のセッションが `mise run release:salva` を叩く前に `[Unreleased]` を埋めるときの判断基準でもある（`git log <前回タグ>..HEAD -- apps/salva` を読んで書き、commit してから叩く。release-salva.sh に pause は無く、空なら止まる）。
 
 ### フォーマット
 
