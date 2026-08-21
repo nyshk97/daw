@@ -526,6 +526,28 @@ void PitchEditorView::drawBlobs (juce::Graphics& g, const Geometry& geo, const C
         }
     }
 
+    // 帯型ブロブ（2026-08-21 モックで確定）: 太さ＝音量（RMS）・中心＝補正後ピッチ・塗り＝移動量で青→暖色。
+    // 目標の段は細い枠だけ、元ピッチは細い線。メロダインの読み方（音の形が主役・目標は添え物）
+    float maxRms = 1e-6f;
+    {
+        const int k0 = (int) (clip.offsetSamples / hop), k1 = (int) ((clip.offsetSamples + clip.lengthSamples) / hop);
+        for (int k = juce::jmax (0, k0); k < juce::jmin (curve.numFrames(), k1); ++k)
+            maxRms = juce::jmax (maxRms, curve.rms[(size_t) k]);
+    }
+    auto thickness = [&] (int k)
+    {
+        // 音量は対数的に見えるので平方根で圧縮（小さい音も潰れない）。最小 2px
+        const float r = std::sqrt (juce::jlimit (0.0f, 1.0f, curve.rms[(size_t) k] / maxRms));
+        return juce::jmax (2.0f, r * geo.rowHeight * 1.6f);
+    };
+    auto heat = [&] (float correction, float a)
+    {
+        // 補正量（transpose を除く）0 → accent、1 半音以上 → 暖色
+        const float d = juce::jlimit (0.0f, 1.0f, std::abs (correction) / 1.0f);
+        return juce::Colour ((juce::uint8) (74 + (230 - 74) * d), (juce::uint8) (110 + (150 - 110) * d),
+                             (juce::uint8) (169 + (90 - 169) * d)).withAlpha (a);
+    };
+
     for (int i = 0; i < (int) w.notes.size(); ++i)
     {
         const auto& n = w.notes[(size_t) i];
@@ -535,31 +557,67 @@ void PitchEditorView::drawBlobs (juce::Graphics& g, const Geometry& geo, const C
         if (x1 < (float) geo.canvas.getX() || x0 > (float) geo.canvas.getRight()) continue;
         const float y = geo.yForMidi (n.targetMidi + 0.5);
         const bool sel = selected.count (i) > 0;
-        g.setColour ((n.bypass ? blobBypass : sel ? blobSelected : blobFill).withAlpha (alpha * (n.bypass ? 0.35f : 0.85f)));
-        g.fillRect (x0, y, x1 - x0, geo.rowHeight);
-        g.setColour ((sel ? juce::Colours::white : blobBorder).withAlpha (alpha));
-        g.drawRect (juce::Rectangle<float> (x0, y, x1 - x0, geo.rowHeight), hoverNote == i ? 1.5f : 1.0f);
-        // 元カーブ（薄）と補正後（濃）
-        juce::Path orig, corrected;
+
+        // 目標の段: 枠だけ（選択は白・ホバーは太く）
+        g.setColour ((sel ? juce::Colours::white : blobBorder).withAlpha ((sel ? 0.9f : 0.5f) * alpha));
+        g.drawRect (juce::Rectangle<float> (x0, y, x1 - x0, geo.rowHeight), sel || hoverNote == i ? 1.5f : 1.0f);
+
+        // 帯: 有声フレームごとに台形を繋ぐ（補正後ピッチを中心・RMS で太さ・移動量で色）
+        const int ks = (int) ((s + hop - 1) / hop), ke = juce::jmin (curve.numFrames(), (int) ((e + hop - 1) / hop));
+        juce::Path orig, center;
         bool first = true;
-        for (int k = (int) ((s + hop - 1) / hop); (juce::int64) k * hop < e && k < curve.numFrames(); ++k)
+        float prevX = 0, prevY = 0, prevH = 0, prevCorr = 0;
+        for (int k = ks; k < ke; ++k)
         {
             if (! curve.isVoiced (k)) { first = true; continue; }
             const float x = geo.xForSource ((juce::int64) k * hop);
             const double m = curve.midiAt (k);
-            const float yo = geo.yForMidi (m), yc = geo.yForMidi (m + shiftAt (k));
-            if (first) { orig.startNewSubPath (x, yo); corrected.startNewSubPath (x, yc); first = false; }
-            else { orig.lineTo (x, yo); corrected.lineTo (x, yc); }
+            const float sh = shiftAt (k);
+            const float yc = geo.yForMidi (m + sh), yo = geo.yForMidi (m);
+            const float h = thickness (k);
+            const float corr = n.bypass ? 0.0f : sh - (float) clip.transposeSemitones;
+            if (! first)
+            {
+                juce::Path quad;
+                quad.startNewSubPath (prevX, prevY - prevH / 2);
+                quad.lineTo (x, yc - h / 2);
+                quad.lineTo (x, yc + h / 2);
+                quad.lineTo (prevX, prevY + prevH / 2);
+                quad.closeSubPath();
+                g.setColour (n.bypass ? blobBypass.withAlpha (0.5f * alpha) : heat ((prevCorr + corr) / 2, 0.9f * alpha));
+                g.fillPath (quad);
+                center.lineTo (x, yc);
+                orig.lineTo (x, yo);
+            }
+            else
+            {
+                center.startNewSubPath (x, yc);
+                orig.startNewSubPath (x, yo);
+            }
+            prevX = x; prevY = yc; prevH = h; prevCorr = corr; first = false;
         }
         g.setColour (juce::Colours::white.withAlpha (0.35f * alpha));
         g.strokePath (orig, juce::PathStrokeType (1.0f));
-        g.setColour (juce::Colours::white.withAlpha ((n.bypass ? 0.35f : 1.0f) * alpha));
-        g.strokePath (corrected, juce::PathStrokeType (1.6f));
+        g.setColour (juce::Colours::white.withAlpha ((n.bypass ? 0.5f : 0.95f) * alpha));
+        g.strokePath (center, juce::PathStrokeType (1.0f));
         if (n.bypass && geo.rowHeight >= 10.0f)
         {
             g.setFont (Fonts::small().withHeight (9.0f));
             g.setColour (juce::Colours::lightgrey.withAlpha (alpha));
             g.drawText ("bypass", (int) x0 + 3, (int) y - 11, 60, 10, juce::Justification::centredLeft);
+        }
+    }
+    // 無声フレーム（息・子音）: ピッチが無いので下端の細いレーンに音量だけを灰色で（在り処が分かる＝切る/バイパスの判断材料）
+    {
+        const int k0 = (int) (clip.offsetSamples / hop), k1 = (int) ((clip.offsetSamples + clip.lengthSamples) / hop);
+        const float laneBottom = (float) geo.canvas.getBottom() - 2.0f;
+        g.setColour (juce::Colours::white.withAlpha (0.22f * alpha));
+        for (int k = juce::jmax (0, k0); k < juce::jmin (curve.numFrames(), k1); ++k)
+        {
+            if (curve.isVoiced (k) || curve.rms[(size_t) k] <= 0.0f) continue;
+            const float h = juce::jmax (1.0f, std::sqrt (juce::jlimit (0.0f, 1.0f, curve.rms[(size_t) k] / maxRms)) * 10.0f);
+            const float x = geo.xForSource ((juce::int64) k * hop);
+            g.fillRect (x, laneBottom - h, juce::jmax (1.0f, (float) (hop * geo.pxPerSample)), h);
         }
     }
     // ノート外の有声フレーム（検出で捨てられた短い音など）は補正されないことを点で示す
