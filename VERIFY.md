@@ -685,7 +685,7 @@ run() { pkill -x LaLa-dev; sleep 1; before=$(ls -t ~/Library/Logs/daw | head -1)
   for i in $(seq 1 90); do sleep 1; f=~/Library/Logs/daw/$(ls -t ~/Library/Logs/daw | head -1)
     [ "$(basename $f)" = "$before" ] && continue; grep -q "debug.pitch_snapshot" "$f" && break; done
   grep -E "pitch\.|debug\." "$f"; }
-# 補正なしで開く → 解析 → 未確定プレビュー（mode=2 preview=1 corrected=0 dirty=0）
+# 補正なしで開く → 解析 → 未確定プレビュー（mode=2 corrected=0 dirty=0。開いた直後は Strength 0% なので preview=0＝原音のまま）
 run --pitch-editor 2 0 --pitch-snapshot "$SP/1-preview.png"
 # Enable → バイパス → 横移動 → 目標 +2 → 保存（mode=3 corrected=1 dirty=0。project.json v21・clip-008.<digest>.pitch）
 run --pitch-editor 2 0 --pitch-action enable --pitch-action bypass1 --pitch-action move3 --pitch-action "target2:+2" --pitch-action save --pitch-snapshot "$SP/2-edited.png"

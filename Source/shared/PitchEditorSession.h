@@ -12,7 +12,7 @@
 // 設計の真実の源: docs/plans/2026-08-20-2244-vocal-pitch-correction.md（Phase 3）
 //
 // 開いたときの2経路:
-// - 補正なしのクリップ: 解析 → 自動スナップを**初回プレビュー**（initialPreview）として開始。
+// - 補正なしのクリップ: 解析 → 自動スナップ（目標音だけ。Strength 0%＝鳴りは原音のまま）を**初回プレビュー**（initialPreview）として開始。
 //   「補正を有効化」または最初の手編集で確定（commitInitial）。閉じる・対象切替で捨てる
 // - 補正ありのクリップ: 保存済みの状態を**確定状態のまま**表示（committed）。自動スナップしない
 // 確定状態からの「キーに合わせ直す」「再解析」は**変更プレビュー**（changePreview）: Apply で確定、
@@ -76,6 +76,9 @@ public:
         detectedNotes = PitchNotes::detect (*workingCurve);
         workingState = PitchCorrections::autoSnap (*workingCurve, detectedNotes, domainOffset, domainLength,
                                                   projectKey, PitchScaleMode::projectKey, {});
+        // 開いた直後は**何も動かさない**（2026-08-21 本人判断・メロダイン寄り）: 目標音はスナップ済みで見えるが
+        // Strength 0% で鳴りは原音のまま。つまみを上げた分だけ掛かる（色も上げた分だけ暖色になる）
+        workingState.strength = 0.0f;
         blocked = ! sidecarWritten;
         currentMode = Mode::initialPreview;
     }

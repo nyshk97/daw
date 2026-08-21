@@ -217,7 +217,7 @@ void PitchEditorView::updateBar()
         bannerText = jp (u8"解析中…");
     else if (mode == Mode::initialPreview)
     {
-        bannerText = jp (u8"未確定のプレビュー（自動スナップ）— Space で試聴・最初の編集か Enable で確定");
+        bannerText = jp (u8"未確定のプレビュー — 目標音は付けてあるがまだ何も動かしていない（Strength 0%）。つまみやノートを触るか Enable で確定");
         bannerButton.setButtonText (jp (u8"Enable"));
         bannerButton.setVisible (true);
     }

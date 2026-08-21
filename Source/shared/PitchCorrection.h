@@ -82,6 +82,8 @@ struct PitchCorrection
     static std::optional<PitchCorrection> fromJson (const juce::var& v);
 
     ContentDigest digest() const; // 内容ハッシュ（レンダー指紋に入れる。音に関係しない scaleMode/customKey は含めない）
+    // 鳴りが原音と同じか（強さ 0 かつタイミングのずれ無し）。開いた直後の「何も動かさない」状態の判定に使う
+    bool isAudiblyNeutral() const;
 
     // BoundaryRef → 原音サンプル座標
     juce::int64 resolve (const BoundaryRef& ref, juce::int64 domainOffset, juce::int64 domainLength) const;

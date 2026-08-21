@@ -15954,6 +15954,7 @@ void testPitchEditorSession()
     expect (! s.commitInitial().has_value(), "サイドカー未書込なら確定できない");
     s.setSidecarWritten (true);
     expect (s.editable() && s.working().notes.size() > 0 && s.working().curveDigest == curve->digest(), "書けたら編集可・autoSnap 済み");
+    expect (juce::exactlyEqual (s.working().strength, 0.0f) && s.working().isAudiblyNeutral(), "開いた直後は Strength 0%（何も動かさない）");
     auto committed = s.commitInitial();
     expect (committed.has_value() && s.mode() == PitchEditorSession::Mode::committed && ! s.hasPreview(), "確定で committed");
     // 変更プレビュー → キャンセルで元に戻る（generation が進む）

@@ -200,6 +200,16 @@ ContentDigest PitchCorrection::digest() const
     return d.finish();
 }
 
+bool PitchCorrection::isAudiblyNeutral() const
+{
+    if (strength > 0.0f)
+        return false;
+    for (const auto& n : timeNodes)
+        if (n.timingDeltaSamples != 0)
+            return false;
+    return true;
+}
+
 juce::int64 PitchCorrection::resolve (const BoundaryRef& ref, juce::int64 domainOffset, juce::int64 domainLength) const
 {
     switch (ref.kind)

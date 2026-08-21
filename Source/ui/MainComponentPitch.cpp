@@ -425,6 +425,16 @@ void MainComponent::pitchRequestPreview()
         pitchPreviewRequest.reset();
         return;
     }
+    if (pitchSession.working().isAudiblyNeutral() && clip->transposeSemitones == 0 && juce::exactlyEqual (clip->stretchRatio, 1.0))
+    {
+        // 開いた直後（Strength 0%・タイミング未編集）: 原音そのもの。WORLD を通さず previewDomain を外す
+        const bool had = clip->previewDomain != nullptr;
+        clip->previewDomain = nullptr;
+        pitchPreviewRequest.reset();
+        pitchPreviewDigest = {};
+        if (had) { pushAudioValueSnapshot(); timeline.refresh(); }
+        return;
+    }
     const auto sr = renderSampleRate();
     auto recipe = std::make_shared<RenderRecipe>();
     recipe->sourceAudio = clip->audio;
