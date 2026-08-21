@@ -438,7 +438,7 @@ void MainComponent::pitchEditorTick()
     pitchWindow.content().refresh();
 }
 
-void MainComponent::pitchRequestPreview()
+void MainComponent::pitchRequestPreview (bool suppressFailToast)
 {
     auto* clip = pitchTargetClip();
     if (clip == nullptr || ! pitchSession.hasPreview() || pitchSession.curve() == nullptr)
@@ -483,6 +483,7 @@ void MainComponent::pitchRequestPreview()
         return;
     }
     pitchPreviewRequest = std::move (request);
+    pitchSuppressPreviewFailDigest = suppressFailToast ? pitchPreviewDigest : ContentDigest{};
     pitchPreviewCache.syncNow();
 }
 
@@ -610,10 +611,11 @@ bool MainComponent::pitchSyncAfterModelChange (bool quiet)
                             || pd->domainOffset != clip->offsetSamples || pd->domainLength != clip->lengthSamples;
             if (stale)
             {
-                pitchRequestPreview();
                 // 巻き戻し直後の再プレビューが同じ原因で失敗したときだけ青トーストを出さない。抑止対象は
-                // いま出した要求の digest に限る（成功・キャッシュ命中・早期 return・別要求で自然に外れる）
-                pitchSuppressPreviewFailDigest = quiet ? pitchPreviewDigest : ContentDigest{};
+                // これから出す要求の digest に限る。pitchRequestPreview が成功（キャッシュ命中）や早期 return で
+                // 終わった場合はその中でクリアされるので、代入は呼び出しの**前**
+                pitchSuppressPreviewFailDigest = {};
+                pitchRequestPreview (quiet);
             }
             break;
         }
@@ -689,8 +691,7 @@ void MainComponent::debugPitchAction (const juce::String& action)
         if (idx >= 0 && idx < (int) pitchSession.working().notes.size())
         {
             pitchBeginEdit();
-            auto& n = pitchSession.mutableWorking().notes[(size_t) idx];
-            n.bypass = ! n.bypass;
+            PitchCorrections::setNoteBypass (pitchSession.mutableWorking(), idx, ! pitchSession.working().notes[(size_t) idx].bypass);
             pitchApplyWorking();
         }
     }
@@ -715,8 +716,8 @@ void MainComponent::debugPitchAction (const juce::String& action)
         if (idx >= 0 && idx < (int) pitchSession.working().notes.size())
         {
             pitchBeginEdit();
-            pitchSession.mutableWorking().notes[(size_t) idx].targetMidi += delta;
-            pitchSession.mutableWorking().notes[(size_t) idx].pinned = true;
+            auto& n = pitchSession.mutableWorking().notes[(size_t) idx];
+            PitchCorrections::setNoteTarget (pitchSession.mutableWorking(), idx, n.targetMidi + delta, n.targetMidi, n.pinned);
             pitchApplyWorking();
         }
     }

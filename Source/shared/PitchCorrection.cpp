@@ -491,11 +491,35 @@ void PitchCorrections::resnap (PitchCorrection& pc, const PitchCurve& curve, juc
 {
     for (auto& n : pc.notes)
     {
+        if (n.pinned)
+            continue; // 手で置いた音は付け直さない（手直し済みノートを勝手に変えない）
         const auto s = pc.resolve (n.start, domainOffset, domainLength);
         const auto e = pc.resolve (n.end, domainOffset, domainLength);
         if (auto median = noteMedianMidi (curve, s, e))
             n.targetMidi = snapToScale (*median, scale);
     }
+}
+
+bool PitchCorrections::setNoteTarget (PitchCorrection& pc, int noteIndex, int targetMidi, int targetAtStart, bool pinnedAtStart)
+{
+    if (noteIndex < 0 || noteIndex >= (int) pc.notes.size())
+        return false;
+    auto& n = pc.notes[(size_t) noteIndex];
+    targetMidi = juce::jlimit (0, 127, targetMidi);
+    const bool changedTarget = n.targetMidi != targetMidi;
+    n.targetMidi = targetMidi;
+    n.pinned = pinnedAtStart || targetMidi != targetAtStart;
+    return changedTarget || n.pinned != pinnedAtStart;
+}
+
+void PitchCorrections::setNoteBypass (PitchCorrection& pc, int noteIndex, bool bypass)
+{
+    if (noteIndex < 0 || noteIndex >= (int) pc.notes.size())
+        return;
+    auto& n = pc.notes[(size_t) noteIndex];
+    n.bypass = bypass;
+    if (bypass)
+        n.pinned = false;
 }
 
 juce::int64 PitchCorrections::moveNote (PitchCorrection& pc, int noteIndex, juce::int64 deltaRender,
@@ -566,7 +590,9 @@ bool PitchCorrections::mergeNotes (PitchCorrection& pc, int leftIndex, juce::int
         return false;
     const auto leftLength = pc.resolve (left.end, domainOffset, domainLength) - s;
     const auto rightLength = e - pc.resolve (right.start, domainOffset, domainLength);
-    const int target = rightLength > leftLength ? right.targetMidi : left.targetMidi;
+    // 目標: 片側だけ pinned ならその側（手で選んだ音程を残す）。両方 or どちらも pinned でなければ長い側
+    const int target = left.pinned != right.pinned ? (left.pinned ? left.targetMidi : right.targetMidi)
+                                                   : (rightLength > leftLength ? right.targetMidi : left.targetMidi);
     const bool bypass = left.bypass && right.bypass;
     const bool pinned = left.pinned || right.pinned;
     const auto endRef = right.end;

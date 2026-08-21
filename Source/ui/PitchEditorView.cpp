@@ -357,13 +357,44 @@ PitchEditorView::Geometry PitchEditorView::computeGeometry (const Clip& clip) co
     return g;
 }
 
-int PitchEditorView::noteAt (const Geometry& g, juce::Point<int> p) const
+void PitchEditorView::ensureTargetCache (const Geometry& geo, const Clip& clip)
 {
-    if (session == nullptr || ! session->isOpen() || session->curve() == nullptr)
+    if (session == nullptr || session->curve() == nullptr)
+        return;
+    const auto& w = session->working();
+    if (cachedTargetDigest != w.digest() || cachedTargetTranspose != clip.transposeSemitones
+        || cachedTargetDomain != std::make_pair (geo.domainOffset, geo.domainLength))
+    {
+        cachedTarget = PitchCorrections::targetCurve (w, *session->curve(), geo.domainOffset, geo.domainLength, clip.transposeSemitones);
+        cachedTargetDigest = w.digest();
+        cachedTargetTranspose = clip.transposeSemitones;
+        cachedTargetDomain = { geo.domainOffset, geo.domainLength };
+    }
+}
+
+float PitchEditorView::shiftAtFrame (int k, int transpose) const
+{
+    const int i = k - cachedTarget.firstFrame;
+    return i >= 0 && i < (int) cachedTarget.shiftSemitones.size() ? cachedTarget.shiftSemitones[(size_t) i] : (float) transpose;
+}
+
+int PitchEditorView::noteAt (const Geometry& g, juce::Point<int> p)
+{
+    const Clip* clip = getClip ? getClip() : nullptr;
+    if (clip == nullptr || session == nullptr || ! session->isOpen() || session->curve() == nullptr)
         return -1;
+    ensureTargetCache (g, *clip); // 変更直後〜再描画前の判定でも描画と同じ帯位置を使う
     const auto& w = session->working();
     const auto& curve = *session->curve();
     const int hop = curve.hopSamples;
+    // カーソル位置のフレームの帯の y（ノート共通・1回だけ）
+    float bandY = -1e9f;
+    if (hop > 0)
+    {
+        const int k = (int) (g.timeMap.inverse (g.renderForX ((float) p.x)) / hop);
+        if (curve.isVoiced (k))
+            bandY = g.yForMidi (curve.midiAt (k) + shiftAtFrame (k, clip->transposeSemitones));
+    }
     for (int i = 0; i < (int) w.notes.size(); ++i)
     {
         const auto& n = w.notes[(size_t) i];
@@ -371,23 +402,11 @@ int PitchEditorView::noteAt (const Geometry& g, juce::Point<int> p) const
         const float x0 = g.xForSource (s), x1 = g.xForSource (e);
         if ((float) p.x < x0 || (float) p.x > x1)
             continue;
-        // 目標の段（枠）
-        const float y0 = g.yForMidi (n.targetMidi + 0.5);
+        const float y0 = g.yForMidi (n.targetMidi + 0.5); // 目標の段（枠）
         if ((float) p.y >= y0 && (float) p.y <= y0 + g.rowHeight)
             return i;
-        // 帯（声の実体）: カーソル位置のフレームの補正後ピッチの近く
-        if (hop > 0)
-        {
-            const int k = (int) (g.timeMap.inverse (g.renderForX ((float) p.x)) / hop);
-            if (curve.isVoiced (k))
-            {
-                const int ti = k - cachedTarget.firstFrame;
-                const float sh = ti >= 0 && ti < (int) cachedTarget.shiftSemitones.size() ? cachedTarget.shiftSemitones[(size_t) ti] : 0.0f;
-                const float yc = g.yForMidi (curve.midiAt (k) + sh);
-                if (std::abs ((float) p.y - yc) <= juce::jmax (g.rowHeight * 0.8f, 6.0f))
-                    return i;
-            }
-        }
+        if (std::abs ((float) p.y - bandY) <= juce::jmax (g.rowHeight * 0.8f, 6.0f)) // 帯（声の実体）
+            return i;
     }
     return -1;
 }
@@ -511,22 +530,11 @@ void PitchEditorView::drawBlobs (juce::Graphics& g, const Geometry& geo, const C
         return;
     const auto& w = session->working();
     const auto& curve = *session->curve();
-    if (cachedTargetDigest != w.digest() || cachedTargetTranspose != clip.transposeSemitones
-        || cachedTargetDomain != std::make_pair (geo.domainOffset, geo.domainLength))
-    {
-        cachedTarget = PitchCorrections::targetCurve (w, curve, geo.domainOffset, geo.domainLength, clip.transposeSemitones);
-        cachedTargetDigest = w.digest();
-        cachedTargetTranspose = clip.transposeSemitones;
-        cachedTargetDomain = { geo.domainOffset, geo.domainLength };
-    }
+    ensureTargetCache (geo, clip);
     const bool dim = isRendering && isRendering();
     const float alpha = dim ? 0.55f : 1.0f;
     const int hop = curve.hopSamples;
-    auto shiftAt = [&] (int k) -> float
-    {
-        const int i = k - cachedTarget.firstFrame;
-        return i >= 0 && i < (int) cachedTarget.shiftSemitones.size() ? cachedTarget.shiftSemitones[(size_t) i] : (float) clip.transposeSemitones;
-    };
+    auto shiftAt = [&] (int k) { return shiftAtFrame (k, clip.transposeSemitones); };
 
     // 変更プレビュー中: 元の目標音を点線のゴーストで残し、変わるノートを一目で分かるようにする
     if (const auto& bk = session->backup(); bk.has_value())
@@ -860,8 +868,7 @@ void PitchEditorView::showContextMenu (juce::Point<int> at)
         else if (result == 11 && safe->canEdit() && noteUnder >= 0)
         {
             if (safe->onBeginEdit) safe->onBeginEdit();
-            auto& n = safe->session->mutableWorking().notes[(size_t) noteUnder];
-            n.bypass = ! n.bypass;
+            PitchCorrections::setNoteBypass (safe->session->mutableWorking(), noteUnder, ! safe->session->working().notes[(size_t) noteUnder].bypass);
             if (safe->onEdited) safe->onEdited();
             safe->repaint();
         }
@@ -909,6 +916,7 @@ void PitchEditorView::mouseDown (const juce::MouseEvent& e)
     d.noteIndex = idx;
     d.start = e.getPosition();
     d.targetAtStart = w.notes[(size_t) idx].targetMidi;
+    d.pinnedAtStart = w.notes[(size_t) idx].pinned;
     d.snap = ! e.mods.isAltDown();
     d.stateAtStart = w;
     const auto s = w.resolve (w.notes[(size_t) idx].start, geo.domainOffset, geo.domainLength);
@@ -954,8 +962,9 @@ void PitchEditorView::mouseDrag (const juce::MouseEvent& e)
         const int target = juce::jlimit (0, 127, d.targetAtStart - (int) std::lround ((double) dy / geo.rowHeight));
         if (target != w.notes[(size_t) d.noteIndex].targetMidi)
         {
+            // 途中は pinned 扱いで鳴らす・描く（手で動かしている最中はその先で聴きたい）。確定は mouseUp の setNoteTarget
             w.notes[(size_t) d.noteIndex].targetMidi = target;
-            w.notes[(size_t) d.noteIndex].pinned = true; // 手で置いた音は Strength に関係なく目標へ
+            w.notes[(size_t) d.noteIndex].pinned = true;
             d.moved = true;
             if (onDragAuditionUpdate) onDragAuditionUpdate(); // 動かしながら、その音が鳴る
             repaint();
@@ -998,6 +1007,20 @@ void PitchEditorView::mouseUp (const juce::MouseEvent& e)
     auto d = *drag;
     drag.reset();
     if (d.mode == Drag::Mode::pitch && onDragAuditionEnd) onDragAuditionEnd();
+    if (d.mode == Drag::Mode::pitch && session != nullptr && d.noteIndex >= 0 && d.noteIndex < (int) session->working().notes.size())
+    {
+        // 確定: 開始時と違う目標になったときだけ pinned（往復して戻せば付かない）
+        auto& w = session->mutableWorking();
+        const int finalTarget = w.notes[(size_t) d.noteIndex].targetMidi;
+        w.notes[(size_t) d.noteIndex].pinned = d.pinnedAtStart; // 途中で立てた分を戻してから
+        PitchCorrections::setNoteTarget (w, d.noteIndex, finalTarget, d.targetAtStart, d.pinnedAtStart);
+        d.moved = finalTarget != d.targetAtStart;
+        if (! d.moved && onEdited && w.notes[(size_t) d.noteIndex].pinned == d.pinnedAtStart)
+        {
+            // 同じ段で離した: モデルは変わっていないが途中でプレビューを要求したかもしれないので戻す
+            onEdited();
+        }
+    }
     if (d.moved)
     {
         Log::info ("pitch.drag", juce::String (d.mode == Drag::Mode::pitch ? "pitch" : "time") + " note=" + juce::String (d.noteIndex)
@@ -1021,9 +1044,8 @@ void PitchEditorView::mouseDoubleClick (const juce::MouseEvent& e)
     const int idx = noteAt (computeGeometry (*clip), e.getPosition());
     if (idx < 0) return;
     if (onBeginEdit) onBeginEdit();
-    auto& n = session->mutableWorking().notes[(size_t) idx];
-    n.bypass = ! n.bypass;
-    Log::info ("pitch.bypass", "note=" + juce::String (idx) + " on=" + juce::String ((int) n.bypass));
+    PitchCorrections::setNoteBypass (session->mutableWorking(), idx, ! session->working().notes[(size_t) idx].bypass);
+    Log::info ("pitch.bypass", "note=" + juce::String (idx) + " on=" + juce::String ((int) session->working().notes[(size_t) idx].bypass));
     if (onEdited) onEdited();
     repaint();
 }
@@ -1042,7 +1064,7 @@ bool PitchEditorView::keyPressed (const juce::KeyPress& key)
         if (onBeginEdit) onBeginEdit();
         for (int idx : selected)
             if (idx >= 0 && idx < (int) session->working().notes.size())
-                session->mutableWorking().notes[(size_t) idx].bypass = ! session->working().notes[(size_t) idx].bypass;
+                PitchCorrections::setNoteBypass (session->mutableWorking(), idx, ! session->working().notes[(size_t) idx].bypass);
         if (onEdited) onEdited();
         repaint();
         return true;

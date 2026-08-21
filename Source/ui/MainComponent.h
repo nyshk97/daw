@@ -338,7 +338,7 @@ private:
     bool pitchSyncAfterModelChange (bool quiet = false);
     void pitchDiscardPreviewForExport();                    // ⌘B/⌘E の開始時: 未確定プレビューを自動破棄
     Clip* pitchTargetClip();                                // session の clipId で毎回引き直す（無ければ nullptr）
-    void pitchRequestPreview();                             // working からプレビュー要求（専用 RenderCache）
+    void pitchRequestPreview (bool suppressFailToast = false); // working からプレビュー要求（専用 RenderCache）。suppress = この要求の失敗トーストを出さない
     void pitchClearPreview();                               // previewDomain を外して snapshot を再 push
     void pitchBeginEdit();                                  // 離散編集の直前（初回プレビューの確定・undo 区切り・子の detach）
     void pitchApplyWorking();                               // working を永続モデルへ（dirty・レンダー要求）

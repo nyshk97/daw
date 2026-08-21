@@ -90,7 +90,7 @@ private:
         juce::int64 renderForTimeline (juce::int64 timeline, juce::int64 clipStartSample) const { return clipRenderStart + (timeline - clipStartSample); }
     };
     Geometry computeGeometry (const Clip& clip) const;
-    int noteAt (const Geometry& g, juce::Point<int> p) const; // -1 = 無し
+    int noteAt (const Geometry& g, juce::Point<int> p); // -1 = 無し（描画と同じ目標カーブで判定するため非 const）
     void drawKeyboard (juce::Graphics& g, const Geometry& geo) const;
     void drawGrid (juce::Graphics& g, const Geometry& geo, const Clip& clip) const;
     void drawBlobs (juce::Graphics& g, const Geometry& geo, const Clip& clip);
@@ -135,6 +135,7 @@ private:
         juce::Point<int> start;
         enum class Mode { undecided, pitch, time } mode = Mode::undecided;
         int targetAtStart = 0;
+        bool pinnedAtStart = false;
         juce::int64 appliedDelta = 0;   // 横移動の累積（render）
         juce::int64 prevEndAtStart = 0, nextStartAtStart = 0, startAtStart = 0, endAtStart = 0; // 斜線用（render）
         bool moved = false;
@@ -151,7 +152,9 @@ private:
     Drag lastDragForHatch;
     bool lastDragValid = false;
 
-    // 目標カーブのキャッシュ（working の digest が変わったら作り直す）
+    // 目標カーブのキャッシュ（working の digest・transpose・domain が変わったら作り直す）。描画とヒットテストで共用
+    void ensureTargetCache (const Geometry& geo, const Clip& clip);
+    float shiftAtFrame (int k, int transpose) const;
     ContentDigest cachedTargetDigest;
     int cachedTargetTranspose = 0;
     std::pair<juce::int64, juce::int64> cachedTargetDomain { -1, -1 };

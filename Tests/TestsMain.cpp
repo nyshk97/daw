@@ -15504,6 +15504,9 @@ void testPitchSplitMerge()
         auto m2 = makeThreeNotes(); m2.notes[1].bypass = true;
         PitchCorrections::mergeNotes (m2, 1, 0, dom);
         expect (! m2.notes[1].bypass, "片方だけ bypass なら false");
+        auto m3 = makeThreeNotes(); m3.notes[1].pinned = true; m3.notes[1].targetMidi = 70; m3.timeNodes[3].sourceSample = msSamples (1450); // 右が長い
+        PitchCorrections::mergeNotes (m3, 1, 0, dom);
+        expect (m3.notes[1].targetMidi == 70 && m3.notes[1].pinned, "片側だけ pinned ならその側の目標（長さに依らない）");
     }
 }
 
@@ -15574,6 +15577,21 @@ void testPitchTargetCurve()
         expect (second, "pinned のノートは 100% で目標（64）へ");
         auto back = PitchCorrection::fromJson (p2.toJson());
         expect (back.has_value() && back->notes[1].pinned && *back == p2, "pinned が JSON 往復する");
+        // setNoteTarget: 往復して戻せば pinned は付かない・変えれば付く・bypass で外れる
+        auto p3 = pc;
+        PitchCorrections::setNoteTarget (p3, 0, 60, 60, false);
+        expect (! p3.notes[0].pinned, "同じ目標に戻せば pinned は付かない");
+        PitchCorrections::setNoteTarget (p3, 0, 62, 60, false);
+        expect (p3.notes[0].pinned && p3.notes[0].targetMidi == 62, "目標を変えれば pinned");
+        PitchCorrections::setNoteBypass (p3, 0, true);
+        expect (p3.notes[0].bypass && ! p3.notes[0].pinned, "bypass で pinned が外れる");
+        PitchCorrections::setNoteBypass (p3, 0, false);
+        expect (! p3.notes[0].pinned, "解除しても pinned は戻らない");
+        // resnap は pinned を飛ばす
+        auto p4 = pc; p4.notes[0].pinned = true; p4.notes[0].targetMidi = 61; // スケール外に手で置いた
+        PitchCorrections::resnap (p4, c, 0, dom, ProjectKey { 0, KeyMode::major });
+        expect (p4.notes[0].targetMidi == 61 && p4.notes[0].pinned, "resnap は pinned を変えない");
+        expect (p4.notes[1].targetMidi == 64, "pinned でないノートは付け直される");
     }
     // バイパス → そのノートは transpose のみ
     {
