@@ -80,19 +80,20 @@ PitchEditorView::PitchEditorView()
     auto setupSlider = [this] (juce::Slider& s, double lo, double hi, double step)
     {
         s.setSliderStyle (juce::Slider::LinearHorizontal);
-        s.setTextBoxStyle (juce::Slider::TextBoxRight, false, 52, 18);
+        // 常設の数値は置かない（ヘッダーの音量と同じ流儀: 値はドラッグ中のポップアップだけ。耳で決めるつまみなので
+        // 数値入力の経路も持たない＝undo の区切りも1経路で済む）
+        s.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+        s.setPopupDisplayEnabled (true, false, this);
         s.setRange (lo, hi, step);
         s.setScrollWheelEnabled (false);
-        s.setColour (juce::Slider::textBoxTextColourId, Theme::topBarIcon);
-        s.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
         s.onDragStart = [this] { if (canEdit() && onBeginEdit) { sliderEditing = true; onBeginEdit(); } };
         s.onDragEnd = [this] { sliderEditing = false; };
         addAndMakeVisible (s);
     };
     setupSlider (strengthSlider, 0.0, 100.0, 1.0);
-    strengthSlider.setTextValueSuffix ("%");
+    strengthSlider.textFromValueFunction = [] (double v) { return juce::String ((int) v) + "%"; };
     setupSlider (speedSlider, 0.0, 400.0, 1.0);
-    speedSlider.setTextValueSuffix (" ms");
+    speedSlider.textFromValueFunction = [] (double v) { return v <= 0 ? juce::String::fromUTF8 (u8"0 ms (hard tune)") : juce::String ((int) v) + " ms"; };
     strengthSlider.onValueChange = [this]
     {
         if (! canEdit() || session == nullptr) return;
@@ -287,9 +288,9 @@ void PitchEditorView::resized()
     resnapButton.setBounds (bar.removeFromLeft (64));
     bar.removeFromLeft (8);
     strengthLabel.setBounds (bar.removeFromLeft (52));
-    strengthSlider.setBounds (bar.removeFromLeft (150));
+    strengthSlider.setBounds (bar.removeFromLeft (110));
     speedLabel.setBounds (bar.removeFromLeft (44));
-    speedSlider.setBounds (bar.removeFromLeft (160));
+    speedSlider.setBounds (bar.removeFromLeft (110));
     keroButton.setBounds (bar.removeFromLeft (76));
     // 右: 確定系（右端＝確定）
     auto right = bar;
