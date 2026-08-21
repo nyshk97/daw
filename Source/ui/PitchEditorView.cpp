@@ -689,6 +689,19 @@ void PitchEditorView::paint (juce::Graphics& g)
         drawAbsorbHatch (g, geo);
         drawBlobs (g, geo, *clip);
     }
+    // ⌘ホバー: 分割位置の点線（ここで割れる、の手がかり）
+    if (hoverSplit && hoverNote >= 0 && geo.canvas.contains (hoverPos))
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.7f));
+        const float dash[] = { 3.0f, 3.0f };
+        juce::Path p;
+        p.startNewSubPath ((float) hoverPos.x, (float) geo.canvas.getY());
+        p.lineTo ((float) hoverPos.x, (float) geo.canvas.getBottom());
+        juce::PathStrokeType (1.0f).createDashedStroke (p, p, dash, 2);
+        g.fillPath (p);
+        g.setFont (Fonts::small().withHeight (9.0f));
+        g.drawText (jp (u8"split"), hoverPos.x + 4, geo.canvas.getY() + 2, 40, 12, juce::Justification::centredLeft);
+    }
     // 再生ヘッド（メインと連動）
     if (getPlayheadSample)
     {
@@ -752,25 +765,81 @@ void PitchEditorView::mouseMove (const juce::MouseEvent& e)
 {
     const Clip* clip = getClip ? getClip() : nullptr;
     const int h = clip != nullptr ? noteAt (computeGeometry (*clip), e.getPosition()) : -1;
-    if (h != hoverNote) { hoverNote = h; repaint(); }
+    hoverPos = e.getPosition();
+    const bool split = h >= 0 && e.mods.isCommandDown() && canEdit();
+    if (h != hoverNote || split != hoverSplit)
+    {
+        hoverNote = h;
+        hoverSplit = split;
+        setMouseCursor (split ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
+        repaint();
+    }
+    else if (split)
+        repaint(); // 点線の位置を追従
 }
 
-void PitchEditorView::showContextMenu (juce::Point<int>)
+void PitchEditorView::modifierKeysChanged (const juce::ModifierKeys& mods)
+{
+    const bool split = hoverNote >= 0 && mods.isCommandDown() && canEdit();
+    if (split != hoverSplit)
+    {
+        hoverSplit = split;
+        setMouseCursor (split ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
+        repaint();
+    }
+}
+
+void PitchEditorView::splitAt (int noteIndex, juce::Point<int> p)
+{
+    const Clip* clip = getClip ? getClip() : nullptr;
+    if (clip == nullptr || session == nullptr || ! canEdit() || noteIndex < 0)
+        return;
+    const auto geo = computeGeometry (*clip);
+    const auto source = geo.timeMap.inverse (geo.renderForX ((float) p.x));
+    if (onBeginEdit) onBeginEdit();
+    const double sr = getSampleRate ? getSampleRate() : 48000.0;
+    if (PitchCorrections::splitNote (session->mutableWorking(), noteIndex, source, geo.domainOffset, geo.domainLength, geo.stretchRatio, sr))
+    {
+        Log::info ("pitch.split", "note=" + juce::String (noteIndex));
+        selected.clear();
+        if (onEdited) onEdited();
+    }
+    repaint();
+}
+
+void PitchEditorView::showContextMenu (juce::Point<int> at)
 {
     if (session == nullptr || ! session->isOpen())
         return;
     const bool committed = session->mode() == PitchEditorSession::Mode::committed && session->editable();
+    const Clip* clip = getClip ? getClip() : nullptr;
+    const int noteUnder = clip != nullptr ? noteAt (computeGeometry (*clip), at) : -1;
     juce::PopupMenu menu;
+    if (noteUnder >= 0)
+    {
+        menu.addItem (10, jp (u8"ここで分割（⌘クリック）"), canEdit());
+        menu.addItem (11, session->working().notes[(size_t) noteUnder].bypass ? jp (u8"バイパス解除（B）") : jp (u8"バイパス（B）"), canEdit());
+        menu.addSeparator();
+    }
     menu.addItem (1, jp (u8"自動スナップからやり直す（手直しを捨てる）"), committed);
     menu.addItem (2, jp (u8"再解析（検出をやり直す。検出器が同じなら変わらない）"), committed);
     if (getProjectKey && ! getProjectKey().has_value())
         if (const auto est = PitchNotes::estimateKey (session->detected()); est.valid)
             menu.addItem (3, jp (u8"推定キー ") + ProjectKeys::displayName (est.key) + jp (u8" をプロジェクトに設定"), session->editable());
     juce::Component::SafePointer<PitchEditorView> safe (this);
-    menu.showMenuAsync (juce::PopupMenu::Options(), [safe] (int result)
+    menu.showMenuAsync (juce::PopupMenu::Options(), [safe, at, noteUnder] (int result)
     {
         if (safe == nullptr) return;
-        if (result == 1 && safe->onReset) safe->onReset();
+        if (result == 10) safe->splitAt (noteUnder, at);
+        else if (result == 11 && safe->canEdit() && noteUnder >= 0)
+        {
+            if (safe->onBeginEdit) safe->onBeginEdit();
+            auto& n = safe->session->mutableWorking().notes[(size_t) noteUnder];
+            n.bypass = ! n.bypass;
+            if (safe->onEdited) safe->onEdited();
+            safe->repaint();
+        }
+        else if (result == 1 && safe->onReset) safe->onReset();
         else if (result == 2 && safe->onReanalyze) safe->onReanalyze();
         else if (result == 3 && safe->onSetProjectKey) safe->onSetProjectKey();
     });
@@ -800,19 +869,7 @@ void PitchEditorView::mouseDown (const juce::MouseEvent& e)
     auto& w = session->mutableWorking();
     if (e.mods.isCommandDown())
     {
-        // ⌘クリック = 分割（現在の timeMap 上へ補間ノード挿入＝音は変わらない）
-        if (! canEdit()) return;
-        const auto render = geo.renderForX ((float) e.x);
-        const auto source = geo.timeMap.inverse (render);
-        if (onBeginEdit) onBeginEdit();
-        const double sr = getSampleRate ? getSampleRate() : 48000.0;
-        if (PitchCorrections::splitNote (w, idx, source, geo.domainOffset, geo.domainLength, geo.stretchRatio, sr))
-        {
-            Log::info ("pitch.split", "note=" + juce::String (idx));
-            selected.clear();
-            if (onEdited) onEdited();
-        }
-        repaint();
+        splitAt (idx, e.getPosition()); // ⌘クリック = 分割（現在の timeMap 上へ補間ノード挿入＝音は変わらない）
         return;
     }
     if (e.mods.isShiftDown())

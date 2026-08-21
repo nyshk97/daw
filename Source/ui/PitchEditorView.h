@@ -56,6 +56,8 @@ public:
     void mouseUp (const juce::MouseEvent& e) override;
     void mouseDoubleClick (const juce::MouseEvent& e) override;
     void mouseMove (const juce::MouseEvent& e) override;
+    void mouseExit (const juce::MouseEvent&) override { hoverNote = -1; hoverSplit = false; repaint(); }
+    void modifierKeysChanged (const juce::ModifierKeys& mods) override;
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
     void mouseMagnify (const juce::MouseEvent& e, float scaleFactor) override;
 
@@ -139,6 +141,9 @@ private:
     std::optional<Drag> drag;
     std::set<int> selected;
     int hoverNote = -1;
+    juce::Point<int> hoverPos;
+    bool hoverSplit = false; // ⌘ を押してブロブに乗っている（分割位置の点線とハサミカーソル）
+    void splitAt (int noteIndex, juce::Point<int> p);
     double hatchFadeUntil = 0.0; // 斜線・ゴーストをドラッグ後しばらく残す（ms）
     Drag lastDragForHatch;
     bool lastDragValid = false;
