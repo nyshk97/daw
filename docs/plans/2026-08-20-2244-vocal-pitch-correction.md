@@ -593,6 +593,10 @@
   ようにして API で塞いだ（reconcile・巻き戻し・読込・ガチャ・applyStretchRequest の全呼び出しが自動で従う。2 回続けて
   同じ型の漏れが出たため呼び出し側の規律をやめた）② 巻き戻しの「中立補正は保持」を `hasNeutralPitchCorrection()` で両枝に
   統一 ③ 保存経路の述語・初回確定の重複・debug の同一分岐を整理。「（有効）」は補正データを持てば出し、中立は「編集あり・0%」
+- 2026-08-21 /code-review 4 回目: レビュー 3 の「中立補正を両枝で保持」は誤り（鳴っている音に補正が入っている枝で
+  保持すると要求≠実効のまま renderPending が解けず同じ失敗を繰り返す）→ d.correction ありなら必ずそれに合わせる・
+  中立保持は d.correction 無し／前例なしの枝だけ。テストで「巻き戻し後に renderPending が解ける」を固定。
+  `pitchWriteWorkingToClip` は代入→reset の順（無駄な detach なし）。reset 単独で自範囲化する経路もテストに追加
 - 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
   自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
   検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、

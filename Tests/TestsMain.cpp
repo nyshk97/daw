@@ -15883,12 +15883,17 @@ void testPitchProjectRoundtrip()
             PitchCorrections::detachToDomain (manual, child0.requestedDomainOffset(), child0.requestedDomainLength(), child0.offsetSamples, child0.lengthSamples);
             expect (own.has_value() && *own == manual && own->validate (child0.offsetSamples, child0.lengthSamples), "pitchCorrectionInOwnDomain は detach と同じ結果");
             expect (child0.sharesInheritedDomain() && ! (*child0.pitchCorrection == manual), "クリップ自体は触らない");
-            // 共有中の子に移調を受け付けると補正も自範囲へ写ってから domain が戻る（親座標の取り残しが無い）
+            // resetRenderDomainToSelf 単独で補正が自範囲へ写る（呼び出し側が detach を忘れても API が塞ぐ）
+            Clip reset = child0;
+            reset.resetRenderDomainToSelf();
+            expect (! reset.sharesInheritedDomain() && reset.pitchCorrection.has_value() && *reset.pitchCorrection == manual,
+                    "resetRenderDomainToSelf が共有中の補正を自範囲へ写す");
+            // 共有中の子に移調を受け付けても同じ（applyStretchRequest は reset を通る）
             Clip stretched = child0;
             expect (ClipDomains::applyStretchRequest (stretched, 1, 1.0), "移調を受理");
             expect (! stretched.sharesInheritedDomain() && stretched.pitchCorrection.has_value() && *stretched.pitchCorrection == manual,
-                    "applyStretchRequest は補正を自範囲へ写してから domain を自範囲に");
-            // 中立補正（Strength 0）はレンダー失敗の巻き戻しで消えない
+                    "applyStretchRequest 後に親座標が残らない");
+            // 中立補正（Strength 0）は「前例なし」の巻き戻しで消えない・巻き戻し後は renderPending が解ける
             Clip neutral = stretched;
             neutral.pitchCorrection->strength = 0.0f;
             neutral.activeDomain = nullptr;
@@ -15897,7 +15902,20 @@ void testPitchProjectRoundtrip()
             auto& nc = tmp.tracks[0].clips[0];
             const auto failed = nc.requestedFingerprint (sr);
             expect (ClipDomains::rollbackFailedRequest (tmp, sr, failed), "巻き戻し");
-            expect (nc.pitchCorrection.has_value() && nc.transposeSemitones == 0, "中立補正は保持したまま移調だけ戻る");
+            expect (nc.pitchCorrection.has_value() && nc.transposeSemitones == 0, "前例なし: 中立補正は保持したまま移調だけ戻る");
+            expect (! nc.renderPending (sr), "巻き戻し後は要求と実効が一致する");
+            // 可聴の補正付きで鳴っている（activeDomain に correction あり）→ 中立の手直しより「鳴っている音」を優先
+            Clip audible = clips[0];
+            audible.pitchCorrection->strength = 0.0f; // 手直し中（中立）
+            audible.pitchCorrection->notes[0].targetMidi += 3;
+            audible.transposeSemitones = 5; // 失敗した要求（という想定）
+            Project tmp2; tmp2.sampleRate = sr;
+            Track t2; t2.clips.push_back (audible); tmp2.tracks.push_back (t2);
+            auto& ac = tmp2.tracks[0].clips[0];
+            expect (ac.activeDomain != nullptr && ac.activeDomain->correction != nullptr, "前提: 補正付きで鳴っている");
+            expect (ClipDomains::rollbackFailedRequest (tmp2, sr, ac.requestedFingerprint (sr)), "巻き戻し（補正付き前例）");
+            expect (ac.pitchCorrection.has_value() && *ac.pitchCorrection == *ac.activeDomain->correction, "鳴っている音の補正に合わせる");
+            expect (! ac.renderPending (sr), "巻き戻し後に renderPending が解ける（同じ失敗を繰り返さない）");
         }
         // 子を detach すると digest が分かれる
         auto& child = clips[1];

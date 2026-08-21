@@ -503,13 +503,14 @@ void MainComponent::pitchClearPreview()
 // 親とのドメイン共有が終わる（親子の digest がここで分かれる＝再レンダーはこのとき初めて）
 void MainComponent::pitchWriteWorkingToClip (Clip& clip)
 {
-    if (clip.sharesInheritedDomain())
+    const bool detaching = clip.sharesInheritedDomain();
+    clip.pitchCorrection = pitchSession.working(); // working は自範囲で表現済み
+    clip.pitchCurve = pitchSession.curve();
+    if (detaching)
     {
-        clip.resetRenderDomainToSelf();
+        clip.resetRenderDomainToSelf(); // 代入の後なので旧補正の detach は走らない（domain を戻すだけ）
         Log::info ("pitch.detach", "clip=" + juce::String (clip.id));
     }
-    clip.pitchCorrection = pitchSession.working();
-    clip.pitchCurve = pitchSession.curve();
 }
 
 void MainComponent::pitchBeginEdit()

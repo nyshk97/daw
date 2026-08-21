@@ -184,14 +184,17 @@ bool ClipDomains::rollbackFailedRequest (Project& project, double sampleRate,
                 clip.stretchRatio = d.ratio;
                 clip.renderDomainOffset = d.domainOffset;
                 clip.renderDomainLength = d.domainLength;
-                // 補正も「鳴っている音」の状態へ。ただし現在の補正が中立（Strength 0）ならどちらの枝でも保持する
-                // （音に出ていないだけで、ノートの手直しを undo 無しで失う理由が無い）
-                if (clip.hasNeutralPitchCorrection())
-                    ; // 保持
-                else if (d.correction != nullptr)
+                // 補正も「鳴っている音」の状態へ。鳴っている音に補正が入っている（d.correction あり）なら**必ずそれに合わせる**
+                // — 中立の手直しを残すと要求 fingerprint（recipe 無し）と実効（recipeDigest あり）が一致せず renderPending が
+                // 解けないまま同じ失敗レンダーを繰り返す。手直しが消えるのは残念だがここは「永続状態＝鳴っている音」が優先
+                //（失敗自体が maxRenderBytes 超過等の例外経路）。d.correction は d の domain 座標で記録されているので、
+                // domain を d に戻すこの枝では座標も整合する
+                if (d.correction != nullptr)
                     clip.pitchCorrection = *d.correction;
-                else
+                else if (! clip.hasNeutralPitchCorrection())
                     clip.pitchCorrection.reset();
+                // （d.correction == nullptr で中立補正を保持する場合: そのドメインは補正なしで鳴っており recipe も出ないので
+                //   fingerprint は一致する。ノード座標は絶対サンプルで、domain が広がる向きの戻しは検証を破らない）
             }
             else
             {
