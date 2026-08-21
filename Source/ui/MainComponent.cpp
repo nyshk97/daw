@@ -1434,8 +1434,8 @@ void MainComponent::deleteRegionAt (int trackIndex, int regionIndex)
 
 void MainComponent::performUndo()
 {
-    if (engine.isRecording())
-        return;
+    if (engine.isRecording() || pitchEdit.has_value())
+        return; // ピッチエディタの編集ジェスチャー中は undo を受けない（begin を消費して履歴が崩れる。Logic も同じ）
     // undo/redo は begin を通らない（willBegin フックが効かない）ので、仮配置をここで撤去する
     cancelGachaPreview();
     auto kind = UndoStack::EditKind::structure;
@@ -1448,7 +1448,7 @@ void MainComponent::performUndo()
 
 void MainComponent::performRedo()
 {
-    if (engine.isRecording())
+    if (engine.isRecording() || pitchEdit.has_value())
         return;
     cancelGachaPreview(); // undo/redo は begin を通らない（willBegin フックが効かない）
     auto kind = UndoStack::EditKind::structure;

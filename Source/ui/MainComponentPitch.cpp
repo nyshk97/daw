@@ -58,7 +58,7 @@ void MainComponent::wirePitchEditor()
     view.getPlayheadSample = [this] { return transport.playheadSamplePos.load(); };
     view.isRendering = [this]
     {
-        if (pitchSession.hasPreview())
+        if (pitchPreviewActive())
             return ! pitchPreviewCache.isIdle();
         const auto* clip = pitchTargetClip();
         return clip != nullptr && clip->renderPending (renderSampleRate());
@@ -257,7 +257,7 @@ void MainComponent::wirePitchEditor()
     pitchPreviewCache.collectRequests = [this]
     {
         std::vector<ClipDomains::Request> requests;
-        if (pitchPreviewRequest.has_value() && pitchSession.hasPreview()
+        if (pitchPreviewRequest.has_value() && pitchPreviewActive()
             && pitchPreviewCache.lookup (pitchPreviewRequest->fingerprint) == nullptr)
             requests.push_back (*pitchPreviewRequest);
         return requests;
@@ -265,7 +265,7 @@ void MainComponent::wirePitchEditor()
     pitchPreviewCache.onRenderReady = [this] (const std::shared_ptr<const RenderedDomain>& domain)
     {
         auto* clip = pitchTargetClip();
-        if (domain == nullptr || clip == nullptr || ! pitchSession.hasPreview() || domain->recipeDigest != pitchPreviewDigest
+        if (domain == nullptr || clip == nullptr || ! pitchPreviewActive() || domain->recipeDigest != pitchPreviewDigest
             || domain->sourceAudio.get() != clip->audio.get())
             return; // 遅着・不一致は捨てる（generation はモード変更のたびに digest が変わることで代替）
         clip->previewDomain = domain;
@@ -450,7 +450,7 @@ void MainComponent::pitchRequestPreview (bool suppressFailToast)
 {
     pitchSuppressPreviewFailDigest = {}; // 全出口で「前の抑止」を持ち越さない（成功・早期 return・別要求）
     auto* clip = pitchTargetClip();
-    if (clip == nullptr || ! pitchSession.hasPreview() || pitchSession.curve() == nullptr)
+    if (clip == nullptr || ! pitchPreviewActive() || pitchSession.curve() == nullptr)
     {
         pitchPreviewRequest.reset();
         return;
@@ -529,6 +529,12 @@ void MainComponent::pitchWriteWorkingToClip (Clip& clip)
     }
 }
 
+bool MainComponent::pitchPreviewActive() const
+{
+    return pitchSession.hasPreview()
+        || (pitchEdit.has_value() && pitchSession.mode() == PitchEditorSession::Mode::committed);
+}
+
 void MainComponent::pitchBeginEdit()
 {
     if (pitchEdit.has_value())
@@ -548,6 +554,7 @@ void MainComponent::pitchBeginEdit()
         Log::info ("pitch.commit_initial", "clip=" + juce::String (clip->id));
     }
     edit.before = pitchSession.working();
+    edit.revisionAtBegin = pitchSession.revision();
     pitchEdit = std::move (edit);
 }
 
@@ -557,20 +564,25 @@ void MainComponent::pitchEndEdit()
         return;
     const auto edit = std::move (*pitchEdit);
     pitchEdit.reset(); // トークンは使い捨て（古いトークンで別の begin を消さない）
-    const bool changed = pitchSession.isOpen() && ! (pitchSession.working() == edit.before);
+    // ジェスチャー途中のプレビュー（previewDomain）はここで必ず外す（確定なら activeDomain が追従、取消なら元の音）
+    pitchClearPreview();
+    const bool replaced = pitchSession.revision() != edit.revisionAtBegin; // 外部置換（巻き戻し・再解析の着地）はユーザーの編集ではない
+    const bool changed = pitchSession.isOpen() && ! replaced && ! (pitchSession.working() == edit.before);
     if (changed)
         pitchApplyWorking();
     else if (! edit.committedInitial)
-        undoStack.abandon (edit.token); // 変化なし: undo も dirty も無し（判定はここ 1 箇所）
+        undoStack.abandon (edit.token); // 変化なし or 外部置換: undo も dirty も無し（判定はここ 1 箇所）
+    if (replaced)
+        Log::info ("pitch.edit_replaced", "clip=" + juce::String (pitchSession.clipId()));
 }
 
 void MainComponent::pitchPreviewWorking()
 {
-    auto* clip = pitchTargetClip();
-    if (clip == nullptr || pitchSession.mode() != PitchEditorSession::Mode::committed || ! pitchEdit.has_value())
+    // ジェスチャー途中は永続モデル（clip）を触らない。初回プレビューと同じ previewDomain 経路で鳴りだけ追従させる
+    //（CLAUDE.md: プレビュー段階の副作用はメモリ内だけ。確定は pitchEndEdit → pitchApplyWorking の一括）
+    if (! pitchEdit.has_value() || pitchSession.mode() != PitchEditorSession::Mode::committed)
         return;
-    pitchWriteWorkingToClip (*clip);
-    renderCache.requestSync(); // 鳴りだけ追従。dirty は pitchEndEdit で
+    pitchRequestPreview();
     pitchWindow.content().refresh();
 }
 
@@ -756,7 +768,7 @@ void MainComponent::debugPitchAction (const juce::String& action)
 
 void MainComponent::debugPitchSnapshot (const juce::File& target)
 {
-    if (pitchSession.mode() == PitchEditorSession::Mode::analyzing || (pitchSession.hasPreview() && ! pitchPreviewCache.isIdle())
+    if (pitchSession.mode() == PitchEditorSession::Mode::analyzing || (pitchPreviewActive() && ! pitchPreviewCache.isIdle())
         || (pitchSession.isOpen() && pitchTargetClip() != nullptr && pitchTargetClip()->renderPending (renderSampleRate())))
     {
         juce::Timer::callAfterDelay (200, [safe = juce::Component::SafePointer<MainComponent> (this), target]

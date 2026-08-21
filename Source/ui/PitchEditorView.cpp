@@ -83,7 +83,7 @@ PitchEditorView::PitchEditorView()
         s.setPopupDisplayEnabled (true, false, this);
         s.setRange (lo, hi, step);
         s.setScrollWheelEnabled (false);
-        s.onDragStart = [this, &s] { if (canEdit() && onBeginEdit) { sliderEditing = true; sliderValueAtStart = s.getValue(); onBeginEdit(); } };
+        s.onDragStart = [this] { if (canEdit() && onBeginEdit) { sliderEditing = true; onBeginEdit(); } };
         s.onDragEnd = [this]
         {
             sliderEditing = false;
@@ -1093,7 +1093,7 @@ bool PitchEditorView::keyPressed (const juce::KeyPress& key)
     // working が差し替わっていたら選択 index は無効（Timer のクリアを待たず同期的に）
     if (session != nullptr && session->revision() != seenRevision) { seenRevision = session->revision(); selected.clear(); }
     // 編集ジェスチャー中の undo/redo は受け付けない（Logic も同じ。ドラッグ中の begin を消費して履歴が崩れる）
-    if (drag.has_value() && (Shortcuts::matches (key, Shortcuts::ID::undo) || Shortcuts::matches (key, Shortcuts::ID::redo)))
+    if ((drag.has_value() || sliderEditing) && (Shortcuts::matches (key, Shortcuts::ID::undo) || Shortcuts::matches (key, Shortcuts::ID::redo)))
         return true;
     // ⌘←/→ = 横ズーム（タイムラインと同じ割り当て。ウィンドウ内ではこちらを優先し、メインへは流さない）
     if (Shortcuts::matches (key, Shortcuts::ID::zoomHorizontal))

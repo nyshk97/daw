@@ -641,6 +641,10 @@
   abandon・ありなら確定）の対に閉じ込めた。View は onBeginEdit/onEndEdit で囲むだけ（判定しない）。スライダーの中間値は
   `onPreviewEdit`（鳴りだけ・dirty は終了時）。begin が重なれば前を先に閉じる。ドラッグ中の ⌘Z/⇧⌘Z は View が飲む（Logic と同じ）。
   選択のクリアは keyPressed/右クリックの先頭で同期的に。`syncCommitted` は bool を返す。maxDepth テストは復元内容まで固定
+- 2026-08-21 /code-review 15 回目: `pitchEndEdit` は revision が begin 時と違えば（外部置換）変化に関係なく abandon。
+  スライダー途中のプレビューは clip を書かず previewDomain 経路（`pitchPreviewActive()` = 初回/変更プレビュー or 編集
+  ジェスチャー中の committed）で鳴りだけ追従し、終了時に必ず外す。undo/redo は receiver（performUndo/Redo）がジェスチャー中は
+  無視（View 側もスライダー中を飲む）。dead state 削除
 - 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
   自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
   検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、

@@ -131,7 +131,6 @@ private:
     bool bannerVisible = false;
     juce::String bannerText;
     bool sliderEditing = false;
-    double sliderValueAtStart = 0.0;
     juce::uint64 seenRevision = 0; // working が差し替わったら選択をクリア（index が無効になる）
 
     // ---- ドラッグ状態 ----
