@@ -83,7 +83,8 @@ set(DAW_WORLD_SOURCES
     "${world-vocoder_SOURCE_DIR}/src/synthesis.cpp"
 )
 # 上流ソースの警告は LaLa の警告ゼロ基準から除外する（サードパーティ）
-set_source_files_properties(${DAW_WORLD_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
+# 警告は除外し、Debug でも -O2 で組む（中をデバッグしない。-O0 だと 27s の合成に 3 秒かかり、エディタの体感が別物になる）
+set_source_files_properties(${DAW_WORLD_SOURCES} PROPERTIES COMPILE_OPTIONS "-w;-O2")
 
 # Debug は dev 版として別アプリ扱いにする（名前・bundle id・アイコンを分離し、
 # Dock・⌘Tab・TCC 権限が常用版（Release）と独立する）。

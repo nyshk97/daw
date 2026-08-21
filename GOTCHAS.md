@@ -389,6 +389,9 @@ view の両端・分割境界・再生 offset は**絶対境界の差**（`Rende
 ### ピッチ補正（WORLD・サイドカー・プレビュー）の落とし穴
 
 - **WORLD 付属の `cmd/util/wav.h`（signalsmith も同系）の `length()` は `offset` を引いた残量を返す**。ループ中に `offset` を進めた後に総長のつもりで呼ぶと、後半の入力が尽きて出力が一定のスミアになる（lab の CLI で踏んだ）。総長はループ前に変数へ固定する
+- **WORLD は Debug（-O0）だと桁で遅い**: 27s のクリップで分解 4.7s＋合成 2.9s。サードパーティで中をデバッグしないので
+  CMake で WORLD のソースだけ `-O2` を付ける（→ 1.5s＋0.6s）。さらに分解結果は目標音に依存しないので `VocalResynth` 内に
+  1 エントリのキャッシュを持ち、ブロブを動かしたときの再レンダーは合成だけ（0.6s）にしている。計測は `pitch.render` ログ
 - **WORLD の CheapTrick/D4C はスペクトログラムを doubles で持つ**（48kHz・f0_floor 60Hz → fft 4096 → 32KB/フレーム）。`VocalResynth::render` は解析バイト数が `maxRenderBytes` を超えると nullptr（≒ 2 分の domain が上限）。長いテイクを補正したくなったらフレーム分割処理を足す
 - **再生・描画・試聴は `Clip::effectiveDomain()` を通す（`activeDomain` の直読み禁止）**。ピッチエディタの未確定プレビューは `Clip::previewDomain` に載り、`renderPending` / `collectRequests` / `reconcile` からは見えない。どれか 1 箇所でも `activeDomain` を直読みすると未確定中に補正前の音が鳴る／波形だけ古い
 - **`PitchCorrection::digest()` に音に関係しない設定（scaleMode/customKey）を入れない**。入れると設定を変えただけで指紋が変わり再レンダーが走る。逆に音に関係する値を入れ忘れると変更が反映されない（`RenderRecipe` の不変性の前提）

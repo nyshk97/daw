@@ -9,7 +9,10 @@
 #include <world/synthesis.h>
 
 #include "PitchAnalyzer.h"
+#include "../shared/Log.h"
 #include "../shared/RenderedDomain.h"
+
+#include <mutex>
 
 namespace
 {
@@ -25,6 +28,21 @@ struct Spectrogram
             rows[i] = data.data() + i * bins;
     }
 };
+
+// 分解（CheapTrick/D4C）の結果キャッシュ。分解は原音・解析カーブ・範囲にしか依存せず目標音に依存しないので、
+// ブロブを動かすたびに全体を分解し直す必要がない（再レンダーの大半は分解だった）。
+// 1 エントリ（直前のクリップ）だけ保持。原音は weak_ptr で持ち、解放されたら無効
+struct AnalysisCache
+{
+    std::weak_ptr<const juce::AudioBuffer<float>> source;
+    const void* sourcePtr = nullptr;
+    ContentDigest curveDigest;
+    int ka = 0, kb = 0, fftSize = 0, channels = 0;
+    double sampleRate = 0.0;
+    std::vector<std::shared_ptr<Spectrogram>> sp, ap; // チャンネルごと
+};
+std::mutex analysisCacheMutex;
+AnalysisCache analysisCache;
 } // namespace
 
 juce::int64 VocalResynth::maxAnalysisBytes() { return ClipStretchLimits::maxRenderBytes; }
@@ -116,23 +134,49 @@ std::unique_ptr<juce::AudioBuffer<float>> VocalResynth::render (const RenderReci
         f0Out[(size_t) j] = f0 > 0.0 ? f0 * std::pow (2.0, (double) shift / 12.0) : 0.0;
     }
 
-    auto result = std::make_unique<juce::AudioBuffer<float>> (channels, outLength);
-    std::vector<double> x ((size_t) analysisLength), y ((size_t) outLength);
-    Spectrogram sp ((size_t) analysisFrames, bins), ap ((size_t) analysisFrames, bins);
-    std::vector<const double*> spOut ((size_t) outFrames), apOut ((size_t) outFrames);
-    for (int j = 0; j < outFrames; ++j)
+    // 分解（キャッシュが効けば飛ばす）
+    const auto tStart = juce::Time::getMillisecondCounterHiRes();
+    std::vector<std::shared_ptr<Spectrogram>> sp, ap;
+    bool cacheHit = false;
     {
-        spOut[(size_t) j] = sp.rows[(size_t) srcFrame[(size_t) j]];
-        apOut[(size_t) j] = ap.rows[(size_t) srcFrame[(size_t) j]];
+        std::lock_guard<std::mutex> lock (analysisCacheMutex);
+        auto& c = analysisCache;
+        if (c.sourcePtr == src.get() && ! c.source.expired() && c.curveDigest == curve->digest() && c.ka == ka && c.kb == kb
+            && c.fftSize == fftSize && c.channels == channels && juce::exactlyEqual (c.sampleRate, sr))
+        {
+            sp = c.sp; ap = c.ap; cacheHit = true;
+        }
     }
+    if (! cacheHit)
+    {
+        std::vector<double> x ((size_t) analysisLength);
+        for (int ch = 0; ch < channels; ++ch)
+        {
+            auto s = std::make_shared<Spectrogram> ((size_t) analysisFrames, bins);
+            auto a = std::make_shared<Spectrogram> ((size_t) analysisFrames, bins);
+            const float* in = src->getReadPointer (ch);
+            for (int i = 0; i < analysisLength; ++i)
+                x[(size_t) i] = in[a0 + i];
+            CheapTrick (x.data(), analysisLength, fs, temporal.data(), f0In.data(), analysisFrames, &ctOption, s->rows.data());
+            D4C (x.data(), analysisLength, fs, temporal.data(), f0In.data(), analysisFrames, fftSize, &d4cOption, a->rows.data());
+            sp.push_back (std::move (s)); ap.push_back (std::move (a));
+        }
+        std::lock_guard<std::mutex> lock (analysisCacheMutex);
+        analysisCache = { src, src.get(), curve->digest(), ka, kb, fftSize, channels, sr, sp, ap };
+    }
+    const auto tAnalysed = juce::Time::getMillisecondCounterHiRes();
 
+    // 合成（目標音が変わるたびに走るのはここだけ）
+    auto result = std::make_unique<juce::AudioBuffer<float>> (channels, outLength);
+    std::vector<double> y ((size_t) outLength);
+    std::vector<const double*> spOut ((size_t) outFrames), apOut ((size_t) outFrames);
     for (int ch = 0; ch < channels; ++ch)
     {
-        const float* in = src->getReadPointer (ch);
-        for (int i = 0; i < analysisLength; ++i)
-            x[(size_t) i] = in[a0 + i];
-        CheapTrick (x.data(), analysisLength, fs, temporal.data(), f0In.data(), analysisFrames, &ctOption, sp.rows.data());
-        D4C (x.data(), analysisLength, fs, temporal.data(), f0In.data(), analysisFrames, fftSize, &d4cOption, ap.rows.data());
+        for (int j = 0; j < outFrames; ++j)
+        {
+            spOut[(size_t) j] = sp[(size_t) ch]->rows[(size_t) srcFrame[(size_t) j]];
+            apOut[(size_t) j] = ap[(size_t) ch]->rows[(size_t) srcFrame[(size_t) j]];
+        }
         std::fill (y.begin(), y.end(), 0.0);
         Synthesis (f0Out.data(), outFrames, spOut.data(), apOut.data(), fftSize, framePeriodMs, fs, outLength, y.data());
         float* out = result->getWritePointer (ch);
@@ -142,5 +186,8 @@ std::unique_ptr<juce::AudioBuffer<float>> VocalResynth::render (const RenderReci
             out[i] = std::isfinite (v) ? (float) v : 0.0f;
         }
     }
+    Log::info ("pitch.render", "frames=" + juce::String (analysisFrames) + " cache=" + juce::String ((int) cacheHit)
+                                   + " analyse_ms=" + juce::String (tAnalysed - tStart, 0)
+                                   + " synth_ms=" + juce::String (juce::Time::getMillisecondCounterHiRes() - tAnalysed, 0));
     return result;
 }
