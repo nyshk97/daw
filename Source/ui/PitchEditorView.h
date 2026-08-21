@@ -54,6 +54,8 @@ public:
     void mouseUp (const juce::MouseEvent& e) override;
     void mouseDoubleClick (const juce::MouseEvent& e) override;
     void mouseMove (const juce::MouseEvent& e) override;
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
+    void mouseMagnify (const juce::MouseEvent& e, float scaleFactor) override;
 
     static constexpr int barHeight = 36;
     static constexpr int bannerHeight = 26;
@@ -86,6 +88,11 @@ private:
     void applyScaleSelection();
     bool canEdit() const { return session != nullptr && session->editable(); }
     bool changingButtonsVisible() const;
+    // 横ズーム（1 = クリップ全体が幅に収まる）とスクロール（render 座標・view 先頭からのオフセット）
+    void zoomAround (double factor, float anchorX);
+    void clampScroll (const Clip& clip);
+    double zoom = 1.0;
+    juce::int64 scrollRender = 0;
 
     void timerCallback() override { repaint(); }
 

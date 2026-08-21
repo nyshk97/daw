@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "Fonts.h"
+#include "Shortcuts.h"
 #include "Theme.h"
 #include "../shared/Log.h"
 
@@ -305,9 +306,14 @@ PitchEditorView::Geometry PitchEditorView::computeGeometry (const Clip& clip) co
         g.timeMap = PitchCorrections::buildTimeMap (session->working(), g.domainOffset, g.domainLength, g.stretchRatio, sr);
     else
         g.timeMap = TimeMap::uniform (g.domainOffset, g.domainLength, g.stretchRatio);
-    g.viewStart = g.timeMap.map (clip.offsetSamples);
-    g.viewEnd = juce::jmax (g.viewStart + 1, g.timeMap.map (clip.offsetSamples + clip.lengthSamples));
-    g.pxPerSample = (double) juce::jmax (1, g.canvas.getWidth()) / (double) (g.viewEnd - g.viewStart);
+    // クリップの view 範囲（render 座標）をズーム倍率で切り出し、scrollRender ぶんずらす
+    const auto clipStart = g.timeMap.map (clip.offsetSamples);
+    const auto clipEnd = juce::jmax (clipStart + 1, g.timeMap.map (clip.offsetSamples + clip.lengthSamples));
+    const auto visible = juce::jmax ((juce::int64) 1, (juce::int64) std::llround ((double) (clipEnd - clipStart) / zoom));
+    const auto maxScroll = juce::jmax ((juce::int64) 0, clipEnd - clipStart - visible);
+    g.viewStart = clipStart + juce::jlimit ((juce::int64) 0, maxScroll, scrollRender);
+    g.viewEnd = g.viewStart + visible;
+    g.pxPerSample = (double) juce::jmax (1, g.canvas.getWidth()) / (double) visible;
 
     // 音域: ノートの目標音（全部）と有声フレームの音程の 2〜98 パーセンタイル（オクターブ飛びの数フレームに
     // 引っ張られて段が潰れないように）から ±2 半音、最低 12 段
@@ -587,6 +593,51 @@ void PitchEditorView::paint (juce::Graphics& g)
 
 // ---- 操作 ----
 
+void PitchEditorView::clampScroll (const Clip& clip)
+{
+    const auto geo = computeGeometry (clip);
+    scrollRender = geo.viewStart - geo.timeMap.map (clip.offsetSamples); // computeGeometry がクランプ済み
+}
+
+void PitchEditorView::zoomAround (double factor, float anchorX)
+{
+    const Clip* clip = getClip ? getClip() : nullptr;
+    if (clip == nullptr) return;
+    const auto before = computeGeometry (*clip);
+    const auto anchorRender = before.renderForX (anchorX);
+    zoom = juce::jlimit (1.0, 64.0, zoom * factor);
+    // アンカー（カーソル位置）の render 座標が同じ x に留まるようスクロールを合わせる
+    const auto clipStart = before.timeMap.map (clip->offsetSamples);
+    const auto clipEnd = juce::jmax (clipStart + 1, before.timeMap.map (clip->offsetSamples + clip->lengthSamples));
+    const double visible = (double) (clipEnd - clipStart) / zoom;
+    const double frac = (anchorX - (float) before.canvas.getX()) / (double) juce::jmax (1, before.canvas.getWidth());
+    scrollRender = (juce::int64) std::llround ((double) (anchorRender - clipStart) - frac * visible);
+    clampScroll (*clip);
+    repaint();
+}
+
+void PitchEditorView::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
+{
+    const Clip* clip = getClip ? getClip() : nullptr;
+    if (clip == nullptr) return;
+    if (e.mods.isCommandDown())
+    {
+        // ⌘＋ホイール＝ズーム（上で拡大）
+        zoomAround (std::pow (1.5, (double) wheel.deltaY * 4.0), (float) e.x);
+        return;
+    }
+    const auto geo = computeGeometry (*clip);
+    const double dx = (std::abs (wheel.deltaX) > std::abs (wheel.deltaY) ? wheel.deltaX : wheel.deltaY);
+    scrollRender -= (juce::int64) std::llround (dx * 300.0 / geo.pxPerSample);
+    clampScroll (*clip);
+    repaint();
+}
+
+void PitchEditorView::mouseMagnify (const juce::MouseEvent& e, float scaleFactor)
+{
+    zoomAround ((double) scaleFactor, (float) e.x);
+}
+
 void PitchEditorView::mouseMove (const juce::MouseEvent& e)
 {
     const Clip* clip = getClip ? getClip() : nullptr;
@@ -756,6 +807,13 @@ void PitchEditorView::mouseDoubleClick (const juce::MouseEvent& e)
 
 bool PitchEditorView::keyPressed (const juce::KeyPress& key)
 {
+    // ⌘←/→ = 横ズーム（タイムラインと同じ割り当て。ウィンドウ内ではこちらを優先し、メインへは流さない）
+    if (Shortcuts::matches (key, Shortcuts::ID::zoomHorizontal))
+    {
+        const float centre = (float) getWidth() * 0.5f;
+        zoomAround (key.getKeyCode() == juce::KeyPress::rightKey ? 1.5 : 1.0 / 1.5, centre);
+        return true;
+    }
     const bool plain = ! key.getModifiers().testFlags (juce::ModifierKeys::commandModifier | juce::ModifierKeys::ctrlModifier | juce::ModifierKeys::altModifier);
     if (plain && key.getTextCharacter() == 'b' && canEdit() && ! selected.empty())
     {
