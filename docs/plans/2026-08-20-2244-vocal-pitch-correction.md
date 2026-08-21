@@ -607,6 +607,10 @@
   で巻き戻し経路は同期側を黙らせ（エディタ内の状態表示に逃がす）、失敗トーストに「（変更プレビューも取り消しました）」を
   付ける。巻き戻し直後の再プレビューが同じ原因で失敗したときの青トーストも 1 回だけ抑止。`ContentDigest::toShortHex()`・
   VERIFY.md の失敗経路に `pitch.render_failed` を追記
+- 2026-08-21 /code-review 8 回目: プレビュー失敗トーストの抑止を bool から「抑止対象の recipe digest」に（成功・キャッシュ命中・
+  別要求で自然に無効）、quiet は失敗がエディタ対象クリップのものだったときだけ、committed 枝の巻き戻しもエディタ内に状態表示、
+  `pitchSyncAfterModelChange` が「変更プレビューを取り消したか」を返す（文言の併記を推定でなく事実で）、
+  dismiss 直前の状態表示は出さず open 時にクリア
 - 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
   自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
   検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、

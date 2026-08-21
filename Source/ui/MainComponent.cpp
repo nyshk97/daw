@@ -390,12 +390,14 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
             timeline.refresh();
             // 失敗の種別で文言を分ける（recipe 付き = ピッチ補正の WORLD レンダー）。トーストは単一スロットの後勝ちなので、
             // エディタ側の同期は quiet で呼び、赤の失敗トースト（dirty 化の事実）だけを残す
-            const bool changePreviewDropped = pitchSession.mode() == PitchEditorSession::Mode::changePreview;
-            pitchSyncAfterModelChange (/*quiet=*/ true); // 巻き戻しは補正も上書きする → エディタの working を同期（古い編集を書き戻して同じ失敗を繰り返さない）
+            // 巻き戻しは補正も上書きする → エディタの working を同期（古い編集を書き戻して同じ失敗を繰り返さない）。
+            // quiet は失敗がエディタ対象クリップのものだったときだけ（他クリップの失敗で対象のトーストを黙らせない）
+            const auto* target = pitchTargetClip();
+            const bool ownFailure = target != nullptr && target->audio.get() == failed.source;
+            const bool droppedChangePreview = pitchSyncAfterModelChange (/*quiet=*/ ownFailure);
             toast.show ((failed.hasRecipe() ? jp (u8"ピッチ補正の処理に失敗したため、編集を元に戻しました")
                                             : jp (u8"移調・伸縮の処理に失敗したため、値を元に戻しました"))
-                            + (changePreviewDropped && pitchSession.mode() != PitchEditorSession::Mode::changePreview
-                                   ? jp (u8"（変更プレビューも取り消しました）") : juce::String()),
+                            + (droppedChangePreview ? jp (u8"（変更プレビューも取り消しました）") : juce::String()),
                         /*isError=*/ true, nullptr);
         }
     };

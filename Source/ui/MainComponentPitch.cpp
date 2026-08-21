@@ -277,8 +277,8 @@ void MainComponent::wirePitchEditor()
         if (failed.recipe != pitchPreviewDigest)
             return;
         Log::warn ("pitch.preview_failed", "clip=" + juce::String (pitchSession.clipId()));
-        if (pitchSuppressPreviewFailToast)
-            pitchSuppressPreviewFailToast = false; // 巻き戻し直後の再プレビュー失敗: 赤の失敗トーストを残す（同じ原因）
+        if (! failed.recipe.isNull() && failed.recipe == pitchSuppressPreviewFailDigest)
+            pitchSuppressPreviewFailDigest = {}; // 巻き戻し直後の再プレビュー失敗: 赤の失敗トーストを残す（同じ原因）
         else
             toast.show (jp (u8"ピッチ補正のプレビューを作れませんでした（原音で鳴っています）"), true, nullptr);
         pitchWindow.content().showStatus (jp (u8"プレビューのレンダーに失敗（原音で鳴っています）"));
@@ -338,6 +338,7 @@ void MainComponent::openPitchEditor (int trackIndex, int itemIndex)
         pitchSession.openForAnalysis (clip.id);
         pitchStartAnalysis (clip, /*reanalyze=*/ false);
     }
+    pitchWindow.content().showStatus ({}); // 前のクリップの状態表示を持ち越さない
     pitchWindow.openOver (this);
     pitchWindow.content().refresh();
 }
@@ -549,23 +550,29 @@ void MainComponent::pitchApplyWorking()
     pitchWindow.content().refresh();
 }
 
-void MainComponent::pitchSyncAfterModelChange (bool quiet)
+bool MainComponent::pitchSyncAfterModelChange (bool quiet)
 {
+    bool droppedChangePreview = false;
     // quiet: 失敗巻き戻し直後の呼び出し。失敗トースト（赤・dirty 化の事実）を後勝ちのトーストで上書きしない
     if (! pitchSession.isOpen())
-        return;
+        return false;
     auto* clip = pitchTargetClip();
     if (clip == nullptr)
     {
         Log::info ("pitch.target_lost", "clip=" + juce::String (pitchSession.clipId()));
         pitchWindow.dismiss(); // 対象が消えた（削除・undo）: プレビューを破棄して閉じる（別クリップへは戻さない）
-        return;
+        return false;
     }
     switch (pitchSession.mode())
     {
         case PitchEditorSession::Mode::committed:
             if (clip->pitchCorrection.has_value() && clip->pitchCurve != nullptr)
+            {
+                const bool changed = ! (pitchSession.working() == *clip->pitchCorrectionInOwnDomain());
                 pitchSession.syncCommitted (*clip->pitchCorrectionInOwnDomain(), clip->pitchCurve); // working は常に自範囲
+                if (quiet && changed)
+                    pitchWindow.content().showStatus (jp (u8"レンダーに失敗したため編集を元に戻しました")); // 独立ウィンドウはメインのトーストが見えない
+            }
             else
                 pitchWindow.dismiss(); // undo で「補正なし」へ戻った
             break;
@@ -578,14 +585,17 @@ void MainComponent::pitchSyncAfterModelChange (bool quiet)
                 {
                     pitchSession.cancelChange();
                     pitchClearPreview();
+                    droppedChangePreview = true;
+                    if (! current.has_value())
+                    {
+                        pitchWindow.dismiss(); // 表示は閉じるので状態表示は出さない（次のクリップに残さない）
+                        break;
+                    }
+                    pitchSession.syncCommitted (*current, clip->pitchCurve);
                     if (! quiet)
                         toast.show (jp (u8"モデルが変わったためピッチ補正の変更プレビューを取り消しました"), false, nullptr);
                     else
                         pitchWindow.content().showStatus (jp (u8"変更プレビューを取り消しました（レンダー失敗）"));
-                    if (! current.has_value())
-                        pitchWindow.dismiss();
-                    else
-                        pitchSession.syncCommitted (*current, clip->pitchCurve);
                     break;
                 }
             }
@@ -598,8 +608,10 @@ void MainComponent::pitchSyncAfterModelChange (bool quiet)
                             || pd->domainOffset != clip->offsetSamples || pd->domainLength != clip->lengthSamples;
             if (stale)
             {
-                pitchSuppressPreviewFailToast = quiet; // 同じ原因で失敗したときにトーストを重ねない
                 pitchRequestPreview();
+                // 巻き戻し直後の再プレビューが同じ原因で失敗したときだけ青トーストを出さない。抑止対象は
+                // いま出した要求の digest に限る（成功・キャッシュ命中・早期 return・別要求で自然に外れる）
+                pitchSuppressPreviewFailDigest = quiet ? pitchPreviewDigest : ContentDigest{};
             }
             break;
         }
@@ -608,6 +620,7 @@ void MainComponent::pitchSyncAfterModelChange (bool quiet)
             break;
     }
     pitchWindow.content().refresh();
+    return droppedChangePreview;
 }
 
 void MainComponent::pitchDiscardPreviewForExport()

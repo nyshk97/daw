@@ -149,7 +149,7 @@ PitchEditorView::~PitchEditorView() { stopTimer(); }
 void PitchEditorView::showStatus (const juce::String& text)
 {
     statusText = text;
-    statusUntil = juce::Time::getMillisecondCounterHiRes() + 4000.0;
+    statusUntil = text.isEmpty() ? 0.0 : juce::Time::getMillisecondCounterHiRes() + 4000.0; // 空 = 即クリア
     statusLabel.setText (text, juce::dontSendNotification);
 }
 
