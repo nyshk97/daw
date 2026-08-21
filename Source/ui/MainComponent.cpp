@@ -388,12 +388,15 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
             setDirty (true);
             pushAudioValueSnapshot();
             timeline.refresh();
-            // 失敗の種別で文言を分ける（recipe 付き = ピッチ補正の WORLD レンダー）。汎用トーストを先に出し、
-            // エディタ側の同期（変更プレビューの取消トースト等）を後にして上書きされないようにする
-            toast.show (failed.hasRecipe() ? jp (u8"ピッチ補正の処理に失敗したため、編集を元に戻しました")
-                                           : jp (u8"移調・伸縮の処理に失敗したため、値を元に戻しました"),
+            // 失敗の種別で文言を分ける（recipe 付き = ピッチ補正の WORLD レンダー）。トーストは単一スロットの後勝ちなので、
+            // エディタ側の同期は quiet で呼び、赤の失敗トースト（dirty 化の事実）だけを残す
+            const bool changePreviewDropped = pitchSession.mode() == PitchEditorSession::Mode::changePreview;
+            pitchSyncAfterModelChange (/*quiet=*/ true); // 巻き戻しは補正も上書きする → エディタの working を同期（古い編集を書き戻して同じ失敗を繰り返さない）
+            toast.show ((failed.hasRecipe() ? jp (u8"ピッチ補正の処理に失敗したため、編集を元に戻しました")
+                                            : jp (u8"移調・伸縮の処理に失敗したため、値を元に戻しました"))
+                            + (changePreviewDropped && pitchSession.mode() != PitchEditorSession::Mode::changePreview
+                                   ? jp (u8"（変更プレビューも取り消しました）") : juce::String()),
                         /*isError=*/ true, nullptr);
-            pitchSyncAfterModelChange(); // 巻き戻しは補正も上書きする → 開いているエディタの working を同期（古い編集を書き戻して同じ失敗を繰り返さない）
         }
     };
     // サイクル範囲はundo対象外（音量・ミュートと同じ扱い。Logicもサイクル操作はundoしない）なので

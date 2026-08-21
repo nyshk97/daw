@@ -189,7 +189,7 @@ void RenderCache::drainCompletedNow()
                             + " length=" + juce::String (item.fingerprint.domainLength)
                             + " semitones=" + juce::String (item.fingerprint.semitones)
                             + " ratio=" + juce::String (item.fingerprint.ratio, 4)
-                            + (item.fingerprint.hasRecipe() ? " recipe=" + item.fingerprint.recipe.toHex().substring (0, 8) : juce::String()));
+                            + (item.fingerprint.hasRecipe() ? " recipe=" + item.fingerprint.recipe.toShortHex() : juce::String()));
             if (onRenderFailed != nullptr)
                 onRenderFailed (item.fingerprint);
         }

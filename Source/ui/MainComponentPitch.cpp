@@ -277,7 +277,10 @@ void MainComponent::wirePitchEditor()
         if (failed.recipe != pitchPreviewDigest)
             return;
         Log::warn ("pitch.preview_failed", "clip=" + juce::String (pitchSession.clipId()));
-        toast.show (jp (u8"ピッチ補正のプレビューを作れませんでした（原音で鳴っています）"), true, nullptr);
+        if (pitchSuppressPreviewFailToast)
+            pitchSuppressPreviewFailToast = false; // 巻き戻し直後の再プレビュー失敗: 赤の失敗トーストを残す（同じ原因）
+        else
+            toast.show (jp (u8"ピッチ補正のプレビューを作れませんでした（原音で鳴っています）"), true, nullptr);
         pitchWindow.content().showStatus (jp (u8"プレビューのレンダーに失敗（原音で鳴っています）"));
         // 永続値の巻き戻しも dirty 化もしない（エディタ内表示のみ）
     };
@@ -401,7 +404,7 @@ void MainComponent::pitchEditorTick()
     }
     pitchBlockedMessage = result.sidecarWritten ? juce::String() : result.errorMessage;
     Log::info ("pitch.analyzed", "clip=" + juce::String (clip->id) + " frames=" + juce::String (curve->numFrames())
-                                     + " digest=" + curve->digest().toHex().substring (0, 8)
+                                     + " digest=" + curve->digest().toShortHex()
                                      + " sidecar=" + juce::String ((int) result.sidecarWritten));
     if (pitchReanalyzing)
     {
@@ -546,8 +549,9 @@ void MainComponent::pitchApplyWorking()
     pitchWindow.content().refresh();
 }
 
-void MainComponent::pitchSyncAfterModelChange()
+void MainComponent::pitchSyncAfterModelChange (bool quiet)
 {
+    // quiet: 失敗巻き戻し直後の呼び出し。失敗トースト（赤・dirty 化の事実）を後勝ちのトーストで上書きしない
     if (! pitchSession.isOpen())
         return;
     auto* clip = pitchTargetClip();
@@ -574,7 +578,10 @@ void MainComponent::pitchSyncAfterModelChange()
                 {
                     pitchSession.cancelChange();
                     pitchClearPreview();
-                    toast.show (jp (u8"モデルが変わったためピッチ補正の変更プレビューを取り消しました"), false, nullptr);
+                    if (! quiet)
+                        toast.show (jp (u8"モデルが変わったためピッチ補正の変更プレビューを取り消しました"), false, nullptr);
+                    else
+                        pitchWindow.content().showStatus (jp (u8"変更プレビューを取り消しました（レンダー失敗）"));
                     if (! current.has_value())
                         pitchWindow.dismiss();
                     else
@@ -590,7 +597,10 @@ void MainComponent::pitchSyncAfterModelChange()
             const bool stale = pd == nullptr || pd->semitones != clip->transposeSemitones || ! juce::exactlyEqual (pd->ratio, clip->stretchRatio)
                             || pd->domainOffset != clip->offsetSamples || pd->domainLength != clip->lengthSamples;
             if (stale)
+            {
+                pitchSuppressPreviewFailToast = quiet; // 同じ原因で失敗したときにトーストを重ねない
                 pitchRequestPreview();
+            }
             break;
         }
         case PitchEditorSession::Mode::analyzing:

@@ -660,7 +660,8 @@ sleep 8 && grep -E "project.open|render_failed" ~/Library/Logs/daw/"$(ls -t ~/Li
 - 値の変更直後は**古い音のまま**鳴り、レンダー完了時に音・長さ・波形が一斉に切り替わる（正常動作）。
   処理中は「分割」「複製」がグレーアウトする
 - ログでの裏取り: `clip_stretch.request`（要求）/ `clip_stretch.render_failed`（失敗。トーストと
-  値の巻き戻し＋dirty化を伴う）
+  値の巻き戻し＋dirty化を伴う）。ピッチ補正付きクリップの失敗は `pitch.render_failed`（recipe digest 付き）で、
+  トーストは「ピッチ補正の処理に失敗したため、編集を元に戻しました」
 - 保存値は project.json の clips[].transposeSemitones / stretchRatio / renderDomain*（v20）。
   加工済みWAVは書かれない（読込時に固定シードで再生成 = 再起動後も同じ音）
 

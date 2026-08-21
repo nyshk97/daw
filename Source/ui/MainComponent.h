@@ -333,7 +333,7 @@ private:
     void wirePitchEditor();                                 // コンストラクタから1回
     void openPitchEditor (int trackIndex, int itemIndex);   // 右クリック →「ピッチ補正…」
     void pitchEditorTick();                                 // Timer: ワーカーの結果回収・試聴の掃除
-    void pitchSyncAfterModelChange();                       // undo/redo・構造変更後: id で引き直し・プレビュー再生成
+    void pitchSyncAfterModelChange (bool quiet = false);    // undo/redo・構造変更後: id で引き直し・プレビュー再生成（quiet = 失敗巻き戻し直後。トーストを出さない）
     void pitchDiscardPreviewForExport();                    // ⌘B/⌘E の開始時: 未確定プレビューを自動破棄
     Clip* pitchTargetClip();                                // session の clipId で毎回引き直す（無ければ nullptr）
     void pitchRequestPreview();                             // working からプレビュー要求（専用 RenderCache）
@@ -457,6 +457,7 @@ private:
     juce::uint64 pitchAnalysisGeneration = 0; // ワーカーへ渡す generation（切替・再解析で進む）
     bool pitchReanalyzing = false;            // 再解析（確定状態から）の結果待ち
     juce::String pitchBlockedMessage;
+    bool pitchSuppressPreviewFailToast = false; // 失敗巻き戻し直後の再プレビューが同じ原因で失敗しても赤トーストを上書きしない
     ReportWindow reportWindow;           // 分析レポートの閲覧（独立ウィンドウ・1枚使い回し）
     ToastBar toast;                      // 右下の一時通知（レポート生成の完了/失敗）
     // 歯車ボタン／⌘,のデバイス設定（開いている間だけ生存。入力レベル測定を常駐させないため閉じたら破棄）

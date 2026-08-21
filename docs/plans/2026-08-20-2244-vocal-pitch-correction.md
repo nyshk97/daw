@@ -603,6 +603,10 @@
 - 2026-08-21 /code-review 6 回目: ① 失敗トーストを先に出してからエディタ同期（上書きされない）② recipe 付きの失敗は
   「ピッチ補正の処理に失敗」文言＋ログ `pitch.render_failed`（recipe digest 付き）③ 巻き戻しでカーブも戻ることをテストで固定
   （別世代に差し替えてから巻き戻す）④ `d.curve` は jassert で契約化・旧サイドカー依存をコメントに
+- 2026-08-21 /code-review 7 回目: トーストは単一スロットの後勝ちなので順序入替は逆効果 → `pitchSyncAfterModelChange(quiet)`
+  で巻き戻し経路は同期側を黙らせ（エディタ内の状態表示に逃がす）、失敗トーストに「（変更プレビューも取り消しました）」を
+  付ける。巻き戻し直後の再プレビューが同じ原因で失敗したときの青トーストも 1 回だけ抑止。`ContentDigest::toShortHex()`・
+  VERIFY.md の失敗経路に `pitch.render_failed` を追記
 - 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
   自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
   検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、

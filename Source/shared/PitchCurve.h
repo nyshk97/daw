@@ -23,6 +23,7 @@ struct ContentDigest
 
     bool isNull() const { return a == 0 && b == 0; }
     juce::String toHex() const; // 32 文字（ファイル名・JSON 用）
+    juce::String toShortHex() const { return toHex().substring (0, 8); } // ログ用（pitch.analyzed / pitch.render_failed を突き合わせる）
     static std::optional<ContentDigest> fromHex (const juce::String& hex);
 
     bool operator== (const ContentDigest& o) const { return a == o.a && b == o.b; }
