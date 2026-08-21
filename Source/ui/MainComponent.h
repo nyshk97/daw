@@ -340,7 +340,9 @@ private:
     Clip* pitchTargetClip();                                // session の clipId で毎回引き直す（無ければ nullptr）
     void pitchRequestPreview (bool suppressFailToast = false); // working からプレビュー要求（専用 RenderCache）。suppress = この要求の失敗トーストを出さない
     void pitchClearPreview();                               // previewDomain を外して snapshot を再 push
-    void pitchBeginEdit();                                  // 離散編集の直前（初回プレビューの確定・undo 区切り・子の detach）
+    void pitchBeginEdit();                                  // 編集ジェスチャーの開始（初回プレビューの確定・undo 区切り）。進行中なら先に終える
+    void pitchEndEdit();                                    // 終了: 変化なし → undo 取り消し／あり → 確定（dirty・レンダー要求）
+    void pitchPreviewWorking();                             // ジェスチャー途中: 鳴りだけ更新（dirty にしない）
     void pitchApplyWorking();                               // working を永続モデルへ（dirty・レンダー要求）
     void pitchWriteWorkingToClip (Clip& clip);              // working（自範囲）をクリップへ。分割子はここで親のドメイン共有を終える
     void pitchStartAnalysis (const Clip& clip, bool reanalyze);
@@ -459,7 +461,10 @@ private:
     juce::uint64 pitchAnalysisGeneration = 0; // ワーカーへ渡す generation（切替・再解析で進む）
     bool pitchReanalyzing = false;            // 再解析（確定状態から）の結果待ち
     juce::String pitchBlockedMessage;
-    UndoStack::BeginToken pitchBeginToken = 0; // 直前の pitchBeginEdit が積んだ begin（0 = 積んでいない／初回確定で実変更済み）。onCancelEdit の対象
+    // 進行中の編集ジェスチャー（pitchBeginEdit 〜 pitchEndEdit）。終了時に working を before と比べ、変化なしなら undo を取り消す。
+    // 初回確定を伴った begin は実変更なので取り消さない（committedInitial）
+    struct PitchEdit { UndoStack::BeginToken token = 0; PitchCorrection before; bool committedInitial = false; };
+    std::optional<PitchEdit> pitchEdit;
     ContentDigest pitchSuppressPreviewFailDigest; // この digest のプレビューが失敗しても青トーストを出さない（失敗巻き戻し直後の再プレビュー。成功・キャッシュ命中・別要求で自然に無効）
     ReportWindow reportWindow;           // 分析レポートの閲覧（独立ウィンドウ・1枚使い回し）
     ToastBar toast;                      // 右下の一時通知（レポート生成の完了/失敗）

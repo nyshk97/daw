@@ -16161,12 +16161,14 @@ void testUndoAbandonLast()
     expect (undo.canRedo() && project.tracks[0].name == "a", "undo 後の abandon は no-op");
     // maxDepth 境界: 押し出した 1 件が abandon で戻る
     UndoStack deep;
+    project.tracks[0].name = "orig";
     for (int i = 0; i < 100; ++i) { deep.begin (project); project.tracks[0].name = juce::String (i); }
     int depth = 0; { UndoStack probe = deep; Project p2 = project; while (probe.undo (p2, kind)) ++depth; }
     const auto t3 = deep.begin (project);
     deep.abandon (t3);
-    int depthAfter = 0; { Project p2 = project; while (deep.undo (p2, kind)) ++depthAfter; }
-    expect (depth == 100 && depthAfter == 100, "maxDepth で押し出された 1 件も戻る（到達範囲が減らない）");
+    int depthAfter = 0; juce::String deepest;
+    { Project p2 = project; while (deep.undo (p2, kind)) { ++depthAfter; deepest = p2.tracks[0].name; } }
+    expect (depth == 100 && depthAfter == 100 && deepest == "orig", "maxDepth で押し出された 1 件も先頭に戻る（最深 undo が最初の状態）");
 }
 
 } // namespace

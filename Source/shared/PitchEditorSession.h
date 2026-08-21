@@ -150,21 +150,26 @@ public:
         ++currentGeneration;
     }
     // undo 等で永続モデルが変わったときの再同期（committed のときだけ。working を永続値で置き換える）
-    void syncCommitted (const PitchCorrection& committed, std::shared_ptr<const PitchCurve> curve)
+    // 戻り値: working が実際に置き換わったか
+    bool syncCommitted (const PitchCorrection& committed, std::shared_ptr<const PitchCurve> curve)
     {
         if (currentMode != Mode::committed)
-            return;
+            return false;
+        bool changed = false;
         if (! (workingState == committed))
         {
             workingState = committed;
             ++currentRevision; // 実際に置き換わったときだけ（no-op 同期で進行中のドラッグを殺さない）
+            changed = true;
         }
         if (curve != workingCurve)
         {
             workingCurve = std::move (curve);
             detectedNotes = workingCurve != nullptr ? PitchNotes::detect (*workingCurve) : std::vector<DetectedPitchNote>{};
             ++currentRevision;
+            changed = true;
         }
+        return changed;
     }
 
 private:

@@ -11,7 +11,7 @@
 
 // ボーカルのピッチ補正エディタ（独立ウィンドウの中身）。鍵盤＋グリッドにノートをブロブ（矩形＝目標音・
 // 薄い線＝元ピッチ・濃い線＝補正後）で描く。判断ロジックは持たない: 編集は PitchCorrections の関数を
-// session->mutableWorking() に適用して onEdited を呼ぶだけ。確定・プレビュー・undo は MainComponent が配線する。
+// session->mutableWorking() に適用して onBeginEdit/onEndEdit で囲むだけ。確定・プレビュー・undo は MainComponent が配線する。
 // 見た目は scratchpad のモック（2026-08-21 確定・全て B 案: バナー＋Enable／左＝音の決め方・右＝確定系／
 // 吸収区間に斜線＋ゴースト）
 class PitchEditorView : public juce::Component,
@@ -32,9 +32,11 @@ public:
     std::function<float()> getAnalysisProgress;             // 解析中の進捗 0..1
     std::function<juce::String()> getBlockedMessage;        // サイドカー書込失敗などの理由（空なら無し）
 
-    std::function<void()> onBeginEdit;  // 離散編集の直前（undo 区切り・初回プレビューの確定）
-    std::function<void()> onCancelEdit; // onBeginEdit の後に編集が不成立だった（モデル不変）。undo の区切りを取り消す
-    std::function<void()> onEdited;     // 編集後（モデルへ反映・レンダー要求・dirty）
+    // 編集は必ず onBeginEdit → （working を書き換える）→ onEndEdit の対で行う。変わったかの判定（undo を残すか取り消すか・
+    // dirty にするか）は受け手（MainComponent::pitchEndEdit）が working と開始時の snapshot を比べて決める。View は判断しない
+    std::function<void()> onBeginEdit;   // 離散編集の直前（undo 区切り・初回プレビューの確定）
+    std::function<void()> onEndEdit;     // 編集ジェスチャーの終わり（変化なしなら undo を取り消し、あれば確定・dirty）
+    std::function<void()> onPreviewEdit; // ジェスチャー途中の中間値（スライダー）: 鳴りだけ更新。dirty は onEndEdit で
     std::function<void()> onEnable;
     std::function<void (PitchScaleMode, ProjectKey)> onScaleChanged; // Scale 選択＝合わせ直しのプレビュー開始
     std::function<void()> onReanalyze;

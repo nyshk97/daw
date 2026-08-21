@@ -68,21 +68,15 @@ void MainComponent::wirePitchEditor()
     view.onKey = [this] (const juce::KeyPress& key) { return keyPressed (key); };
 
     view.onBeginEdit = [this] { pitchBeginEdit(); };
-    view.onEdited = [this] { pitchApplyWorking(); };
-    view.onCancelEdit = [this]
-    {
-        // begin の後に編集が不成立（往復ドラッグ・クランプ・split/merge 失敗・値の変わらないスライダー）。
-        // 対象はトークンで確認（初回確定を伴った begin は実変更なので 0 にしてあり取り消さない）
-        undoStack.abandon (pitchBeginToken);
-        pitchBeginToken = 0;
-    };
+    view.onEndEdit = [this] { pitchEndEdit(); };
+    view.onPreviewEdit = [this] { pitchPreviewWorking(); };
     view.onEnable = [this]
     {
         if (pitchSession.mode() != PitchEditorSession::Mode::initialPreview || ! pitchSession.editable())
             return;
         Log::info ("pitch.enable", "clip=" + juce::String (pitchSession.clipId()));
         pitchBeginEdit();       // 初回プレビューの確定（1件の undo）
-        pitchApplyWorking();
+        pitchEndEdit();
     };
     view.onApply = [this]
     {
@@ -242,6 +236,7 @@ void MainComponent::wirePitchEditor()
 
     pitchWindow.onDismissed = [this]
     {
+        pitchEndEdit(); // 進行中のジェスチャーを閉じる
         bufferAudition.stop();
         noteAudition.reset();
         VocalResynth::clearAnalysisCache();
@@ -536,25 +531,47 @@ void MainComponent::pitchWriteWorkingToClip (Clip& clip)
 
 void MainComponent::pitchBeginEdit()
 {
-    pitchBeginToken = 0; // begin しない早期 return でも古いトークンを残さない
+    if (pitchEdit.has_value())
+        pitchEndEdit(); // ネストさせない（前のジェスチャーを先に閉じる）
     auto* clip = pitchTargetClip();
     if (clip == nullptr || ! pitchSession.editable())
         return;
-    if (pitchSession.mode() == PitchEditorSession::Mode::initialPreview)
+    PitchEdit edit;
+    edit.token = undoStack.begin (*project); // 1 操作 = 1 件（最初の実変更・クリック列の先頭で区切る）
+    if (pitchSession.mode() == PitchEditorSession::Mode::initialPreview && pitchSession.commitInitial().has_value())
     {
-        // 最初の明示編集で初回プレビューを確定（以後の編集は永続モデルへ直接）。undo はここで 1 件
-        const auto token = undoStack.begin (*project);
-        if (pitchSession.commitInitial().has_value())
-        {
-            (void) token; // 確定＝実変更なので abandon の対象にしない（pitchBeginToken は 0 のまま）
-            clip->previewDomain = nullptr;
-            pitchPreviewRequest.reset();
-            pitchApplyWorking(); // 編集が成立しなくても（同じ段で離す等）確定は起きている: 書き込み・dirty・レンダー同期
-            Log::info ("pitch.commit_initial", "clip=" + juce::String (clip->id));
-        }
-        return;
+        // 最初の明示編集で初回プレビューを確定（以後の編集は永続モデルへ直接）。確定＝実変更なのでこの begin は取り消さない
+        edit.committedInitial = true;
+        clip->previewDomain = nullptr;
+        pitchPreviewRequest.reset();
+        pitchApplyWorking(); // 書き込み・dirty・レンダー同期
+        Log::info ("pitch.commit_initial", "clip=" + juce::String (clip->id));
     }
-    pitchBeginToken = undoStack.begin (*project); // 1 操作 = 1 件（最初の実変更・クリック列の先頭で区切る）
+    edit.before = pitchSession.working();
+    pitchEdit = std::move (edit);
+}
+
+void MainComponent::pitchEndEdit()
+{
+    if (! pitchEdit.has_value())
+        return;
+    const auto edit = std::move (*pitchEdit);
+    pitchEdit.reset(); // トークンは使い捨て（古いトークンで別の begin を消さない）
+    const bool changed = pitchSession.isOpen() && ! (pitchSession.working() == edit.before);
+    if (changed)
+        pitchApplyWorking();
+    else if (! edit.committedInitial)
+        undoStack.abandon (edit.token); // 変化なし: undo も dirty も無し（判定はここ 1 箇所）
+}
+
+void MainComponent::pitchPreviewWorking()
+{
+    auto* clip = pitchTargetClip();
+    if (clip == nullptr || pitchSession.mode() != PitchEditorSession::Mode::committed || ! pitchEdit.has_value())
+        return;
+    pitchWriteWorkingToClip (*clip);
+    renderCache.requestSync(); // 鳴りだけ追従。dirty は pitchEndEdit で
+    pitchWindow.content().refresh();
 }
 
 void MainComponent::pitchApplyWorking()
@@ -587,8 +604,7 @@ bool MainComponent::pitchSyncAfterModelChange (bool quiet)
         case PitchEditorSession::Mode::committed:
             if (clip->pitchCorrection.has_value() && clip->pitchCurve != nullptr)
             {
-                const bool changed = ! (pitchSession.working() == *clip->pitchCorrectionInOwnDomain());
-                pitchSession.syncCommitted (*clip->pitchCorrectionInOwnDomain(), clip->pitchCurve); // working は常に自範囲
+                const bool changed = pitchSession.syncCommitted (*clip->pitchCorrectionInOwnDomain(), clip->pitchCurve); // working は常に自範囲
                 if (quiet && changed)
                     pitchWindow.content().showStatus (jp (u8"レンダーに失敗したため編集を元に戻しました")); // 独立ウィンドウはメインのトーストが見えない
             }
@@ -698,7 +714,7 @@ void MainComponent::debugPitchAction (const juce::String& action)
     {
         pitchBeginEdit();
         pitchSession.mutableWorking().speedMs = PitchCorrection::keroSpeedMs;
-        pitchApplyWorking();
+        pitchEndEdit();
     }
     else if (action.startsWith ("bypass"))
     {
@@ -707,7 +723,7 @@ void MainComponent::debugPitchAction (const juce::String& action)
         {
             pitchBeginEdit();
             PitchCorrections::toggleNoteBypass (pitchSession.mutableWorking(), idx);
-            pitchApplyWorking();
+            pitchEndEdit();
         }
     }
     else if (action.startsWith ("move"))
@@ -715,16 +731,11 @@ void MainComponent::debugPitchAction (const juce::String& action)
         const int idx = action.substring (4).getIntValue();
         if (auto* clip = pitchTargetClip(); clip != nullptr && idx >= 0 && idx < (int) pitchSession.working().notes.size())
         {
-            auto trial = pitchSession.working();
-            if (PitchCorrections::moveNote (trial, idx, (juce::int64) (renderSampleRate() * 0.04), clip->offsetSamples, clip->lengthSamples,
-                                            clip->stretchRatio, renderSampleRate()) == 0)
-                return; // クランプで動かない → undo も dirty も作らない
             pitchBeginEdit();
             const auto d = PitchCorrections::moveNote (pitchSession.mutableWorking(), idx, (juce::int64) (renderSampleRate() * 0.04),
-                                                       clip->offsetSamples, clip->lengthSamples,
-                                                       clip->stretchRatio, renderSampleRate());
+                                                       clip->offsetSamples, clip->lengthSamples, clip->stretchRatio, renderSampleRate());
             Log::info ("debug.pitch_move", "note=" + juce::String (idx) + " applied=" + juce::String (d));
-            pitchApplyWorking();
+            pitchEndEdit(); // クランプで動かなければ undo も dirty も残らない
         }
     }
     else if (action.startsWith ("target"))
@@ -735,13 +746,9 @@ void MainComponent::debugPitchAction (const juce::String& action)
         if (idx >= 0 && idx < (int) pitchSession.working().notes.size())
         {
             const auto before = pitchSession.working().notes[(size_t) idx];
-            auto trial = pitchSession.working();
-            if (PitchCorrections::setNoteTarget (trial, idx, before.targetMidi + delta, before.targetMidi, before.pinned))
-            {
-                pitchBeginEdit();
-                PitchCorrections::setNoteTarget (pitchSession.mutableWorking(), idx, before.targetMidi + delta, before.targetMidi, before.pinned);
-                pitchApplyWorking();
-            }
+            pitchBeginEdit();
+            PitchCorrections::setNoteTarget (pitchSession.mutableWorking(), idx, before.targetMidi + delta, before.targetMidi, before.pinned);
+            pitchEndEdit();
         }
     }
     view.refresh();

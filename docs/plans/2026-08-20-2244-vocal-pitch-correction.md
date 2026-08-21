@@ -636,6 +636,11 @@
   退避分は abandon 不可になった時点で捨てる）。`pitchBeginEdit` は begin しない早期 return でもトークンを 0 に。
   `revision` は working が実際に置き換わったときだけ進める（no-op 同期でドラッグを殺さない）。スライダーのクリックだけ・
   bypass が 1 つも変わらない経路も onCancelEdit。選択は revision 変化でクリア。mouseUp の moved は各ステップの結果を使う
+- 2026-08-21 /code-review 14 回目（構造）: 「begin したが変化なしなら cancel」を UI の各所で手書きしていたのをやめ、
+  編集ジェスチャーを `pitchBeginEdit`（トークン＋working の snapshot）〜 `pitchEndEdit`（working と snapshot を比較し、変化なしなら
+  abandon・ありなら確定）の対に閉じ込めた。View は onBeginEdit/onEndEdit で囲むだけ（判定しない）。スライダーの中間値は
+  `onPreviewEdit`（鳴りだけ・dirty は終了時）。begin が重なれば前を先に閉じる。ドラッグ中の ⌘Z/⇧⌘Z は View が飲む（Logic と同じ）。
+  選択のクリアは keyPressed/右クリックの先頭で同期的に。`syncCommitted` は bool を返す。maxDepth テストは復元内容まで固定
 - 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
   自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
   検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、
