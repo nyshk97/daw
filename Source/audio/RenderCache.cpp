@@ -184,11 +184,12 @@ void RenderCache::drainCompletedNow()
         }
         else
         {
-            Log::error ("clip_stretch.render_failed",
+            Log::error (item.fingerprint.hasRecipe() ? "pitch.render_failed" : "clip_stretch.render_failed",
                         "offset=" + juce::String (item.fingerprint.domainOffset)
                             + " length=" + juce::String (item.fingerprint.domainLength)
                             + " semitones=" + juce::String (item.fingerprint.semitones)
-                            + " ratio=" + juce::String (item.fingerprint.ratio, 4));
+                            + " ratio=" + juce::String (item.fingerprint.ratio, 4)
+                            + (item.fingerprint.hasRecipe() ? " recipe=" + item.fingerprint.recipe.toHex().substring (0, 8) : juce::String()));
             if (onRenderFailed != nullptr)
                 onRenderFailed (item.fingerprint);
         }

@@ -15909,12 +15909,19 @@ void testPitchProjectRoundtrip()
             audible.pitchCorrection->strength = 0.0f; // 手直し中（中立）
             audible.pitchCorrection->notes[0].targetMidi += 3;
             audible.transposeSemitones = 5; // 失敗した要求（という想定）
+            // 再解析を適用した直後という想定: カーブと curveDigest を別世代に差し替えておく（巻き戻しで両方が戻ること）
+            auto otherCurve = std::make_shared<const PitchCurve> ([&] { auto c = *curve; c.algoId = "other"; return c; }());
+            audible.pitchCurve = otherCurve;
+            audible.pitchCorrection->curveDigest = otherCurve->digest();
             Project tmp2; tmp2.sampleRate = sr;
             Track t2; t2.clips.push_back (audible); tmp2.tracks.push_back (t2);
             auto& ac = tmp2.tracks[0].clips[0];
             expect (ac.activeDomain != nullptr && ac.activeDomain->correction != nullptr, "前提: 補正付きで鳴っている");
             expect (ClipDomains::rollbackFailedRequest (tmp2, sr, ac.requestedFingerprint (sr)), "巻き戻し（補正付き前例）");
             expect (ac.pitchCorrection.has_value() && *ac.pitchCorrection == *ac.activeDomain->correction, "鳴っている音の補正に合わせる");
+            expect (ac.activeDomain->curve != nullptr && ac.pitchCurve == ac.activeDomain->curve
+                        && ac.pitchCorrection->curveDigest == ac.pitchCurve->digest(),
+                    "カーブも一緒に戻り curveDigest と一致する");
             expect (! ac.renderPending (sr), "巻き戻し後に renderPending が解ける（同じ失敗を繰り返さない）");
         }
         // 子を detach すると digest が分かれる

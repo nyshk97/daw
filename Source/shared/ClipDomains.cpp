@@ -192,8 +192,12 @@ bool ClipDomains::rollbackFailedRequest (Project& project, double sampleRate,
                 if (d.correction != nullptr)
                 {
                     clip.pitchCorrection = *d.correction;
-                    if (d.curve != nullptr)
-                        clip.pitchCurve = d.curve; // curveDigest とカーブを揃える（再解析の適用後に失敗した場合）
+                    // curveDigest とカーブを揃える（再解析の適用後に失敗した場合）。producer（RenderCache）は correction と
+                    // 一緒に必ず curve を入れる契約 — 入れ忘れは黙って digest 不一致になるので大声で
+                    jassert (d.curve != nullptr);
+                    clip.pitchCurve = d.curve;
+                    // 注: 戻した curveDigest の世代サイドカーがディスクに残っている前提（保存 GC は undo 履歴の世代を残す。
+                    // 履歴上限を超える極端な経路では保存時に欠損し、次回読込で「無効化」として扱われる）
                 }
                 else if (! clip.hasNeutralPitchCorrection())
                     clip.pitchCorrection.reset();

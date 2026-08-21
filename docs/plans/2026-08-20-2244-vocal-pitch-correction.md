@@ -600,6 +600,9 @@
 - 2026-08-21 /code-review 5 回目: ① 本レンダーの失敗巻き戻し後に `pitchSyncAfterModelChange()`（エディタの working が古い
   編集を持ち続けて同じ失敗を繰り返さない）② `RenderedDomain::curve` を追加し、巻き戻しで correction とカーブを一緒に戻す
   （curveDigest と pitchCurve の食い違い防止）③ コメントの嘘 2 箇所（detach の冪等性・中立保持の条件）を修正
+- 2026-08-21 /code-review 6 回目: ① 失敗トーストを先に出してからエディタ同期（上書きされない）② recipe 付きの失敗は
+  「ピッチ補正の処理に失敗」文言＋ログ `pitch.render_failed`（recipe digest 付き）③ 巻き戻しでカーブも戻ることをテストで固定
+  （別世代に差し替えてから巻き戻す）④ `d.curve` は jassert で契約化・旧サイドカー依存をコメントに
 - 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
   自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
   検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、
