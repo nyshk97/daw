@@ -35,7 +35,7 @@ public:
     std::function<void()> onBeginEdit;  // 離散編集の直前（undo 区切り・初回プレビューの確定）
     std::function<void()> onEdited;     // 編集後（モデルへ反映・レンダー要求・dirty）
     std::function<void()> onEnable;
-    std::function<void()> onResnap;
+    std::function<void (PitchScaleMode, ProjectKey)> onScaleChanged; // Scale 選択＝合わせ直しのプレビュー開始
     std::function<void()> onReanalyze;
     std::function<void()> onApply;
     std::function<void()> onCancel;
@@ -109,7 +109,7 @@ private:
     // ---- 上部バー（左＝音の決め方 ／ 右＝確定系）----
     juce::Label scaleLabel, strengthLabel, speedLabel, statusLabel;
     juce::ComboBox scaleBox;
-    juce::TextButton resnapButton, keroButton, enableButton, applyButton, cancelButton, retryButton;
+    juce::TextButton enableButton, applyButton, cancelButton, retryButton;
     IconButton scaleHighlightButton { IconButton::Icon::keys, juce::String::fromUTF8 (u8"スケール音を表示") };
     bool highlightScale = true;       // スケール音の段を明るく・外を暗く（ON/OFF）
     juce::String statusText;

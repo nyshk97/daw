@@ -51,9 +51,6 @@ PitchEditorView::PitchEditorView()
         b.setColour (juce::ComboBox::outlineColourId, juce::Colours::transparentBlack);
         addAndMakeVisible (b);
     };
-    setupButton (resnapButton, u8"Re-snap");
-    setupButton (keroButton, u8"Hard tune");
-    keroButton.setTooltip (jp (u8"ケロケロ（Auto-Tune のハードチューン）: Speed 0ms・Strength 100% にする"));
     setupButton (enableButton, u8"Enable", true);
     setupButton (applyButton, u8"Apply", true);
     setupButton (cancelButton, u8"Cancel");
@@ -93,7 +90,8 @@ PitchEditorView::PitchEditorView()
     setupSlider (strengthSlider, 0.0, 100.0, 1.0);
     strengthSlider.textFromValueFunction = [] (double v) { return juce::String ((int) v) + "%"; };
     setupSlider (speedSlider, 0.0, 400.0, 1.0);
-    speedSlider.textFromValueFunction = [] (double v) { return v <= 0 ? juce::String::fromUTF8 (u8"0 ms (hard tune)") : juce::String ((int) v) + " ms"; };
+    speedSlider.textFromValueFunction = [] (double v) { return v <= 0 ? juce::String::fromUTF8 (u8"hard tune (0 ms)") : juce::String ((int) v) + " ms"; };
+    speedSlider.setTooltip (jp (u8"ノート内の動きを目標へ引き寄せる速さ。左端 = ハードチューン（ケロケロ）・右へ行くほどビブラート・しゃくりを残す"));
     strengthSlider.onValueChange = [this]
     {
         if (! canEdit() || session == nullptr) return;
@@ -112,18 +110,6 @@ PitchEditorView::PitchEditorView()
         session->mutableWorking().speedMs = v;
         if (onEdited) onEdited();
     };
-    keroButton.onClick = [this]
-    {
-        if (! canEdit() || session == nullptr) return;
-        auto& w = session->mutableWorking();
-        if (juce::exactlyEqual (w.speedMs, PitchCorrection::keroSpeedMs) && juce::exactlyEqual (w.strength, 1.0f)) return;
-        if (onBeginEdit) onBeginEdit();
-        w.speedMs = PitchCorrection::keroSpeedMs;
-        w.strength = 1.0f;
-        updateBar();
-        if (onEdited) onEdited();
-    };
-    resnapButton.onClick = [this] { if (onResnap) onResnap(); };
     enableButton.onClick = [this] { if (onEnable) onEnable(); };
     applyButton.onClick = [this] { if (onApply) onApply(); };
     cancelButton.onClick = [this] { if (onCancel) onCancel(); };
@@ -175,9 +161,7 @@ void PitchEditorView::updateBar()
     const bool committed = mode == Mode::committed;
     const bool changing = mode == Mode::changePreview;
 
-    scaleBox.setEnabled (editable);
-    resnapButton.setEnabled (committed && editable);
-    keroButton.setEnabled (editable);
+    scaleBox.setEnabled (editable || changing); // 変更プレビュー中も選び直せる（別スケールで取り直し）
     strengthSlider.setEnabled (editable);
     speedSlider.setEnabled (editable);
     // 右端＝確定系。未確定プレビュー中だけ Enable、変更プレビュー中だけ Apply/Cancel。確定後は何も出さない
@@ -246,7 +230,7 @@ void PitchEditorView::updateBar()
         }
     }
     else if (changing)
-        bannerText = jp (u8"変更のプレビュー中 — Apply で確定・Cancel で元に戻す（この間は編集できません）");
+        bannerText = jp (u8"付け直しのプレビュー — 点線が元の位置。Apply で確定・Cancel で元に戻す（この間はノート編集不可）");
     else
         bannerVisible = false;
     bannerLabel.setText (bannerText, juce::dontSendNotification);
@@ -259,7 +243,7 @@ void PitchEditorView::applyScaleSelection()
 {
     if (! canEdit() || session == nullptr)
         return;
-    auto& w = session->mutableWorking();
+    const auto& w = session->working();
     const int id = scaleBox.getSelectedId();
     PitchScaleMode mode = PitchScaleMode::projectKey;
     ProjectKey key = w.customKey;
@@ -271,10 +255,8 @@ void PitchEditorView::applyScaleSelection()
     }
     if (w.scaleMode == mode && (mode != PitchScaleMode::custom || w.customKey == key))
         return;
-    if (onBeginEdit) onBeginEdit();
-    w.scaleMode = mode;
-    w.customKey = key;
-    if (onEdited) onEdited();
+    // Scale を選ぶ＝そのスケールで目標音を付け直すプレビュー（元の位置はゴーストで残る。Apply / Cancel で確定・取消）
+    if (onScaleChanged) onScaleChanged (mode, key);
 }
 
 void PitchEditorView::resized()
@@ -284,13 +266,11 @@ void PitchEditorView::resized()
     scaleLabel.setBounds (bar.removeFromLeft (36));
     scaleBox.setBounds (bar.removeFromLeft (190).reduced (2, 0));
     scaleHighlightButton.setBounds (bar.removeFromLeft (28).reduced (2, 1));
-    resnapButton.setBounds (bar.removeFromLeft (64));
     bar.removeFromLeft (8);
     strengthLabel.setBounds (bar.removeFromLeft (52));
     strengthSlider.setBounds (bar.removeFromLeft (110));
     speedLabel.setBounds (bar.removeFromLeft (44));
-    speedSlider.setBounds (bar.removeFromLeft (110));
-    keroButton.setBounds (bar.removeFromLeft (76));
+    speedSlider.setBounds (bar.removeFromLeft (140).withTrimmedLeft (28).withTrimmedRight (44)); // 両端に hard / natural の目盛り文字
     // 右: 確定系（右端＝確定）
     auto right = bar;
     const auto primary = right.removeFromRight (changingButtonsVisible() ? 64 : 90);
@@ -519,6 +499,26 @@ void PitchEditorView::drawBlobs (juce::Graphics& g, const Geometry& geo, const C
         return i >= 0 && i < (int) cachedTarget.shiftSemitones.size() ? cachedTarget.shiftSemitones[(size_t) i] : (float) clip.transposeSemitones;
     };
 
+    // 変更プレビュー中: 元の目標音を点線のゴーストで残し、変わるノートを一目で分かるようにする
+    if (const auto& bk = session->backup(); bk.has_value())
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.35f * alpha));
+        const float dash[] = { 3.0f, 3.0f };
+        for (const auto& o : bk->notes)
+        {
+            const auto s = bk->resolve (o.start, geo.domainOffset, geo.domainLength), e = bk->resolve (o.end, geo.domainOffset, geo.domainLength);
+            if (e <= s) continue;
+            bool same = false;
+            for (const auto& n : w.notes)
+                if (n.targetMidi == o.targetMidi && w.resolve (n.start, geo.domainOffset, geo.domainLength) == s) { same = true; break; }
+            if (same) continue;
+            juce::Path p;
+            p.addRectangle (geo.xForSource (s), geo.yForMidi (o.targetMidi + 0.5), geo.xForSource (e) - geo.xForSource (s), geo.rowHeight);
+            juce::PathStrokeType (1.0f).createDashedStroke (p, p, dash, 2);
+            g.fillPath (p);
+        }
+    }
+
     for (int i = 0; i < (int) w.notes.size(); ++i)
     {
         const auto& n = w.notes[(size_t) i];
@@ -582,6 +582,14 @@ void PitchEditorView::paint (juce::Graphics& g)
     // 上部バー（シルバー）
     g.setGradientFill (juce::ColourGradient (Theme::topBarTop, 0, 0, Theme::topBarBottom, 0, (float) barHeight, false));
     g.fillRect (0, 0, getWidth(), barHeight);
+    {
+        // Speed の両端: 左端 = hard（ケロケロ）・右端 = natural（揺れを残す）。位置そのものが状態
+        const auto sb = speedSlider.getBounds();
+        g.setColour (Theme::topBarIcon.withAlpha (speedSlider.isEnabled() ? 0.8f : 0.35f));
+        g.setFont (Fonts::small().withHeight (10.0f));
+        g.drawText ("hard", sb.getX() - 30, sb.getY(), 28, sb.getHeight(), juce::Justification::centredRight);
+        g.drawText ("natural", sb.getRight() + 2, sb.getY(), 44, sb.getHeight(), juce::Justification::centredLeft);
+    }
     if (bannerVisible)
     {
         g.setColour (session != nullptr && session->sidecarBlocked() ? juce::Colour (0xff4a2a26) : bannerBgColour);

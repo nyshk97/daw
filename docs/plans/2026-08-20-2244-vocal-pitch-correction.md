@@ -546,6 +546,11 @@
   Re-snap｜Strength・Speed・Hard tune｜右端の確定系（未確定中だけ Enable、変更プレビュー中だけ Apply/Cancel。
   「Correction ON」の常時表示は廃止＝状態は ♪ バッジとバナーで分かる）。Reset・Re-analyze・推定キーの設定は
   グリッドの右クリックメニューへ。キー未設定はバナーに推定キー＋「Use Dm」。略語（Kero・Hl）は Hard tune・Show scale に
+- 2026-08-21 本人レビュー2: 「Re-snap」「Hard tune」は押すまで結果が見えない → 両方ボタンを廃止。
+  Hard tune は Speed スライダーの左端（両端に hard / natural の目盛り文字。位置＝状態）。Re-snap は
+  「Scale を選ぶ＝そのスケールで付け直すプレビュー」に統合（元の目標を点線ゴーストで残し、変わるノートが
+  一目で分かる。Apply/Cancel。未確定プレビュー中なら作り直すだけ）。plan の「キーに合わせ直す」ボタンは
+  この形で実現
 - 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
   自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
   検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、

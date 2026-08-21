@@ -103,22 +103,35 @@ void MainComponent::wirePitchEditor()
         pitchClearPreview();
         pitchWindow.content().refresh();
     };
-    view.onResnap = [this]
+    view.onScaleChanged = [this] (PitchScaleMode mode, ProjectKey key)
     {
         auto* clip = pitchTargetClip();
-        if (clip == nullptr || pitchSession.mode() != PitchEditorSession::Mode::committed || pitchSession.curve() == nullptr)
+        if (clip == nullptr || pitchSession.curve() == nullptr)
+            return;
+        using Mode = PitchEditorSession::Mode;
+        if (pitchSession.mode() == Mode::changePreview)
+            pitchSession.cancelChange(); // 選び直し: 前の案を捨てて元から付け直す
+        if (pitchSession.mode() != Mode::committed && pitchSession.mode() != Mode::initialPreview)
             return;
         auto proposal = pitchSession.working();
+        proposal.scaleMode = mode;
+        proposal.customKey = key;
         PitchCorrections::resnap (proposal, *pitchSession.curve(), clip->requestedDomainOffset(), clip->requestedDomainLength(),
                                   PitchCorrections::effectiveScale (proposal, project->key));
-        if (proposal == pitchSession.working())
+        Log::info ("pitch.scale_changed", "clip=" + juce::String (clip->id) + " mode=" + juce::String ((int) mode)
+                                              + " key=" + ProjectKeys::cliText (key));
+        if (pitchSession.mode() == Mode::initialPreview)
         {
-            pitchWindow.content().showStatus (jp (u8"Re-snap: 変わる音はありません"));
-            return;
+            // 未確定プレビューの中なら単に作り直す（まだ何も確定していない）
+            pitchSession.mutableWorking() = proposal;
+            pitchRequestPreview();
         }
-        Log::info ("pitch.resnap_preview", "clip=" + juce::String (clip->id));
-        pitchSession.beginChangePreview (proposal, pitchSession.curve());
-        pitchRequestPreview();
+        else
+        {
+            // 確定状態からは「付け直しのプレビュー」（元の目標はゴーストで見える）。Apply / Cancel で確定・取消
+            pitchSession.beginChangePreview (proposal, pitchSession.curve());
+            pitchRequestPreview();
+        }
         pitchWindow.content().refresh();
     };
     view.onReset = [this]
@@ -547,7 +560,7 @@ void MainComponent::debugPitchAction (const juce::String& action)
     if (action == "enable" && view.onEnable) view.onEnable();
     else if (action == "apply" && view.onApply) view.onApply();
     else if (action == "cancel" && view.onCancel) view.onCancel();
-    else if (action == "resnap" && view.onResnap) view.onResnap();
+    else if (action == "resnap" && view.onScaleChanged) view.onScaleChanged (PitchScaleMode::chromatic, {});
     else if (action == "reset" && view.onReset) view.onReset();
     else if (action == "reanalyze" && view.onReanalyze) view.onReanalyze();
     else if (action == "close") pitchWindow.dismiss();
@@ -556,7 +569,8 @@ void MainComponent::debugPitchAction (const juce::String& action)
     else if (action == "bounce") startBounceFlow();
     else if (action == "kero")
     {
-        pitchBeginEdit();
+        if (pitchSession.mode() == PitchEditorSession::Mode::initialPreview) { pitchBeginEdit(); }
+        else pitchBeginEdit();
         pitchSession.mutableWorking().speedMs = PitchCorrection::keroSpeedMs;
         pitchApplyWorking();
     }

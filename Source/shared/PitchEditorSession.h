@@ -35,6 +35,8 @@ public:
     PitchCorrection& mutableWorking() { return workingState; }
     const std::shared_ptr<const PitchCurve>& curve() const { return workingCurve; }
     const std::vector<DetectedPitchNote>& detected() const { return detectedNotes; }
+    // 変更プレビュー中の「元の状態」（ゴースト描画用。changePreview 以外は nullopt）
+    const std::optional<PitchCorrection>& backup() const { return backupState; }
 
     // 手編集・つまみ・「補正を有効化」ができる状態か
     bool editable() const
