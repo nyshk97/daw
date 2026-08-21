@@ -365,7 +365,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         if (attachedAny)
         {
             // その場で装着できた（無加工化・キャッシュヒット）→ 音と長さが変わった
-            pitchDropStalePreview(); // インライン装着で追いついたプレビューを外す（onRenderReady は来ない）
+            pitchDropStalePreview(); // インライン装着で追いついたプレビューを外す（onRenderReady は来ない）。push は下で 1 回
             pushAudioValueSnapshot();
             timeline.refresh();
         }
@@ -376,7 +376,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         // 完了は装着だけで dirty にしない（値の変更時に dirty 済み。音は同じで再生成できる）
         if (ClipDomains::attachRenderResult (*project, renderSampleRate(), domain))
         {
-            pitchDropStalePreview(); // ジェスチャー後に残していた previewDomain は本レンダーが追いついたここで外す（音飛びなし）
+            pitchDropStalePreview(); // ジェスチャー後に残していた previewDomain は本レンダーが追いついたここで外す（push は下で 1 回）
             pushAudioValueSnapshot();
             timeline.refresh();
         }
@@ -4727,6 +4727,8 @@ void MainComponent::reconcileClipRenderState (bool immediate)
     else
         renderCache.requestSync(); // 通常の編集はデバウンス（値が落ち着いてから積む）
     pitchSyncAfterModelChange(); // エディタの対象を id で引き直し、プレビューを現在の状態から作り直す
+    if (pitchDropStalePreview()) // reconcile も activeDomain を差し替える経路（包含が崩れて中立へ）
+        pushAudioValueSnapshot();
 }
 
 // ---- 曲末フェードアウト ----

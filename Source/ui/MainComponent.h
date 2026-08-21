@@ -344,7 +344,7 @@ private:
     void pitchEndEdit();                                    // 終了: 変化なし → undo 取り消し／あり → 確定（dirty・レンダー要求）
     void pitchPreviewWorking();                             // ジェスチャー途中: previewDomain で鳴りだけ更新（clip は触らない）
     bool pitchPreviewActive() const;                        // previewDomain に鳴りを載せる状態か（初回/変更プレビュー・編集ジェスチャー中）
-    void pitchDropStalePreview();                           // Clip::dropPreviewIfCurrent を対象クリップに適用（activeDomain が変わりうる経路の後で）
+    bool pitchDropStalePreview();                           // Clip::dropPreviewIfCurrent を対象クリップに適用（activeDomain が変わりうる経路の後で）。戻り値: 外したか
     void pitchApplyWorking();                               // working を永続モデルへ（dirty・レンダー要求）
     void pitchWriteWorkingToClip (Clip& clip);              // working（自範囲）をクリップへ。分割子はここで親のドメイン共有を終える
     void pitchStartAnalysis (const Clip& clip, bool reanalyze);

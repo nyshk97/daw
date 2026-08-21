@@ -89,12 +89,16 @@ struct Clip
     {
         return previewDomain != nullptr ? previewDomain.get() : activeDomain.get();
     }
-    // previewDomain の寿命規則（1 文）: 「プレビューが活動中」か「activeDomain がまだ要求に追いついていない」なら残す。
-    // それ以外は外す。activeDomain が変わりうる全経路（本レンダー装着・インライン装着・巻き戻し・ジェスチャー終了）の後で
-    // 呼ぶ。戻り値: 外したか（snapshot の再 push が要る）
+    // previewDomain の寿命規則（1 文）: 「プレビューが活動中」か「待っている本レンダーと同じ内容」なら残す。それ以外は外す。
+    // activeDomain が変わりうる全経路（本レンダー装着・インライン装着・巻き戻し・reconcile・ジェスチャー終了）の後で呼ぶ。
+    // 戻り値: 外したか（snapshot の再 push が要る）
     bool dropPreviewIfCurrent (double sampleRate, bool previewActive)
     {
-        if (previewDomain == nullptr || previewActive || renderPending (sampleRate))
+        if (previewDomain == nullptr || previewActive)
+            return false;
+        // 活動中でないなら、残してよいのは「待っている本レンダーと同じ内容のプレビュー」だけ
+        //（取り消した recipe のレンダー待ちに別内容のプレビューが便乗して残らない）
+        if (renderPending (sampleRate) && previewDomain->fingerprint() == requestedFingerprint (sampleRate))
             return false;
         previewDomain = nullptr;
         return true;

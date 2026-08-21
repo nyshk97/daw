@@ -15879,8 +15879,14 @@ void testPitchProjectRoundtrip()
             c.pitchCorrection.reset(); // activeDomain（中立）と要求を一致させる
             c.previewDomain = c.activeDomain;
             expect (! c.dropPreviewIfCurrent (sr, /*previewActive=*/ true), "活動中は残す");
-            c.transposeSemitones = 3; // 要求が実効に追いついていない
-            expect (! c.dropPreviewIfCurrent (sr, false) && c.previewDomain != nullptr, "renderPending の間は残す");
+            c.transposeSemitones = 3; // 要求が実効に追いついていない（プレビューは中立＝別内容）
+            expect (c.dropPreviewIfCurrent (sr, false) && c.previewDomain == nullptr, "待っている本レンダーと別内容のプレビューは pending でも外す");
+            // 待っている本レンダーと同内容のプレビューは残す
+            auto same = std::make_shared<RenderedDomain> (*c.activeDomain);
+            same->semitones = 3;
+            c.previewDomain = same;
+            expect (! c.dropPreviewIfCurrent (sr, false) && c.previewDomain != nullptr, "同内容（指紋一致）なら renderPending の間は残す");
+            c.previewDomain = c.activeDomain;
             c.transposeSemitones = 0;
             expect (c.dropPreviewIfCurrent (sr, false) && c.previewDomain == nullptr, "追いついたら外す");
             expect (! c.dropPreviewIfCurrent (sr, false), "無ければ false");

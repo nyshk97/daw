@@ -654,6 +654,11 @@
   集約し、activeDomain が変わりうる 4 経路（本レンダー装着・インライン装着 attachedAny・巻き戻し後・ジェスチャー終了）の後で
   `pitchDropStalePreview()` を呼ぶ。`RenderedDomain::fingerprint()` で 7 フィールドの手組みを 1 箇所に。プレビュー失敗の照合も
   指紋全体＋活動中のみ。新しいプレビュー要求の前に旧プレビューを外す（失敗時に嘘をつかない）。仕様表の試聴の記述を更新
+- 2026-08-21 /code-review 18 回目: 寿命規則を「活動中、または待っている本レンダーと同内容（指紋一致）なら残す」に強化
+  （取り消した recipe のレンダー待ちに別内容のプレビューが便乗しない。テスト）。signalsmith プレビュー要求前の pre-clear を
+  削除し、失敗処理を `pitchPreviewCache.onRenderFailed` の 1 箇所に（そこで外す・文言は「確定済みの音／原音で鳴っています」を
+  activeDomain で分岐）。非活動なら fingerprint/request を必ずリセット。reconcile 後にも寿命規則。push は各経路で 1 回。
+  「対象外クリップの previewDomain」は warn ログに
 - 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
   自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
   検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、

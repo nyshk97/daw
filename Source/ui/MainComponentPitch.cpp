@@ -272,7 +272,7 @@ void MainComponent::wirePitchEditor()
             return; // 遅着・不一致は捨てる（指紋はモード変更のたびに変わるので generation の代わりになる）
         clip->previewDomain = domain;
         pitchSuppressPreviewFailDigest = {}; // 成功したら抑止は外す
-        pitchDropStalePreview(); // 活動中でなく本レンダーも追いついていれば即外す
+        pitchDropStalePreview(); // 活動中でなく本レンダーも追いついていれば即外す（push は下の 1 回）
         pushAudioValueSnapshot();
         timeline.refresh();
         pitchWindow.content().refresh();
@@ -283,11 +283,22 @@ void MainComponent::wirePitchEditor()
         if (failed != pitchPreviewFingerprint || ! pitchPreviewActive())
             return; // 誰も待っていない遅着失敗にはトーストを出さない
         pitchPreviewFingerprint = {};
+        pitchPreviewRequest.reset();
+        // 失敗したプレビューの処理はここ 1 箇所: 前のプレビューを外し、鳴っている音（activeDomain）に合った文言を出す
+        auto* clip = pitchTargetClip();
+        const bool activeHasCorrection = clip != nullptr && clip->activeDomain != nullptr && clip->activeDomain->correction != nullptr;
+        if (clip != nullptr && clip->previewDomain != nullptr)
+        {
+            clip->previewDomain = nullptr;
+            pushAudioValueSnapshot();
+            timeline.refresh();
+        }
         Log::warn ("pitch.preview_failed", "clip=" + juce::String (pitchSession.clipId()));
         if (! failed.recipe.isNull() && failed.recipe == pitchSuppressPreviewFailDigest)
             pitchSuppressPreviewFailDigest = {}; // 巻き戻し直後の再プレビュー失敗: 赤の失敗トーストを残す（同じ原因）
         else
-            toast.show (jp (u8"ピッチ補正のプレビューを作れませんでした（原音で鳴っています）"), true, nullptr);
+            toast.show (activeHasCorrection ? jp (u8"ピッチ補正のプレビューを作れませんでした（確定済みの音で鳴っています）")
+                                            : jp (u8"ピッチ補正のプレビューを作れませんでした（原音で鳴っています）"), true, nullptr);
         pitchWindow.content().showStatus (jp (u8"プレビューのレンダーに失敗（原音で鳴っています）"));
         // 永続値の巻き戻しも dirty 化もしない（エディタ内表示のみ）
     };
@@ -498,8 +509,6 @@ void MainComponent::pitchRequestPreview (bool suppressFailToast)
             timeline.refresh();
             return;
         }
-        clip->previewDomain = nullptr; // 旧プレビュー（WORLD）を外してから要求（失敗しても「原音で鳴っています」が嘘にならない）
-        pushAudioValueSnapshot();
         pitchPreviewRequest = std::move (request);
         pitchPreviewCache.syncNow();
         return;
@@ -566,22 +575,31 @@ void MainComponent::pitchWriteWorkingToClip (Clip& clip)
     }
 }
 
-void MainComponent::pitchDropStalePreview()
+bool MainComponent::pitchDropStalePreview()
 {
     auto* clip = pitchTargetClip();
-    const bool dropped = clip != nullptr && clip->dropPreviewIfCurrent (renderSampleRate(), pitchPreviewActive());
-    // 対象外のクリップに previewDomain が残っていることは無い（cloneForNewId が落とす）が、念のため全クリップも見る
-    bool others = false;
+    const bool active = pitchPreviewActive();
+    const bool dropped = clip != nullptr && clip->dropPreviewIfCurrent (renderSampleRate(), active);
+    if (! active)
+    {
+        // 活動中でなければ「待っている要求」も無い（遅着の結果を装着→即 drop する無駄と snapshot の二重 push を防ぐ）
+        pitchPreviewFingerprint = {};
+        pitchPreviewRequest.reset();
+    }
+    // 不変条件: previewDomain は対象クリップにしか付かない（cloneForNewId が落とす）。破れていたら直して記録する
     for (auto& track : project->tracks)
         for (auto& c : track.clips)
-            if (&c != clip && c.previewDomain != nullptr) { c.previewDomain = nullptr; others = true; }
-    if (dropped || others)
+            if (&c != clip && c.previewDomain != nullptr)
+            {
+                Log::warn ("pitch.preview_on_other_clip", "clip=" + juce::String (c.id));
+                c.previewDomain = nullptr;
+            }
+    if (dropped)
     {
-        if (dropped) pitchPreviewFingerprint = {};
-        pushAudioValueSnapshot();
         timeline.refresh();
         pitchWindow.content().refresh();
     }
+    return dropped; // snapshot の push は呼び出し側で 1 回
 }
 
 bool MainComponent::pitchPreviewActive() const
@@ -629,7 +647,8 @@ void MainComponent::pitchEndEdit()
         undoStack.abandon (edit.token); // 変化なし or 外部置換: undo も dirty も無し（判定はここ 1 箇所）
     if (replaced && pitchSession.hasPreview())
         pitchRequestPreview(); // 置換後のプレビュー（変更プレビューの着地）を鳴らし直す
-    pitchDropStalePreview();
+    if (pitchDropStalePreview())
+        pushAudioValueSnapshot();
     if (replaced)
         Log::info ("pitch.edit_replaced", "clip=" + juce::String (pitchSession.clipId()));
 }
