@@ -88,9 +88,16 @@ PitchEditorView::PitchEditorView()
         addAndMakeVisible (s);
     };
     setupSlider (strengthSlider, 0.0, 100.0, 1.0);
-    strengthSlider.textFromValueFunction = [] (double v) { return juce::String ((int) v) + "%"; };
+    strengthSlider.textFromValueFunction = [] (double v) { return v <= 0 ? juce::String::fromUTF8 (u8"off (0%)") : juce::String ((int) v) + "%"; };
+    strengthSlider.setTooltip (jp (u8"ノートの中心を目標音へ寄せる量。off = 補正しない・full = 中心が目標に乗る"));
     setupSlider (speedSlider, 0.0, 400.0, 1.0);
-    speedSlider.textFromValueFunction = [] (double v) { return v <= 0 ? juce::String::fromUTF8 (u8"hard tune (0 ms)") : juce::String ((int) v) + " ms"; };
+    speedSlider.textFromValueFunction = [this] (double v)
+    {
+        if (v > 0) return juce::String ((int) v) + " ms";
+        // ケロケロは Strength 100% × Speed 0 の組み合わせ。Strength が足りなければ平らにならないことを伝える
+        return strengthSlider.getValue() >= 99.5 ? jp (u8"hard tune (0 ms)")
+                                                 : jp (u8"0 ms — Strength が 100% でないとハードチューンになりません");
+    };
     speedSlider.setTooltip (jp (u8"ノート内の動きを目標へ引き寄せる速さ。左端 = ハードチューン（ケロケロ）・右へ行くほどビブラート・しゃくりを残す"));
     strengthSlider.onValueChange = [this]
     {
@@ -268,7 +275,7 @@ void PitchEditorView::resized()
     scaleHighlightButton.setBounds (bar.removeFromLeft (28).reduced (2, 1));
     bar.removeFromLeft (8);
     strengthLabel.setBounds (bar.removeFromLeft (52));
-    strengthSlider.setBounds (bar.removeFromLeft (110));
+    strengthSlider.setBounds (bar.removeFromLeft (140).withTrimmedLeft (22).withTrimmedRight (26)); // 両端に off / full
     speedLabel.setBounds (bar.removeFromLeft (44));
     speedSlider.setBounds (bar.removeFromLeft (140).withTrimmedLeft (28).withTrimmedRight (44)); // 両端に hard / natural の目盛り文字
     // 右: 確定系（右端＝確定）
@@ -584,11 +591,15 @@ void PitchEditorView::paint (juce::Graphics& g)
     g.fillRect (0, 0, getWidth(), barHeight);
     {
         // Speed の両端: 左端 = hard（ケロケロ）・右端 = natural（揺れを残す）。位置そのものが状態
+        g.setFont (Fonts::small().withHeight (10.0f));
         const auto sb = speedSlider.getBounds();
         g.setColour (Theme::topBarIcon.withAlpha (speedSlider.isEnabled() ? 0.8f : 0.35f));
-        g.setFont (Fonts::small().withHeight (10.0f));
         g.drawText ("hard", sb.getX() - 30, sb.getY(), 28, sb.getHeight(), juce::Justification::centredRight);
         g.drawText ("natural", sb.getRight() + 2, sb.getY(), 44, sb.getHeight(), juce::Justification::centredLeft);
+        const auto tb = strengthSlider.getBounds();
+        g.setColour (Theme::topBarIcon.withAlpha (strengthSlider.isEnabled() ? 0.8f : 0.35f));
+        g.drawText ("off", tb.getX() - 24, tb.getY(), 22, tb.getHeight(), juce::Justification::centredRight);
+        g.drawText ("full", tb.getRight() + 2, tb.getY(), 26, tb.getHeight(), juce::Justification::centredLeft);
     }
     if (bannerVisible)
     {
