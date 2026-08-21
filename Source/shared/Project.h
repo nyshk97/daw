@@ -89,6 +89,16 @@ struct Clip
     {
         return previewDomain != nullptr ? previewDomain.get() : activeDomain.get();
     }
+    // previewDomain の寿命規則（1 文）: 「プレビューが活動中」か「activeDomain がまだ要求に追いついていない」なら残す。
+    // それ以外は外す。activeDomain が変わりうる全経路（本レンダー装着・インライン装着・巻き戻し・ジェスチャー終了）の後で
+    // 呼ぶ。戻り値: 外したか（snapshot の再 push が要る）
+    bool dropPreviewIfCurrent (double sampleRate, bool previewActive)
+    {
+        if (previewDomain == nullptr || previewActive || renderPending (sampleRate))
+            return false;
+        previewDomain = nullptr;
+        return true;
+    }
     // 分割で親のレンダードメインを共有したままか（補正のノート列も親の domain 座標で表現されている）
     bool sharesInheritedDomain() const
     {
@@ -151,11 +161,7 @@ struct Clip
     {
         if (activeDomain == nullptr)
             return ! requestedFingerprint (sampleRate).isNeutral();
-        const RenderFingerprint active { activeDomain->sourceAudio.get(),
-                                         activeDomain->domainOffset, activeDomain->domainLength,
-                                         activeDomain->semitones, activeDomain->ratio,
-                                         activeDomain->sampleRate, activeDomain->recipeDigest };
-        return requestedFingerprint (sampleRate) != active;
+        return requestedFingerprint (sampleRate) != activeDomain->fingerprint();
     }
 
     // ---- 長さのメソッドは2本 ----

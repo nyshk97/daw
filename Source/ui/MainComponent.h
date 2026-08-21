@@ -344,6 +344,7 @@ private:
     void pitchEndEdit();                                    // 終了: 変化なし → undo 取り消し／あり → 確定（dirty・レンダー要求）
     void pitchPreviewWorking();                             // ジェスチャー途中: previewDomain で鳴りだけ更新（clip は触らない）
     bool pitchPreviewActive() const;                        // previewDomain に鳴りを載せる状態か（初回/変更プレビュー・編集ジェスチャー中）
+    void pitchDropStalePreview();                           // Clip::dropPreviewIfCurrent を対象クリップに適用（activeDomain が変わりうる経路の後で）
     void pitchApplyWorking();                               // working を永続モデルへ（dirty・レンダー要求）
     void pitchWriteWorkingToClip (Clip& clip);              // working（自範囲）をクリップへ。分割子はここで親のドメイン共有を終える
     void pitchStartAnalysis (const Clip& clip, bool reanalyze);
@@ -458,7 +459,6 @@ private:
     BufferAudition bufferAudition;       // ブロブクリックの単独試聴
     VocalNoteAudition noteAudition;      // 上下ドラッグ中に「その音」を合成して鳴らす（分解はドラッグ開始時に1回）
     std::optional<ClipDomains::Request> pitchPreviewRequest; // 現在要求中のプレビュー（digest で照合）
-    ContentDigest pitchPreviewDigest;
     RenderFingerprint pitchPreviewFingerprint; // 現在要求中/装着中のプレビューの指紋（recipe 無しの signalsmith プレビューも照合できる）
     juce::uint64 pitchAnalysisGeneration = 0; // ワーカーへ渡す generation（切替・再解析で進む）
     bool pitchReanalyzing = false;            // 再解析（確定状態から）の結果待ち

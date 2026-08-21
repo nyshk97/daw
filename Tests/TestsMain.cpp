@@ -15873,6 +15873,17 @@ void testPitchProjectRoundtrip()
         expect (! live.requestedFingerprint (sr).hasRecipe() && ! live.requestedFingerprint (sr).isNeutral(), "Strength 0＋移調は signalsmith 経路");
         live.transposeSemitones = 0;
         live.pitchCorrection = saved;
+        // previewDomain の寿命規則: 活動中 or 要求未達なら残す・それ以外は外す
+        {
+            Clip c = live;
+            c.previewDomain = c.activeDomain;
+            expect (! c.dropPreviewIfCurrent (sr, /*previewActive=*/ true), "活動中は残す");
+            c.transposeSemitones = 3; // 要求が実効に追いついていない
+            expect (! c.dropPreviewIfCurrent (sr, false) && c.previewDomain != nullptr, "renderPending の間は残す");
+            c.transposeSemitones = 0;
+            expect (c.dropPreviewIfCurrent (sr, false) && c.previewDomain == nullptr, "追いついたら外す");
+            expect (! c.dropPreviewIfCurrent (sr, false), "無ければ false");
+        }
         // 分割・複製で previewDomain は持ち越さない
         live.previewDomain = live.activeDomain;
         Clip l, r;

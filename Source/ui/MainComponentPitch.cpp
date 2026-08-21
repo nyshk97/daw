@@ -265,14 +265,14 @@ void MainComponent::wirePitchEditor()
     pitchPreviewCache.onRenderReady = [this] (const std::shared_ptr<const RenderedDomain>& domain)
     {
         auto* clip = pitchTargetClip();
-        if (domain == nullptr || clip == nullptr || ! pitchPreviewActive())
+        if (domain == nullptr || clip == nullptr)
             return;
-        const RenderFingerprint got { domain->sourceAudio.get(), domain->domainOffset, domain->domainLength, domain->semitones,
-                                      domain->ratio, domain->sampleRate, domain->recipeDigest };
-        if (got != pitchPreviewFingerprint || domain->sourceAudio.get() != clip->audio.get())
+        // 指紋が現在の要求と一致すれば受け取る（ジェスチャー終了直後の in-flight も含む。その後 dropPreviewIfCurrent が寿命を決める）
+        if (domain->fingerprint() != pitchPreviewFingerprint || domain->sourceAudio.get() != clip->audio.get())
             return; // 遅着・不一致は捨てる（指紋はモード変更のたびに変わるので generation の代わりになる）
         clip->previewDomain = domain;
         pitchSuppressPreviewFailDigest = {}; // 成功したら抑止は外す
+        pitchDropStalePreview(); // 活動中でなく本レンダーも追いついていれば即外す
         pushAudioValueSnapshot();
         timeline.refresh();
         pitchWindow.content().refresh();
@@ -280,8 +280,9 @@ void MainComponent::wirePitchEditor()
     };
     pitchPreviewCache.onRenderFailed = [this] (const RenderFingerprint& failed)
     {
-        if (failed.recipe != pitchPreviewDigest)
-            return;
+        if (failed != pitchPreviewFingerprint || ! pitchPreviewActive())
+            return; // 誰も待っていない遅着失敗にはトーストを出さない
+        pitchPreviewFingerprint = {};
         Log::warn ("pitch.preview_failed", "clip=" + juce::String (pitchSession.clipId()));
         if (! failed.recipe.isNull() && failed.recipe == pitchSuppressPreviewFailDigest)
             pitchSuppressPreviewFailDigest = {}; // 巻き戻し直後の再プレビュー失敗: 赤の失敗トーストを残す（同じ原因）
@@ -470,7 +471,6 @@ void MainComponent::pitchRequestPreview (bool suppressFailToast)
             const bool had = clip->previewDomain != nullptr;
             clip->previewDomain = nullptr;
             pitchPreviewRequest.reset();
-            pitchPreviewDigest = {};
             pitchPreviewFingerprint = {};
             if (had) { pushAudioValueSnapshot(); timeline.refresh(); }
             return;
@@ -479,7 +479,6 @@ void MainComponent::pitchRequestPreview (bool suppressFailToast)
         {
             clip->previewDomain = ClipDomains::makeNeutralDomain (clip->audio, clip->offsetSamples, clip->lengthSamples, sr); // 即座
             pitchPreviewRequest.reset();
-            pitchPreviewDigest = {};
             pitchPreviewFingerprint = {};
             pushAudioValueSnapshot();
             timeline.refresh();
@@ -490,7 +489,6 @@ void MainComponent::pitchRequestPreview (bool suppressFailToast)
         request.fingerprint = { clip->audio.get(), clip->offsetSamples, clip->lengthSamples, clip->transposeSemitones,
                                 clip->stretchRatio, sr, ContentDigest{} };
         request.sourceAudio = clip->audio;
-        pitchPreviewDigest = {};
         pitchPreviewFingerprint = request.fingerprint;
         if (auto cached = pitchPreviewCache.lookup (request.fingerprint))
         {
@@ -500,6 +498,8 @@ void MainComponent::pitchRequestPreview (bool suppressFailToast)
             timeline.refresh();
             return;
         }
+        clip->previewDomain = nullptr; // 旧プレビュー（WORLD）を外してから要求（失敗しても「原音で鳴っています」が嘘にならない）
+        pushAudioValueSnapshot();
         pitchPreviewRequest = std::move (request);
         pitchPreviewCache.syncNow();
         return;
@@ -518,7 +518,6 @@ void MainComponent::pitchRequestPreview (bool suppressFailToast)
                             recipe->stretchRatio, sr, recipe->digest() };
     request.sourceAudio = clip->audio;
     request.recipe = recipe;
-    pitchPreviewDigest = request.fingerprint.recipe;
     pitchPreviewFingerprint = request.fingerprint;
     if (auto cached = pitchPreviewCache.lookup (request.fingerprint))
     {
@@ -530,7 +529,7 @@ void MainComponent::pitchRequestPreview (bool suppressFailToast)
         return;
     }
     pitchPreviewRequest = std::move (request);
-    pitchSuppressPreviewFailDigest = suppressFailToast ? pitchPreviewDigest : ContentDigest{};
+    pitchSuppressPreviewFailDigest = suppressFailToast ? pitchPreviewFingerprint.recipe : ContentDigest{};
     pitchPreviewCache.syncNow();
 }
 
@@ -545,7 +544,6 @@ void MainComponent::pitchClearPreview()
                 changed = true;
             }
     pitchPreviewRequest.reset();
-    pitchPreviewDigest = {};
     pitchPreviewFingerprint = {};
     if (changed)
     {
@@ -565,6 +563,24 @@ void MainComponent::pitchWriteWorkingToClip (Clip& clip)
     {
         clip.resetRenderDomainToSelf(); // working は既に自範囲なので中の detach は冪等（無害）。domain を自範囲へ
         Log::info ("pitch.detach", "clip=" + juce::String (clip.id));
+    }
+}
+
+void MainComponent::pitchDropStalePreview()
+{
+    auto* clip = pitchTargetClip();
+    const bool dropped = clip != nullptr && clip->dropPreviewIfCurrent (renderSampleRate(), pitchPreviewActive());
+    // 対象外のクリップに previewDomain が残っていることは無い（cloneForNewId が落とす）が、念のため全クリップも見る
+    bool others = false;
+    for (auto& track : project->tracks)
+        for (auto& c : track.clips)
+            if (&c != clip && c.previewDomain != nullptr) { c.previewDomain = nullptr; others = true; }
+    if (dropped || others)
+    {
+        if (dropped) pitchPreviewFingerprint = {};
+        pushAudioValueSnapshot();
+        timeline.refresh();
+        pitchWindow.content().refresh();
     }
 }
 
@@ -605,23 +621,15 @@ void MainComponent::pitchEndEdit()
     pitchEdit.reset(); // トークンは使い捨て（古いトークンで別の begin を消さない）
     const bool replaced = pitchSession.revision() != edit.revisionAtBegin; // 外部置換（巻き戻し・再解析の着地）はユーザーの編集ではない
     const bool changed = pitchSession.isOpen() && ! replaced && ! (pitchSession.working() == edit.before);
-    // previewDomain を外すのは「取消（ここ）」か「本レンダーの装着（renderCache.onRenderReady）」の 2 箇所だけ。
-    // 確定時に先に外すと本レンダー（debounce＋合成）が着くまで旧音へ戻る
+    // previewDomain の寿命は Clip::dropPreviewIfCurrent の 1 文（活動中 or 要求未達なら残す）。ここでは確定/取消だけ行い、
+    // 最後に寿命規則を 1 回適用する（取消でも確定でも、本レンダーが要るなら着くまで今の音のまま＝音飛びなし）
     if (changed)
-    {
         pitchApplyWorking();
-        if (auto* clip = pitchTargetClip(); clip != nullptr && ! clip->renderPending (renderSampleRate()))
-            pitchClearPreview(); // 本レンダー不要（中立確定など）なら今すぐ activeDomain の音
-    }
-    else
-    {
-        if (! edit.committedInitial)
-            undoStack.abandon (edit.token); // 変化なし or 外部置換: undo も dirty も無し（判定はここ 1 箇所）
-        if (replaced && pitchSession.hasPreview())
-            pitchRequestPreview(); // 置換後のプレビュー（変更プレビューの着地）を鳴らし直す
-        else if (! replaced)
-            pitchClearPreview();   // 取消: 元の音へ
-    }
+    else if (! edit.committedInitial)
+        undoStack.abandon (edit.token); // 変化なし or 外部置換: undo も dirty も無し（判定はここ 1 箇所）
+    if (replaced && pitchSession.hasPreview())
+        pitchRequestPreview(); // 置換後のプレビュー（変更プレビューの着地）を鳴らし直す
+    pitchDropStalePreview();
     if (replaced)
         Log::info ("pitch.edit_replaced", "clip=" + juce::String (pitchSession.clipId()));
 }

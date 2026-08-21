@@ -5,11 +5,7 @@
 namespace
 {
 // activeDomain の実効指紋（Clip::renderPending と同じ定義）
-RenderFingerprint activeFingerprint (const RenderedDomain& domain)
-{
-    return { domain.sourceAudio.get(), domain.domainOffset, domain.domainLength,
-             domain.semitones, domain.ratio, domain.sampleRate, domain.recipeDigest };
-}
+RenderFingerprint activeFingerprint (const RenderedDomain& domain) { return domain.fingerprint(); }
 } // namespace
 
 std::shared_ptr<const RenderedDomain> ClipDomains::makeNeutralDomain (

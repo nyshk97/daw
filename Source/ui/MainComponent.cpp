@@ -365,6 +365,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         if (attachedAny)
         {
             // その場で装着できた（無加工化・キャッシュヒット）→ 音と長さが変わった
+            pitchDropStalePreview(); // インライン装着で追いついたプレビューを外す（onRenderReady は来ない）
             pushAudioValueSnapshot();
             timeline.refresh();
         }
@@ -375,10 +376,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         // 完了は装着だけで dirty にしない（値の変更時に dirty 済み。音は同じで再生成できる）
         if (ClipDomains::attachRenderResult (*project, renderSampleRate(), domain))
         {
-            // ピッチエディタのジェスチャー後に残していた previewDomain は、本レンダーが追いついたここで外す（音飛びなし）
-            if (auto* target = pitchTargetClip(); target != nullptr && ! pitchPreviewActive() && target->previewDomain != nullptr
-                && ! target->renderPending (renderSampleRate()))
-                pitchClearPreview();
+            pitchDropStalePreview(); // ジェスチャー後に残していた previewDomain は本レンダーが追いついたここで外す（音飛びなし）
             pushAudioValueSnapshot();
             timeline.refresh();
         }
@@ -400,6 +398,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
             // エディタ側の同期は quiet で呼び、赤の失敗トースト（dirty 化の事実）だけを残す。
             // quiet は失敗がエディタ対象クリップのものだったときだけ（他クリップの失敗で対象のトーストを黙らせない）
             const bool droppedChangePreview = pitchSyncAfterModelChange (/*quiet=*/ ownFailure);
+            pitchDropStalePreview(); // 巻き戻しで renderPending が解けた → 途中値のプレビューを残さない
             toast.show ((failed.hasRecipe() ? jp (u8"ピッチ補正の処理に失敗したため、編集を元に戻しました")
                                             : jp (u8"移調・伸縮の処理に失敗したため、値を元に戻しました"))
                             + (droppedChangePreview ? jp (u8"（変更プレビューも取り消しました）") : juce::String()),

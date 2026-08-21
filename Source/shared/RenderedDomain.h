@@ -122,6 +122,12 @@ struct RenderedDomain
     // クリップは部分範囲を参照して描く（チョップを何個作ってもピークの再計算が起きない）
     std::vector<float> peakCache;
 
+    // このドメインの実効指紋（Clip::renderPending・ClipDomains::attach の一致判定に使う 7 フィールド）
+    RenderFingerprint fingerprint() const
+    {
+        return { sourceAudio.get(), domainOffset, domainLength, semitones, ratio, sampleRate, recipeDigest };
+    }
+
     // 原音絶対位置 → render座標（ドメイン先頭からの距離）。
     // ⚠️ 原音座標と実効座標をまたぐ計算は必ずここを通す。相対値に × ratio / ÷ ratio を
     // 直接使うと、隣接 view の境界が一致せずバッファ終端を越えて読む（planの退化ケース参照）
