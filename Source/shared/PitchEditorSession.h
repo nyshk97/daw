@@ -27,6 +27,9 @@ public:
     Mode mode() const { return currentMode; }
     juce::uint64 clipId() const { return targetClipId; }
     juce::uint64 generation() const { return currentGeneration; } // 破棄・切替のたびに進む（遅着の結果を無視する）
+    // working が**外部要因で**差し替わるたびに進む（同期・変更プレビューの開始/取消/適用・解析着地・開閉）。ドラッグ中の
+    // 差し替え検出に O(1) で使う（digest の再計算をしない）。ユーザー自身の編集（mutableWorking 経由）では進まない
+    juce::uint64 revision() const { return currentRevision; }
     bool isOpen() const { return currentMode != Mode::closed; }
     bool sidecarBlocked() const { return blocked; }
 
@@ -50,6 +53,7 @@ public:
     // 補正なしのクリップを開く（解析待ち）。generation を進める
     void openForAnalysis (juce::uint64 clipId)
     {
+        ++currentRevision;
         close();
         targetClipId = clipId;
         currentMode = Mode::analyzing;
@@ -58,6 +62,7 @@ public:
     // 補正ありのクリップを開く（確定状態のまま）
     void openCommitted (juce::uint64 clipId, const PitchCorrection& committed, std::shared_ptr<const PitchCurve> curve)
     {
+        ++currentRevision;
         close();
         targetClipId = clipId;
         currentMode = Mode::committed;
@@ -70,6 +75,7 @@ public:
     void analysisFinished (std::shared_ptr<const PitchCurve> curve, juce::int64 domainOffset, juce::int64 domainLength,
                            const std::optional<ProjectKey>& projectKey, bool sidecarWritten)
     {
+        ++currentRevision;
         if (currentMode != Mode::analyzing)
             return;
         workingCurve = std::move (curve);
@@ -94,6 +100,7 @@ public:
     // 変更プレビューの開始（キーに合わせ直す・再解析の結果を working に）。committed からのみ
     bool beginChangePreview (const PitchCorrection& proposal, std::shared_ptr<const PitchCurve> proposalCurve)
     {
+        ++currentRevision;
         if (currentMode != Mode::committed)
             return false;
         backupState = workingState;
@@ -106,6 +113,7 @@ public:
     }
     std::optional<PitchCorrection> applyChange()
     {
+        ++currentRevision;
         if (currentMode != Mode::changePreview)
             return std::nullopt;
         currentMode = Mode::committed;
@@ -115,6 +123,7 @@ public:
     }
     bool cancelChange()
     {
+        ++currentRevision;
         if (currentMode != Mode::changePreview)
             return false;
         workingState = backupState.value_or (workingState);
@@ -129,6 +138,7 @@ public:
     // 閉じる・対象切替・対象消失。generation を進めて遅着を無視する
     void close()
     {
+        ++currentRevision;
         currentMode = Mode::closed;
         targetClipId = 0;
         workingState = {};
@@ -142,6 +152,7 @@ public:
     // undo 等で永続モデルが変わったときの再同期（committed のときだけ。working を永続値で置き換える）
     void syncCommitted (const PitchCorrection& committed, std::shared_ptr<const PitchCurve> curve)
     {
+        ++currentRevision;
         if (currentMode != Mode::committed)
             return;
         workingState = committed;
@@ -156,6 +167,7 @@ private:
     Mode currentMode = Mode::closed;
     juce::uint64 targetClipId = 0;
     juce::uint64 currentGeneration = 0;
+    juce::uint64 currentRevision = 0;
     bool blocked = false;
     PitchCorrection workingState;
     std::shared_ptr<const PitchCurve> workingCurve;

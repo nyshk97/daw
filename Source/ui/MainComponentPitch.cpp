@@ -69,6 +69,12 @@ void MainComponent::wirePitchEditor()
 
     view.onBeginEdit = [this] { pitchBeginEdit(); };
     view.onEdited = [this] { pitchApplyWorking(); };
+    view.onCancelEdit = [this]
+    {
+        // begin の後に編集が不成立（往復ドラッグ・クランプ・split/merge 失敗）。初回確定を伴った begin は実変更なので残す
+        if (! pitchLastBeginCommitted)
+            undoStack.abandonLast();
+    };
     view.onEnable = [this]
     {
         if (pitchSession.mode() != PitchEditorSession::Mode::initialPreview || ! pitchSession.editable())
@@ -532,12 +538,14 @@ void MainComponent::pitchBeginEdit()
     auto* clip = pitchTargetClip();
     if (clip == nullptr || ! pitchSession.editable())
         return;
+    pitchLastBeginCommitted = false;
     if (pitchSession.mode() == PitchEditorSession::Mode::initialPreview)
     {
         // 最初の明示編集で初回プレビューを確定（以後の編集は永続モデルへ直接）。undo はここで 1 件
         undoStack.begin (*project);
         if (pitchSession.commitInitial().has_value())
         {
+            pitchLastBeginCommitted = true;
             clip->previewDomain = nullptr;
             pitchPreviewRequest.reset();
             pitchApplyWorking(); // 編集が成立しなくても（同じ段で離す等）確定は起きている: 書き込み・dirty・レンダー同期

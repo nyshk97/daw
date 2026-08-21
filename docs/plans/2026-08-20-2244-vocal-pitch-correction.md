@@ -626,6 +626,11 @@
   捨てる。`toggleNoteBypass`・digest 1 回計算・debug の no-op ガード・抑止クリアを `pitchRequestPreview` 先頭へ。
   Re-analyze は「ゼロから」で割り切り、手で置いた音が戻る旨を状態表示（Cancel で戻せる）。ドラッグの undo 区切り（onBeginEdit）は
   モード決定時でなく**最初の実変更の直前**に（往復して同じ段で離す／クランプで動かないドラッグは undo を積まない）
+- 2026-08-21 /code-review 12 回目（空 undo の本丸）: `UndoStack::abandonLast()`（begin で退避した redo も戻す・間に undo/begin が
+  入れば no-op）＋エディタの `onCancelEdit`。ドラッグ（上下・横とも）が開始時の状態に戻って終わった／クランプで動かなかった／
+  split・merge が false、の経路は begin を取り消す（初回確定を伴った begin は実変更なので残す）。差し替え検出は
+  `PitchEditorSession::revision()`（O(1)・両モード）。範囲チェックと差し替え検出を mode 決定の前に移し、中断時は試聴も止める。
+  `setNoteTarget` は bypass なら拒否（UI/debug 共通）、digest は bypass 中の pinned を含めない（旧 JSON 正規化で指紋不変）
 - 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
   自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
   検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、

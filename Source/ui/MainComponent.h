@@ -459,6 +459,7 @@ private:
     juce::uint64 pitchAnalysisGeneration = 0; // ワーカーへ渡す generation（切替・再解析で進む）
     bool pitchReanalyzing = false;            // 再解析（確定状態から）の結果待ち
     juce::String pitchBlockedMessage;
+    bool pitchLastBeginCommitted = false; // 直前の pitchBeginEdit が初回プレビューを確定した（＝モデルが変わった）か。onCancelEdit の可否
     ContentDigest pitchSuppressPreviewFailDigest; // この digest のプレビューが失敗しても青トーストを出さない（失敗巻き戻し直後の再プレビュー。成功・キャッシュ命中・別要求で自然に無効）
     ReportWindow reportWindow;           // 分析レポートの閲覧（独立ウィンドウ・1枚使い回し）
     ToastBar toast;                      // 右下の一時通知（レポート生成の完了/失敗）

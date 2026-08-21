@@ -820,6 +820,15 @@ void PitchEditorView::modifierKeysChanged (const juce::ModifierKeys& mods)
     }
 }
 
+void PitchEditorView::abortDrag (bool auditionStarted)
+{
+    const bool began = drag.has_value() && drag->began;
+    drag.reset();
+    if (auditionStarted && onDragAuditionEnd) onDragAuditionEnd(); // 試聴バッファ・分解キャッシュを残さない
+    if (began && onCancelEdit) onCancelEdit();
+    repaint();
+}
+
 void PitchEditorView::splitAt (int noteIndex, juce::Point<int> p)
 {
     const Clip* clip = getClip ? getClip() : nullptr;
@@ -835,6 +844,8 @@ void PitchEditorView::splitAt (int noteIndex, juce::Point<int> p)
         selected.clear();
         if (onEdited) onEdited();
     }
+    else if (onCancelEdit)
+        onCancelEdit();
     repaint();
 }
 
@@ -919,7 +930,7 @@ void PitchEditorView::mouseDown (const juce::MouseEvent& e)
     d.targetAtStart = w.notes[(size_t) idx].targetMidi;
     d.pinnedAtStart = w.notes[(size_t) idx].pinned;
     d.snap = ! e.mods.isAltDown();
-    d.workingDigestAtStart = w.digest();
+    d.revisionAtStart = session->revision();
     const auto s = w.resolve (w.notes[(size_t) idx].start, geo.domainOffset, geo.domainLength);
     const auto en = w.resolve (w.notes[(size_t) idx].end, geo.domainOffset, geo.domainLength);
     d.startAtStart = geo.timeMap.map (s);
@@ -949,26 +960,24 @@ void PitchEditorView::mouseDrag (const juce::MouseEvent& e)
     auto& d = *drag;
     const auto geo = computeGeometry (*clip);
     const int dx = e.x - d.start.x, dy = e.y - d.start.y;
+    // 範囲と差し替えの確認を**最初に**（押下中に ⌘Z・再解析の着地で working が縮む／入れ替わる）
+    auto& w = session->mutableWorking();
+    if (d.noteIndex < 0 || d.noteIndex >= (int) w.notes.size() || session->revision() != d.revisionAtStart)
+    {
+        abortDrag (d.mode == Drag::Mode::pitch);
+        return;
+    }
     if (d.mode == Drag::Mode::undecided)
     {
         if (std::abs (dx) < 4 && std::abs (dy) < 4) return;
         d.mode = std::abs (dy) > std::abs (dx) ? Drag::Mode::pitch : Drag::Mode::time;
-        if (d.mode == Drag::Mode::pitch && session->working().notes[(size_t) d.noteIndex].bypass)
+        if (d.mode == Drag::Mode::pitch && w.notes[(size_t) d.noteIndex].bypass)
         {
             drag.reset(); // bypass 中は音程を動かさない（聞こえないまま動かして解除時に跳ぶのを防ぐ）。横移動は可
             return;
         }
-        // undo の区切り（onBeginEdit）は最初の**実変更**の直前に呼ぶ（下）。往復して同じ段で離したドラッグは何も積まない
+        // undo の区切り（onBeginEdit）は最初の**実変更**の直前に呼ぶ（下）。不成立なら mouseUp で onCancelEdit
         if (d.mode == Drag::Mode::pitch && onDragAuditionStart) onDragAuditionStart (d.noteIndex);
-    }
-    auto& w = session->mutableWorking();
-    if (d.noteIndex < 0 || d.noteIndex >= (int) w.notes.size()) return;
-    if (d.mode == Drag::Mode::pitch && w.digest() != d.workingDigestAtStart)
-    {
-        // 自分の直前の編集以外で working が変わった（巻き戻し・再解析の着地）: このドラッグは捨てる
-        drag.reset();
-        repaint();
-        return;
     }
     if (d.mode == Drag::Mode::pitch)
     {
@@ -979,12 +988,11 @@ void PitchEditorView::mouseDrag (const juce::MouseEvent& e)
             {
                 d.began = true;
                 if (onBeginEdit) onBeginEdit(); // 1ドラッグ = 1件（区切りは最初の実変更）。初回プレビューならここで確定
-                if (! canEdit() || d.noteIndex >= (int) session->working().notes.size()) { drag.reset(); return; }
-                d.workingDigestAtStart = session->working().digest(); // 確定で working は変わらないが念のため揃える
+                if (! canEdit() || d.noteIndex >= (int) session->working().notes.size()) { abortDrag (true); return; }
+                d.revisionAtStart = session->revision(); // 確定は revision を進めないが、揃えておく
             }
             // 各ステップで規則そのものを通す（途中状態＝確定状態。往復して戻れば pinned も戻り、聴いた音と残る音が一致する）
             d.moved = PitchCorrections::setNoteTarget (w, d.noteIndex, target, d.targetAtStart, d.pinnedAtStart);
-            d.workingDigestAtStart = w.digest(); // 自分の編集を「期待する状態」として更新
             if (onDragAuditionUpdate) onDragAuditionUpdate(); // 動かしながら、その音が鳴る
             repaint();
         }
@@ -1014,13 +1022,14 @@ void PitchEditorView::mouseDrag (const juce::MouseEvent& e)
                     return;
                 d.began = true;
                 if (onBeginEdit) onBeginEdit();
-                if (! canEdit() || d.noteIndex >= (int) session->working().notes.size()) { drag.reset(); return; }
+                if (! canEdit() || d.noteIndex >= (int) session->working().notes.size()) { abortDrag (false); return; }
+                d.revisionAtStart = session->revision();
             }
             const auto applied = PitchCorrections::moveNote (w, d.noteIndex, step, geo.domainOffset, geo.domainLength, geo.stretchRatio, sr);
             if (applied != 0)
             {
                 d.appliedDelta += applied;
-                d.moved = true;
+                d.moved = d.appliedDelta != 0; // 往復して元の位置に戻れば不成立
                 lastDragForHatch = d;
                 lastDragValid = true;
                 repaint();
@@ -1036,13 +1045,21 @@ void PitchEditorView::mouseUp (const juce::MouseEvent& e)
     auto d = *drag;
     drag.reset();
     if (d.mode == Drag::Mode::pitch && onDragAuditionEnd) onDragAuditionEnd();
-    if (d.mode == Drag::Mode::pitch && session != nullptr && d.noteIndex >= 0 && d.noteIndex < (int) session->working().notes.size())
+    if (session != nullptr && d.mode != Drag::Mode::undecided)
     {
         // 確定は各ステップで済んでいる。moved は「開始時と状態が違うか」（往復して戻せば false ＝ 何も起きない）。
-        // working が差し替わっていたら（期待する digest と不一致）ユーザーが置いていない値なので適用しない
-        const auto& w = session->working();
-        const auto& n = w.notes[(size_t) d.noteIndex];
-        d.moved = canEdit() && w.digest() == d.workingDigestAtStart && (n.targetMidi != d.targetAtStart || n.pinned != d.pinnedAtStart);
+        // working が差し替わっていたらユーザーが置いていない値なので適用しない
+        const bool valid = canEdit() && session->revision() == d.revisionAtStart && d.noteIndex >= 0
+                        && d.noteIndex < (int) session->working().notes.size();
+        if (d.mode == Drag::Mode::pitch)
+        {
+            const auto& n = valid ? session->working().notes[(size_t) d.noteIndex] : PitchNote{};
+            d.moved = valid && (n.targetMidi != d.targetAtStart || n.pinned != d.pinnedAtStart);
+        }
+        else
+            d.moved = valid && d.appliedDelta != 0;
+        if (d.began && ! d.moved && onCancelEdit)
+            onCancelEdit(); // begin は変更前に積むしかないので、不成立は後から取り消す
     }
     if (d.moved)
     {
@@ -1108,6 +1125,8 @@ bool PitchEditorView::keyPressed (const juce::KeyPress& key)
                 selected.insert (a);
                 if (onEdited) onEdited();
             }
+            else if (onCancelEdit)
+                onCancelEdit();
             repaint();
         }
         return true;

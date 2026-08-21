@@ -37,7 +37,7 @@ public:
     // フック内から begin()/undo()/redo() を呼び返さないこと（再入は想定しない）
     std::function<void()> willBegin;
 
-    // 編集操作の直前に呼ぶ。redo履歴は破棄される
+    // 編集操作の直前に呼ぶ。redo履歴は破棄される（直後に abandonLast() で取り消すまでは退避しておく）
     void begin (const Project& project, EditKind kind = EditKind::structure)
     {
         if (willBegin != nullptr)
@@ -48,7 +48,22 @@ public:
         stripClipDomains (undoStates.back().tracks);
         if ((int) undoStates.size() > maxDepth)
             undoStates.erase (undoStates.begin());
+        abandonedRedo = std::move (redoStates);
         redoStates.clear();
+        lastBeginDepth = undoStates.size();
+    }
+
+    // 直前の begin() の取り消し。begin は変更**前**の状態を積むしかないので、その後に編集が不成立だった
+    //（往復ドラッグで同じ段に戻った・クランプで動かなかった・split/merge が false）経路は後からこれで捨てる。
+    // 呼び出し側が「モデルは begin 時点から変わっていない」ことを保証する。退避していた redo 履歴も戻す
+    void abandonLast()
+    {
+        if (undoStates.empty() || undoStates.size() != lastBeginDepth)
+            return; // 間に別の begin / undo が入っていたら触らない
+        undoStates.pop_back();
+        redoStates = std::move (abandonedRedo);
+        abandonedRedo.clear();
+        lastBeginDepth = 0;
     }
 
     // ガチャ「残す」の確定: 呼び出し側が保持していた**仮配置前の tracks / BPM / キー / アンカー**を
@@ -72,6 +87,7 @@ public:
     // kind には「復元した編集の種類」が入る（往復で同じ値。呼び出し側の同期範囲の判断に使う）
     bool undo (Project& project, EditKind& kind)
     {
+        lastBeginDepth = 0; // 以後 abandonLast は効かない
         if (undoStates.empty())
             return false;
         kind = undoStates.back().kind;
@@ -85,6 +101,7 @@ public:
 
     bool redo (Project& project, EditKind& kind)
     {
+        lastBeginDepth = 0;
         if (redoStates.empty())
             return false;
         kind = redoStates.back().kind;
@@ -173,4 +190,8 @@ private:
     }
 
     std::vector<State> undoStates, redoStates;
+
+    std::vector<State> abandonedRedo; // 直前の begin で捨てた redo（abandonLast で戻す）
+
+    size_t lastBeginDepth = 0;        // 直前の begin 直後の undoStates.size()（abandonLast の対象確認）
 };

@@ -33,6 +33,7 @@ public:
     std::function<juce::String()> getBlockedMessage;        // サイドカー書込失敗などの理由（空なら無し）
 
     std::function<void()> onBeginEdit;  // 離散編集の直前（undo 区切り・初回プレビューの確定）
+    std::function<void()> onCancelEdit; // onBeginEdit の後に編集が不成立だった（モデル不変）。undo の区切りを取り消す
     std::function<void()> onEdited;     // 編集後（モデルへ反映・レンダー要求・dirty）
     std::function<void()> onEnable;
     std::function<void (PitchScaleMode, ProjectKey)> onScaleChanged; // Scale 選択＝合わせ直しのプレビュー開始
@@ -141,7 +142,7 @@ private:
         bool moved = false;
         bool began = false; // onBeginEdit（undo の区切り・初回確定）を呼んだか。最初の実変更の直前に呼ぶ（往復で戻せば空の undo を積まない）
         bool snap = true;
-        ContentDigest workingDigestAtStart; // ドラッグ中に working が差し替わった（巻き戻し・再解析の着地）ら確定しない
+        juce::uint64 revisionAtStart = 0;   // session->revision()。ドラッグ中に working が差し替わった（巻き戻し・再解析の着地）ら捨てる
     };
     std::optional<Drag> drag;
     std::set<int> selected;
@@ -149,6 +150,7 @@ private:
     juce::Point<int> hoverPos;
     bool hoverSplit = false; // ⌘ を押してブロブに乗っている（分割位置の点線とハサミカーソル）
     void splitAt (int noteIndex, juce::Point<int> p);
+    void abortDrag (bool auditionStarted);
     double hatchFadeUntil = 0.0; // 斜線・ゴーストをドラッグ後しばらく残す（ms）
     Drag lastDragForHatch;
     bool lastDragValid = false;

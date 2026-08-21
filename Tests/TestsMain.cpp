@@ -15507,6 +15507,9 @@ void testPitchSplitMerge()
         auto m3 = makeThreeNotes(); m3.notes[1].pinned = true; m3.notes[1].targetMidi = 70; m3.timeNodes[3].sourceSample = msSamples (1450); // 右が長い
         PitchCorrections::mergeNotes (m3, 1, 0, dom);
         expect (m3.notes[1].targetMidi == 70 && m3.notes[1].pinned, "片側だけ pinned ならその側の目標（長さに依らない）");
+        auto m4 = makeThreeNotes(); m4.notes[1].pinned = true; m4.notes[1].bypass = true; m4.notes[2].bypass = true;
+        PitchCorrections::mergeNotes (m4, 1, 0, dom);
+        expect (m4.notes[1].bypass && ! m4.notes[1].pinned, "結合で両方 bypass なら pinned は付かない（正規化）");
     }
 }
 
@@ -15588,8 +15591,18 @@ void testPitchTargetCurve()
         PitchCorrections::setNoteBypass (p3, 0, false);
         expect (! p3.notes[0].pinned, "解除しても pinned は戻らない");
         PitchCorrections::setNoteBypass (p3, 0, true);
-        PitchCorrections::setNoteTarget (p3, 0, 65, 62, false);
-        expect (p3.notes[0].targetMidi == 65 && ! p3.notes[0].pinned, "bypass 中は目標を変えても pinned にならない");
+        expect (! PitchCorrections::setNoteTarget (p3, 0, 65, 62, false) && p3.notes[0].targetMidi == 62 && ! p3.notes[0].pinned,
+                "bypass 中は目標を置けない（false・不変）");
+        // 戻り値は「開始時比」: 往復で戻せば false、pinnedAtStart=true で戻しても false（pinned は維持）
+        auto p5 = pc;
+        expect (PitchCorrections::setNoteTarget (p5, 1, 66, 64, false), "変えたら true");
+        expect (! PitchCorrections::setNoteTarget (p5, 1, 64, 64, false) && ! p5.notes[1].pinned, "戻せば false・pinned も戻る");
+        p5.notes[1].pinned = true;
+        expect (! PitchCorrections::setNoteTarget (p5, 1, 64, 64, true) && p5.notes[1].pinned, "pinned 開始で戻しても false・pinned 維持");
+        // digest は bypass 中の pinned を含めない（旧 JSON の正規化で指紋が変わらない）
+        auto p6 = pc; p6.notes[0].bypass = true; p6.notes[0].pinned = true;
+        auto p7 = pc; p7.notes[0].bypass = true; p7.notes[0].pinned = false;
+        expect (p6.digest() == p7.digest(), "bypass 中の pinned は digest に影響しない");
         auto json = p3.toJson();
         json.getDynamicObject()->getProperty ("notes").getArray()->getReference (0).getDynamicObject()->setProperty ("pinned", true);
         auto loaded = PitchCorrection::fromJson (json);
@@ -16120,6 +16133,31 @@ void testVocalNoteAudition()
     }
 }
 
+void testUndoAbandonLast()
+{
+    beginTest ("UndoStack abandonLast (begin without edit leaves no entry, redo preserved)");
+    Project project;
+    project.sampleRate = 48000.0;
+    Track track; track.id = project.allocateId(); project.tracks.push_back (track);
+    UndoStack undo;
+    undo.begin (project);
+    project.tracks[0].name = "a";
+    UndoStack::EditKind kind;
+    expect (undo.undo (project, kind) && project.tracks[0].name != "a", "1件 undo");
+    expect (undo.canRedo(), "redo あり");
+    undo.begin (project);          // 編集が不成立だった begin
+    expect (! undo.canRedo(), "begin で redo は一旦消える");
+    undo.abandonLast();
+    expect (undo.canRedo(), "abandonLast で redo が戻る");
+    expect (! undo.canUndo(), "空の begin は残らない");
+    expect (undo.redo (project, kind) && project.tracks[0].name == "a", "redo が効く");
+    // 間に undo が入ったら abandonLast は効かない
+    undo.begin (project); project.tracks[0].name = "b";
+    undo.undo (project, kind);
+    undo.abandonLast();
+    expect (undo.canRedo() && project.tracks[0].name == "a", "undo 後の abandonLast は no-op");
+}
+
 } // namespace
 
 int main (int argc, char** argv)
@@ -16301,6 +16339,7 @@ int main (int argc, char** argv)
     testPitchProjectRoundtrip();
     testPitchEditorSession();
     testVocalNoteAudition();
+    testUndoAbandonLast();
 
 
     if (failureCount > 0)

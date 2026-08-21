@@ -199,7 +199,7 @@ ContentDigest PitchCorrection::digest() const
         d.add ((std::int32_t) n.end.kind); d.add ((std::int32_t) n.end.index);
         d.add ((std::int32_t) n.targetMidi);
         d.add ((std::int32_t) (n.bypass ? 1 : 0));
-        d.add ((std::int32_t) (n.pinned ? 1 : 0));
+        d.add ((std::int32_t) (n.pinned && ! n.bypass ? 1 : 0)); // bypass 中の pinned は音に出ない（旧 JSON の正規化で指紋を変えない）
     }
     return d.finish();
 }
@@ -506,9 +506,11 @@ bool PitchCorrections::setNoteTarget (PitchCorrection& pc, int noteIndex, int ta
     if (noteIndex < 0 || noteIndex >= (int) pc.notes.size())
         return false;
     auto& n = pc.notes[(size_t) noteIndex];
+    if (n.bypass)
+        return false; // bypass 中は音程を置けない（UI・debug とも同じ規則）
     targetMidi = juce::jlimit (0, 127, targetMidi);
     n.targetMidi = targetMidi;
-    n.pinned = ! n.bypass && (pinnedAtStart || targetMidi != targetAtStart);
+    n.pinned = pinnedAtStart || targetMidi != targetAtStart;
     return targetMidi != targetAtStart || n.pinned != pinnedAtStart;
 }
 

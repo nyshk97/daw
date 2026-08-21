@@ -145,7 +145,7 @@ void resnap (PitchCorrection& pc, const PitchCurve& curve, juce::int64 domainOff
 // ---- 編集操作（UI から呼ぶだけ。規則はここに置きテストで固定）----
 
 // 目標音を手で置く（ドラッグの各ステップと終了時・キー操作・debug）。開始時と違う目標になったときだけ pinned を立てる
-// （途中で往復して戻せば付かない）。bypass 中のノートには pinned を立てない（bypass ⇒ pinned=false の不変条件）。
+// （途中で往復して戻せば付かない）。bypass 中のノートは変更せず false（bypass ⇒ pinned=false の不変条件）。
 // 戻り値: ノートの状態が開始時から変わったか（target か pinned）
 bool setNoteTarget (PitchCorrection& pc, int noteIndex, int targetMidi, int targetAtStart, bool pinnedAtStart);
 // バイパスの切替。bypass = 素に戻す、なので pinned も外す（解除しても戻らない）
