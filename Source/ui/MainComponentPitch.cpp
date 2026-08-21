@@ -282,24 +282,18 @@ void MainComponent::wirePitchEditor()
     {
         if (failed != pitchPreviewFingerprint || ! pitchPreviewActive())
             return; // 誰も待っていない遅着失敗にはトーストを出さない
-        pitchPreviewFingerprint = {};
-        pitchPreviewRequest.reset();
-        // 失敗したプレビューの処理はここ 1 箇所: 前のプレビューを外し、鳴っている音（activeDomain）に合った文言を出す
+        // 失敗したプレビューの処理はここ 1 箇所: 前のプレビューを外し（待っている本レンダーと同内容なら残す）、
+        // 鳴っている音（activeDomain）に合った文言を 1 回組み立ててトーストとエディタ内表示の両方に出す
         auto* clip = pitchTargetClip();
         const bool activeHasCorrection = clip != nullptr && clip->activeDomain != nullptr && clip->activeDomain->correction != nullptr;
-        if (clip != nullptr && clip->previewDomain != nullptr)
-        {
-            clip->previewDomain = nullptr;
-            pushAudioValueSnapshot();
-            timeline.refresh();
-        }
+        pitchClearPreview (/*keepMatchingPending=*/ true);
         Log::warn ("pitch.preview_failed", "clip=" + juce::String (pitchSession.clipId()));
+        const auto sounding = activeHasCorrection ? jp (u8"確定済みの音で鳴っています") : jp (u8"原音で鳴っています");
         if (! failed.recipe.isNull() && failed.recipe == pitchSuppressPreviewFailDigest)
             pitchSuppressPreviewFailDigest = {}; // 巻き戻し直後の再プレビュー失敗: 赤の失敗トーストを残す（同じ原因）
         else
-            toast.show (activeHasCorrection ? jp (u8"ピッチ補正のプレビューを作れませんでした（確定済みの音で鳴っています）")
-                                            : jp (u8"ピッチ補正のプレビューを作れませんでした（原音で鳴っています）"), true, nullptr);
-        pitchWindow.content().showStatus (jp (u8"プレビューのレンダーに失敗（原音で鳴っています）"));
+            toast.show (jp (u8"ピッチ補正のプレビューを作れませんでした（") + sounding + jp (u8"）"), true, nullptr);
+        pitchWindow.content().showStatus (jp (u8"プレビューのレンダーに失敗（") + sounding + jp (u8"）"));
         // 永続値の巻き戻しも dirty 化もしない（エディタ内表示のみ）
     };
 
@@ -542,13 +536,17 @@ void MainComponent::pitchRequestPreview (bool suppressFailToast)
     pitchPreviewCache.syncNow();
 }
 
-void MainComponent::pitchClearPreview()
+void MainComponent::pitchClearPreview (bool keepMatchingPending)
 {
     bool changed = false;
+    const auto sr = renderSampleRate();
     for (auto& track : project->tracks)
         for (auto& clip : track.clips)
             if (clip.previewDomain != nullptr)
             {
+                // keepMatchingPending: 待っている本レンダーと同内容のプレビュー（前のジェスチャーの確定分）は残す
+                if (keepMatchingPending && clip.renderPending (sr) && clip.previewDomain->fingerprint() == clip.requestedFingerprint (sr))
+                    continue;
                 clip.previewDomain = nullptr;
                 changed = true;
             }
@@ -579,10 +577,11 @@ bool MainComponent::pitchDropStalePreview()
 {
     auto* clip = pitchTargetClip();
     const bool active = pitchPreviewActive();
-    const bool dropped = clip != nullptr && clip->dropPreviewIfCurrent (renderSampleRate(), active);
-    if (! active)
+    bool dropped = clip != nullptr && clip->dropPreviewIfCurrent (renderSampleRate(), active);
+    if (! active && (clip == nullptr || pitchPreviewFingerprint != clip->requestedFingerprint (renderSampleRate())))
     {
-        // 活動中でなければ「待っている要求」も無い（遅着の結果を装着→即 drop する無駄と snapshot の二重 push を防ぐ）
+        // 活動中でなく、待っている本レンダーとも別内容の要求は捨てる（遅着の結果を装着→即 drop する無駄を防ぐ）。
+        // 同内容の in-flight（ジェスチャー最後のステップ）は生かす: 着弾時に寿命規則が「同内容」で保持し、本レンダー装着で外れる
         pitchPreviewFingerprint = {};
         pitchPreviewRequest.reset();
     }
@@ -593,6 +592,7 @@ bool MainComponent::pitchDropStalePreview()
             {
                 Log::warn ("pitch.preview_on_other_clip", "clip=" + juce::String (c.id));
                 c.previewDomain = nullptr;
+                dropped = true;
             }
     if (dropped)
     {

@@ -339,7 +339,7 @@ private:
     void pitchDiscardPreviewForExport();                    // ⌘B/⌘E の開始時: 未確定プレビューを自動破棄
     Clip* pitchTargetClip();                                // session の clipId で毎回引き直す（無ければ nullptr）
     void pitchRequestPreview (bool suppressFailToast = false); // working からプレビュー要求（専用 RenderCache）。suppress = この要求の失敗トーストを出さない
-    void pitchClearPreview();                               // previewDomain を外して snapshot を再 push
+    void pitchClearPreview (bool keepMatchingPending = false); // previewDomain を外して snapshot を再 push（keepMatchingPending = 待っている本レンダーと同内容は残す）
     void pitchBeginEdit();                                  // 編集ジェスチャーの開始（初回プレビューの確定・undo 区切り）。進行中なら先に終える
     void pitchEndEdit();                                    // 終了: 変化なし → undo 取り消し／あり → 確定（dirty・レンダー要求）
     void pitchPreviewWorking();                             // ジェスチャー途中: previewDomain で鳴りだけ更新（clip は触らない）

@@ -392,13 +392,13 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
         if (ClipDomains::rollbackFailedRequest (*project, renderSampleRate(), failed))
         {
             setDirty (true);
-            pushAudioValueSnapshot();
-            timeline.refresh();
             // 失敗の種別で文言を分ける（recipe 付き = ピッチ補正の WORLD レンダー）。トーストは単一スロットの後勝ちなので、
             // エディタ側の同期は quiet で呼び、赤の失敗トースト（dirty 化の事実）だけを残す。
             // quiet は失敗がエディタ対象クリップのものだったときだけ（他クリップの失敗で対象のトーストを黙らせない）
             const bool droppedChangePreview = pitchSyncAfterModelChange (/*quiet=*/ ownFailure);
-            pitchDropStalePreview(); // 巻き戻しで renderPending が解けた → 途中値のプレビューを残さない
+            pitchDropStalePreview(); // 巻き戻しで renderPending が解けた → 途中値のプレビューを残さない（push は下の 1 回）
+            pushAudioValueSnapshot();
+            timeline.refresh();
             toast.show ((failed.hasRecipe() ? jp (u8"ピッチ補正の処理に失敗したため、編集を元に戻しました")
                                             : jp (u8"移調・伸縮の処理に失敗したため、値を元に戻しました"))
                             + (droppedChangePreview ? jp (u8"（変更プレビューも取り消しました）") : juce::String()),
@@ -4727,7 +4727,9 @@ void MainComponent::reconcileClipRenderState (bool immediate)
     else
         renderCache.requestSync(); // 通常の編集はデバウンス（値が落ち着いてから積む）
     pitchSyncAfterModelChange(); // エディタの対象を id で引き直し、プレビューを現在の状態から作り直す
-    if (pitchDropStalePreview()) // reconcile も activeDomain を差し替える経路（包含が崩れて中立へ）
+    // reconcile も activeDomain を差し替える経路（包含が崩れて中立へ）。通常編集（immediate=false）は呼び出し元の
+    // pushSnapshot が直後に全体を push するので、ここで push するのは undo/読込（immediate）のときだけ
+    if (pitchDropStalePreview() && immediate)
         pushAudioValueSnapshot();
 }
 

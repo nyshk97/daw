@@ -48,7 +48,7 @@
 | v20 移調との関係 | **合算して1パス**でレンダー（各時刻の移動量 = 補正量 + transposeSemitones）。キー変更で補正が消えず、二重加工の劣化も無い |
 | エディタの場所 | 右クリック →「ピッチ補正…」→ **独立ウィンドウ**（`MixerWindow` の型。1枚を使い回し・別リージョンを開くと中身が入れ替わる・位置サイズはセッション内維持）。デュアルモニター前提。ダブルクリックは空けておく |
 | エディタの見え方 | 鍵盤＋グリッド（ピアノロールのレイアウト流用）にノートを**ブロブ**（矩形＋元ピッチカーブ＋補正後カーブ）で描く |
-| 試聴 | **メイン再生（Space）でミックスごと聴く**。編集ジェスチャー中（ドラッグ・スライダー）は `Clip::previewDomain` に中間結果を載せて即座に鳴り、確定後は本レンダー（デバウンス→裏レンダー）が追いついた時点で previewDomain を外して差し替える（＝途中は新しい音・確定直後も旧音へ戻らない）。previewDomain の寿命は `Clip::dropPreviewIfCurrent`（活動中 or 要求未達なら残す）の 1 文。**ブロブクリックでそのノートだけ単独試聴**（`effectiveDomain(clipId)`＝「previewDomain があればそれ、無ければ activeDomain」を解決する共通関数の結果のメモリ内範囲を鳴らす専用 audition 経路。`AudioFilePreview` はファイル先頭からのデコード専用で流用不可） |
+| 試聴 | **メイン再生（Space）でミックスごと聴く**。編集ジェスチャー中（ドラッグ・スライダー）は `Clip::previewDomain` に中間結果を載せて即座に鳴り、確定後は本レンダー（デバウンス→裏レンダー）が追いついた時点で previewDomain を外して差し替える（＝途中は新しい音・確定直後も旧音へ戻らない）。previewDomain の寿命は `Clip::dropPreviewIfCurrent`（活動中 or 待っている本レンダーと同内容なら残す）の 1 文。**ブロブクリックでそのノートだけ単独試聴**（`effectiveDomain(clipId)`＝「previewDomain があればそれ、無ければ activeDomain」を解決する共通関数の結果のメモリ内範囲を鳴らす専用 audition 経路。`AudioFilePreview` はファイル先頭からのデコード専用で流用不可） |
 | 開いただけの副作用 | **project・undo・dirty への副作用なし**（例外: 解析キャッシュ＝サイドカーだけは保存する。派生データで再生成可能・undo 対象外）。自動スナップの結果は**未確定プレビュー**として**メイン再生でも聴ける**（`MainComponent` 所有の `clipId → previewDomain` 一時マップ。再生 snapshot 構築・描画・単独試聴はすべて共通の `effectiveDomain(clipId)` で解決し、`Clip::activeDomain` は触らない。ガチャ仮配置と同じ「メモリ内＋baseline で復元」の型。ミックスの中で聴いて判断するのが目的なので、聴けないプレビューは意味がない）。ウィンドウを閉じる・対象クリップを切り替えると baseline へ戻す。最初の明示編集または「補正を有効化」で**1件の undo として確定**し、そこで初めて dirty になる。「再解析」も確定まで旧解析を保持しキャンセル可 |
 | 保存 | 解析結果（ピッチカーブ＋有声度）は **`clip-NNN.<curveDigest>.pitch` サイドカー**（WAV の隣・バイナリ・**世代ごとに不変ファイル**。再解析は**解析内容が変わった場合のみ**新しい digest のファイルを追加し（同じ内容なら同じ digest＝既存ファイルを再利用）、旧世代を上書きしない。補正状態は自分が乗っている `curveDigest` を保持し、undo/キャンセル/同じ WAV を共有する別クリップが旧世代を参照し続けられる）。ノート編集・つまみ・スケール上書きは **project.json（v21）**。レンダー結果は読込時に再生成（v20 同様） |
 | 痕跡 | リージョン隅に**バッジ**（移調の `+2` と同じ流儀。補正が1ノートでも有効なときだけ） |
@@ -659,6 +659,10 @@
   削除し、失敗処理を `pitchPreviewCache.onRenderFailed` の 1 箇所に（そこで外す・文言は「確定済みの音／原音で鳴っています」を
   activeDomain で分岐）。非活動なら fingerprint/request を必ずリセット。reconcile 後にも寿命規則。push は各経路で 1 回。
   「対象外クリップの previewDomain」は warn ログに
+- 2026-08-21 /code-review 19 回目: 巻き戻し経路の push を drop の後に（外した結果を engine へ）。非活動時の要求リセットは
+  「待っている本レンダーと別内容」のときだけ（ジェスチャー最後の in-flight を孤児にしない）。プレビュー失敗は
+  `pitchClearPreview(keepMatchingPending)` で同内容は残す。失敗文言は 1 回組み立ててトーストとエディタ内表示へ。
+  不変条件 sweep も dropped 扱い。reconcile 内の push は immediate のときだけ。仕様表の文言を更新
 - 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
   自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
   検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、
