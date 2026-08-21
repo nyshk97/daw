@@ -113,6 +113,8 @@ struct RenderedDomain
     ContentDigest recipeDigest;
     // レンダーに使った補正状態のコピー（失敗巻き戻しで「直前に成功していた値」へ戻すため。補正なし = nullptr）
     std::shared_ptr<const PitchCorrection> correction;
+    // レンダーに使った解析カーブ（補正なし = nullptr）。巻き戻しで correction と一緒に戻す（curveDigest と食い違わせない）
+    std::shared_ptr<const PitchCurve> curve;
     // 原音座標 → render 座標の区分線形写像。一様 ratio はノード 2 点。空なら ratio の一様写像として振る舞う
     // （v20 由来の生成箇所との互換。新しい生成箇所は必ず埋める）
     TimeMap timeMap;

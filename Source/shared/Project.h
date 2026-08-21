@@ -119,8 +119,10 @@ struct Clip
     //（写さずに戻すと、以後 sharesInheritedDomain() が false になり誰も detach しない＝親座標のノートが
     // 自範囲で解釈されて誤った目標音・再読込で無効化。呼び出し側の規律でなくここで塞ぐ）。実装は Project.cpp
     void resetRenderDomainToSelf();
-    // 現在の補正を保持すべきか（巻き戻し用）: 中立（Strength 0・Δ 0）の補正は音に出ていないだけでノートの手直しを
-    // 失う理由が無い。失敗した指紋の中身に関係なく両枝で同じ判定を使う
+    // 現在の補正が中立（Strength 0・Δ 0）か。巻き戻し（ClipDomains::rollbackFailedRequest）で「鳴っている音に補正が
+    // 入っていない」ときだけ、この中立補正（ノートの手直し）を保持する判定に使う。鳴っている音に補正が入っている枝では
+    // **保持しない**（保持すると要求≠実効のまま renderPending が解けず同じ失敗を繰り返す。plan の方針変更ログ
+    // 2026-08-21 /code-review 4 回目を参照）
     bool hasNeutralPitchCorrection() const
     {
         return pitchCorrection.has_value() && pitchCorrection->isAudiblyNeutral();

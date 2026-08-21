@@ -190,7 +190,11 @@ bool ClipDomains::rollbackFailedRequest (Project& project, double sampleRate,
                 //（失敗自体が maxRenderBytes 超過等の例外経路）。d.correction は d の domain 座標で記録されているので、
                 // domain を d に戻すこの枝では座標も整合する
                 if (d.correction != nullptr)
+                {
                     clip.pitchCorrection = *d.correction;
+                    if (d.curve != nullptr)
+                        clip.pitchCurve = d.curve; // curveDigest とカーブを揃える（再解析の適用後に失敗した場合）
+                }
                 else if (! clip.hasNeutralPitchCorrection())
                     clip.pitchCorrection.reset();
                 // （d.correction == nullptr で中立補正を保持する場合: そのドメインは補正なしで鳴っており recipe も出ないので

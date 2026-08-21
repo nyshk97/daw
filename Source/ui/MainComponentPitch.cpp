@@ -508,7 +508,7 @@ void MainComponent::pitchWriteWorkingToClip (Clip& clip)
     clip.pitchCurve = pitchSession.curve();
     if (detaching)
     {
-        clip.resetRenderDomainToSelf(); // 代入の後なので旧補正の detach は走らない（domain を戻すだけ）
+        clip.resetRenderDomainToSelf(); // working は既に自範囲なので中の detach は冪等（無害）。domain を自範囲へ
         Log::info ("pitch.detach", "clip=" + juce::String (clip.id));
     }
 }

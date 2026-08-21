@@ -597,6 +597,9 @@
   保持すると要求≠実効のまま renderPending が解けず同じ失敗を繰り返す）→ d.correction ありなら必ずそれに合わせる・
   中立保持は d.correction 無し／前例なしの枝だけ。テストで「巻き戻し後に renderPending が解ける」を固定。
   `pitchWriteWorkingToClip` は代入→reset の順（無駄な detach なし）。reset 単独で自範囲化する経路もテストに追加
+- 2026-08-21 /code-review 5 回目: ① 本レンダーの失敗巻き戻し後に `pitchSyncAfterModelChange()`（エディタの working が古い
+  編集を持ち続けて同じ失敗を繰り返さない）② `RenderedDomain::curve` を追加し、巻き戻しで correction とカーブを一緒に戻す
+  （curveDigest と pitchCurve の食い違い防止）③ コメントの嘘 2 箇所（detach の冪等性・中立保持の条件）を修正
 - 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
   自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
   検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、

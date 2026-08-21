@@ -388,6 +388,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
             setDirty (true);
             pushAudioValueSnapshot();
             timeline.refresh();
+            pitchSyncAfterModelChange(); // 巻き戻しは補正も上書きする → 開いているエディタの working を同期（古い編集を書き戻して同じ失敗を繰り返さない）
             toast.show (jp (u8"移調・伸縮の処理に失敗したため、値を元に戻しました"),
                         /*isError=*/ true, nullptr);
         }

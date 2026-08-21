@@ -121,6 +121,7 @@ void RenderCache::workerLoop()
                 {
                     result->recipeDigest = job.fingerprint.recipe;
                     result->correction = std::make_shared<const PitchCorrection> (job.recipe->correction);
+                    result->curve = job.recipe->curve;
                     result->timeMap = job.recipe->timeMap();
                 }
                 else
