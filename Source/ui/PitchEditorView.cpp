@@ -311,8 +311,9 @@ PitchEditorView::Geometry PitchEditorView::computeGeometry (const Clip& clip) co
     area.removeFromTop (rulerHeight);
     area.removeFromLeft (keyboardWidth);
     g.canvas = area;
-    g.domainOffset = clip.requestedDomainOffset();
-    g.domainLength = clip.requestedDomainLength();
+    // エディタの working は常にクリップ自身の範囲で表現する（分割子は開いた時点で detach 済み）
+    g.domainOffset = clip.offsetSamples;
+    g.domainLength = clip.lengthSamples;
     g.stretchRatio = clip.stretchRatio;
     const double sr = getSampleRate ? getSampleRate() : 48000.0;
     if (session != nullptr && session->isOpen() && session->mode() != PitchEditorSession::Mode::analyzing)
@@ -389,7 +390,7 @@ void PitchEditorView::drawKeyboard (juce::Graphics& g, const Geometry& geo) cons
         {
             g.setColour (juce::Colour (0xff555555));
             g.setFont (Fonts::small().withHeight (juce::jmin (11.0f, geo.rowHeight - 1.0f)));
-            g.drawText (juce::String (names[m % 12]) + juce::String (m / 12 - 1), 3, (int) y, keyboardWidth - 4, (int) geo.rowHeight - 1,
+            g.drawText (juce::String (names[m % 12]) + juce::String (m / 12 - 2), 3, (int) y, keyboardWidth - 4, (int) geo.rowHeight - 1, // C3 = 60（ピアノロールと同じ Logic 式）
                         juce::Justification::centredLeft);
         }
     }
@@ -492,10 +493,13 @@ void PitchEditorView::drawBlobs (juce::Graphics& g, const Geometry& geo, const C
         return;
     const auto& w = session->working();
     const auto& curve = *session->curve();
-    if (cachedTargetDigest != w.digest())
+    if (cachedTargetDigest != w.digest() || cachedTargetTranspose != clip.transposeSemitones
+        || cachedTargetDomain != std::make_pair (geo.domainOffset, geo.domainLength))
     {
         cachedTarget = PitchCorrections::targetCurve (w, curve, geo.domainOffset, geo.domainLength, clip.transposeSemitones);
         cachedTargetDigest = w.digest();
+        cachedTargetTranspose = clip.transposeSemitones;
+        cachedTargetDomain = { geo.domainOffset, geo.domainLength };
     }
     const bool dim = isRendering && isRendering();
     const float alpha = dim ? 0.55f : 1.0f;
@@ -818,7 +822,11 @@ void PitchEditorView::showContextMenu (juce::Point<int> at)
     if (noteUnder >= 0)
     {
         menu.addItem (10, jp (u8"ここで分割（⌘クリック）"), canEdit());
-        menu.addItem (11, session->working().notes[(size_t) noteUnder].bypass ? jp (u8"バイパス解除（B）") : jp (u8"バイパス（B）"), canEdit());
+        juce::PopupMenu::Item bypassItem (session->working().notes[(size_t) noteUnder].bypass ? jp (u8"バイパス解除") : jp (u8"バイパス"));
+        bypassItem.itemID = 11;
+        bypassItem.isEnabled = canEdit();
+        bypassItem.shortcutKeyDescription = Shortcuts::keyText (Shortcuts::ID::pitchBypass);
+        menu.addItem (bypassItem);
         menu.addSeparator();
     }
     menu.addItem (1, jp (u8"自動スナップからやり直す（手直しを捨てる）"), committed);
@@ -1010,8 +1018,7 @@ bool PitchEditorView::keyPressed (const juce::KeyPress& key)
         zoomAround (key.getKeyCode() == juce::KeyPress::rightKey ? 1.5 : 1.0 / 1.5, centre);
         return true;
     }
-    const bool plain = ! key.getModifiers().testFlags (juce::ModifierKeys::commandModifier | juce::ModifierKeys::ctrlModifier | juce::ModifierKeys::altModifier);
-    if (plain && key.getTextCharacter() == 'b' && canEdit() && ! selected.empty())
+    if (Shortcuts::matches (key, Shortcuts::ID::pitchBypass) && canEdit() && ! selected.empty())
     {
         if (onBeginEdit) onBeginEdit();
         for (int idx : selected)
@@ -1021,7 +1028,7 @@ bool PitchEditorView::keyPressed (const juce::KeyPress& key)
         repaint();
         return true;
     }
-    if (plain && key.getTextCharacter() == 'm' && canEdit() && selected.size() == 2)
+    if (Shortcuts::matches (key, Shortcuts::ID::pitchMerge) && canEdit() && selected.size() == 2)
     {
         const Clip* clip = getClip ? getClip() : nullptr;
         if (clip == nullptr) return true;

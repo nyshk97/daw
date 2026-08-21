@@ -351,6 +351,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     {
         setDirty (true);
         renderCache.requestSync();
+        pitchSyncAfterModelChange(); // 対象クリップの移調・伸縮が変わったらプレビューも作り直す（長さ不変条件）
     };
 
     // ---- 移調・伸縮のレンダリング配線 ----
@@ -5309,6 +5310,7 @@ bool MainComponent::copySelectedItem()
             return false;
         itemClipboard.kind = ItemClipboard::Kind::audioClip;
         itemClipboard.clip = clips[(size_t) sel.clip]; // fileName/audio/activeDomainは共有参照
+        itemClipboard.clip.previewDomain = nullptr;    // 未確定プレビューはコピーしない
         itemClipboard.region = {};
         Log::info ("region.copy", "type=audio track=" + juce::String (sel.track)
                                       + " item=" + juce::String (sel.clip));
@@ -5379,6 +5381,7 @@ bool MainComponent::pasteItemAtPlayhead()
     {
         Clip pasted = itemClipboard.clip; // fileName/audio/activeDomainは共有参照
         pasted.id = 0; // ペーストは新しい id（reconcile の ensureUniqueIds が採番）
+        pasted.previewDomain = nullptr;
         pasted.startSample = timeline.snapSampleToVisibleGrid (playhead);
         track.clips.push_back (std::move (pasted));
         pastedIndex = (int) track.clips.size() - 1;

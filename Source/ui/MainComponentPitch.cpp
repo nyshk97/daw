@@ -11,6 +11,7 @@
 // - ⌘B/⌘E・閉じる・対象切替・undo はプレビューを破棄（初回: 捨てて閉じる／変更: 旧状態へ）
 #include "MainComponent.h"
 
+#include "../audio/VocalResynth.h"
 #include "../shared/Log.h"
 
 namespace
@@ -83,9 +84,8 @@ void MainComponent::wirePitchEditor()
             return;
         Log::info ("pitch.apply", "clip=" + juce::String (clip->id));
         undoStack.begin (*project);
-        const auto applied = pitchSession.applyChange();
-        clip->pitchCorrection = applied;
-        clip->pitchCurve = pitchSession.curve();
+        pitchSession.applyChange();
+        pitchWriteWorkingToClip (*clip);
         clip->previewDomain = nullptr;
         pitchPreviewRequest.reset();
         setDirty (true);
@@ -116,7 +116,7 @@ void MainComponent::wirePitchEditor()
         auto proposal = pitchSession.working();
         proposal.scaleMode = mode;
         proposal.customKey = key;
-        PitchCorrections::resnap (proposal, *pitchSession.curve(), clip->requestedDomainOffset(), clip->requestedDomainLength(),
+        PitchCorrections::resnap (proposal, *pitchSession.curve(), clip->offsetSamples, clip->lengthSamples,
                                   PitchCorrections::effectiveScale (proposal, project->key));
         Log::info ("pitch.scale_changed", "clip=" + juce::String (clip->id) + " mode=" + juce::String ((int) mode)
                                               + " key=" + ProjectKeys::cliText (key));
@@ -141,9 +141,8 @@ void MainComponent::wirePitchEditor()
             return;
         // 「すべてリセット」= 現在のスケール設定で自動スナップし直し（手直し・つまみを捨てる）。変更プレビューとして見せる
         const auto& w = pitchSession.working();
-        auto proposal = PitchCorrections::autoSnap (*pitchSession.curve(), pitchSession.detected(), clip->requestedDomainOffset(),
-                                                    clip->requestedDomainLength(), PitchCorrections::effectiveScale (w, project->key),
-                                                    w.scaleMode, w.customKey);
+        auto proposal = PitchCorrections::autoSnap (*pitchSession.curve(), pitchSession.detected(), clip->offsetSamples, clip->lengthSamples,
+                                                    PitchCorrections::effectiveScale (w, project->key), w.scaleMode, w.customKey);
         if (proposal == w)
         {
             pitchWindow.content().showStatus (jp (u8"Reset: 既に自動スナップの状態です"));
@@ -191,7 +190,7 @@ void MainComponent::wirePitchEditor()
         const auto* domain = clip->effectiveDomain();
         if (domain == nullptr || domain->audio == nullptr)
             return;
-        const auto off = clip->requestedDomainOffset(), len = clip->requestedDomainLength();
+        const auto off = clip->offsetSamples, len = clip->lengthSamples; // working は自範囲
         const auto s = w.resolve (w.notes[(size_t) noteIndex].start, off, len);
         const auto e = w.resolve (w.notes[(size_t) noteIndex].end, off, len);
         const auto r0 = domain->audioBaseOffset + domain->mapBoundary (s);
@@ -212,7 +211,7 @@ void MainComponent::wirePitchEditor()
         const auto& w = pitchSession.working();
         if (noteIndex < 0 || noteIndex >= (int) w.notes.size())
             return;
-        const auto off = clip->requestedDomainOffset(), len = clip->requestedDomainLength();
+        const auto off = clip->offsetSamples, len = clip->lengthSamples; // working は自範囲
         const auto s = w.resolve (w.notes[(size_t) noteIndex].start, off, len);
         const auto e = w.resolve (w.notes[(size_t) noteIndex].end, off, len);
         const auto t0 = juce::Time::getMillisecondCounterHiRes();
@@ -225,8 +224,8 @@ void MainComponent::wirePitchEditor()
         auto* clip = pitchTargetClip();
         if (clip == nullptr || ! noteAudition.isPrepared() || pitchSession.curve() == nullptr)
             return;
-        auto buf = noteAudition.render (pitchSession.working(), *pitchSession.curve(), clip->requestedDomainOffset(),
-                                        clip->requestedDomainLength(), clip->transposeSemitones);
+        auto buf = noteAudition.render (pitchSession.working(), *pitchSession.curve(), clip->offsetSamples, clip->lengthSamples,
+                                        clip->transposeSemitones);
         if (buf == nullptr)
             return;
         filePreview.stop();
@@ -237,6 +236,8 @@ void MainComponent::wirePitchEditor()
     pitchWindow.onDismissed = [this]
     {
         bufferAudition.stop();
+        noteAudition.reset();
+        VocalResynth::clearAnalysisCache();
         if (pitchSession.mode() == PitchEditorSession::Mode::changePreview)
         {
             pitchSession.cancelChange();
@@ -311,6 +312,8 @@ void MainComponent::openPitchEditor (int trackIndex, int itemIndex)
             pitchSession.cancelChange();
             toast.show (jp (u8"ピッチ補正の変更プレビューを取り消しました（対象を切り替え）"), false, nullptr);
         }
+        bufferAudition.stop();
+        noteAudition.reset();
         pitchWorker.cancelAndWait();
         pitchReanalyzing = false;
         pitchClearPreview();
@@ -319,8 +322,18 @@ void MainComponent::openPitchEditor (int trackIndex, int itemIndex)
     }
     Log::info ("pitch.open", "clip=" + juce::String (clip.id) + " corrected=" + juce::String ((int) clip.pitchCorrection.has_value()));
     pitchBlockedMessage.clear();
+    VocalResynth::clearAnalysisCache(); // 前の対象の分解キャッシュ（数百 MB）を持ち越さない
     if (clip.pitchCorrection.has_value() && clip.pitchCurve != nullptr)
-        pitchSession.openCommitted (clip.id, *clip.pitchCorrection, clip.pitchCurve); // 保存済みの手直しを隠さない
+    {
+        // 保存済みの手直しを隠さない。分割子（親の domain を共有）は**開いた時点で**自範囲へ写した作業コピーにする —
+        // 編集中に detach するとノート index が途中でずれる（レビュー指摘）。クリップ側は最初の書き込みまで親の
+        // domain を共有したまま（再レンダーしない）
+        auto working = *clip.pitchCorrection;
+        if (clip.requestedDomainOffset() != clip.offsetSamples || clip.requestedDomainLength() != clip.lengthSamples)
+            PitchCorrections::detachToDomain (working, clip.requestedDomainOffset(), clip.requestedDomainLength(),
+                                              clip.offsetSamples, clip.lengthSamples);
+        pitchSession.openCommitted (clip.id, working, clip.pitchCurve);
+    }
     else
     {
         pitchSession.openForAnalysis (clip.id);
@@ -381,6 +394,15 @@ void MainComponent::pitchEditorTick()
         return;
     }
     auto curve = std::make_shared<const PitchCurve> (std::move (result.curve));
+    // ワーカーが書いてから回収するまでの間に ⌘S の GC が世代を消していることがある（保持リストに無いため）。
+    // ここで存在を確かめ、無ければ書き直す（write は同一内容なら冪等）
+    if (result.sidecarWritten && ! result.sidecarFile.existsAsFile())
+    {
+        juce::String err;
+        result.sidecarWritten = PitchSidecar::write (*curve, project->directory.getChildFile (clip->fileName), &err);
+        if (! result.sidecarWritten) result.errorMessage = err;
+        Log::info ("pitch.sidecar_rewrite", "ok=" + juce::String ((int) result.sidecarWritten));
+    }
     pitchBlockedMessage = result.sidecarWritten ? juce::String() : result.errorMessage;
     Log::info ("pitch.analyzed", "clip=" + juce::String (clip->id) + " frames=" + juce::String (curve->numFrames())
                                      + " digest=" + curve->digest().toHex().substring (0, 8)
@@ -397,9 +419,8 @@ void MainComponent::pitchEditorTick()
         }
         // 内容が変わった: 新しいカーブで自動スナップし直した案を変更プレビューとして見せる
         const auto& w = pitchSession.working();
-        auto proposal = PitchCorrections::autoSnap (*curve, PitchNotes::detect (*curve), clip->requestedDomainOffset(),
-                                                    clip->requestedDomainLength(), PitchCorrections::effectiveScale (w, project->key),
-                                                    w.scaleMode, w.customKey);
+        auto proposal = PitchCorrections::autoSnap (*curve, PitchNotes::detect (*curve), clip->offsetSamples, clip->lengthSamples,
+                                                    PitchCorrections::effectiveScale (w, project->key), w.scaleMode, w.customKey);
         proposal.strength = w.strength;
         proposal.speedMs = w.speedMs;
         pitchSession.beginChangePreview (proposal, curve);
@@ -410,8 +431,7 @@ void MainComponent::pitchEditorTick()
     {
         if (pitchSession.mode() != PitchEditorSession::Mode::analyzing)
             return;
-        pitchSession.analysisFinished (curve, clip->requestedDomainOffset(), clip->requestedDomainLength(), project->key,
-                                       result.sidecarWritten);
+        pitchSession.analysisFinished (curve, clip->offsetSamples, clip->lengthSamples, project->key, result.sidecarWritten);
         pitchRequestPreview();
     }
     pitchWindow.content().refresh();
@@ -425,9 +445,10 @@ void MainComponent::pitchRequestPreview()
         pitchPreviewRequest.reset();
         return;
     }
-    if (pitchSession.working().isAudiblyNeutral() && clip->transposeSemitones == 0 && juce::exactlyEqual (clip->stretchRatio, 1.0))
+    if (pitchSession.working().isAudiblyNeutral())
     {
-        // 開いた直後（Strength 0%・タイミング未編集）: 原音そのもの。WORLD を通さず previewDomain を外す
+        // 開いた直後（Strength 0%・タイミング未編集）: 補正としては中立。WORLD を通さず previewDomain を外す
+        //（移調・伸縮があれば activeDomain = signalsmith の音がそのまま鳴る。確定時の requestedRecipeDigest と同じ規則）
         const bool had = clip->previewDomain != nullptr;
         clip->previewDomain = nullptr;
         pitchPreviewRequest.reset();
@@ -439,8 +460,8 @@ void MainComponent::pitchRequestPreview()
     auto recipe = std::make_shared<RenderRecipe>();
     recipe->sourceAudio = clip->audio;
     recipe->sampleRate = sr;
-    recipe->domainOffset = clip->requestedDomainOffset();
-    recipe->domainLength = clip->requestedDomainLength();
+    recipe->domainOffset = clip->offsetSamples;   // working は常にクリップ自身の範囲
+    recipe->domainLength = clip->lengthSamples;
     recipe->transposeSemitones = clip->transposeSemitones;
     recipe->stretchRatio = clip->stretchRatio;
     recipe->curve = pitchSession.curve();
@@ -482,33 +503,38 @@ void MainComponent::pitchClearPreview()
     }
 }
 
+// working（常にクリップ自身の範囲で表現）を永続モデルへ書く。分割子は最初の書き込みでここで自範囲へ移り
+// 親とのドメイン共有が終わる（親子の digest がここで分かれる＝再レンダーはこのとき初めて）
+void MainComponent::pitchWriteWorkingToClip (Clip& clip)
+{
+    if (clip.requestedDomainOffset() != clip.offsetSamples || clip.requestedDomainLength() != clip.lengthSamples)
+    {
+        clip.resetRenderDomainToSelf();
+        Log::info ("pitch.detach", "clip=" + juce::String (clip.id));
+    }
+    clip.pitchCorrection = pitchSession.working();
+    clip.pitchCurve = pitchSession.curve();
+}
+
 void MainComponent::pitchBeginEdit()
 {
     auto* clip = pitchTargetClip();
     if (clip == nullptr || ! pitchSession.editable())
         return;
-    undoStack.begin (*project); // 1 操作 = 1 件（ドラッグ開始・クリック列の先頭で区切る）
     if (pitchSession.mode() == PitchEditorSession::Mode::initialPreview)
     {
-        // 最初の明示編集で初回プレビューを確定（以後の編集は永続モデルへ直接）
-        const auto committed = pitchSession.commitInitial();
-        if (committed.has_value())
+        // 最初の明示編集で初回プレビューを確定（以後の編集は永続モデルへ直接）。undo はここで 1 件
+        undoStack.begin (*project);
+        if (pitchSession.commitInitial().has_value())
         {
-            clip->pitchCorrection = committed;
-            clip->pitchCurve = pitchSession.curve();
+            pitchWriteWorkingToClip (*clip);
             clip->previewDomain = nullptr;
             pitchPreviewRequest.reset();
             Log::info ("pitch.commit_initial", "clip=" + juce::String (clip->id));
         }
+        return;
     }
-    // 分割の子（親の domain を共有）を初めて編集するときは自範囲へ detach（親子の digest がここで分かれる）
-    if (clip->requestedDomainOffset() != clip->offsetSamples || clip->requestedDomainLength() != clip->lengthSamples)
-    {
-        PitchCorrections::detachToDomain (pitchSession.mutableWorking(), clip->requestedDomainOffset(), clip->requestedDomainLength(),
-                                          clip->offsetSamples, clip->lengthSamples);
-        clip->resetRenderDomainToSelf();
-        Log::info ("pitch.detach", "clip=" + juce::String (clip->id));
-    }
+    undoStack.begin (*project); // 1 操作 = 1 件（ドラッグ開始・クリック列の先頭で区切る）
 }
 
 void MainComponent::pitchApplyWorking()
@@ -516,8 +542,7 @@ void MainComponent::pitchApplyWorking()
     auto* clip = pitchTargetClip();
     if (clip == nullptr || pitchSession.mode() != PitchEditorSession::Mode::committed)
         return;
-    clip->pitchCorrection = pitchSession.working();
-    clip->pitchCurve = pitchSession.curve();
+    pitchWriteWorkingToClip (*clip);
     setDirty (true);
     renderCache.requestSync(); // デバウンス → 完了で activeDomain が一斉に切り替わる（完了までは古い音）
     timeline.refresh();
@@ -543,12 +568,36 @@ void MainComponent::pitchSyncAfterModelChange()
             else
                 pitchWindow.dismiss(); // undo で「補正なし」へ戻った
             break;
-        case PitchEditorSession::Mode::initialPreview:
         case PitchEditorSession::Mode::changePreview:
-            // undo は previewDomain を剥がす（UndoStack::stripClipDomains）。現在の状態から作り直す
-            if (clip->previewDomain == nullptr)
+            // undo で永続値が変わっていたら backup が陳腐化している → 変更プレビューは破棄（Cancel 相当）
+            if (const auto& bk = pitchSession.backup(); bk.has_value())
+            {
+                auto current = clip->pitchCorrection;
+                if (current.has_value() && (clip->requestedDomainOffset() != clip->offsetSamples || clip->requestedDomainLength() != clip->lengthSamples))
+                    PitchCorrections::detachToDomain (*current, clip->requestedDomainOffset(), clip->requestedDomainLength(), clip->offsetSamples, clip->lengthSamples);
+                if (! current.has_value() || ! (*current == *bk))
+                {
+                    pitchSession.cancelChange();
+                    pitchClearPreview();
+                    toast.show (jp (u8"モデルが変わったためピッチ補正の変更プレビューを取り消しました"), false, nullptr);
+                    if (! current.has_value())
+                        pitchWindow.dismiss();
+                    else
+                        pitchSession.syncCommitted (*current, clip->pitchCurve);
+                    break;
+                }
+            }
+            [[fallthrough]];
+        case PitchEditorSession::Mode::initialPreview:
+        {
+            // undo は previewDomain を剥がす（UndoStack::stripClipDomains）。移調・伸縮・範囲が変わった場合も作り直す
+            const auto* pd = clip->previewDomain.get();
+            const bool stale = pd == nullptr || pd->semitones != clip->transposeSemitones || ! juce::exactlyEqual (pd->ratio, clip->stretchRatio)
+                            || pd->domainOffset != clip->offsetSamples || pd->domainLength != clip->lengthSamples;
+            if (stale)
                 pitchRequestPreview();
             break;
+        }
         case PitchEditorSession::Mode::analyzing:
         case PitchEditorSession::Mode::closed:
             break;
@@ -633,7 +682,7 @@ void MainComponent::debugPitchAction (const juce::String& action)
         {
             pitchBeginEdit();
             const auto d = PitchCorrections::moveNote (pitchSession.mutableWorking(), idx, (juce::int64) (renderSampleRate() * 0.04),
-                                                       clip->requestedDomainOffset(), clip->requestedDomainLength(),
+                                                       clip->offsetSamples, clip->lengthSamples,
                                                        clip->stretchRatio, renderSampleRate());
             Log::info ("debug.pitch_move", "note=" + juce::String (idx) + " applied=" + juce::String (d));
             pitchApplyWorking();

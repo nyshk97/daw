@@ -220,13 +220,17 @@ file(COPY_FILE "${signalsmith-stretch_SOURCE_DIR}/LICENSE.txt"
     "${DAW_LICENSE_DIR}/LICENSE-signalsmith-stretch.txt" ONLY_IF_DIFFERENT)
 file(COPY_FILE "${signalsmith-linear_SOURCE_DIR}/LICENSE.txt"
     "${DAW_LICENSE_DIR}/LICENSE-signalsmith-linear.txt" ONLY_IF_DIFFERENT)
+file(COPY_FILE "${world-vocoder_SOURCE_DIR}/LICENSE.txt"
+    "${DAW_LICENSE_DIR}/LICENSE-world.txt" ONLY_IF_DIFFERENT) # BSD-3（ピッチ補正の再合成）
 target_sources(daw PRIVATE
     "${DAW_LICENSE_DIR}/LICENSE-signalsmith-stretch.txt"
     "${DAW_LICENSE_DIR}/LICENSE-signalsmith-linear.txt"
+    "${DAW_LICENSE_DIR}/LICENSE-world.txt"
 )
 set_source_files_properties(
     "${DAW_LICENSE_DIR}/LICENSE-signalsmith-stretch.txt"
     "${DAW_LICENSE_DIR}/LICENSE-signalsmith-linear.txt"
+    "${DAW_LICENSE_DIR}/LICENSE-world.txt"
     PROPERTIES MACOSX_PACKAGE_LOCATION Resources
 )
 

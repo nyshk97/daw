@@ -24,4 +24,6 @@ std::unique_ptr<juce::AudioBuffer<float>> render (const RenderRecipe& recipe);
 // 解析フレーム数の上限（CheapTrick/D4C のスペクトログラムは fft/2+1 doubles × 2 本/フレーム。
 // 48kHz・f0_floor 60Hz で fft 4096 → 32KB/フレーム。768MB で約 2 分。超える domain は失敗にする）
 juce::int64 maxAnalysisBytes();
+// 分解キャッシュ（直前のクリップの CheapTrick/D4C。27s ステレオで約 350MB）を捨てる。エディタを閉じた／対象を切り替えたときに呼ぶ
+void clearAnalysisCache();
 } // namespace VocalResynth

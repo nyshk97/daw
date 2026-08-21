@@ -153,6 +153,8 @@ private:
 
     // 目標カーブのキャッシュ（working の digest が変わったら作り直す）
     ContentDigest cachedTargetDigest;
+    int cachedTargetTranspose = 0;
+    std::pair<juce::int64, juce::int64> cachedTargetDomain { -1, -1 };
     PitchCorrections::TargetCurve cachedTarget;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PitchEditorView)

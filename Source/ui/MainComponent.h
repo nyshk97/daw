@@ -340,6 +340,7 @@ private:
     void pitchClearPreview();                               // previewDomain を外して snapshot を再 push
     void pitchBeginEdit();                                  // 離散編集の直前（初回プレビューの確定・undo 区切り・子の detach）
     void pitchApplyWorking();                               // working を永続モデルへ（dirty・レンダー要求）
+    void pitchWriteWorkingToClip (Clip& clip);              // working（自範囲）をクリップへ。分割子はここで親のドメイン共有を終える
     void pitchStartAnalysis (const Clip& clip, bool reanalyze);
     juce::StringArray pitchPreviewSidecars() const;         // 保存時の GC で残す世代（開いているプレビューの世代）
     void updateTransportButtons();

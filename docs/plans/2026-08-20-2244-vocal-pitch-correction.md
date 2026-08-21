@@ -574,6 +574,16 @@
   plan 外の追加（性能・操作感のため。モデル・永続化には影響しない）
   ⑧ 未実装のまま意図的に残すもの: 横ズーム以外のスクロール UI（スクロールバー無し・ホイールのみ）、ドラッグ中の数値ポップ
   アップ（帯型ブロブで目標の段が読めるため不要と判断）、鍵盤の PianoRollView との共有
+- 2026-08-21 /code-review（high・10 件＋軽微 8 件・全件 CONFIRMED）を全件反映:
+  ①⑦⑨ 分割子の detach を「編集中」から**開いた時点**へ（エディタの working は常にクリップ自身の範囲。クリップ側は最初の
+  書き込み `pitchWriteWorkingToClip` で自範囲へ移る＝それまで親のドメイン共有・再レンダーなし）。index ずれ・空 undo・
+  Apply 経路の取りこぼしを同根で解消 ② previewDomain をコピー経路（⌘C・複製・ペースト・splitClip の右）で外す
+  ③⑧ 中立判定（Strength 0・Δ 0）を `requestedRecipeDigest()` に移し、プレビューと確定で同じ規則。移調のみは signalsmith
+  経路のまま（開くだけで WORLD に差し替わらない）④ 解析結果の回収時にサイドカーの存在を再確認し無ければ書き直す
+  （⌘S の GC との競合）⑤ 移調・伸縮の変更で previewDomain を作り直す（長さ不変条件）⑥ changePreview 中の undo で
+  backup が陳腐化したら変更プレビューを破棄 ⑩ 分解キャッシュは対象切替・閉じるで解放＋原音解放で無効。
+  軽微: cachedTarget に transpose/domain、null InputStream、オクターブ表記 C3=60、B/M を Shortcuts 経由、切替時の試聴停止、
+  WORLD の BSD-3 を Resources に同梱、ensureUniqueIds を set で O(n log n)、BufferAudition の範囲クランプ
 - 2026-08-21 Phase 0 結論: **再合成は WORLD を採用**（耳判定で全ケース上位・ケロケロは唯一/最良。
   自作 PSOLA は全補正ケースで「プツプツ」＝実装欠陥で不採用。位相ボコーダー系はケロケロで脱落）。
   検出は自作 YIN。Phase 2 の「`ClipStretcher` 拡張 or `VocalResynth`」は `VocalResynth`（WORLD）に確定し、

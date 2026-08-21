@@ -112,9 +112,12 @@ struct Clip
     }
     // 補正の要求 digest（補正なし・カーブ未解決なら null）。補正は「サイドカー（カーブ）が読めている」
     // ときだけ鳴らせる — カーブ無しでは目標カーブを計算できない（有声マスク・元ピッチが要る）
+    // 聴感上中立な補正（Strength 0・タイミング未編集）は recipe を出さない＝移調・伸縮だけなら従来の signalsmith 経路、
+    // 無加工なら中立ドメイン（WORLD の素通しで音色を変えない。プレビューも同じ規則＝聴いた音と確定した音が一致する）
     ContentDigest requestedRecipeDigest() const
     {
-        return pitchCorrection.has_value() && pitchCurve != nullptr ? pitchCorrection->digest() : ContentDigest{};
+        return pitchCorrection.has_value() && pitchCurve != nullptr && ! pitchCorrection->isAudiblyNeutral()
+                 ? pitchCorrection->digest() : ContentDigest{};
     }
 
     // 要求と実効の不一致（レンダリング待ち）。この間は長さ依存操作（分割・終端直後へ複製）を

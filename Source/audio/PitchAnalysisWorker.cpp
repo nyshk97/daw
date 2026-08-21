@@ -59,7 +59,8 @@ void PitchAnalysisWorker::run()
             if (ok)
             {
                 juce::WavAudioFormat wav;
-                std::unique_ptr<juce::AudioFormatReader> reader (wav.createReaderFor (request.wavFile.createInputStream().release(), true));
+                auto stream = request.wavFile.createInputStream();
+                std::unique_ptr<juce::AudioFormatReader> reader (stream != nullptr ? wav.createReaderFor (stream.release(), true) : nullptr);
                 ok = reader != nullptr
                   && reader->lengthInSamples == result.curve.source.frames
                   && (int) reader->numChannels == result.curve.source.channels;

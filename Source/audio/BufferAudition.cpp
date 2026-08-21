@@ -12,7 +12,12 @@ BufferAudition::~BufferAudition()
 void BufferAudition::start (std::shared_ptr<const juce::AudioBuffer<float>> audio, juce::int64 start,
                             juce::int64 length, double sampleRate)
 {
-    if (audio == nullptr || length <= 0 || sampleRate <= 0.0)
+    if (audio == nullptr || sampleRate <= 0.0)
+        return;
+    const auto total = (juce::int64) audio->getNumSamples();
+    start = juce::jlimit ((juce::int64) 0, total, start);
+    length = juce::jmin (length, total - start);
+    if (length <= 0)
         return;
     auto* snap = new Snapshot { std::move (audio), start, length, sampleRate, nextGeneration++ };
     playingGeneration.store (snap->generation);

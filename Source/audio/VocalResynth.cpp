@@ -47,6 +47,12 @@ AnalysisCache analysisCache;
 
 juce::int64 VocalResynth::maxAnalysisBytes() { return ClipStretchLimits::maxRenderBytes; }
 
+void VocalResynth::clearAnalysisCache()
+{
+    std::lock_guard<std::mutex> lock (analysisCacheMutex);
+    analysisCache = {};
+}
+
 std::unique_ptr<juce::AudioBuffer<float>> VocalResynth::render (const RenderRecipe& recipe)
 {
     using namespace ClipStretchLimits;
@@ -141,6 +147,8 @@ std::unique_ptr<juce::AudioBuffer<float>> VocalResynth::render (const RenderReci
     {
         std::lock_guard<std::mutex> lock (analysisCacheMutex);
         auto& c = analysisCache;
+        if (c.sourcePtr != nullptr && c.source.expired())
+            c = {}; // 原音が解放されていたら捨てる（アドレス再利用の誤ヒットとメモリ残留を防ぐ）
         if (c.sourcePtr == src.get() && ! c.source.expired() && c.curveDigest == curve->digest() && c.ka == ka && c.kb == kb
             && c.fftSize == fftSize && c.channels == channels && juce::exactlyEqual (c.sampleRate, sr))
         {

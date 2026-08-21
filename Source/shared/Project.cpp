@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <set>
 
 #include "ClipDomains.h"
 #include "GainScale.h"
@@ -169,6 +170,7 @@ bool splitClip (const Clip& clip, juce::int64 splitSample, Clip& left, Clip& rig
 
     right = clip;
     right.id = 0; // 右側は新しい id（呼び出し側の reconcile → ensureUniqueIds が採番）
+    right.previewDomain = nullptr; // 未確定プレビューはエディタの対象（id）にだけ付く。別 id へ持ち越さない
     // ピッチ補正（pitchCorrection / pitchCurve）は左右とも**丸ごと**継承する（構造体コピー）。
     // 親の domain で表現されたノート列を切らないので親子の recipe digest が一致し、分割直後は再レンダーが
     // 起きない。子を編集するときにエディタ側が detachToDomain で自範囲へ写す
@@ -1518,12 +1520,12 @@ void Project::ensureUniqueIds()
     }
     nextId = juce::jmax (nextId, maxId + 1);
 
-    std::vector<juce::uint64> seen;
+    std::set<juce::uint64> seen; // reconcile のたびに走るので O(n log n) に
     auto assignIfNeeded = [this, &seen] (juce::uint64& id)
     {
-        if (id == 0 || std::find (seen.begin(), seen.end(), id) != seen.end())
+        if (id == 0 || seen.count (id) > 0)
             id = allocateId();
-        seen.push_back (id);
+        seen.insert (id);
     };
 
     for (auto& track : tracks)

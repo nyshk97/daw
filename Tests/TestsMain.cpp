@@ -15810,6 +15810,22 @@ void testPitchProjectRoundtrip()
     live.pitchCorrection = PitchCorrections::autoSnap (*curve, PitchNotes::detect (*curve), live.offsetSamples,
                                                         live.lengthSamples, std::nullopt, PitchScaleMode::chromatic, {});
     expect (live.renderPending (sr) && live.requestedFingerprint (sr).hasRecipe(), "補正を付けるとレンダー待ち");
+    {
+        // 聴感上中立（Strength 0・Δ 0）は recipe を出さない＝WORLD を通さない（プレビューと確定で同じ規則）
+        auto saved = *live.pitchCorrection;
+        live.pitchCorrection->strength = 0.0f;
+        expect (! live.requestedFingerprint (sr).hasRecipe() && live.requestedFingerprint (sr).isNeutral(), "Strength 0 は中立");
+        live.transposeSemitones = 2;
+        expect (! live.requestedFingerprint (sr).hasRecipe() && ! live.requestedFingerprint (sr).isNeutral(), "Strength 0＋移調は signalsmith 経路");
+        live.transposeSemitones = 0;
+        live.pitchCorrection = saved;
+        // 分割・複製で previewDomain は持ち越さない
+        live.previewDomain = live.activeDomain;
+        Clip l, r;
+        expect (splitClip (live, live.startSample + live.renderedLengthSamples() / 2, l, r), "分割");
+        expect (l.previewDomain == live.previewDomain && r.previewDomain == nullptr, "右側（新 id）にはプレビューが付かない");
+        live.previewDomain = nullptr;
+    }
 
     const auto renderAll = [&sr] (Project& target)
     {
