@@ -179,9 +179,8 @@ ContentDigest PitchCorrection::digest() const
     DigestBuilder d;
     d.add ((std::uint64_t) curveDigest.a);
     d.add ((std::uint64_t) curveDigest.b);
-    d.add ((std::int32_t) scaleMode);
-    d.add ((std::int32_t) customKey.root);
-    d.add ((std::int32_t) customKey.mode);
+    // scaleMode / customKey は含めない: スナップの「次回の設定」であって音には影響しない（固定方式。
+    // 音を決めるのは targetMidi）。含めると設定を変えただけで再レンダーが走る
     d.add (strength);
     d.add (speedMs);
     d.add ((std::int32_t) timeNodes.size());

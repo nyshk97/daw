@@ -19,6 +19,7 @@
 #include "InstrumentDetailView.h"
 #include "IconButton.h"
 #include "MixerWindow.h"
+#include "PitchEditorWindow.h"
 #include "ReportWindow.h"
 #include "ToastBar.h"
 #include "../audio/ReferenceReportGenerator.h"
@@ -33,6 +34,8 @@
 #include "../audio/AudioImporter.h"
 #include "../audio/AudioFilePreview.h"
 #include "../audio/BounceRenderer.h"
+#include "../audio/BufferAudition.h"
+#include "../audio/PitchAnalysisWorker.h"
 #include "../audio/PlaybackEngine.h"
 #include "../audio/RenderCache.h"
 #include "../audio/ReferenceAnalyzer.h"
@@ -40,6 +43,7 @@
 #include "../shared/GachaSession.h"
 #include "../shared/PreviewFifo.h"
 #include "../shared/ReferenceAlign.h"
+#include "../shared/PitchEditorSession.h"
 #include "../shared/PlaybackSnapshot.h"
 #include "../shared/Project.h"
 #include "../shared/SynthBank.h"
@@ -104,6 +108,12 @@ public:
     // 検証用: FileChooserを迂回して書き出しを開始する（--bounce <path>）
     void debugStartBounce (const juce::File& target);
     void debugStartPlayback();
+    // 検証用（ピッチ補正。MainComponentPitch.cpp）: --pitch-editor <track> <clip> でエディタを開き、
+    // --pitch-action <name> を解析完了後に実行（enable / bypass0 / move1 / kero / resnap / apply / cancel / close / save）、
+    // --pitch-snapshot <path> でエディタウィンドウの中身を PNG 保存（ログ debug.pitch_snapshot）
+    void debugOpenPitchEditor (int trackIndex, int clipIndex);
+    void debugPitchAction (const juce::String& action);
+    void debugPitchSnapshot (const juce::File& target);
 #endif
 
     juce::String windowTitle() const;
@@ -316,6 +326,21 @@ private:
     // undo/redo 後・読込直後に通す。immediate = デバウンスを挟まず即同期（undo・読込）
     void reconcileClipRenderState (bool immediate);
     void setDirty (bool nowDirty);
+
+    // ---- ボーカルのピッチ補正（独立ウィンドウのエディタ。実装は MainComponentPitch.cpp）----
+    // 設計の真実の源: docs/plans/2026-08-20-2244-vocal-pitch-correction.md（Phase 3）
+    void wirePitchEditor();                                 // コンストラクタから1回
+    void openPitchEditor (int trackIndex, int itemIndex);   // 右クリック →「ピッチ補正…」
+    void pitchEditorTick();                                 // Timer: ワーカーの結果回収・試聴の掃除
+    void pitchSyncAfterModelChange();                       // undo/redo・構造変更後: id で引き直し・プレビュー再生成
+    void pitchDiscardPreviewForExport();                    // ⌘B/⌘E の開始時: 未確定プレビューを自動破棄
+    Clip* pitchTargetClip();                                // session の clipId で毎回引き直す（無ければ nullptr）
+    void pitchRequestPreview();                             // working からプレビュー要求（専用 RenderCache）
+    void pitchClearPreview();                               // previewDomain を外して snapshot を再 push
+    void pitchBeginEdit();                                  // 離散編集の直前（初回プレビューの確定・undo 区切り・子の detach）
+    void pitchApplyWorking();                               // working を永続モデルへ（dirty・レンダー要求）
+    void pitchStartAnalysis (const Clip& clip, bool reanalyze);
+    juce::StringArray pitchPreviewSidecars() const;         // 保存時の GC で残す世代（開いているプレビューの世代）
     void updateTransportButtons();
     void updateLcdTime();
     void updateSampleRateWarning();
@@ -419,6 +444,16 @@ private:
     ShortcutListOverlay shortcutOverlay; // ⌘?のショートカット一覧（表示中のみ可視）
     BounceOverlay bounceOverlay;         // バウンス進捗（表示中のみ可視・モーダル）
     MixerWindow mixerWindow;             // Xのミキサー（独立ウィンドウ。移動・リサイズ自由）
+    PitchEditorWindow pitchWindow;       // ピッチ補正エディタ（独立ウィンドウ・1枚使い回し）
+    PitchEditorSession pitchSession;     // エディタの対象と状態（判断ロジック。shared/）
+    PitchAnalysisWorker pitchWorker;     // 解析ワーカー（pull 型）
+    RenderCache pitchPreviewCache;       // プレビュー専用のレンダー経路（通常の装着・巻き戻しを通さない）
+    BufferAudition bufferAudition;       // ブロブクリックの単独試聴
+    std::optional<ClipDomains::Request> pitchPreviewRequest; // 現在要求中のプレビュー（digest で照合）
+    ContentDigest pitchPreviewDigest;
+    juce::uint64 pitchAnalysisGeneration = 0; // ワーカーへ渡す generation（切替・再解析で進む）
+    bool pitchReanalyzing = false;            // 再解析（確定状態から）の結果待ち
+    juce::String pitchBlockedMessage;
     ReportWindow reportWindow;           // 分析レポートの閲覧（独立ウィンドウ・1枚使い回し）
     ToastBar toast;                      // 右下の一時通知（レポート生成の完了/失敗）
     // 歯車ボタン／⌘,のデバイス設定（開いている間だけ生存。入力レベル測定を常駐させないため閉じたら破棄）

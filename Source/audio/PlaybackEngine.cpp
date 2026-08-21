@@ -7,6 +7,7 @@
 #include "../shared/Pan.h"
 #include "../shared/SongFade.h"
 #include "AudioFilePreview.h"
+#include "BufferAudition.h"
 #include "TrackFxChain.h"
 
 namespace
@@ -48,12 +49,16 @@ void PlaybackEngine::prepareToPlay (int samplesPerBlockExpected, double sampleRa
     busDelay.prepare (sampleRate);
     if (filePreview != nullptr)
         filePreview->prepareToPlay (sampleRate);
+    if (bufferAudition != nullptr)
+        bufferAudition->prepareToPlay (sampleRate);
 }
 
 void PlaybackEngine::releaseResources()
 {
     if (filePreview != nullptr)
         filePreview->releaseResources();
+    if (bufferAudition != nullptr)
+        bufferAudition->releaseResources();
 }
 
 void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
@@ -246,6 +251,8 @@ void PlaybackEngine::process (const juce::AudioSourceChannelInfo& bufferToFill)
     // post-master信号。デコード済み不変バッファを線形補間して加算するだけ。
     if (filePreview != nullptr)
         filePreview->mixInto (buffer, startSample, numSamples);
+    if (bufferAudition != nullptr)
+        bufferAudition->mixInto (buffer, startSample, numSamples);
 }
 
 // オーディオスレッド専用。スクラッチバッファは常にオフセット0から segLen 分を使い、

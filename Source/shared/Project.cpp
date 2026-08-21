@@ -50,9 +50,9 @@ std::vector<float> buildDomainPeakCache (const juce::AudioBuffer<float>& audio,
 // （本体1サンプル・ratio=1.5・100反復の全長フェードは実効200だが round(100×1.5)=150 になる）
 juce::int64 Clip::renderedFadeLength (juce::int64 fadeSamples, bool fromEnd) const
 {
-    if (activeDomain == nullptr || lengthSamples <= 0)
+    if (effectiveDomain() == nullptr || lengthSamples <= 0)
         return fadeSamples;
-    const auto& d = *activeDomain;
+    const auto& d = *effectiveDomain();
     const auto viewStart = d.mapBoundary (offsetSamples);
     const auto viewEnd = d.mapBoundary (offsetSamples + lengthSamples);
     const auto renderedBody = viewEnd - viewStart;
@@ -69,9 +69,9 @@ juce::int64 Clip::renderedFadeLength (juce::int64 fadeSamples, bool fromEnd) con
 // 本体数を出し、端数は sourceForBoundary（mapBoundary の逆）で原音側へ戻す
 juce::int64 Clip::sourceFadeFromRendered (juce::int64 renderedFade, bool fromEnd) const
 {
-    if (activeDomain == nullptr || lengthSamples <= 0)
+    if (effectiveDomain() == nullptr || lengthSamples <= 0)
         return renderedFade;
-    const auto& d = *activeDomain;
+    const auto& d = *effectiveDomain();
     const auto viewStart = d.mapBoundary (offsetSamples);
     const auto viewEnd = d.mapBoundary (offsetSamples + lengthSamples);
     const auto renderedBody = viewEnd - viewStart;
@@ -202,11 +202,13 @@ void appendRegionNotes (const MidiRegion& region, int fixedPitch, std::vector<Mi
 
 void appendClipPlaybacks (const Clip& clip, std::vector<ClipPlayback>& out)
 {
-    // 再生は activeDomain（実効）だけを見る。要求値（stretchRatio 等）から見かけ長を
-    // 計算してはいけない — レンダー完了前に使うと再生長と実バッファ長が食い違う
+    // 再生は effectiveDomain（実効。ピッチエディタの未確定プレビューがあればそれ）だけを見る。
+    // 要求値（stretchRatio 等）から見かけ長を計算してはいけない — レンダー完了前に使うと
+    // 再生長と実バッファ長が食い違う
+    const auto* domain = clip.effectiveDomain();
     const std::shared_ptr<const juce::AudioBuffer<float>> audio =
-        clip.activeDomain != nullptr ? clip.activeDomain->audio
-                                     : std::shared_ptr<const juce::AudioBuffer<float>> (clip.audio);
+        domain != nullptr ? domain->audio
+                          : std::shared_ptr<const juce::AudioBuffer<float>> (clip.audio);
     if (audio == nullptr)
         return;
 
@@ -214,9 +216,9 @@ void appendClipPlaybacks (const Clip& clip, std::vector<ClipPlayback>& out)
     // ものなので、domainOffset != 0 のクリップが原音の先頭から鳴ってしまう
     juce::int64 readOffset = clip.offsetSamples;
     juce::int64 renderedLength = clip.lengthSamples;
-    if (clip.activeDomain != nullptr)
+    if (domain != nullptr)
     {
-        const auto& d = *clip.activeDomain;
+        const auto& d = *domain;
         const auto viewStart = d.mapBoundary (clip.offsetSamples);
         const auto viewEnd = d.mapBoundary (clip.offsetSamples + clip.lengthSamples);
         readOffset = d.audioBaseOffset + viewStart;

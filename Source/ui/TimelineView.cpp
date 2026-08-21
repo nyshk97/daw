@@ -1188,6 +1188,28 @@ private:
         g.drawText (label, badge, juce::Justification::centred);
     }
 
+    // ピッチ補正バッジ（♪）。補正は痕跡が見えない（長さも波形もほぼ同じ）項目なのでバッジで示す。
+    // 表示は**実効**（鳴っている音が補正済みか。未確定プレビュー中も含む）。移調バッジの左に並べる
+    static int pitchBadgeWidth (const Clip& clip, const juce::Rectangle<int>& rect)
+    {
+        return clip.effectivePitchCorrected() && rect.getWidth() >= 80 ? 22 : 0; // 18px＋左マージン4px
+    }
+    void drawPitchBadge (juce::Graphics& g, const Clip& clip, const juce::Rectangle<int>& rect, bool dimmed)
+    {
+        if (pitchBadgeWidth (clip, rect) == 0)
+            return;
+        int badgeX = rect.getRight() - 40;
+        if (gainBadgeWidth (clip.gain, rect) > 0) badgeX -= 34;
+        if (transposeBadgeWidth (clip, rect) > 0) badgeX -= 30;
+        badgeX -= 0;
+        const auto badge = juce::Rectangle<int> (badgeX - 0, rect.getY() + 3, 18, 13);
+        g.setColour (juce::Colours::black.withAlpha (0.34f));
+        g.fillRoundedRectangle (badge.toFloat(), 3.0f);
+        g.setColour (juce::Colours::white.withAlpha (dimmed ? 0.45f : 0.9f));
+        g.setFont (Fonts::small());
+        g.drawText (juce::String::fromUTF8 (u8"♪"), badge, juce::Justification::centred);
+    }
+
     // リージョンゲインのdB値。0dBのときは何も描かない（デフォルトは沈黙、逸脱だけ主張）。
     // 波形の振幅スケールだけでは -1dB のような微差が読めないので数値も添える。
     // 置き場所は本体の右上: 表示名（左上）とループハンドル（右下）を避けるため。
@@ -1360,7 +1382,7 @@ private:
         // ループ部分は同じ形を薄く繰り返す
         const float midY = (float) rect.getCentreY();
         const float halfH = (float) (rect.getHeight() / 2 - 3);
-        const auto* domain = clip.activeDomain.get();
+        const auto* domain = clip.effectiveDomain(); // 未確定プレビューがあればその波形
         const auto viewStart = clip.viewStartRendered();
         const auto viewEnd = clip.viewEndRendered();
         for (int r = 0; r < reps; ++r)
@@ -1412,6 +1434,7 @@ private:
         }
         drawGainBadge (g, clip.gain, rect, dimmed); // 名前より後に描く（万一重なっても数値が読める）
         drawTransposeBadge (g, clip, rect, dimmed); // ゲインバッジの左に並ぶ
+        drawPitchBadge (g, clip, rect, dimmed);     // さらにその左
     }
 
     void drawMidiRegion (juce::Graphics& g, const MidiRegion& region, int y, bool isSelected,
@@ -2528,6 +2551,14 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
             stretchItem.shortcutKeyDescription = current;
         }
         menu.addItem (stretchItem);
+
+        // ピッチ補正（オーディオ専用・v21）。独立ウィンドウのエディタを開く。有効なら「（有効）」を併記
+        juce::PopupMenu::Item pitchItem (jp (u8"ピッチ補正…"));
+        pitchItem.itemID = 10;
+        pitchItem.isEnabled = onPitchEditRequested != nullptr;
+        if (clip.pitchCorrection.has_value())
+            pitchItem.shortcutKeyDescription = jp (u8"有効");
+        menu.addItem (pitchItem);
     }
     menu.addItem (itemWithKey (2, jp (u8"複製"), Shortcuts::ID::repeatItem, ! pendingClip));
     // ループはハンドルのドラッグで作るので「解除」だけメニューに置く（ループ中のみ有効）
@@ -2572,6 +2603,8 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
                                 safe->onAnalyzeItemRequested (trackIndex, itemIndex);
                             else if (result == 9)
                                 safe->showClipStretchCallout (trackIndex, itemIndex);
+                            else if (result == 10 && safe->onPitchEditRequested)
+                                safe->onPitchEditRequested (trackIndex, itemIndex);
                         });
 }
 

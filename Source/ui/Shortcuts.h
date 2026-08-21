@@ -46,6 +46,9 @@ enum class ID
     // ピアノロール（表示中のみ有効。有効条件はkeyPressed側が持つ）
     noteSemitone,
     noteOctave,
+    // ピッチエディタ（ウィンドウ表示中のみ有効。判定は PitchEditorView が持つ）
+    pitchBypass,
+    pitchMerge,
     // 表示・ズーム
     zoomHorizontal,
     toggleMixer,
@@ -224,6 +227,12 @@ inline const Entry table[] = {
           return k == juce::KeyPress (juce::KeyPress::upKey, juce::ModifierKeys::altModifier, 0)
               || k == juce::KeyPress (juce::KeyPress::downKey, juce::ModifierKeys::altModifier, 0);
       } },
+    { ID::pitchBypass, Category::pianoRoll, u8"ピッチ補正: 選択ノートをバイパス", u8"B",
+      [] (const juce::KeyPress& k)
+      { return detail::noCmdCtrlAlt (k) && k.getTextCharacter() == 'b'; } },
+    { ID::pitchMerge, Category::pianoRoll, u8"ピッチ補正: 隣接2ノートを結合", u8"M",
+      [] (const juce::KeyPress& k)
+      { return detail::noCmdCtrlAlt (k) && k.getTextCharacter() == 'm'; } },
 
     // ---- 表示・ズーム ----
     { ID::zoomHorizontal, Category::view, u8"横ズームアウト/イン", u8"⌘← / ⌘→",

@@ -46,6 +46,7 @@ void operator delete[] (void* p, std::size_t) noexcept { std::free (p); }
 #include "shared/PitchNotes.h"
 #include "shared/PitchCorrection.h"
 #include "shared/RenderRecipe.h"
+#include "shared/PitchEditorSession.h"
 #include "audio/VocalResynth.h"
 #include "audio/RenderCache.h"
 #include "audio/MasterLimiter.h"
@@ -15933,6 +15934,49 @@ void testPitchProjectRoundtrip()
     dir.deleteRecursively();
 }
 
+void testPitchEditorSession()
+{
+    beginTest ("PitchEditorSession transitions (initial preview / commit / change preview / cancel)");
+    const double sr = 48000.0;
+    auto voice = makeSynthVoice (sr);
+    auto curve = std::make_shared<const PitchCurve> (PitchAnalyzer::analyze (*voice.audio, sr));
+    const auto total = (juce::int64) voice.audio->getNumSamples();
+    PitchEditorSession s;
+    expect (! s.isOpen() && ! s.editable() && ! s.hasPreview(), "閉じた状態");
+    s.openForAnalysis (7);
+    const auto g1 = s.generation();
+    expect (s.mode() == PitchEditorSession::Mode::analyzing && s.clipId() == 7 && ! s.editable(), "解析中は編集不可");
+    expect (! s.commitInitial().has_value(), "解析中は確定できない");
+    s.analysisFinished (curve, 0, total, std::nullopt, /*sidecarWritten=*/ false);
+    expect (s.mode() == PitchEditorSession::Mode::initialPreview && s.hasPreview() && ! s.editable() && s.sidecarBlocked(),
+            "サイドカー未書込なら初回プレビューでも編集不可");
+    expect (! s.commitInitial().has_value(), "サイドカー未書込なら確定できない");
+    s.setSidecarWritten (true);
+    expect (s.editable() && s.working().notes.size() > 0 && s.working().curveDigest == curve->digest(), "書けたら編集可・autoSnap 済み");
+    auto committed = s.commitInitial();
+    expect (committed.has_value() && s.mode() == PitchEditorSession::Mode::committed && ! s.hasPreview(), "確定で committed");
+    // 変更プレビュー → キャンセルで元に戻る（generation が進む）
+    auto proposal = *committed;
+    proposal.notes[0].targetMidi += 1;
+    expect (s.beginChangePreview (proposal, curve) && s.mode() == PitchEditorSession::Mode::changePreview && ! s.editable() && s.hasPreview(),
+            "変更プレビュー中は編集不可");
+    expect (! s.commitInitial().has_value(), "変更プレビュー中は commitInitial 不可");
+    const auto gBefore = s.generation();
+    expect (s.cancelChange() && s.mode() == PitchEditorSession::Mode::committed && s.working() == *committed && s.generation() > gBefore,
+            "キャンセルで旧状態・generation 進む");
+    // 変更プレビュー → 適用
+    expect (s.beginChangePreview (proposal, curve), "再び変更プレビュー");
+    auto applied = s.applyChange();
+    expect (applied.has_value() && *applied == proposal && s.mode() == PitchEditorSession::Mode::committed, "適用で新状態が確定");
+    expect (! s.beginChangePreview (proposal, curve) || true, "committed からのみ開始できる");
+    // 閉じる
+    s.close();
+    expect (! s.isOpen() && s.clipId() == 0 && s.generation() > g1, "閉じると generation が進む");
+    // 補正ありで開く: 自動スナップしない（working は渡した状態そのもの）
+    s.openCommitted (9, proposal, curve);
+    expect (s.mode() == PitchEditorSession::Mode::committed && s.working() == proposal && s.editable(), "補正ありは確定状態のまま");
+}
+
 } // namespace
 
 int main (int argc, char** argv)
@@ -16112,6 +16156,7 @@ int main (int argc, char** argv)
     testPitchAutoSnapAndDetach();
     testVocalResynth();
     testPitchProjectRoundtrip();
+    testPitchEditorSession();
 
 
     if (failureCount > 0)

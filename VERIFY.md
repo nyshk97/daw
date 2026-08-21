@@ -664,6 +664,48 @@ sleep 8 && grep -E "project.open|render_failed" ~/Library/Logs/daw/"$(ls -t ~/Li
 - 保存値は project.json の clips[].transposeSemitones / stretchRatio / renderDomain*（v20）。
   加工済みWAVは書かれない（読込時に固定シードで再生成 = 再起動後も同じ音）
 
+## ボーカルのピッチ補正（独立ウィンドウ）の確認
+
+```sh
+# ① モデル・検出・レンダーの回帰は CTest に集約済み（GUI 不要・合成音のみ。実声はコミットしない）
+#    - PitchAnalyzer YIN vs known f0: GPE 0%・voicing P≥0.95/R≥0.90・微小誤差 <5 cent
+#    - PitchSidecar / PitchNotes / PitchAnalysisWorker: 世代不変・検証・分割規則・generation 着地
+#    - TimeMap / PitchCorrection timeMap / split / merge / targetCurve / autoSnap+detach
+#    - VocalResynth (WORLD): 目標との差 中央値 <20 cent（A/C/B/D）・長さ不変・ビット一致
+#    - pitch correction project v21: 保存→再読込ビット一致・分割の親子 digest 一致・サイドカー欠損の無効化
+./build/daw_tests_artefacts/Debug/daw_tests 2>&1 | grep -E "Pitch|TimeMap|VocalResynth|pitch correction|FAILED|passed"
+
+# ② 実アプリ（dev 版限定の検証フック。実機能と同一経路）。対象プロジェクトは ~/Music/daw をコピーして使う
+#    --pitch-editor <track> <clip> でエディタを開き、--pitch-action を解析完了後に順に実行、
+#    --pitch-snapshot でウィンドウ中身を PNG（ログ debug.pitch_snapshot に mode/notes/preview/corrected/dirty/visible）
+#    action: enable / bypassN / moveN（+40ms）/ targetN:+M / kero / resnap / apply / cancel / reset / reanalyze / close / save / undo / bounce
+SP=/tmp/pitch-check; rm -rf "$SP"; mkdir -p "$SP"; cp -R ~/Music/daw/2026-08-18-tundra "$SP/tundra"
+run() { pkill -x LaLa-dev; sleep 1; before=$(ls -t ~/Library/Logs/daw | head -1)
+  open -g build/daw_artefacts/Debug/LaLa-dev.app --args --open "$SP/tundra" "$@"
+  for i in $(seq 1 90); do sleep 1; f=~/Library/Logs/daw/$(ls -t ~/Library/Logs/daw | head -1)
+    [ "$(basename $f)" = "$before" ] && continue; grep -q "debug.pitch_snapshot" "$f" && break; done
+  grep -E "pitch\.|debug\." "$f"; }
+# 補正なしで開く → 解析 → 未確定プレビュー（mode=2 preview=1 corrected=0 dirty=0）
+run --pitch-editor 2 0 --pitch-snapshot "$SP/1-preview.png"
+# Enable → バイパス → 横移動 → 目標 +2 → 保存（mode=3 corrected=1 dirty=0。project.json v21・clip-008.<digest>.pitch）
+run --pitch-editor 2 0 --pitch-action enable --pitch-action bypass1 --pitch-action move3 --pitch-action "target2:+2" --pitch-action save --pitch-snapshot "$SP/2-edited.png"
+ls "$SP/tundra" | grep pitch; python3 -c "import json; p=json.load(open('$SP/tundra/project.json')); print(p['version'], [c.get('pitchCorrection') is not None for t in p['tracks'] for c in t.get('clips',[])])"
+# 保存済みを開き直す: 再解析せず確定状態のまま（pitch.analyze が出ない・mode=3）
+run --pitch-editor 2 0 --pitch-snapshot "$SP/3-reopen.png"
+# 未確定中に ⌘B: プレビューを破棄して閉じる（pitch.preview_discarded → pitch.closed・visible=0・dirty=0）
+run --pitch-editor 3 0 --pitch-action bounce --pitch-snapshot "$SP/4-bounce.png"
+# Enable → undo: 補正が消えエディタが閉じる（edit.undo → pitch.closed・corrected=0）
+run --pitch-editor 3 0 --pitch-action enable --pitch-action undo --pitch-snapshot "$SP/5-undo.png"
+pkill -x LaLa-dev
+```
+
+- GUI 側の操作: オーディオリージョン右クリック →「ピッチ補正…」（有効なら「有効」併記）。上部バーは左＝音の決め方
+  （Scale・Re-snap・Strength・Speed・Kero）／右＝確定系（Re-analyze・Reset・Enable｜Apply/Cancel）。未確定中は黄色いバナー
+- ブロブ: 上下ドラッグ＝目標音（半音）／横ドラッグ＝タイミング（隣接が吸収・1/16 スナップ・⌥で解除・吸収区間に斜線＋ゴースト）／
+  クリック＝単独試聴（メイン再生中は何もしない）／ダブルクリック or B＝バイパス／⌘クリック＝分割／隣接2つを選んで M＝結合
+- 補正が鳴っているクリップは `♪` バッジ（移調バッジの左）。Space・⌘Z・, . はエディタにフォーカスがあってもメインに効く
+- 人間確認が要るもの: 音質（補正の自然さ・ケロケロの「らしさ」）とデュアルモニターでの使用感、ドラッグの掴みやすさ
+
 ## リリース・アップデート（Sparkle）の確認
 
 - **メニュー疎通（AIで自動確認可）**: アプリメニューに `Check for Updates…` が出る。ネイティブメニューなのでAXでクリックできる（JUCEのPopupMenuと違いCGEvent合成は不要）:

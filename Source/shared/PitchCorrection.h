@@ -81,7 +81,7 @@ struct PitchCorrection
     // 構造の検証（index・順序・重なり）は validate() で domain を渡して行う
     static std::optional<PitchCorrection> fromJson (const juce::var& v);
 
-    ContentDigest digest() const; // 内容ハッシュ（レンダー指紋に入れる）
+    ContentDigest digest() const; // 内容ハッシュ（レンダー指紋に入れる。音に関係しない scaleMode/customKey は含めない）
 
     // BoundaryRef → 原音サンプル座標
     juce::int64 resolve (const BoundaryRef& ref, juce::int64 domainOffset, juce::int64 domainLength) const;

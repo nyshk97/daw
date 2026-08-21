@@ -13,6 +13,7 @@
 #include "../shared/PreviewFifo.h"
 
 class AudioFilePreview;
+class BufferAudition;
 class AnalyzerTap;
 
 // サンプル位置ベースの自前ミックスエンジン。process() はオーディオスレッドで走る。
@@ -29,6 +30,7 @@ public:
     void process (const juce::AudioSourceChannelInfo& bufferToFill);
     void releaseResources();
     void setFilePreview (AudioFilePreview* previewToUse) { filePreview = previewToUse; }
+    void setBufferAudition (BufferAudition* auditionToUse) { bufferAudition = auditionToUse; }
     // アナライザタップ（EQエディタのスペクトラム表示）。オーディオ開始前にセットすること
     void setAnalyzerTap (AnalyzerTap* tapToUse) { analyzerTap = tapToUse; }
     // Masterメーターのリング（LUFS/相関/TPの十分統計量）。オーディオ開始前にセットすること
@@ -90,6 +92,7 @@ private:
     PreviewFifo& previewFifo;
     Recorder recorder;
     AudioFilePreview* filePreview = nullptr;
+    BufferAudition* bufferAudition = nullptr; // ピッチエディタの単独試聴（post-master・ファイル試聴と同格）
     AnalyzerTap* analyzerTap = nullptr; // 非所有（MainComponentが所有）。テスト等ではnullptrのまま
 
     double currentSampleRate = 0.0;

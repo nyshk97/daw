@@ -88,6 +88,7 @@ public:
     std::function<void (int, int)> onOpenRegion;     // リージョンをダブルクリック（track, region）
     std::function<void (int, int)> onDeleteItemRequested; // 右クリックメニューの削除（track, クリップorリージョンindex）
     std::function<void (int, int)> onExportItemRequested; // 右クリックメニューの書き出し（同上）
+    std::function<void (int, int)> onPitchEditRequested;  // 右クリックメニューの「ピッチ補正…」（track, clip index）
     // 右クリックメニューの「リファレンスとして分析…」（オーディオクリップのみ。track, clip index）
     std::function<void (int, int)> onAnalyzeItemRequested;
 

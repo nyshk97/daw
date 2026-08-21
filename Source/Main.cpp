@@ -133,6 +133,9 @@ public:
         int reverbEditorBus = -1; // --reverb-editor <0|1>（省略時0）
         bool delayEditor = false;
         bool autoplay = false; // --play: 開いた後に再生を開始（アナライザ等の動作確認用）
+        int pitchTrack = -1, pitchClip = -1; // --pitch-editor <track> <clip>
+        juce::StringArray pitchActions;      // --pitch-action <name>（複数可。順に 1.2 秒間隔で実行）
+        juce::File pitchSnapshotFile;        // --pitch-snapshot <path>
         for (int i = 0; i < args.size(); ++i)
         {
             if (args[i] == "--open" && i + 1 < args.size())
@@ -159,6 +162,15 @@ public:
                 bounceFile = juce::File (args[i + 1]);
             else if (args[i] == "--play")
                 autoplay = true;
+            else if (args[i] == "--pitch-editor" && i + 2 < args.size())
+            {
+                pitchTrack = args[i + 1].getIntValue();
+                pitchClip = args[i + 2].getIntValue();
+            }
+            else if (args[i] == "--pitch-action" && i + 1 < args.size())
+                pitchActions.add (args[i + 1]);
+            else if (args[i] == "--pitch-snapshot" && i + 1 < args.size())
+                pitchSnapshotFile = juce::File (args[i + 1]);
         }
 
         if (openDir.isDirectory())
@@ -247,6 +259,28 @@ public:
                 if (mainWindow != nullptr)
                     if (auto* component = mainWindow->currentMainComponent())
                         component->debugStartBounce (bounceFile);
+            });
+
+        if (pitchTrack >= 0)
+            juce::Timer::callAfterDelay (600, [this, pitchTrack, pitchClip]
+            {
+                if (mainWindow != nullptr)
+                    if (auto* component = mainWindow->currentMainComponent())
+                        component->debugOpenPitchEditor (pitchTrack, pitchClip);
+            });
+        for (int i = 0; i < pitchActions.size(); ++i)
+            juce::Timer::callAfterDelay (1500 + 1200 * i, [this, action = pitchActions[i]]
+            {
+                if (mainWindow != nullptr)
+                    if (auto* component = mainWindow->currentMainComponent())
+                        component->debugPitchAction (action);
+            });
+        if (pitchSnapshotFile != juce::File())
+            juce::Timer::callAfterDelay (1500 + 1200 * pitchActions.size() + 1500, [this, pitchSnapshotFile]
+            {
+                if (mainWindow != nullptr)
+                    if (auto* component = mainWindow->currentMainComponent())
+                        component->debugPitchSnapshot (pitchSnapshotFile);
             });
 
         if (snapshotFile != juce::File())

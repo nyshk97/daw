@@ -153,7 +153,10 @@ private:
     {
         for (auto& track : tracks)
             for (auto& clip : track.clips)
+            {
                 clip.activeDomain = nullptr;
+                clip.previewDomain = nullptr; // プレビューも積まない（エディタが現在の状態から作り直す）
+            }
     }
 
     // states 末尾 → project の復元（undo/redo 共通。State のフィールドを増やしたらここも足す）

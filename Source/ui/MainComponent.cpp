@@ -213,6 +213,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     };
     // ミキサーウィンドウにフォーカスがあるときのキーは集中ハンドラへ転送（Space再生・X/Esc等がそのまま効く）
     mixerWindow.content().onKey = [this] (const juce::KeyPress& key) { return keyPressed (key); };
+    wirePitchEditor(); // ピッチ補正エディタ（独立ウィンドウ）の配線は MainComponentPitch.cpp
     mixerWindow.onDismissed = [this]
     {
         if (fxEditor.isOpen())
@@ -781,6 +782,7 @@ void MainComponent::timerCallback()
 
     snapshots.deleteRetired(); // 旧スナップショット（＋退役したGM音源）の解放は必ずメッセージスレッドで
     filePreview.deleteRetired();
+    pitchEditorTick(); // 解析ワーカーの結果回収（pull 型）・単独試聴の掃除
     if (auto error = filePreview.takeError(); error.isNotEmpty())
     {
         previewError = error;
@@ -2249,6 +2251,7 @@ void MainComponent::startBounceFlow()
     if (bounceActive || engine.isRecording() || importActive || isUrlImporting())
         return;
     cancelGachaPreview(); // 未確定の仮リージョンを書き出しに混入させない
+    pitchDiscardPreviewForExport(); // 未確定のピッチ補正プレビューも（書き出しは永続モデルから作る）
 
     // 素材が何も無ければ入口で弾く（mute/soloを踏まえた正確な判定はbeginBounceで行う）
     bool hasContent = false;
@@ -2481,6 +2484,7 @@ void MainComponent::startRegionExportFlow (int trackIndex, int itemIndex)
 {
     if (bounceActive || engine.isRecording())
         return;
+    pitchDiscardPreviewForExport(); // 未確定のピッチ補正プレビューは書き出しに乗せない（ガチャと同じ）
     // 書き出し対象が仮オブジェクトなら撤去して中止。他対象でも先に撤去する
     //（仮リージョンは対象トラック/リージョン列の末尾に居るため、撤去で index はずれない）
     if (trackIndex >= 0 && trackIndex < (int) project->tracks.size())
@@ -4634,6 +4638,7 @@ bool MainComponent::trySave()
     // （コピー → 元クリップを削除 → 保存、で実ファイルが消えるとペーストが壊れる）
     auto keepWavs = undoStack.referencedWavs();
     auto keepSidecars = undoStack.referencedSidecars();
+    keepSidecars.addArray (pitchPreviewSidecars()); // ⌘S はプレビューを破棄しない＝その世代も残す
     if (itemClipboard.kind == ItemClipboard::Kind::audioClip && itemClipboard.clip.pitchCorrection.has_value())
         keepSidecars.addIfNotAlreadyThere (PitchSidecar::fileNameFor (itemClipboard.clip.fileName,
                                                                        itemClipboard.clip.pitchCorrection->curveDigest));
@@ -4707,6 +4712,7 @@ void MainComponent::reconcileClipRenderState (bool immediate)
         renderCache.syncNow();   // undo/redo・読込直後はキャッシュヒットの即装着を待たせない
     else
         renderCache.requestSync(); // 通常の編集はデバウンス（値が落ち着いてから積む）
+    pitchSyncAfterModelChange(); // エディタの対象を id で引き直し、プレビューを現在の状態から作り直す
 }
 
 // ---- 曲末フェードアウト ----
@@ -4863,6 +4869,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     {
         Log::info ("mixer.close", "source=escape");
         mixerWindow.dismiss();
+        return true;
+    }
+    if (pitchWindow.isVisible() && escape)
+    {
+        Log::info ("pitch.close", "source=escape");
+        pitchWindow.dismiss();
         return true;
     }
     // Logic準拠: B = 下部FXエディタ（Smart Controls相当）

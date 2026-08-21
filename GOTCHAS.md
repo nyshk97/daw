@@ -385,6 +385,16 @@ view の両端・分割境界・再生 offset は**絶対境界の差**（`Rende
 
 ## JUCE一般の落とし穴
 
+
+### ピッチ補正（WORLD・サイドカー・プレビュー）の落とし穴
+
+- **WORLD 付属の `cmd/util/wav.h`（signalsmith も同系）の `length()` は `offset` を引いた残量を返す**。ループ中に `offset` を進めた後に総長のつもりで呼ぶと、後半の入力が尽きて出力が一定のスミアになる（lab の CLI で踏んだ）。総長はループ前に変数へ固定する
+- **WORLD の CheapTrick/D4C はスペクトログラムを doubles で持つ**（48kHz・f0_floor 60Hz → fft 4096 → 32KB/フレーム）。`VocalResynth::render` は解析バイト数が `maxRenderBytes` を超えると nullptr（≒ 2 分の domain が上限）。長いテイクを補正したくなったらフレーム分割処理を足す
+- **再生・描画・試聴は `Clip::effectiveDomain()` を通す（`activeDomain` の直読み禁止）**。ピッチエディタの未確定プレビューは `Clip::previewDomain` に載り、`renderPending` / `collectRequests` / `reconcile` からは見えない。どれか 1 箇所でも `activeDomain` を直読みすると未確定中に補正前の音が鳴る／波形だけ古い
+- **`PitchCorrection::digest()` に音に関係しない設定（scaleMode/customKey）を入れない**。入れると設定を変えただけで指紋が変わり再レンダーが走る。逆に音に関係する値を入れ忘れると変更が反映されない（`RenderRecipe` の不変性の前提）
+- **サイドカーは世代不変ファイル（`clip-NNN.<curveDigest>.pitch`）**。同一内容なら書き直さず、内容が変われば追加。GC は `Project::save(keepSidecars)` だけが行い、project・undo 履歴・クリップボード・開いているプレビューの世代を残す。⌘S はプレビューを破棄しない
+- **`juce::String` に日本語の `const char*` を直接渡すと `juce_String.cpp:327` でアサートする**（テストの `expect` メッセージ連結で踏んだ）。`juce::String::fromUTF8 (u8"...")` を通す。`beginTest` の名前は ASCII にしておくとログの文字化けも避けられる
+
 ### NSWindow の styleMask を後から変えても JUCE の resized() は走らない
 
 `setContentOwned()` 時点で `resized()` は済んでおり、その後 `TitleBarStyle::apply()` で `fullSizeContentView` を立ててもコンテンツビューの frame は変わらない（`contentLayoutRect` だけ変わる）ので再レイアウトが起きない。`TitleBarStyle::titleBarInset()` を `resized()` で読む設計なら、apply の直後に `component->resized(); component->repaint();` を明示的に呼ぶ。症状は「帯はタイトルバー下まで伸びたのにタイトルが描かれず、ボタン群がタイトルバーに食い込む」。

@@ -79,6 +79,16 @@ struct Clip
     std::optional<PitchCorrection> pitchCorrection;
     // 解析カーブ（永続化しない。読込時に pitchCorrection->curveDigest のサイドカーから読む。分割・複製で共有）
     std::shared_ptr<const PitchCurve> pitchCurve;
+    // ピッチエディタの**未確定プレビュー**（永続化しない・undo state にも積まない・指紋判定にも出てこない）。
+    // activeDomain を触らずに「鳴っている音・見えている波形」だけを差し替えるための置き場。
+    // 再生 snapshot・描画・単独試聴は必ず effectiveDomain() を通す（activeDomain の直読みは未確定中に
+    // 補正前の音が鳴る）。renderPending / collectRequests / reconcile からは見えない（巻き戻されない）。
+    // 長さは activeDomain と常に同じ（プレビューは音程と目標だけが違い、時間写像は同じ）
+    std::shared_ptr<const RenderedDomain> previewDomain;
+    const RenderedDomain* effectiveDomain() const
+    {
+        return previewDomain != nullptr ? previewDomain.get() : activeDomain.get();
+    }
 
     juce::int64 requestedDomainOffset() const
     {
@@ -134,15 +144,22 @@ struct Clip
     {
         return activeDomain != nullptr ? activeDomain->semitones : 0;
     }
+    // 補正が鳴っているか（バッジ用。プレビュー中も含む＝見えている音と一致させる）
+    bool effectivePitchCorrected() const
+    {
+        const auto* d = effectiveDomain();
+        return d != nullptr && ! d->recipeDigest.isNull();
+    }
 
     juce::int64 viewStartRendered() const
     {
-        return activeDomain != nullptr ? activeDomain->mapBoundary (offsetSamples) : (juce::int64) 0;
+        const auto* d = effectiveDomain();
+        return d != nullptr ? d->mapBoundary (offsetSamples) : (juce::int64) 0;
     }
     juce::int64 viewEndRendered() const
     {
-        return activeDomain != nullptr ? activeDomain->mapBoundary (offsetSamples + lengthSamples)
-                                       : lengthSamples;
+        const auto* d = effectiveDomain();
+        return d != nullptr ? d->mapBoundary (offsetSamples + lengthSamples) : lengthSamples;
     }
     // 本体1反復の見かけ長。**絶対境界の差**で求める（独立に round(length × ratio) しない —
     // 隣接 view の境界が一致せずバッファ終端を越えて読む）

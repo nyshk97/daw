@@ -148,6 +148,7 @@ target_sources(daw PRIVATE
     Source/audio/AudioImporter.cpp
     Source/audio/AudioFilePreview.cpp
     Source/audio/BounceRenderer.cpp
+    Source/audio/BufferAudition.cpp
     Source/audio/ClipStretcher.cpp
     Source/audio/PitchAnalyzer.cpp
     Source/audio/PitchAnalysisWorker.cpp
@@ -193,6 +194,8 @@ target_sources(daw PRIVATE
     Source/ui/SatEditorView.cpp
     Source/ui/AudioFileBrowserView.cpp
     Source/ui/MainComponent.cpp
+    Source/ui/MainComponentPitch.cpp
+    Source/ui/PitchEditorView.cpp
     Source/ui/MixerOverlay.cpp
     Source/ui/PianoRollView.cpp
     Source/ui/ProjectChooserComponent.cpp
@@ -335,6 +338,7 @@ target_sources(daw_tests PRIVATE
     Source/audio/AudioImporter.cpp
     Source/audio/AudioFilePreview.cpp
     Source/audio/BounceRenderer.cpp
+    Source/audio/BufferAudition.cpp
     Source/audio/ClipStretcher.cpp
     Source/audio/PitchAnalyzer.cpp
     Source/audio/PitchAnalysisWorker.cpp
