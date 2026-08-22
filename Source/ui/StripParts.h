@@ -96,7 +96,7 @@ inline void drawLed (juce::Graphics& g, juce::Rectangle<float> pill, juce::Colou
 }
 
 // FXスロットのピル（Illustrated hardware: 共通のボタン質感＋左端にFX固有色のLED。
-// ON=LED点灯＋白文字 / OFF=LED消灯＋暗い文字。kind=neutral（Instrument・Ext）はLEDを描かない。
+// ON=LED点灯＋白文字 / OFF=LED消灯＋暗い文字。kind=neutral（Instrument）はLEDを描かない。
 // 空きスロット=沈んだ暗い枠）
 inline void drawSlotPill (juce::Graphics& g, juce::Rectangle<int> bounds,
                           const juce::String& name, bool isOn, bool grayed,

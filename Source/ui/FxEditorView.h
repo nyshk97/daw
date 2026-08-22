@@ -13,7 +13,7 @@
 
 // 左のFXパネル（Logicのインスペクタ相当・基本常設で I トグル）。
 // 選択チャンネルをLogicのチャンネルストリップ準拠の縦並びで表示する:
-//   トラック = EQサムネイル → スロット [EQ][Comp][Ext(空き)] → Sends → Panノブ＋dB数値 → フェーダー/メーター
+//   トラック = EQサムネイル → スロット [EQ][Comp][Sat][Lo-fi] → Sends → Panノブ＋dB数値 → フェーダー/メーター
 //   バス     = [Reverb] / [Delay]、Master = [Limiter]（サムネイル・Sends・Panなし）
 // スロットはLogic風のピル（ON=青・OFF=グレー）。hoverで「電源｜エディタ」の2分割に変わり、
 // 電源=ON/OFFトグル・エディタ側クリックで下部詳細（FxDetailView）が開く（Logicのフローティングの代替）。

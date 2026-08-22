@@ -12,7 +12,7 @@
 #include "../shared/Project.h"
 
 // ミキサーの1本分のストリップ。FXパネルと同じ項目をLogicのミキサー列の並びで表示する:
-//   トラック = EQサムネイル → スロット [EQ][Comp][Ext] → Sends行 → Panノブ → dB数値 → フェーダー/メーター → M/S → 名前
+//   トラック = EQサムネイル → スロット [EQ][Comp][Sat][Lo-fi] → Sends行 → Panノブ → dB数値 → フェーダー/メーター → M/S → 名前
 //   バス     = スロット [Reverb]/[Delay] → dB数値 → フェーダー/メーター → M → 名前、Master = [Limiter]（Mなし）
 // スロットはFXパネルと同じSlotPill（hoverで電源｜エディタ2分割。エディタ側は onOpenSlot 経由で
 // チャンネル選択＋下部詳細エディタを開く）。値の変更は TrackParams の atomic に直接書く（スナップショット再構築は不要）。
@@ -62,7 +62,7 @@ private:
     juce::Rectangle<int> eqThumbArea;             // EQサムネイル（トラックのみ。クリック=EQエディタを開く）
     juce::Rectangle<int> readoutArea;             // dB数値ボックスのペア（設定値・ピーク）
 
-    // トラック=EQ/Comp/Sat/Lo-fi/Extの5枠（FxSlots::trackBaseLayout × mixerOrder の投影）、
+    // トラック=EQ/Comp/Sat/Lo-fiの4枠（FxSlots::trackBaseLayout × mixerOrder の投影）、
     // バス/Master=[0]のみ。配列index=表示位置（意味IDへの変換は mixerOrder 経由）。
     // 部品・スロット番号の意味はFXパネルと共有（FxSlotLayout.h）
     SlotPill slotPills[FxSlots::mixerSlots];

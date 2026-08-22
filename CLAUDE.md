@@ -67,7 +67,7 @@
 
 まだ作らないもの:
 
-- 汎用AU/VSTプラグインホスティング（FXのExtスロットは空き表示のみ。内蔵GM音源の固定ホストとは別物）
+- 汎用AU/VSTプラグインホスティング（Ext 枠は 2026-08-22 に廃止。理由は fx-roadmap.md「削った候補」。内蔵GM音源の固定ホストとは別物）
 - UI面の意図的な見送りは [ui-principles.md](docs/design/ui-principles.md) の見送りリスト、機能の要否判断は [feature-scope.md](docs/design/feature-scope.md) を参照
 - 現在のフェーズのスコープ外の実装を先回りして入れない（抽象化のしすぎに注意）
 

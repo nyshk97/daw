@@ -20,7 +20,7 @@ MixerStrip::MixerStrip (Kind kindToUse, juce::String fxSlotNameToUse, FxVisualKi
 {
     const bool isTrack = kind == Kind::track;
 
-    // スロットピル（トラック=5・バス/Master=1。中身の構成はbindで行う）。
+    // スロットピル（トラック=4・バス/Master=1。中身の構成はbindで行う）。
     // 配列index=表示位置。クリックが運ぶスロット番号は意味ID（表示位置ではない）＝
     // mixerOrder で変換する。位置を直接渡すと位置2以降で別スロットのエディタが開く
     for (int i = 0; i < (isTrack ? FxSlots::mixerSlots : 1); ++i)
@@ -148,7 +148,7 @@ void MixerStrip::bind (const juce::String& name, std::shared_ptr<TrackParams> pa
     }
 
     // スロットピルの構成（定義はFxSlotLayoutが単一の真実の源。ミキサーはInstrumentを除いた
-    // 5枠の投影＝trackBaseLayout × mixerOrder。enabled atomicの実体はTrackが所有するTrackParams）
+    // 4枠の投影＝trackBaseLayout × mixerOrder。enabled atomicの実体はTrackが所有するTrackParams）
     if (kind == Kind::track)
     {
         const auto layout = FxSlots::trackBaseLayout (params.get());

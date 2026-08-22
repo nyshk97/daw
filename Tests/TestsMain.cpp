@@ -12198,10 +12198,9 @@ void testFxSlotProjection()
 {
     beginTest ("fx slot projection (mixer/panel order)");
 
-    expect (FxSlots::mixerOrder[0] == FxSlots::eq && FxSlots::mixerOrder[1] == FxSlots::comp
-                && FxSlots::mixerOrder[2] == FxSlots::sat && FxSlots::mixerOrder[3] == FxSlots::lofi
-                && FxSlots::mixerOrder[4] == FxSlots::ext,
-            "ミキサー表示順 EQ,Comp,Sat,Lo-fi,Ext と既存IDの対応");
+    expect (FxSlots::mixerSlots == 4 && FxSlots::mixerOrder[0] == FxSlots::eq && FxSlots::mixerOrder[1] == FxSlots::comp
+                && FxSlots::mixerOrder[2] == FxSlots::sat && FxSlots::mixerOrder[3] == FxSlots::lofi,
+            "ミキサー表示順 EQ,Comp,Sat,Lo-fi と既存IDの対応（Ext 枠は 2026-08-22 に廃止）");
     expect (FxSlots::mixerPositionOf (FxSlots::grSlot) == 1, "GRミニバーの逆引き＝Comp位置(1)");
 
     TrackParams params;
@@ -12211,24 +12210,21 @@ void testFxSlotProjection()
                 && layout.slots[FxSlots::sat].enabled == &params.satEnabled
                 && layout.slots[FxSlots::lofi].enabled == &params.lofiEnabled,
             "電源トグルが各FXの正しいatomicを指す");
-    expect (layout.slots[FxSlots::ext].placeholder
-                && layout.slots[FxSlots::ext].enabled == nullptr,
-            "Extは空き表示・トグルなし");
+    expect (! layout.slots[2].used, "旧 Ext（ID 2）は欠番＝構成に現れない");
     expect (! layout.slots[FxSlots::instrument].used, "ベース構成にInstrumentは無い");
 
     Track audioTrack;
     int order[FxSlots::maxSlots];
     int n = FxSlots::panelOrder (FxSlots::trackPanelLayout (audioTrack), order);
-    expect (n == 5 && order[0] == FxSlots::eq && order[1] == FxSlots::comp
-                && order[2] == FxSlots::sat && order[3] == FxSlots::lofi
-                && order[4] == FxSlots::ext,
+    expect (n == 4 && order[0] == FxSlots::eq && order[1] == FxSlots::comp
+                && order[2] == FxSlots::sat && order[3] == FxSlots::lofi,
             "オーディオトラックのFXパネル表示順");
 
     Track midiTrack;
     midiTrack.type = TrackType::midi;
     n = FxSlots::panelOrder (FxSlots::trackPanelLayout (midiTrack), order);
-    expect (n == 6 && order[0] == FxSlots::instrument && order[1] == FxSlots::eq
-                && order[5] == FxSlots::ext,
+    expect (n == 5 && order[0] == FxSlots::instrument && order[1] == FxSlots::eq
+                && order[4] == FxSlots::lofi,
             "MIDIトラックはInstrumentが先頭・以降は同順");
 }
 

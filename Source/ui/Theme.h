@@ -124,7 +124,7 @@ inline const juce::Colour fxReverbA  { 0xff6fc3b8 };  // ティール（空間�
 inline const juce::Colour fxReverbB  { 0xff5fa7d0 };  // 空色（Aと明度差で区別）
 inline const juce::Colour fxDelay    { 0xff8ccf7a };  // 緑（Sendsの旧緑の系譜）
 inline const juce::Colour fxLimiter  { 0xffe06a6a };  // 赤（天井＝警告色）
-inline const juce::Colour fxNeutral  { 0xff9a958a };  // 固有色なし（Instrument・Ext）。中立の暖色グレー
+inline const juce::Colour fxNeutral  { 0xff9a958a };  // 固有色なし（Instrument）。中立の暖色グレー
 // 予備（新FX追加時はここから割り当て、上に1行足す。未使用）
 inline const juce::Colour fxSpareRose { 0xffd98aa8 };
 inline const juce::Colour fxSpareYellow { 0xffd9d06a };

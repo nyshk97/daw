@@ -14,22 +14,23 @@
 //
 // 既存の番号（onOpenSlot / fxDetailSlot / BottomPanelHistory の外部契約）は動かさない:
 // Sat / Lo-fi はバッチ3で末尾に追加した番号で、**表示位置とIDは別物**
-//（表示は EQ, Comp, Sat, Lo-fi, Ext の順だがIDは 0,1,4,5,2）。
+//（表示は EQ, Comp, Sat, Lo-fi の順だがIDは 0,1,4,5）。ID 2 は外部AU（Ext）用だったが
+// 2026-08-22 に枠ごと廃止（fx-roadmap.md「削った候補」）。番号は欠番として残す（履歴の互換）。
 // ミキサー側が表示位置をそのままIDとして使うと ID3=Instrument を誤参照するため、
 // 表示位置→IDの変換は必ず mixerOrder / panelOrder を経由する
 namespace FxSlots
 {
-enum Id : int { eq = 0, comp = 1, ext = 2, instrument = 3, sat = 4, lofi = 5 };
+enum Id : int { eq = 0, comp = 1, /* 2 = 旧 Ext（欠番） */ instrument = 3, sat = 4, lofi = 5 };
 
-inline constexpr int maxSlots = 6;   // FXパネルの最大（MIDIトラック: Instrument込み）
-inline constexpr int mixerSlots = 5; // ミキサーの表示枠（Instrumentを除外した投影。
+inline constexpr int maxSlots = 6;   // 配列サイズ（ID の最大+1。欠番 2 を含む）
+inline constexpr int mixerSlots = 4; // ミキサーの表示枠（Instrumentを除外した投影。
                                      // ミキサーに出すかは未決の機能判断＝現状は出さない）
 
 // ミキサーの表示位置→意味ID投影（縦積みの上からこの順）
-inline constexpr Id mixerOrder[mixerSlots] = { eq, comp, sat, lofi, ext };
+inline constexpr Id mixerOrder[mixerSlots] = { eq, comp, sat, lofi };
 
 // FXパネルの表示順（音源＝Instrumentが一番上・以降はミキサーと同順）
-inline constexpr Id panelSequence[maxSlots] = { instrument, eq, comp, sat, lofi, ext };
+inline constexpr Id panelSequence[maxSlots - 1] = { instrument, eq, comp, sat, lofi };
 
 // 表示位置の逆引き（GRミニバー等「特定IDのピルはどこか」用。無ければ-1）
 inline constexpr int mixerPositionOf (Id id)
@@ -79,9 +80,8 @@ inline juce::String gmInstrumentName (const Track& track)
     return gmInstruments[0].name;
 }
 
-// トラックの基本5枠（EQ/Comp/Sat/Lo-fi/Ext）。ON/OFFを持つのはEQ・Comp・Sat・Lo-fi
-//（enabled の実体は TrackParams）。Ext は外部AU（スライス6）まで空き表示。
-// ミキサーはこの5枠を mixerOrder の順で表示する
+// トラックの基本4枠（EQ/Comp/Sat/Lo-fi。すべて ON/OFF を持つ。enabled の実体は TrackParams）。
+// ミキサーはこの4枠を mixerOrder の順で表示する
 inline Layout trackBaseLayout (TrackParams* params)
 {
     Layout layout;
@@ -89,12 +89,11 @@ inline Layout trackBaseLayout (TrackParams* params)
     layout.slots[comp] = { "Comp", params != nullptr ? &params->compEnabled : nullptr, false, true, FxVisualKind::comp };
     layout.slots[sat] = { "Sat", params != nullptr ? &params->satEnabled : nullptr, false, true, FxVisualKind::sat };
     layout.slots[lofi] = { "Lo-fi", params != nullptr ? &params->lofiEnabled : nullptr, false, true, FxVisualKind::lofi };
-    layout.slots[ext] = { "Ext", nullptr, true, true };
     return layout;
 }
 
 // FXパネル用: MIDIトラックは Instrument スロット（番号3）を追加。サンプル割当時だけ
-// 点灯してクリック可、内蔵GM音源のときは Ext と同じグレー表示（音源の差し替えは
+// 点灯してクリック可、内蔵GM音源のときはグレー表示（音源の差し替えは
 // ヘッダーのプルダウンで行う）。表示順は panelOrder が決める
 inline Layout trackPanelLayout (const Track& track)
 {

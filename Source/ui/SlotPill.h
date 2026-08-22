@@ -23,7 +23,7 @@ public:
     }
 
     // enabledAtomic の実体は TrackParams（Trackが所有）。bind対象が変わるたびに差し替えること
-    // kind は固有色（LED・選択枠・ミニGRバー）用。neutral（Instrument・Ext）はLEDを描かない
+    // kind は固有色（LED・選択枠・ミニGRバー）用。neutral（Instrument）はLEDを描かない
     void configure (const juce::String& nameToUse, std::atomic<bool>* enabledAtomic, bool grayedToUse,
                     FxVisualKind kindToUse = FxVisualKind::neutral)
     {
