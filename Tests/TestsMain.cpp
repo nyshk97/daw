@@ -15591,6 +15591,20 @@ void testPitchTargetCurve()
         for (int k = 20; k < 200; ++k) { const double v = c.midiAt (k) + at (t, k); mn = juce::jmin (mn, v); mx = juce::jmax (mx, v); }
         expect (mx - mn > 0.3 && std::abs ((mx + mn) / 2 - 60.0) < 0.05, "速さ大 = 中心だけ寄せてビブラートは残る");
     }
+    // ノート単位の「自動の目標に戻す」: 中央値に一番近いスケール内の音へ・pinned と bypass を外す・境界は触らない
+    {
+        auto r = pc; r.notes[0].targetMidi = 67; r.notes[0].pinned = true; r.notes[1].bypass = true;
+        expect (PitchCorrections::resetNoteToAuto (r, 0, c, 0, dom, std::nullopt), "手で置いたノートは変わる");
+        expect (r.notes[0].targetMidi == 60 && ! r.notes[0].pinned, "クロマチックなら中央値 60.3 → 60・pinned が外れる");
+        expect (PitchCorrections::resetNoteToAuto (r, 1, c, 0, dom, std::nullopt) && ! r.notes[1].bypass && r.notes[1].targetMidi == 64,
+                "bypass も外れて自動の目標（64.4 → 64）に戻る");
+        expect (! PitchCorrections::resetNoteToAuto (r, 0, c, 0, dom, std::nullopt), "既に自動の状態なら変わらない（undo を積まない判定に使う）");
+        ProjectKey dMinor; dMinor.root = 2; dMinor.mode = KeyMode::minor; // D E F G A Bb C: 64.4 は E(64) でスケール内
+        auto r2 = pc; r2.notes[1].targetMidi = 63; r2.notes[1].pinned = true;
+        expect (PitchCorrections::resetNoteToAuto (r2, 1, c, 0, dom, dMinor) && r2.notes[1].targetMidi == 64, "スケール指定なら snapToScale と同じ規則");
+        expect (r.timeNodes == pc.timeNodes && r2.timeNodes == pc.timeNodes, "ノート境界は触らない");
+        expect (! PitchCorrections::resetNoteToAuto (r, 5, c, 0, dom, std::nullopt), "範囲外は false");
+    }
     // pinned（手で置いた音）は Strength 0 でも 100% で目標へ寄る。中立判定からも外れる
     {
         auto p2 = pc; p2.strength = 0.0f; p2.notes[1].pinned = true;

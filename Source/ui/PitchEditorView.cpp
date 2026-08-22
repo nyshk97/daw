@@ -139,6 +139,7 @@ PitchEditorView::PitchEditorView()
         u8"    ・枠が狙いと違う段にある → 上下ドラッグで目標を置く（pinned になり、Strength に関係なく 100% で乗る）\n"
         u8"    ・しゃくり・下降・意図的な外しで、目標を付けること自体が不自然 → B でバイパス（原音のまま）\n"
         u8"    ・目標は合っているが声が不自然（ケロケロ・こもり）→ Speed を上げる（ノート単位では効かせられない）\n"
+        u8"    ・1 つだけ元に戻したい → ノートを右クリック「このノートを自動の目標に戻す」（pinned・バイパスも外れる）\n"
         u8"5. 手直しを全部やり直したくなったら右クリック「ノートの手直しを捨てて目標音を付け直す」\n"
         u8"    （Apply / Cancel で確定・取消。Strength / Speed は残る）\n"
         u8"\n"
@@ -957,6 +958,28 @@ void PitchEditorView::splitAt (int noteIndex, juce::Point<int> p)
     repaint();
 }
 
+bool PitchEditorView::resetNoteToAuto (int noteIndex)
+{
+    const Clip* clip = getClip ? getClip() : nullptr;
+    if (clip == nullptr || session == nullptr || ! canEdit() || session->curve() == nullptr || noteIndex < 0)
+        return false;
+    const auto& w = session->working();
+    const auto scale = PitchCorrections::effectiveScale (w, getProjectKey ? getProjectKey() : std::nullopt);
+    // 変わらないときは undo を積まない（付け直し〔全体〕の「既に自動の状態です」と同じ扱い）
+    auto probe = w;
+    if (! PitchCorrections::resetNoteToAuto (probe, noteIndex, *session->curve(), clip->offsetSamples, clip->lengthSamples, scale))
+    {
+        showStatus (jp (u8"既に自動の目標です"));
+        return false;
+    }
+    if (onBeginEdit) onBeginEdit();
+    PitchCorrections::resetNoteToAuto (session->mutableWorking(), noteIndex, *session->curve(), clip->offsetSamples, clip->lengthSamples, scale);
+    Log::info ("pitch.note_reset", "note=" + juce::String (noteIndex));
+    if (onEndEdit) onEndEdit();
+    repaint();
+    return true;
+}
+
 void PitchEditorView::showContextMenu (juce::Point<int> at)
 {
     if (session == nullptr || ! session->isOpen())
@@ -974,6 +997,7 @@ void PitchEditorView::showContextMenu (juce::Point<int> at)
         bypassItem.isEnabled = canEdit();
         bypassItem.shortcutKeyDescription = Shortcuts::keyText (Shortcuts::ID::pitchBypass);
         menu.addItem (bypassItem);
+        menu.addItem (12, jp (u8"このノートを自動の目標に戻す"), canEdit()); // 手で置いた目標・pinned・bypass を外す（ノート版の付け直し）
         menu.addSeparator();
     }
     // 「再解析」はメニューに置かない（2026-08-22）: 検出は決定的で、同じ検出器なら結果が変わらず、検出器が変わるのは
@@ -995,6 +1019,7 @@ void PitchEditorView::showContextMenu (juce::Point<int> at)
             if (safe->onEndEdit) safe->onEndEdit();
             safe->repaint();
         }
+        else if (result == 12 && noteUnder >= 0) safe->resetNoteToAuto (noteUnder);
         else if (result == 1 && safe->onReset) safe->onReset();
         else if (result == 3 && safe->onSetProjectKey) safe->onSetProjectKey();
     });

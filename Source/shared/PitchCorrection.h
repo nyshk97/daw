@@ -154,6 +154,11 @@ bool setNoteTarget (PitchCorrection& pc, int noteIndex, int targetMidi, int targ
 // バイパスの切替。bypass = 素に戻す、なので pinned も外す（解除しても戻らない）
 void setNoteBypass (PitchCorrection& pc, int noteIndex, bool bypass);
 bool toggleNoteBypass (PitchCorrection& pc, int noteIndex); // 範囲外なら false
+// ノート単位の「自動の目標に戻す」: 自動スナップと同じ規則（中央値に一番近いスケール内の音）で目標を付け直し、
+// pinned・bypass を外す（付け直し〔全体〕のノート版。ノート境界・タイミングは触らない）。
+// 戻り値: 何か変わったか（中央値が取れない＝無声だけのノートは false）
+bool resetNoteToAuto (PitchCorrection& pc, int noteIndex, const PitchCurve& curve,
+                      juce::int64 domainOffset, juce::int64 domainLength, const std::optional<ProjectKey>& scale);
 
 // 横ドラッグ: ノート i の開始/終了ノードを同量 Δ（render 座標）動かす。両隣の区間が吸収。
 // 端点（domainStart/End）を参照するノートは動かせない。区間別下限を下回る Δ はクランプ。

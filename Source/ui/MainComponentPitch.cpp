@@ -822,6 +822,16 @@ void MainComponent::debugPitchAction (const juce::String& action)
         pitchSession.mutableWorking().speedMs = PitchCorrection::keroSpeedMs;
         pitchEndEdit();
     }
+    else if (action.startsWith ("auto"))
+    {
+        const int idx = action.substring (4).getIntValue();
+        const bool ok = view.resetNoteToAuto (idx);
+        const auto& n = pitchSession.working().notes;
+        Log::info ("debug.pitch_note_reset", "note=" + juce::String (idx) + " ok=" + juce::String ((int) ok)
+                                                + (idx >= 0 && idx < (int) n.size() ? " target=" + juce::String (n[(size_t) idx].targetMidi)
+                                                                                       + " pinned=" + juce::String ((int) n[(size_t) idx].pinned)
+                                                                                       + " bypass=" + juce::String ((int) n[(size_t) idx].bypass) : juce::String()));
+    }
     else if (action.startsWith ("bypass"))
     {
         const int idx = action.substring (6).getIntValue();

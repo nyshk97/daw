@@ -680,6 +680,7 @@ sleep 8 && grep -E "project.open|render_failed" ~/Library/Logs/daw/"$(ls -t ~/Li
 #    --pitch-editor <track> <clip> でエディタを開き、--pitch-action を解析完了後に順に実行、
 #    --pitch-snapshot でウィンドウ中身を PNG（ログ debug.pitch_snapshot に mode/notes/preview/corrected/dirty/visible）
 #    action: enable / bypassN / moveN（+40ms）/ targetN:+M / kero / resnap / apply / cancel / reset / reanalyze / close / save / undo / bounce / rulerclick:<x>（ルーラー帯の x をクリック＝シーク。ログ debug.pitch_rulerclick に hit/position）
+#            autoN（ノート N を右クリック「このノートを自動の目標に戻す」＝目標を自動スナップの段へ・pinned/bypass 解除。ログ debug.pitch_note_reset に ok/target/pinned/bypass。変化なしなら ok=0 で undo を積まない）
 #            help:guide|strength|speed（「?」を押す＝吹き出し。guide はバー左端の「使い方」。CallOutBox は背景起動だと前面判定で 200ms 後に自動で閉じるので、スナップショットには中身のパネルだけを直接描いて合成する＝レイアウト・見切れの確認用）/ dblclick:strength|speed（スライダーのダブルクリック＝80% / 200ms に戻る。ログ debug.pitch_dblclick に strength/speedMs）
 SP=/tmp/pitch-check; rm -rf "$SP"; mkdir -p "$SP"; cp -R ~/Music/daw/2026-08-18-tundra "$SP/tundra"
 run() { pkill -x LaLa-dev; sleep 1; before=$(ls -t ~/Library/Logs/daw | head -1)
@@ -701,6 +702,8 @@ run --pitch-editor 3 0 --pitch-action enable --pitch-action undo --pitch-snapsho
 # ルーラークリックでシーク: hit=1 で position（論理位置。locate は非同期なので playhead 実値は次のコールバック後）が
 # 表示中のグリッド線へスナップした値になる（ズームアウト時は拍・小節）。録音中は動かない
 run --pitch-editor 2 0 --pitch-action rulerclick:600 --pitch-snapshot "$SP/6-seek.png"
+# ノート単位の「自動の目標に戻す」: target2:+2 で pinned にした音と bypass3 を auto で戻す（pinned=0 bypass=0）。同じノートへ 2 回目は ok=0
+run --pitch-editor 2 0 --pitch-action enable --pitch-action "target2:+2" --pitch-action bypass3 --pitch-action auto2 --pitch-action auto3 --pitch-action auto3 --pitch-action undo --pitch-snapshot "$SP/8-noteauto.png"
 # 「?」の吹き出しと、つまみのダブルクリック既定値（Strength 0%→80%・Speed→200ms。debug.pitch_dblclick の strength=0.80 speedMs=200）
 run --pitch-editor 2 0 --pitch-action enable --pitch-action dblclick:strength --pitch-action dblclick:speed --pitch-action help:speed --pitch-snapshot "$SP/7-help.png"
 pkill -x LaLa-dev
@@ -713,7 +716,7 @@ pkill -x LaLa-dev
 - 上下ドラッグ中はその音が新しい目標音で鳴る（`VocalNoteAudition`: ドラッグ開始時にノート範囲だけ WORLD で分解・半音ごとに合成。メイン再生中は鳴らない。ログ `pitch.drag_audition_prepare`）
 - 手で目標音を動かしたノートは pinned（枠が実線で強め）。Strength に関係なく 100% で目標へ寄る（自動スナップ分だけが Strength に従う）
 - ブロブ: 上下ドラッグ＝目標音（半音）／横ドラッグ＝タイミング（隣接が吸収・1/16 スナップ・⌥で解除・吸収区間に斜線＋ゴースト）／
-  クリック＝単独試聴（メイン再生中は何もしない）／ダブルクリック or B＝バイパス／⌘クリック＝分割（⌘を押してブロブに乗ると分割位置の点線が出る。右クリック「ここで分割」でも可）／隣接2つを Shift クリックで選んで M＝結合
+  クリック＝単独試聴（メイン再生中は何もしない）／ダブルクリック or B＝バイパス／右クリック「このノートを自動の目標に戻す」＝手で置いた目標・pinned・bypass を外す（ノート版の付け直し。境界・タイミングは触らない）／⌘クリック＝分割（⌘を押してブロブに乗ると分割位置の点線が出る。右クリック「ここで分割」でも可）／隣接2つを Shift クリックで選んで M＝結合
 - Scale の右の鍵盤アイコンでスケール音の段のハイライトを ON/OFF（キー未設定なら推定キー）。Re-snap/Reset の結果は上部バー右に数秒表示（「結果は同じ」等）
 - ズーム: ⌘←/→（ウィンドウ内ではタイムラインでなくエディタが拡大）・トラックパッドのピンチ・⌘＋ホイール（カーソル中心）。スクロール: 横スワイプ／ホイール
 - 補正が鳴っているクリップは `♪` バッジ（移調バッジの左）。Space・⌘Z・, . はエディタにフォーカスがあってもメインに効く

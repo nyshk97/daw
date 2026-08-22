@@ -532,6 +532,25 @@ void PitchCorrections::setNoteBypass (PitchCorrection& pc, int noteIndex, bool b
         n.pinned = false;
 }
 
+bool PitchCorrections::resetNoteToAuto (PitchCorrection& pc, int noteIndex, const PitchCurve& curve,
+                                        juce::int64 domainOffset, juce::int64 domainLength, const std::optional<ProjectKey>& scale)
+{
+    if (noteIndex < 0 || noteIndex >= (int) pc.notes.size())
+        return false;
+    auto& n = pc.notes[(size_t) noteIndex];
+    const auto s = pc.resolve (n.start, domainOffset, domainLength);
+    const auto e = pc.resolve (n.end, domainOffset, domainLength);
+    const auto median = s >= 0 && e > s ? noteMedianMidi (curve, s, e) : std::nullopt;
+    if (! median.has_value())
+        return false;
+    const int target = snapToScale (*median, scale);
+    const bool changed = n.targetMidi != target || n.pinned || n.bypass;
+    n.targetMidi = target;
+    n.pinned = false;
+    n.bypass = false;
+    return changed;
+}
+
 juce::int64 PitchCorrections::moveNote (PitchCorrection& pc, int noteIndex, juce::int64 deltaRender,
                                         juce::int64 domainOffset, juce::int64 domainLength,
                                         double stretchRatio, double sampleRate)
