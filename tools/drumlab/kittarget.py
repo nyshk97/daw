@@ -164,7 +164,7 @@ def summarize(rows: list[dict], lane: str, field: str) -> tuple[float, float, fl
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--oneshots", type=str, default=None,
-                    help="ワンショットのディレクトリ（再帰。ファイル名でレーンを推定）")
+                    help="ワンショットのディレクトリ（再帰。wav/aif。ファイル名でレーンを推定）")
     args = ap.parse_args()
 
     songs = top_songs()
@@ -196,15 +196,24 @@ def main() -> None:
     if args.oneshots:
         root = Path(args.oneshots).expanduser()
         # 目標値と比べるのは3レーンだけ。オープンハットは「クローズハット」に混ざると
-        # 減衰の分布を壊す（実測で上限が 0.80s まで伸びた）ので分けて、参考として出す
-        pat = [("kick", "kick", r"kick"),
-               ("snare", "snare", r"snare|rimshot"),
-               ("hat", "hat", r"closed[ _-]*hi[ _-]*hat|closed[ _-]*hat"),
-               ("hat(open) 参考", "hat", r"open[ _-]*hi[ _-]*hat|open[ _-]*hat")]
+        # 減衰の分布を壊す（実測で上限が 0.80s まで伸びた）ので分けて、参考として出す。
+        # ハットは「open が名前に入るか」で分ける — Cymatics は "Closed/Open Hihat"、
+        # Logic は "Hi-Hat_1 / Hi-Hat_Open" と書き方が違い、closed を要求すると Logic が漏れる
+        # `\b` は `_` の前後で境界にならない（`Kick_1_...` が `\bkick\b` に一致しない）。
+        # 英字だけを除外する先読み/後読みにする
+        def w(word): return rf"(?<![A-Za-z]){word}(?![A-Za-z])"
+        HAT = w("hi[ _-]?hat") + "|" + w("hats?")
+        pat = [("kick", "kick", lambda n: re.search(w("kick"), n, re.I)),
+               # リムショットは別の音なのでスネアの目標比較に混ぜない
+               ("snare", "snare", lambda n: re.search(w("snare"), n, re.I)
+                and not re.search("rim", n, re.I)),
+               ("hat", "hat", lambda n: re.search(HAT, n, re.I) and not re.search(r"open", n, re.I)),
+               ("hat(open) 参考", "hat", lambda n: re.search(HAT, n, re.I) and re.search(r"open", n, re.I))]
         print(f"\n{'='*78}\n手持ちのワンショット: {root}\n")
         print(f"{'レーン':<15}{'本数':>4}{'重心(Hz)':>22}{'減衰(s)':>20}{'目標との差':>14}")
-        for label, lane, rx in pat:
-            files = [f for f in root.rglob("*.wav") if re.search(rx, f.name, re.I)]
+        audio = [f for ext in ("*.wav", "*.aif", "*.aiff") for f in root.rglob(ext)]
+        for label, lane, match in pat:
+            files = [f for f in audio if match(f.name)]
             if not files:
                 continue
             ms = [measure_oneshot(f, lane) for f in files]
