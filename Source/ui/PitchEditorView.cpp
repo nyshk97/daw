@@ -93,16 +93,51 @@ PitchEditorView::PitchEditorView()
     };
     setupSlider (strengthSlider, 0.0, 100.0, 1.0);
     strengthSlider.textFromValueFunction = [] (double v) { return v <= 0 ? juce::String::fromUTF8 (u8"off (0%)") : juce::String ((int) v) + "%"; };
-    strengthSlider.setTooltip (jp (u8"ノートの中心を目標音へ寄せる量。off = 補正しない・full = 中心が目標に乗る"));
+    strengthSlider.setTooltip (jp (u8"ノートの中心を目標音へ寄せる量。off = 補正しない・full = 中心が目標に乗る。ダブルクリックで 80%"));
+    strengthSlider.setDoubleClickReturnValue (true, PitchCorrection::defaultStrength * 100.0); // 「よく使う位置」へ 1 操作で戻す
     setupSlider (speedSlider, 0.0, 400.0, 1.0);
+    speedSlider.setDoubleClickReturnValue (true, PitchCorrection::defaultSpeedMs);
     speedSlider.textFromValueFunction = [this] (double v)
     {
         if (v > 0) return juce::String ((int) v) + " ms";
         // ケロケロは Strength 100% × Speed 0 の組み合わせ。Strength が足りなければ平らにならないことを伝える
-        return strengthSlider.getValue() >= 99.5 ? jp (u8"hard tune (0 ms)")
-                                                 : jp (u8"0 ms — Strength が 100% でないとハードチューンになりません");
+        // 0 ms でも残る揺れは (100 − Strength)%（出力 = 原音のずれ × (1 − Strength)）。100% 未満なら「その分だけ残る」と伝える
+        const int remain = 100 - (int) std::round (strengthSlider.getValue());
+        return remain <= 0 ? jp (u8"hard tune (0 ms)")
+                           : jp (u8"0 ms — 揺れが ") + juce::String (remain) + jp (u8"% 残る（Strength ") + juce::String (100 - remain) + "%)";
     };
-    speedSlider.setTooltip (jp (u8"ノート内の動きを目標へ引き寄せる速さ。左端 = ハードチューン（ケロケロ）・右へ行くほどビブラート・しゃくりを残す"));
+    speedSlider.setTooltip (jp (u8"ノート内の動きを目標へ引き寄せる速さ。左端 = ハードチューン（ケロケロ）・右へ行くほどビブラート・しゃくりを残す。ダブルクリックで 200 ms"));
+
+    // 「?」: 2 つのつまみは横に並んでいるが触っている層が違う（Strength＝ノートの縦位置・Speed＝ノート内の揺れ）。
+    // その違いと「どう置けば透明な補正になるか」を、使う場所で読めるようにする
+    strengthHelpText = jp (
+        u8"各ノートの「中心」を目標の音へどれだけ寄せるか。\n"
+        u8"ノートを手で上下に動かすのと同じ層（ノートの縦位置）を、全ノートまとめて動かしています。\n\n"
+        u8"• 0% = 何もしない（目標は付いているが鳴りは原音）\n"
+        u8"• 80% = ずれの 8 割を埋める。「合っているけど機械的ではない」の目安\n"
+        u8"• 100% = 中心が目標にぴったり乗る\n\n"
+        u8"手で目標を置いたノート（pinned）は、この値に関係なく常に 100% で乗ります。"
+        u8"全体は控えめ・ひどい所だけ手で、の分業ができます。\n"
+        u8"Logic の Flex Pitch では「Pitch Correction」に相当。ケロケロ感の原因はこちらではなく Speed。\n"
+        u8"目標の段は Scale で決まる。プロジェクトキー未設定だとクロマチック（12 音どれでも）で付くので、キーは先に設定する。");
+    speedHelpText = jp (
+        u8"ノートの「中」の揺れ（ビブラート・しゃくり・語尾の落ち）を、目標へどれだけ速く引き寄せるか。\n"
+        u8"Strength や手での移動では触れない層（ノート内の時間変化）を決めています。\n\n"
+        u8"• 0 ms（hard）= 毎瞬目標へ張り付く ＝ ハードチューン（ケロケロ）。残る揺れは (100 − Strength)% なので、"
+        u8"Strength 100% で完全に平ら・50% なら揺れ幅が半分\n"
+        u8"• 200 ms = 大きい揺れは残して中心だけ合う。透明な補正の目安\n"
+        u8"• 400 ms（natural）= 歌い回しをほぼそのまま残す\n\n"
+        u8"「補正しているのが分かる」と感じたら上げる（Strength を下げても中心が戻るだけで違和感は消えない）。\n"
+        u8"Auto-Tune の「Retune Speed」、Logic Flex Pitch の「Pitch Drift / Vibrato」に相当。");
+    auto setupHelp = [this] (IconButton& b, const juce::String& title, const juce::String& body)
+    {
+        b.setOnLightBackground (true);
+        b.setTooltip (body);
+        b.onClick = [this, &b, title, body] { showHelpCallout (b, title, body); };
+        addAndMakeVisible (b);
+    };
+    setupHelp (strengthHelpButton, "Strength", strengthHelpText);
+    setupHelp (speedHelpButton, "Speed", speedHelpText);
     strengthSlider.onValueChange = [this]
     {
         if (! canEdit() || session == nullptr) return;
@@ -195,7 +230,8 @@ void PitchEditorView::updateBar()
         else if (w.scaleMode == PitchScaleMode::custom)
             item = scaleItemCustomBase + w.customKey.root * 2 + (w.customKey.mode == KeyMode::minor ? 1 : 0);
         scaleBox.setSelectedId (item, juce::dontSendNotification);
-        // プロジェクトキー未設定なら推定値を項目名に出す（設定はバナーのボタンか右クリック）
+        // プロジェクトキー未設定なら、実際の付け方（クロマチック）を先頭に出す。段のハイライトは推定キーで塗るので、
+        // 「明るい段があるのに暗い段へ枠が付く」の読み違いを防ぐ（推定キーで勝手に付けはしない。設定はバナーのボタンか右クリック）
         const auto projectKey = getProjectKey ? getProjectKey() : std::nullopt;
         if (projectKey.has_value())
             scaleBox.changeItemText (scaleItemProjectKey, jp (u8"Project key: ") + ProjectKeys::displayName (*projectKey));
@@ -203,8 +239,8 @@ void PitchEditorView::updateBar()
         {
             const auto est = PitchNotes::estimateKey (session->detected());
             scaleBox.changeItemText (scaleItemProjectKey,
-                                     est.valid ? jp (u8"Project key: unset (guess ") + ProjectKeys::displayName (est.key) + ")"
-                                               : jp (u8"Project key: unset"));
+                                     est.valid ? jp (u8"Chromatic (key unset · guess ") + ProjectKeys::displayName (est.key) + ")"
+                                               : jp (u8"Chromatic (key unset)"));
         }
     }
 
@@ -281,8 +317,10 @@ void PitchEditorView::resized()
     scaleHighlightButton.setBounds (bar.removeFromLeft (28).reduced (2, 1));
     bar.removeFromLeft (8);
     strengthLabel.setBounds (bar.removeFromLeft (52));
+    strengthHelpButton.setBounds (bar.removeFromLeft (18).reduced (0, 3));
     strengthSlider.setBounds (bar.removeFromLeft (140).withTrimmedLeft (22).withTrimmedRight (26)); // 両端に off / full
     speedLabel.setBounds (bar.removeFromLeft (44));
+    speedHelpButton.setBounds (bar.removeFromLeft (18).reduced (0, 3));
     speedSlider.setBounds (bar.removeFromLeft (140).withTrimmedLeft (28).withTrimmedRight (44)); // 両端に hard / natural の目盛り文字
     // 右: 確定系（右端＝確定）
     auto right = bar;
@@ -433,7 +471,7 @@ void PitchEditorView::drawKeyboard (juce::Graphics& g, const Geometry& geo) cons
     for (int m = geo.midiLo; m < geo.midiHi; ++m)
     {
         const bool black = m % 12 == 1 || m % 12 == 3 || m % 12 == 6 || m % 12 == 8 || m % 12 == 10;
-        const float y = geo.yForMidi (m + 1);
+        const float y = geo.yForMidi (m + 0.5); // 半音 m を行の中心に置く（目標の枠・ピッチ線と同じ基準。m+1 だと半行ずれる）
         g.setColour (black ? juce::Colour (0xff2b2b30) : juce::Colour (0xffd8d8dc));
         g.fillRect (0.0f, y, (float) keyboardWidth, geo.rowHeight - 1.0f);
         if (! black && geo.rowHeight >= 10.0f)
@@ -462,9 +500,9 @@ void PitchEditorView::drawGrid (juce::Graphics& g, const Geometry& geo, const Cl
     {
         const bool inScale = ! scale.has_value() || PitchCorrections::snapToScale (m, scale) == m;
         g.setColour (! scale.has_value() ? Theme::timelineBg : inScale ? juce::Colour (0xff2a2b33) : juce::Colour (0xff17171b));
-        g.fillRect ((float) geo.canvas.getX(), geo.yForMidi (m + 1), (float) geo.canvas.getWidth(), geo.rowHeight);
+        g.fillRect ((float) geo.canvas.getX(), geo.yForMidi (m + 0.5), (float) geo.canvas.getWidth(), geo.rowHeight); // 鍵盤と同じく m が行の中心
         g.setColour (Theme::gridLineBeat);
-        g.fillRect ((float) geo.canvas.getX(), geo.yForMidi (m), (float) geo.canvas.getWidth(), 1.0f);
+        g.fillRect ((float) geo.canvas.getX(), geo.yForMidi (m - 0.5), (float) geo.canvas.getWidth(), 1.0f); // 行の下辺（m と m−1 の境）
     }
     // ルーラーと拍グリッド（刻みは Geometry で決める。シークのスナップも同じ刻み）
     const double sixteenth = geo.sixteenthSamples;
@@ -678,6 +716,48 @@ void PitchEditorView::drawBlobs (juce::Graphics& g, const Geometry& geo, const C
         g.setFont (Fonts::small());
         g.drawText (jp (u8"rendering…"), geo.canvas.getRight() - 90, geo.canvas.getY() + 4, 84, 14, juce::Justification::centredRight);
     }
+}
+
+std::unique_ptr<juce::Component> PitchEditorView::makeHelpPanel (const juce::String& title, const juce::String& body)
+{
+    struct Panel : juce::Component
+    {
+        juce::Label titleLabel, bodyLabel;
+        Panel (const juce::String& t, const juce::String& b)
+        {
+            constexpr int width = 420, pad = 10, titleH = 20;
+            titleLabel.setText (t, juce::dontSendNotification);
+            titleLabel.setFont (Fonts::bodyStrong());
+            titleLabel.setColour (juce::Label::textColourId, juce::Colours::white);
+            const auto bodyFont = Fonts::forText (Fonts::small(), b);
+            bodyLabel.setText (b, juce::dontSendNotification);
+            bodyLabel.setFont (bodyFont);
+            bodyLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.88f));
+            bodyLabel.setJustificationType (juce::Justification::topLeft);
+            bodyLabel.setBorderSize ({ 0, 0, 0, 0 });
+            // Label の折り返しは内部で幅を少し詰めて計算する（GlyphArrangement の maxWidth ＝ 幅 − 余白）ので、
+            // 同じフォントで少し狭い幅に組んで高さを測り、行数の読み違いによる見切れを防ぐ
+            juce::AttributedString as (b);
+            as.setFont (bodyFont);
+            juce::TextLayout layout;
+            layout.createLayout (as, (float) (width - pad * 2) - 8.0f);
+            const int textH = (int) std::ceil (layout.getHeight()) + 6;
+            setSize (width, pad + titleH + textH + pad);
+            titleLabel.setBounds (pad, pad, width - pad * 2, titleH);
+            bodyLabel.setBounds (pad, pad + titleH, width - pad * 2, textH);
+            addAndMakeVisible (titleLabel);
+            addAndMakeVisible (bodyLabel);
+        }
+        void paint (juce::Graphics& g) override { g.fillAll (juce::Colour (0xff2a2d33)); } // CallOutBox の地と同系（単体描画用）
+    };
+    return std::make_unique<Panel> (title, body);
+}
+
+void PitchEditorView::showHelpCallout (juce::Component& anchor, const juce::String& title, const juce::String& body)
+{
+    // 読むための吹き出し（ツールチップはマウスが動くと消える）。外側クリックで閉じる・状態は持たない
+    juce::CallOutBox::launchAsynchronously (makeHelpPanel (title, body),
+                                            getLocalArea (&anchor, anchor.getLocalBounds()), this);
 }
 
 void PitchEditorView::paint (juce::Graphics& g)
@@ -971,6 +1051,39 @@ void PitchEditorView::seekFromRuler (const Geometry& geo, const Clip& clip, int 
 {
     if (onSeek)
         onSeek (geo.snapToVisibleGrid (geo.timelineForRender (geo.renderForX ((float) x), clip.startSample)));
+}
+
+bool PitchEditorView::debugPressHelp (const juce::String& which)
+{
+    IconButton* b = which == "strength" ? &strengthHelpButton : which == "speed" ? &speedHelpButton : nullptr;
+    if (b == nullptr) return false;
+    b->triggerClick(); // 非同期（次のメッセージループで onClick）
+    debugHelpPanel = makeHelpPanel (which == "strength" ? "Strength" : "Speed", which == "strength" ? strengthHelpText : speedHelpText);
+    return true;
+}
+
+bool PitchEditorView::debugDoubleClickSlider (const juce::String& which)
+{
+    juce::Slider* s = which == "strength" ? &strengthSlider : which == "speed" ? &speedSlider : nullptr;
+    if (s == nullptr || ! s->isDoubleClickReturnEnabled()) return false;
+    s->setValue (s->getDoubleClickReturnValue(), juce::sendNotificationSync); // Slider::mouseDoubleClick と同じ
+    return true;
+}
+
+juce::Image PitchEditorView::debugSnapshotWithCallouts()
+{
+    auto image = createComponentSnapshot (getLocalBounds(), true, 2.0f);
+    juce::Graphics g (image); // 2 倍解像度。吹き出しも 2 倍で撮って座標だけ 2 倍する
+    auto& desktop = juce::Desktop::getInstance();
+    for (int i = 0; i < desktop.getNumComponents(); ++i)
+        if (auto* box = dynamic_cast<juce::CallOutBox*> (desktop.getComponent (i)))
+        {
+            const auto local = getLocalArea (nullptr, box->getScreenBounds());
+            g.drawImageAt (box->createComponentSnapshot (box->getLocalBounds(), true, 2.0f), local.getX() * 2, local.getY() * 2);
+        }
+    if (debugHelpPanel != nullptr) // 背景起動では CallOutBox が即閉じるので、中身のレイアウト確認用に直接描く
+        g.drawImageAt (debugHelpPanel->createComponentSnapshot (debugHelpPanel->getLocalBounds(), true, 2.0f), 20 * 2, (barHeight + 8) * 2);
+    return image;
 }
 
 bool PitchEditorView::debugClickRuler (int x)

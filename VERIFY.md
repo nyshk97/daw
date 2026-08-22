@@ -680,6 +680,7 @@ sleep 8 && grep -E "project.open|render_failed" ~/Library/Logs/daw/"$(ls -t ~/Li
 #    --pitch-editor <track> <clip> でエディタを開き、--pitch-action を解析完了後に順に実行、
 #    --pitch-snapshot でウィンドウ中身を PNG（ログ debug.pitch_snapshot に mode/notes/preview/corrected/dirty/visible）
 #    action: enable / bypassN / moveN（+40ms）/ targetN:+M / kero / resnap / apply / cancel / reset / reanalyze / close / save / undo / bounce / rulerclick:<x>（ルーラー帯の x をクリック＝シーク。ログ debug.pitch_rulerclick に hit/position）
+#            help:strength|speed（「?」を押す＝吹き出し。CallOutBox は背景起動だと前面判定で 200ms 後に自動で閉じるので、スナップショットには中身のパネルだけを直接描いて合成する＝レイアウト・見切れの確認用）/ dblclick:strength|speed（スライダーのダブルクリック＝80% / 200ms に戻る。ログ debug.pitch_dblclick に strength/speedMs）
 SP=/tmp/pitch-check; rm -rf "$SP"; mkdir -p "$SP"; cp -R ~/Music/daw/2026-08-18-tundra "$SP/tundra"
 run() { pkill -x LaLa-dev; sleep 1; before=$(ls -t ~/Library/Logs/daw | head -1)
   open -g build/daw_artefacts/Debug/LaLa-dev.app --args --open "$SP/tundra" "$@"
@@ -700,12 +701,14 @@ run --pitch-editor 3 0 --pitch-action enable --pitch-action undo --pitch-snapsho
 # ルーラークリックでシーク: hit=1 で position（論理位置。locate は非同期なので playhead 実値は次のコールバック後）が
 # 表示中のグリッド線へスナップした値になる（ズームアウト時は拍・小節）。録音中は動かない
 run --pitch-editor 2 0 --pitch-action rulerclick:600 --pitch-snapshot "$SP/6-seek.png"
+# 「?」の吹き出しと、つまみのダブルクリック既定値（Strength 0%→80%・Speed→200ms。debug.pitch_dblclick の strength=0.80 speedMs=200）
+run --pitch-editor 2 0 --pitch-action enable --pitch-action dblclick:strength --pitch-action dblclick:speed --pitch-action help:speed --pitch-snapshot "$SP/7-help.png"
 pkill -x LaLa-dev
 ```
 
 - GUI 側の操作: オーディオリージョン右クリック →「ピッチ補正…」（有効なら「有効」併記）。上部バーは左＝音の決め方
-  （Scale・鍵盤アイコン（スケール表示）｜Strength・Strength〔off〜full〕・Speed〔hard〜natural。ケロケロ = Strength full × Speed hard〕）。Scale を選ぶ＝そのスケールで付け直すプレビュー（元の目標は点線ゴースト・右端 Apply/Cancel）／右端＝確定系（未確定中だけ Enable、変更プレビュー中だけ Apply/Cancel。確定後は何も出ない）。
-  Reset（自動スナップからやり直す）・再解析・推定キーの設定はグリッドの右クリックメニュー。キー未設定時はバナーに推定キーと「Use Dm」ボタン
+  （Scale・鍵盤アイコン（スケール表示）｜Strength〔off〜full〕・Speed〔hard〜natural。ケロケロ = Strength full × Speed hard〕。各ラベル右の「?」はホバーでツールチップ・クリックで吹き出し。スライダーのダブルクリックで 80% / 200ms）。Scale を選ぶ＝そのスケールで付け直すプレビュー（元の目標は点線ゴースト・右端 Apply/Cancel）／右端＝確定系（未確定中だけ Enable、変更プレビュー中だけ Apply/Cancel。確定後は何も出ない）。
+  Reset（自動スナップからやり直す。ノートの手直しだけ捨て、Strength / Speed は現在値のまま）・再解析・推定キーの設定はグリッドの右クリックメニュー。キー未設定時はバナーに推定キーと「Use Dm」ボタン（未設定の間のスナップはクロマチック。Scale 項目は `Chromatic (key unset · guess Dm)` と出る。段のハイライトだけ推定キーで塗る）
 - ブロブは帯型（太さ＝音量・中心＝補正後ピッチ・塗り＝移動量で青→暖色・目標の段は枠だけ・元ピッチは細線）。無声（息・子音）は下端の細いレーンに灰色で音量だけ
 - 上下ドラッグ中はその音が新しい目標音で鳴る（`VocalNoteAudition`: ドラッグ開始時にノート範囲だけ WORLD で分解・半音ごとに合成。メイン再生中は鳴らない。ログ `pitch.drag_audition_prepare`）
 - 手で目標音を動かしたノートは pinned（枠が実線で強め）。Strength に関係なく 100% で目標へ寄る（自動スナップ分だけが Strength に従う）

@@ -8,7 +8,7 @@ class IconButton : public juce::Button
 {
 public:
     enum class Icon { play, stop, record, metronome, gear, plus, notes, folder, speaker,
-                      speakerMuted, sort, dice, inspector, cycle, keys };
+                      speakerMuted, sort, dice, inspector, cycle, keys, help };
 
     IconButton (Icon initialIcon, const juce::String& accessibleName)
         : juce::Button (accessibleName), icon (initialIcon) {}
@@ -152,7 +152,7 @@ public:
         const bool strokeIcon = icon == Icon::notes || icon == Icon::folder || icon == Icon::gear
                                 || icon == Icon::speaker || icon == Icon::speakerMuted
                                 || icon == Icon::sort || icon == Icon::dice || icon == Icon::inspector
-                                || icon == Icon::cycle;
+                                || icon == Icon::cycle || icon == Icon::help;
         // 塗り図形は枠なしだと小さく見えるので一回り大きくする（枠付きは従来寸法）
         const float side = juce::jmin (bounds.getWidth(), bounds.getHeight())
                            * (strokeIcon ? 0.57f : (borderless ? 0.46f : 0.42f))
@@ -246,6 +246,15 @@ public:
                 g.strokePath (p, juce::PathStrokeType (stroke));
                 for (float x : { 7.0f, 13.0f }) // 黒鍵（塗り）
                     g.fillRect (juce::Rectangle<float> (at (r, x, 5.0f), at (r, x + 4.0f, 12.5f)));
+                break;
+            }
+            case Icon::help:
+            {
+                // 丸囲みの「?」。つまみの意味を説明する吹き出しの入口（ホバー＝ツールチップ・クリック＝吹き出し）
+                const float stroke = strokeWidth (side);
+                g.drawEllipse (juce::Rectangle<float> (at (r, 3.0f, 3.0f), at (r, 21.0f, 21.0f)), stroke);
+                g.setFont (juce::Font (juce::FontOptions (design (side, 13.0f), juce::Font::bold)));
+                g.drawText ("?", r.toNearestInt().translated (0, -1), juce::Justification::centred, false);
                 break;
             }
             case Icon::cycle:

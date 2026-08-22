@@ -145,6 +145,9 @@ void MainComponent::wirePitchEditor()
         const auto& w = pitchSession.working();
         auto proposal = PitchCorrections::autoSnap (*pitchSession.curve(), pitchSession.detected(), clip->offsetSamples, clip->lengthSamples,
                                                     PitchCorrections::effectiveScale (w, project->key), w.scaleMode, w.customKey);
+        // つまみ（Strength / Speed）はノートの手直しではなく全体設定なので残す（autoSnap の戻り値は構造体の初期値＝100% になる）
+        proposal.strength = w.strength;
+        proposal.speedMs = w.speedMs;
         if (proposal == w)
         {
             pitchWindow.content().showStatus (jp (u8"Reset: 既に自動スナップの状態です"));
@@ -807,6 +810,12 @@ void MainComponent::debugPitchAction (const juce::String& action)
         Log::info ("debug.pitch_rulerclick", "x=" + juce::String (x) + " hit=" + juce::String ((int) hit)
                                               + " position=" + juce::String (transport.uiPositionSample())); // locate は非同期（seekRequest）なので論理位置を読む
     }
+    else if (action.startsWith ("help:"))
+        Log::info ("debug.pitch_help", "which=" + action.substring (5) + " ok=" + juce::String ((int) view.debugPressHelp (action.substring (5))));
+    else if (action.startsWith ("dblclick:"))
+        Log::info ("debug.pitch_dblclick", "which=" + action.substring (9) + " ok=" + juce::String ((int) view.debugDoubleClickSlider (action.substring (9)))
+                                               + " strength=" + juce::String (pitchSession.working().strength, 2)
+                                               + " speedMs=" + juce::String (pitchSession.working().speedMs, 0));
     else if (action == "kero")
     {
         pitchBeginEdit();
@@ -864,7 +873,7 @@ void MainComponent::debugPitchSnapshot (const juce::File& target)
         return;
     }
     auto& view = pitchWindow.content();
-    auto image = view.createComponentSnapshot (view.getLocalBounds(), true, 2.0f);
+    auto image = view.debugSnapshotWithCallouts();
     target.deleteFile();
     juce::PNGImageFormat png;
     std::unique_ptr<juce::OutputStream> out (target.createOutputStream());

@@ -71,13 +71,16 @@ struct PitchCorrection
     ContentDigest curveDigest;                 // 必須。どの世代のサイドカーを使うか
     PitchScaleMode scaleMode = PitchScaleMode::projectKey;
     ProjectKey customKey;                      // scaleMode == custom のとき
+    // つまみの「よく使う位置」（スライダーのダブルクリックで戻る先）。chill 系の透明な補正を前提に、
+    // 中心は寄せ切らず（80%）・揺れは残す（200ms。120ms より遅い＝ビブラート・しゃくりが生き残る）
+    static constexpr float defaultStrength = 0.8f;
+    static constexpr float defaultSpeedMs = 200.0f;
     float strength = 1.0f;                     // 0..1。ノート中心を目標へ寄せる割合
-    float speedMs = 120.0f;                    // ノート内の動きを目標へ引き寄せる時定数。0 = ケロケロ
+    float speedMs = defaultSpeedMs;            // ノート内の動きを目標へ引き寄せる時定数。0 = ケロケロ
     std::vector<TimeNode> timeNodes;           // sourceSample 昇順・重複なし
     std::vector<PitchNote> notes;              // 解決後の座標で昇順・非重複
 
     static constexpr float keroSpeedMs = 0.0f;
-    static constexpr float defaultSpeedMs = 120.0f;
 
     juce::var toJson() const;
     // 形式外・値域外は nullopt（呼び出し側は「サイドカー欠損」と同じ扱い＝補正無効化）。

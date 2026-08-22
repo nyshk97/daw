@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <memory>
 #include <optional>
 #include <set>
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -59,6 +60,11 @@ public:
     void paint (juce::Graphics& g) override;
     void resized() override;
     bool keyPressed (const juce::KeyPress& key) override;
+    // dev検証フック: 「?」を押す（--pitch-action help:strength|speed）・スライダーをダブルクリックしたのと同じ値へ戻す
+    // （--pitch-action dblclick:strength|speed）・吹き出し（CallOutBox は別 peer）を合成したスナップショット
+    bool debugPressHelp (const juce::String& which);
+    bool debugDoubleClickSlider (const juce::String& which);
+    juce::Image debugSnapshotWithCallouts();
     bool debugClickRuler (int x); // dev検証フック: ルーラー帯の x をクリックしたのと同じ経路でシーク（--pitch-action rulerclick:<x>）
     void mouseDown (const juce::MouseEvent& e) override;
     void mouseDrag (const juce::MouseEvent& e) override;
@@ -135,6 +141,15 @@ private:
     juce::String statusText;
     double statusUntil = 0.0;
     juce::Slider strengthSlider, speedSlider;
+    // つまみの意味（ホバー＝ツールチップ・クリック＝吹き出し）。独立ウィンドウなので MainComponent の
+    // TooltipWindow は届かない（JUCE は同じ peer 内のコンポーネントにしか出さない）→ この view が自前で持つ
+    IconButton strengthHelpButton { IconButton::Icon::help, juce::String::fromUTF8 (u8"Strength の説明") };
+    IconButton speedHelpButton { IconButton::Icon::help, juce::String::fromUTF8 (u8"Speed の説明") };
+    juce::TooltipWindow tooltipWindow { this };
+    void showHelpCallout (juce::Component& anchor, const juce::String& title, const juce::String& body);
+    static std::unique_ptr<juce::Component> makeHelpPanel (const juce::String& title, const juce::String& body);
+    std::unique_ptr<juce::Component> debugHelpPanel; // dev検証フック: CallOutBox は背景起動だと即閉じるので中身だけ保持して合成する
+    juce::String strengthHelpText, speedHelpText;
     juce::Label bannerLabel;
     juce::TextButton bannerButton;
     juce::TextButton bannerKeyButton; // キー未設定時の「推定キーをプロジェクトに設定」（バナー側）
