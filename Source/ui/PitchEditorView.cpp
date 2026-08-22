@@ -147,7 +147,7 @@ PitchEditorView::PitchEditorView()
         u8"・白い細線 = 元のピッチ\n"
         u8"・青い帯 = 補正後のピッチ（太さ＝音量）。青→暖色になるほど動かした量が大きい\n"
         u8"・枠 = 目標の段（枠の中心＝目標の音）。薄い青＝自動・濃く太い＝手で置いた（pinned）・白＝選択中\n"
-        u8"・灰色の帯 = バイパス（原音のまま）。下端の細いレーン = 無声（息・子音）\n"
+        u8"・灰色の帯 = バイパス（原音のまま）。下端の unvoiced レーン = 無声（息・子音。ピッチが無いので音量だけ）\n"
         u8"・明るい段 = スケール内の音。暗い段には自動では付かない（鍵盤アイコンで表示 ON/OFF）\n"
         u8"\n"
         u8"■ 操作\n"
@@ -507,7 +507,7 @@ void PitchEditorView::drawKeyboard (juce::Graphics& g, const Geometry& geo) cons
     g.fillRect (0, geo.lane.getY(), keyboardWidth, geo.lane.getHeight());
     g.setColour (juce::Colours::white.withAlpha (0.45f));
     g.setFont (Fonts::small().withHeight (10.0f));
-    g.drawText (jp (u8"息・子音"), 3, geo.lane.getY(), keyboardWidth - 4, geo.lane.getHeight(), juce::Justification::centredLeft);
+    g.drawText ("unvoiced", 3, geo.lane.getY(), keyboardWidth - 4, geo.lane.getHeight(), juce::Justification::centredLeft); // 音響の標準語（Melodyne / Logic と同じ）。日本語だと圧が強い
     for (int m = geo.midiLo; m < geo.midiHi; ++m)
     {
         const bool black = m % 12 == 1 || m % 12 == 3 || m % 12 == 6 || m % 12 == 8 || m % 12 == 10;
