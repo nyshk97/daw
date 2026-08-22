@@ -130,15 +130,37 @@ PitchEditorView::PitchEditorView()
         u8"• 400 ms（natural）= 歌い回しをほぼそのまま残す\n\n"
         u8"「補正しているのが分かる」と感じたら上げる（Strength を下げても中心が戻るだけで違和感は消えない）。\n"
         u8"Auto-Tune の「Retune Speed」、Logic Flex Pitch の「Pitch Drift / Vibrato」に相当。");
-    auto setupHelp = [this] (IconButton& b, const juce::String& title, const juce::String& body)
+    guideHelpText = jp (
+        u8"■ 作業の流れ\n"
+        u8"1. Scale を決める（プロジェクトキー未設定ならバナーの「Use …」で設定。未設定だとクロマチックで付く）\n"
+        u8"2. Strength をダブルクリック（80%）・Speed はそのまま（200 ms）で、全体を一度通して聴く\n"
+        u8"3. 色の濃いノート（移動量が大きい）から順に、クリックで単独試聴して狙った音か確かめる\n"
+        u8"4. 直し方は 3 つ: 枠が狙いと違う段 → 上下ドラッグで目標を置く（pinned・常に 100% で乗る）／"
+        u8"しゃくり・下降・意図的な外しで目標を付けるのが不自然 → B でバイパス／"
+        u8"目標は合っているが声が不自然（ケロケロ・こもり）→ Speed を上げる（個別には効かせられない）\n"
+        u8"5. 手直しを全部やり直したくなったら右クリック「ノートの手直しを捨てて目標音を付け直す」（Apply / Cancel で確定・取消。Strength / Speed は残る）\n\n"
+        u8"■ 画面の読み方\n"
+        u8"• 白い細線 = 元のピッチ。青い帯 = 補正後のピッチ（太さ＝音量）。帯の色が青→暖色になるほど動かした量が大きい\n"
+        u8"• 枠 = 目標の段（枠の中心＝目標の音）。薄い青＝自動で付けた目標・濃く太い＝手で置いた（pinned）・白＝選択中\n"
+        u8"• 灰色の帯＝バイパス（原音のまま）。下端の細いレーン＝無声（息・子音）\n"
+        u8"• 明るい段＝スケール内の音。暗い段には自動では付かない（鍵盤アイコンで表示 ON/OFF）\n\n"
+        u8"■ 操作\n"
+        u8"上下ドラッグ＝目標音／横ドラッグ＝タイミング（隣が吸収・⌥でスナップ解除）／クリック＝単独試聴／"
+        u8"B or ダブルクリック＝バイパス／⌘クリック＝分割／隣接 2 つを Shift クリックして M＝結合／"
+        u8"⌘←→・ピンチ＝ズーム／Space・⌘Z・, . はメインと同じ");
+    auto setupHelp = [this] (IconButton& b, const juce::String& title, const juce::String& body, int width)
     {
         b.setOnLightBackground (true);
         b.setTooltip (body);
-        b.onClick = [this, &b, title, body] { showHelpCallout (b, title, body); };
+        b.onClick = [this, &b, title, body, width]
+        {
+            juce::CallOutBox::launchAsynchronously (makeHelpPanel (title, body, width), getLocalArea (&b, b.getLocalBounds()), this);
+        };
         addAndMakeVisible (b);
     };
-    setupHelp (strengthHelpButton, "Strength", strengthHelpText);
-    setupHelp (speedHelpButton, "Speed", speedHelpText);
+    setupHelp (guideHelpButton, jp (u8"ピッチ補正の使い方"), guideHelpText, 560);
+    setupHelp (strengthHelpButton, "Strength", strengthHelpText, 420);
+    setupHelp (speedHelpButton, "Speed", speedHelpText, 420);
     strengthSlider.onValueChange = [this]
     {
         if (! canEdit() || session == nullptr) return;
@@ -313,6 +335,8 @@ void PitchEditorView::resized()
 {
     auto bar = getLocalBounds().removeFromTop (barHeight).reduced (8, 6);
     // 左: 音の決め方
+    guideHelpButton.setBounds (bar.removeFromLeft (18).reduced (0, 3));
+    bar.removeFromLeft (6);
     scaleLabel.setBounds (bar.removeFromLeft (36));
     scaleBox.setBounds (bar.removeFromLeft (190).reduced (2, 0));
     scaleHighlightButton.setBounds (bar.removeFromLeft (28).reduced (2, 1));
@@ -719,14 +743,14 @@ void PitchEditorView::drawBlobs (juce::Graphics& g, const Geometry& geo, const C
     }
 }
 
-std::unique_ptr<juce::Component> PitchEditorView::makeHelpPanel (const juce::String& title, const juce::String& body)
+std::unique_ptr<juce::Component> PitchEditorView::makeHelpPanel (const juce::String& title, const juce::String& body, int width)
 {
     struct Panel : juce::Component
     {
         juce::Label titleLabel, bodyLabel;
-        Panel (const juce::String& t, const juce::String& b)
+        Panel (const juce::String& t, const juce::String& b, int width)
         {
-            constexpr int width = 420, pad = 10, titleH = 20;
+            constexpr int pad = 10, titleH = 20;
             titleLabel.setText (t, juce::dontSendNotification);
             titleLabel.setFont (Fonts::bodyStrong());
             titleLabel.setColour (juce::Label::textColourId, juce::Colours::white);
@@ -751,14 +775,7 @@ std::unique_ptr<juce::Component> PitchEditorView::makeHelpPanel (const juce::Str
         }
         void paint (juce::Graphics& g) override { g.fillAll (juce::Colour (0xff2a2d33)); } // CallOutBox の地と同系（単体描画用）
     };
-    return std::make_unique<Panel> (title, body);
-}
-
-void PitchEditorView::showHelpCallout (juce::Component& anchor, const juce::String& title, const juce::String& body)
-{
-    // 読むための吹き出し（ツールチップはマウスが動くと消える）。外側クリックで閉じる・状態は持たない
-    juce::CallOutBox::launchAsynchronously (makeHelpPanel (title, body),
-                                            getLocalArea (&anchor, anchor.getLocalBounds()), this);
+    return std::make_unique<Panel> (title, body, width);
 }
 
 void PitchEditorView::paint (juce::Graphics& g)
@@ -1057,10 +1074,11 @@ void PitchEditorView::seekFromRuler (const Geometry& geo, const Clip& clip, int 
 
 bool PitchEditorView::debugPressHelp (const juce::String& which)
 {
-    IconButton* b = which == "strength" ? &strengthHelpButton : which == "speed" ? &speedHelpButton : nullptr;
+    IconButton* b = which == "strength" ? &strengthHelpButton : which == "speed" ? &speedHelpButton : which == "guide" ? &guideHelpButton : nullptr;
     if (b == nullptr) return false;
     b->triggerClick(); // 非同期（次のメッセージループで onClick）
-    debugHelpPanel = makeHelpPanel (which == "strength" ? "Strength" : "Speed", which == "strength" ? strengthHelpText : speedHelpText);
+    debugHelpPanel = which == "guide" ? makeHelpPanel (jp (u8"ピッチ補正の使い方"), guideHelpText, 560)
+                                      : makeHelpPanel (which == "strength" ? "Strength" : "Speed", which == "strength" ? strengthHelpText : speedHelpText);
     return true;
 }
 

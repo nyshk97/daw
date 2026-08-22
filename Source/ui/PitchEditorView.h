@@ -143,13 +143,13 @@ private:
     juce::Slider strengthSlider, speedSlider;
     // つまみの意味（ホバー＝ツールチップ・クリック＝吹き出し）。独立ウィンドウなので MainComponent の
     // TooltipWindow は届かない（JUCE は同じ peer 内のコンポーネントにしか出さない）→ この view が自前で持つ
+    IconButton guideHelpButton { IconButton::Icon::help, juce::String::fromUTF8 (u8"作業の流れと画面の読み方") }; // バー左端。全体の使い方
     IconButton strengthHelpButton { IconButton::Icon::help, juce::String::fromUTF8 (u8"Strength の説明") };
     IconButton speedHelpButton { IconButton::Icon::help, juce::String::fromUTF8 (u8"Speed の説明") };
     juce::TooltipWindow tooltipWindow { this };
-    void showHelpCallout (juce::Component& anchor, const juce::String& title, const juce::String& body);
-    static std::unique_ptr<juce::Component> makeHelpPanel (const juce::String& title, const juce::String& body);
+    static std::unique_ptr<juce::Component> makeHelpPanel (const juce::String& title, const juce::String& body, int width = 420);
     std::unique_ptr<juce::Component> debugHelpPanel; // dev検証フック: CallOutBox は背景起動だと即閉じるので中身だけ保持して合成する
-    juce::String strengthHelpText, speedHelpText;
+    juce::String guideHelpText, strengthHelpText, speedHelpText;
     juce::Label bannerLabel;
     juce::TextButton bannerButton;
     juce::TextButton bannerKeyButton; // キー未設定時の「推定キーをプロジェクトに設定」（バナー側）
