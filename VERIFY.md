@@ -709,7 +709,7 @@ run --pitch-editor 2 0 --pitch-action enable --pitch-action dblclick:strength --
 pkill -x LaLa-dev
 ```
 
-- GUI 側の操作: オーディオリージョン右クリック →「ピッチ補正…」（有効なら「有効」併記）。上部バーは左＝音の決め方
+- GUI 側の操作: オーディオリージョン右クリック →「ピッチ補正…」（補正データがあれば `Strength 80%`、pinned があれば `・手直し 3` を併記。解釈語は出さない）。上部バーは左＝音の決め方
   （Scale・鍵盤アイコン（スケール表示）｜Strength〔off〜full〕・Speed〔hard〜natural。ケロケロ = Strength full × Speed hard〕。バー左端の「?」＝作業の流れ・画面の読み方・操作の一覧、各ラベル右の「?」＝そのつまみの説明（どちらもホバーでツールチップ・クリックで吹き出し）。スライダーのダブルクリックで 80% / 200ms）。Scale を選ぶ＝そのスケールで付け直すプレビュー（元の目標は点線ゴースト・右端 Apply/Cancel）／右端＝確定系（未確定中だけ Enable、変更プレビュー中だけ Apply/Cancel。確定後は何も出ない）。
   Reset（「すべての手直しを取り消して目標音を付け直す」。Strength / Speed は現在値のまま）・推定キーの設定はグリッドの右クリックメニュー。再解析はメニューに無い（検出は決定的・検出器が変わるのはアプリ更新時だけ。`--pitch-action reanalyze` の検証フックだけ残す。検出結果の指紋は CTest `PitchAnalyzer fingerprint` で固定＝変わったら落ちて algoId を上げる合図）。キー未設定時はバナーに推定キーと「Use Dm」ボタン（未設定の間のスナップはクロマチック。Scale 項目は `Chromatic (key unset · guess Dm)` と出る。段のハイライトだけ推定キーで塗る）
 - ブロブは帯型（太さ＝音量・中心＝補正後ピッチ・塗り＝移動量で青→暖色・目標の段は枠だけ・元ピッチは細線）。無声（息・子音）は下端の独立したレーン（暗い地・鍵盤列に「unvoiced」ラベル）に灰色で音量だけ

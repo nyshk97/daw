@@ -2546,12 +2546,20 @@ void TimelineView::showItemMenu (int trackIndex, int itemIndex)
         }
         menu.addItem (stretchItem);
 
-        // ピッチ補正（オーディオ専用・v21）。独立ウィンドウのエディタを開く。有効なら「（有効）」を併記
+        // ピッチ補正（オーディオ専用・v21）。独立ウィンドウのエディタを開く。補正データがあればつまみの値をそのまま併記
+        //（「有効」「編集あり」のような解釈語はエディタの語と繋がらないので数字で出す。0% でも pinned があればそのノートだけ鳴るので件数を添える）
         juce::PopupMenu::Item pitchItem (jp (u8"ピッチ補正…"));
         pitchItem.itemID = 10;
         pitchItem.isEnabled = onPitchEditRequested != nullptr;
-        if (clip.pitchCorrection.has_value())
-            pitchItem.shortcutKeyDescription = clip.pitchCorrection->isAudiblyNeutral() ? jp (u8"編集あり・0%") : jp (u8"有効");
+        if (const auto& pc = clip.pitchCorrection; pc.has_value())
+        {
+            int pinned = 0;
+            for (const auto& n : pc->notes) pinned += (n.pinned && ! n.bypass) ? 1 : 0;
+            auto text = "Strength " + juce::String ((int) std::lround (pc->strength * 100.0f)) + "%";
+            if (pinned > 0)
+                text += jp (u8"・手直し ") + juce::String (pinned);
+            pitchItem.shortcutKeyDescription = text;
+        }
         menu.addItem (pitchItem);
     }
     menu.addItem (itemWithKey (2, jp (u8"複製"), Shortcuts::ID::repeatItem, ! pendingClip));
