@@ -13,6 +13,7 @@
 | `grid-contrast.json` | 否定例6曲の拍子・小節頭の確認 | `review/grid/contrast-answers.json` |
 | `contrast-review.md` | 対照分析の耳確認（Round B〜E）の全回答 | `review/contrast-human-review.md` |
 | `pack-loops-in-band.md` | 2軸帯内のパックループ5本の耳確認（それでも洋物っぽい） | このファイルが正本 |
+| `2026-08-22-drum-pattern-answers.json` | ドラムステム単体の好み判定（否定例10・正例23＋混入3・検証A/B 4本） | `review/drum-pattern-answers.json` |
 
 ## 更新のしかた
 
