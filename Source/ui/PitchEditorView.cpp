@@ -119,7 +119,8 @@ PitchEditorView::PitchEditorView()
         u8"手で目標を置いたノート（pinned）は、この値に関係なく常に 100% で乗ります。"
         u8"全体は控えめ・ひどい所だけ手で、の分業ができます。\n"
         u8"Logic の Flex Pitch では「Pitch Correction」に相当。ケロケロ感の原因はこちらではなく Speed。\n"
-        u8"目標の段は Scale で決まる。プロジェクトキー未設定だとクロマチック（12 音どれでも）で付くので、キーは先に設定する。");
+        u8"目標の段は Scale で決まる。プロジェクトキー未設定だとクロマチック（12 音どれでも）で付くので、キーは先に設定する。\n"
+        u8"右クリックの「ノートの手直しを捨てて目標音を付け直す」を使っても、Strength / Speed は残る。");
     speedHelpText = jp (
         u8"ノートの「中」の揺れ（ビブラート・しゃくり・語尾の落ち）を、目標へどれだけ速く引き寄せるか。\n"
         u8"Strength や手での移動では触れない層（ノート内の時間変化）を決めています。\n\n"
@@ -954,8 +955,10 @@ void PitchEditorView::showContextMenu (juce::Point<int> at)
         menu.addItem (bypassItem);
         menu.addSeparator();
     }
-    menu.addItem (1, jp (u8"自動スナップからやり直す（手直しを捨てる）"), committed);
-    menu.addItem (2, jp (u8"再解析（検出をやり直す。検出器が同じなら変わらない）"), committed);
+    // 「再解析」はメニューに置かない（2026-08-22）: 検出は決定的で、同じ検出器なら結果が変わらず、検出器が変わるのは
+    // アプリ更新時だけ。既存の補正は自分の世代のサイドカーで整合し続けるので取り直しは不要。dev 検証フック
+    // （--pitch-action reanalyze）と onReanalyze は検出器を変えたときの差分確認用に残す
+    menu.addItem (1, jp (u8"ノートの手直しを捨てて目標音を付け直す"), committed);
     if (getProjectKey && ! getProjectKey().has_value())
         if (const auto est = PitchNotes::estimateKey (session->detected()); est.valid)
             menu.addItem (3, jp (u8"推定キー ") + ProjectKeys::displayName (est.key) + jp (u8" をプロジェクトに設定"), session->editable());
@@ -972,7 +975,6 @@ void PitchEditorView::showContextMenu (juce::Point<int> at)
             safe->repaint();
         }
         else if (result == 1 && safe->onReset) safe->onReset();
-        else if (result == 2 && safe->onReanalyze) safe->onReanalyze();
         else if (result == 3 && safe->onSetProjectKey) safe->onSetProjectKey();
     });
 }

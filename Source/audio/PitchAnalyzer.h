@@ -18,7 +18,7 @@
 // pYIN の HMM 後処理は入れていない（同 lab の「留保」参照: オクターブ飛びが目立つ素材が出たら YIN の上に足す）
 namespace PitchAnalyzer
 {
-inline const char* const algoId = "yin-1"; // 定数を変えたら上げる（サイドカーの世代が分かれる）
+inline const char* const algoId = "yin-1"; // 定数を変えたら上げる（サイドカーの世代が分かれる）。CTest「PitchAnalyzer fingerprint」が検出結果の変化で落ちて知らせる
 
 inline constexpr int frameLength = 2048;        // 48kHz で 42ms（60Hz の周期 800 サンプルが窓に収まる）
 inline constexpr double fMin = 60.0;            // ラップの低い語尾

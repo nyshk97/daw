@@ -14933,6 +14933,29 @@ SynthVoice makeSynthVoice (double sr)
     return out;
 }
 
+// 検出器の指紋を固定する（algoId ごと）。検出結果が変わったらこのテストが落ちる＝ PitchAnalyzer::algoId を上げる合図。
+// 「再解析」メニューを廃止した（検出器が変わるのはアプリ更新時だけ）ので、変わったことに気づく手段をここに置く。
+// マシン差（浮動小数の末尾）で揺れないよう、ピッチは cent に丸め、有声/無声の列と合わせてハッシュする
+void testPitchAnalyzerFingerprint()
+{
+    beginTest ("PitchAnalyzer fingerprint fixed per algoId");
+    const double sr = 48000.0;
+    auto voice = makeSynthVoice (sr);
+    const auto curve = PitchAnalyzer::analyze (*voice.audio, sr);
+    DigestBuilder d;
+    for (int k = 0; k < curve.numFrames(); ++k)
+    {
+        const std::int32_t cents = curve.isVoiced (k) ? (std::int32_t) std::lround (curve.midiAt (k) * 100.0) : -1;
+        d.add (cents);
+    }
+    const auto hex = d.finish().toHex();
+    const juce::String expectedAlgoId = "yin-1";
+    const juce::String expectedHex = "877852b87b2d99a7a6e150a558ff7e52";
+    std::cout << "  algoId=" << PitchAnalyzer::algoId << " fingerprint=" << hex << std::endl;
+    expect (juce::String (PitchAnalyzer::algoId) == expectedAlgoId && hex == expectedHex,
+            "検出結果が変わった。意図した変更なら PitchAnalyzer::algoId を上げ、このテストの expectedAlgoId / expectedHex を更新する（実値は上の行）");
+}
+
 void testPitchAnalyzerYin()
 {
     beginTest ("PitchAnalyzer YIN vs known f0 (GPE / voicing P-R)");
@@ -16381,6 +16404,7 @@ int main (int argc, char** argv)
     testStretchSplitSaveReload();
     testGachaLoopStretchValues();
     testPitchAnalyzerYin();
+    testPitchAnalyzerFingerprint();
     testPitchCmndfBruteForce();
     testPitchSidecar();
     testPitchNotesRules();
