@@ -194,6 +194,28 @@ tools/reference/.venv/bin/python tools/gacha/tests/test_bass.py
 tools/reference/.venv/bin/python tools/gacha/tests/test_bass_roots.py
 '''
 
+# --- ドラムの音色・列挙（tools/drumlab/） ---
+
+[tasks."drum:target"]
+description = 'ドラム音色の目標値を測る（好きな曲のドラムステム。--oneshots で手持ちと並べる）'
+usage = 'arg "<args>" var=#true default="" help="[--oneshots DIR]"'
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+args=(); for a in "$@"; do [ -n "$a" ] && args+=("$a"); done
+exec tools/reference/.venv/bin/python tools/drumlab/kittarget.py "${args[@]}"
+'''
+
+[tasks."drum:inventory"]
+description = 'ドラムの列挙用の抜粋とチェックシートを作る（好きな7曲×2区間）'
+usage = 'arg "<args>" var=#true default="" help="[--bars N] [--out DIR]"'
+run = '''
+#!/usr/bin/env bash
+eval "set -- $usage_args"
+args=(); for a in "$@"; do [ -n "$a" ] && args+=("$a"); done
+exec tools/reference/.venv/bin/python tools/drumlab/inventory.py "${args[@]}"
+'''
+
 # --- サンプルライブラリ（tools/library/README.md） ---
 
 [tasks."lib:setup"]
