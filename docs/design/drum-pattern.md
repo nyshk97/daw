@@ -101,6 +101,8 @@ hiphopのテンポ帯では原理的に常にアウト。トラップのハッ�
 
 ## ドラムガチャの生成器への要件
 
+実装は [issue #9](https://github.com/nyshk97/daw/issues/9)。
+
 現行の `tools/gacha/drums.py` は、この条件を**構造的に表現できない**。2点を直す必要がある。
 
 ### 1. BPM を密度制約へ渡す
