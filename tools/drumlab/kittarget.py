@@ -82,6 +82,38 @@ def _decay(x: np.ndarray, sr: int) -> float:
     return float(below[0] / sr)
 
 
+# ---- 聴感の大きさ（ITU-R BS.1770 の K特性）----
+# RMS を揃えても聴感は揃わない。低域に偏った素材は同じRMSでも小さく聞こえる
+# （実測: 切り出したキットは低域偏重になり、RMSを揃えたのに「めっちゃ音小さい」と言われた）。
+# K特性は高域シェルフ＋ハイパスの2段で、耳の周波数感度を粗く模したもの。
+def _rbj_highshelf(f0: float, q: float, gain_db: float, sr: int):
+    A = 10 ** (gain_db / 40); w = 2 * np.pi * f0 / sr
+    c, s = np.cos(w), np.sin(w); al = s / (2 * q); sq = 2 * np.sqrt(A) * al
+    b = [A * ((A + 1) + (A - 1) * c + sq), -2 * A * ((A - 1) + (A + 1) * c),
+         A * ((A + 1) + (A - 1) * c - sq)]
+    a = [(A + 1) - (A - 1) * c + sq, 2 * ((A - 1) - (A + 1) * c), (A + 1) - (A - 1) * c - sq]
+    return np.array(b) / a[0], np.array(a) / a[0]
+
+
+def _rbj_highpass(f0: float, q: float, sr: int):
+    w = 2 * np.pi * f0 / sr; c, s = np.cos(w), np.sin(w); al = s / (2 * q)
+    b = [(1 + c) / 2, -(1 + c), (1 + c) / 2]
+    a = [1 + al, -2 * c, 1 - al]
+    return np.array(b) / a[0], np.array(a) / a[0]
+
+
+def loudness_lufs(x: np.ndarray, sr: int) -> float:
+    """K特性をかけた平均パワー（LUFS 相当。ゲーティングは省略）。相対比較に使う。"""
+    b1, a1 = _rbj_highshelf(1681.974450955533, 0.7071752369554196, 3.999843853973347, sr)
+    b2, a2 = _rbj_highpass(38.13547087602444, 0.5003270373238773, sr)
+    y = signal.lfilter(b2, a2, signal.lfilter(b1, a1, x))
+    return -0.691 + 10 * np.log10(max(float(np.mean(y ** 2)), 1e-20))
+
+
+def match_lufs(x: np.ndarray, sr: int, target_lufs: float) -> np.ndarray:
+    return x * 10 ** ((target_lufs - loudness_lufs(x, sr)) / 20)
+
+
 def measure_stem(path: Path) -> dict[str, dict]:
     y, sr = sf.read(str(path), dtype="float32")
     if y.ndim > 1:
