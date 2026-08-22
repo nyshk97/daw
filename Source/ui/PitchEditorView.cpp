@@ -135,19 +135,25 @@ PitchEditorView::PitchEditorView()
         u8"1. Scale を決める（プロジェクトキー未設定ならバナーの「Use …」で設定。未設定だとクロマチックで付く）\n"
         u8"2. Strength をダブルクリック（80%）・Speed はそのまま（200 ms）で、全体を一度通して聴く\n"
         u8"3. 色の濃いノート（移動量が大きい）から順に、クリックで単独試聴して狙った音か確かめる\n"
-        u8"4. 直し方は 3 つ: 枠が狙いと違う段 → 上下ドラッグで目標を置く（pinned・常に 100% で乗る）／"
-        u8"しゃくり・下降・意図的な外しで目標を付けるのが不自然 → B でバイパス／"
-        u8"目標は合っているが声が不自然（ケロケロ・こもり）→ Speed を上げる（個別には効かせられない）\n"
-        u8"5. 手直しを全部やり直したくなったら右クリック「ノートの手直しを捨てて目標音を付け直す」（Apply / Cancel で確定・取消。Strength / Speed は残る）\n\n"
+        u8"4. 直し方は 3 つ\n"
+        u8"    ・枠が狙いと違う段にある → 上下ドラッグで目標を置く（pinned になり、Strength に関係なく 100% で乗る）\n"
+        u8"    ・しゃくり・下降・意図的な外しで、目標を付けること自体が不自然 → B でバイパス（原音のまま）\n"
+        u8"    ・目標は合っているが声が不自然（ケロケロ・こもり）→ Speed を上げる（ノート単位では効かせられない）\n"
+        u8"5. 手直しを全部やり直したくなったら右クリック「ノートの手直しを捨てて目標音を付け直す」\n"
+        u8"    （Apply / Cancel で確定・取消。Strength / Speed は残る）\n"
+        u8"\n"
         u8"■ 画面の読み方\n"
-        u8"• 白い細線 = 元のピッチ。青い帯 = 補正後のピッチ（太さ＝音量）。帯の色が青→暖色になるほど動かした量が大きい\n"
-        u8"• 枠 = 目標の段（枠の中心＝目標の音）。薄い青＝自動で付けた目標・濃く太い＝手で置いた（pinned）・白＝選択中\n"
-        u8"• 灰色の帯＝バイパス（原音のまま）。下端の細いレーン＝無声（息・子音）\n"
-        u8"• 明るい段＝スケール内の音。暗い段には自動では付かない（鍵盤アイコンで表示 ON/OFF）\n\n"
+        u8"・白い細線 = 元のピッチ\n"
+        u8"・青い帯 = 補正後のピッチ（太さ＝音量）。青→暖色になるほど動かした量が大きい\n"
+        u8"・枠 = 目標の段（枠の中心＝目標の音）。薄い青＝自動・濃く太い＝手で置いた（pinned）・白＝選択中\n"
+        u8"・灰色の帯 = バイパス（原音のまま）。下端の細いレーン = 無声（息・子音）\n"
+        u8"・明るい段 = スケール内の音。暗い段には自動では付かない（鍵盤アイコンで表示 ON/OFF）\n"
+        u8"\n"
         u8"■ 操作\n"
-        u8"上下ドラッグ＝目標音／横ドラッグ＝タイミング（隣が吸収・⌥でスナップ解除）／クリック＝単独試聴／"
-        u8"B or ダブルクリック＝バイパス／⌘クリック＝分割／隣接 2 つを Shift クリックして M＝結合／"
-        u8"⌘←→・ピンチ＝ズーム／Space・⌘Z・, . はメインと同じ");
+        u8"・上下ドラッグ = 目標音／横ドラッグ = タイミング（隣が吸収・⌥でスナップ解除）\n"
+        u8"・クリック = 単独試聴／B or ダブルクリック = バイパス\n"
+        u8"・⌘クリック = 分割／隣接 2 つを Shift クリックして M = 結合\n"
+        u8"・⌘←→・ピンチ = ズーム／Space・⌘Z・, . はメインと同じ");
     auto setupHelp = [this] (IconButton& b, const juce::String& title, const juce::String& body, int width)
     {
         b.setOnLightBackground (true);
@@ -745,35 +751,33 @@ void PitchEditorView::drawBlobs (juce::Graphics& g, const Geometry& geo, const C
 
 std::unique_ptr<juce::Component> PitchEditorView::makeHelpPanel (const juce::String& title, const juce::String& body, int width)
 {
+    // 本文は TextLayout で直接描く（Label は行間を変えられない。高さも同じレイアウトから取るので見切れ・余白のずれが出ない）
     struct Panel : juce::Component
     {
-        juce::Label titleLabel, bodyLabel;
+        juce::Label titleLabel;
+        juce::TextLayout layout;
+        enum { pad = 12, titleH = 22 };
         Panel (const juce::String& t, const juce::String& b, int width)
         {
-            constexpr int pad = 10, titleH = 20;
             titleLabel.setText (t, juce::dontSendNotification);
             titleLabel.setFont (Fonts::bodyStrong());
             titleLabel.setColour (juce::Label::textColourId, juce::Colours::white);
-            const auto bodyFont = Fonts::forText (Fonts::small(), b);
-            bodyLabel.setText (b, juce::dontSendNotification);
-            bodyLabel.setFont (bodyFont);
-            bodyLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.88f));
-            bodyLabel.setJustificationType (juce::Justification::topLeft);
-            bodyLabel.setBorderSize ({ 0, 0, 0, 0 });
-            // Label の折り返しは内部で幅を少し詰めて計算する（GlyphArrangement の maxWidth ＝ 幅 − 余白）ので、
-            // 同じフォントで少し狭い幅に組んで高さを測り、行数の読み違いによる見切れを防ぐ
+            titleLabel.setBorderSize ({ 0, 0, 0, 0 });
             juce::AttributedString as (b);
-            as.setFont (bodyFont);
-            juce::TextLayout layout;
-            layout.createLayout (as, (float) (width - pad * 2) - 8.0f);
-            const int textH = (int) std::ceil (layout.getHeight()) + 6;
+            as.setFont (Fonts::forText (Fonts::small(), b));
+            as.setColour (juce::Colours::white.withAlpha (0.88f));
+            as.setLineSpacing (4.0f); // 行間を少し空ける（日本語の説明文は詰まると読みにくい）
+            layout.createLayout (as, (float) (width - pad * 2));
+            const int textH = (int) std::ceil (layout.getHeight()) + 2;
             setSize (width, pad + titleH + textH + pad);
             titleLabel.setBounds (pad, pad, width - pad * 2, titleH);
-            bodyLabel.setBounds (pad, pad + titleH, width - pad * 2, textH);
             addAndMakeVisible (titleLabel);
-            addAndMakeVisible (bodyLabel);
         }
-        void paint (juce::Graphics& g) override { g.fillAll (juce::Colour (0xff2a2d33)); } // CallOutBox の地と同系（単体描画用）
+        void paint (juce::Graphics& g) override
+        {
+            g.fillAll (juce::Colour (0xff2a2d33)); // CallOutBox の地と同系（単体描画用）
+            layout.draw (g, juce::Rectangle<float> ((float) pad, (float) (pad + titleH), (float) (getWidth() - pad * 2), layout.getHeight() + 2.0f));
+        }
     };
     return std::make_unique<Panel> (title, body, width);
 }
