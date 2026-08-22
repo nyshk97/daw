@@ -6,6 +6,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "IconButton.h"
+#include "../shared/GridSnap.h"
 #include "../shared/PitchEditorSession.h"
 #include "../shared/Project.h"
 
@@ -50,6 +51,7 @@ public:
     std::function<void()> onDragAuditionUpdate;             // 目標音が変わった（合成して鳴らし直す）
     std::function<void()> onDragAuditionEnd;
     std::function<bool (const juce::KeyPress&)> onKey; // メインへ転送（Space / ⌘Z / , .）
+    std::function<void (juce::int64 timelineSample)> onSeek; // ルーラークリック＝タイムラインの再生位置へ（メインのルーラーと同じ流儀）
 
     void refresh(); // session の状態が変わったら呼ぶ（バーの表示を更新して再描画）
     void showStatus (const juce::String& text); // 上部バー右側に数秒だけ出す通知（再解析の結果など。メインのトーストはエディタからは見えない）
@@ -57,6 +59,7 @@ public:
     void paint (juce::Graphics& g) override;
     void resized() override;
     bool keyPressed (const juce::KeyPress& key) override;
+    bool debugClickRuler (int x); // dev検証フック: ルーラー帯の x をクリックしたのと同じ経路でシーク（--pitch-action rulerclick:<x>）
     void mouseDown (const juce::MouseEvent& e) override;
     void mouseDrag (const juce::MouseEvent& e) override;
     void mouseUp (const juce::MouseEvent& e) override;
@@ -70,12 +73,17 @@ public:
     static constexpr int barHeight = 36;
     static constexpr int bannerHeight = 26;
     static constexpr int keyboardWidth = 48;
-    static constexpr int rulerHeight = 18;
+    static constexpr int rulerHeight = 26; // メインの TimelineView::rulerHeight と同じ（クリックでシークする帯なので掴みやすい高さに）
+    juce::Rectangle<int> rulerBounds() const; // ルーラー帯（bounds とバナーだけで決まり time map に依存しない。mouseDown の早期判定用）
 
 private:
     struct Geometry
     {
         juce::Rectangle<int> canvas;   // 鍵盤・ルーラーを除いたグリッド領域
+        juce::Rectangle<int> ruler;    // 小節番号の帯（canvas の直上。描画とクリック判定で共有）
+        double sixteenthSamples = 1.0; // 1/16 の長さ（サンプル）。グリッド描画・横ドラッグ・シークのスナップで共有
+        int gridStepSixteenths = 1;    // 描画しているグリッド線の刻み（1/16 単位。GridSnap で決める）。グリッド描画とシークのスナップ専用で、
+                                       // ノートの横ドラッグは常に最寄りの 1/16（見えていなくても細かく置ける方が編集には都合がよい）
         juce::int64 viewStart = 0, viewEnd = 1; // 表示範囲（render 座標。ズーム・スクロール後）
         juce::int64 clipRenderStart = 0;        // クリップ先頭の render 座標（タイムライン位置 = startSample に対応）
         double pxPerSample = 0.0;
@@ -91,8 +99,11 @@ private:
         // render 座標 ⇄ タイムライン位置（クリップの startSample 基準）
         juce::int64 timelineForRender (juce::int64 render, juce::int64 clipStartSample) const { return clipStartSample + (render - clipRenderStart); }
         juce::int64 renderForTimeline (juce::int64 timeline, juce::int64 clipStartSample) const { return clipRenderStart + (timeline - clipStartSample); }
+        // タイムライン位置を表示中のグリッドへスナップ（メインの seekFromX と同じく「見えている線」に吸着）
+        juce::int64 snapToVisibleGrid (juce::int64 timeline) const { return GridSnap::floorToGrid (timeline, sixteenthSamples * gridStepSixteenths); }
     };
     Geometry computeGeometry (const Clip& clip) const;
+    void seekFromRuler (const Geometry& geo, const Clip& clip, int x);
     int noteAt (const Geometry& g, juce::Point<int> p); // -1 = 無し（描画と同じ目標カーブで判定するため非 const）
     void drawKeyboard (juce::Graphics& g, const Geometry& geo) const;
     void drawGrid (juce::Graphics& g, const Geometry& geo, const Clip& clip) const;

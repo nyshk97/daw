@@ -679,7 +679,7 @@ sleep 8 && grep -E "project.open|render_failed" ~/Library/Logs/daw/"$(ls -t ~/Li
 # ② 実アプリ（dev 版限定の検証フック。実機能と同一経路）。対象プロジェクトは ~/Music/daw をコピーして使う
 #    --pitch-editor <track> <clip> でエディタを開き、--pitch-action を解析完了後に順に実行、
 #    --pitch-snapshot でウィンドウ中身を PNG（ログ debug.pitch_snapshot に mode/notes/preview/corrected/dirty/visible）
-#    action: enable / bypassN / moveN（+40ms）/ targetN:+M / kero / resnap / apply / cancel / reset / reanalyze / close / save / undo / bounce
+#    action: enable / bypassN / moveN（+40ms）/ targetN:+M / kero / resnap / apply / cancel / reset / reanalyze / close / save / undo / bounce / rulerclick:<x>（ルーラー帯の x をクリック＝シーク。ログ debug.pitch_rulerclick に hit/position）
 SP=/tmp/pitch-check; rm -rf "$SP"; mkdir -p "$SP"; cp -R ~/Music/daw/2026-08-18-tundra "$SP/tundra"
 run() { pkill -x LaLa-dev; sleep 1; before=$(ls -t ~/Library/Logs/daw | head -1)
   open -g build/daw_artefacts/Debug/LaLa-dev.app --args --open "$SP/tundra" "$@"
@@ -697,6 +697,9 @@ run --pitch-editor 2 0 --pitch-snapshot "$SP/3-reopen.png"
 run --pitch-editor 3 0 --pitch-action bounce --pitch-snapshot "$SP/4-bounce.png"
 # Enable → undo: 補正が消えエディタが閉じる（edit.undo → pitch.closed・corrected=0）
 run --pitch-editor 3 0 --pitch-action enable --pitch-action undo --pitch-snapshot "$SP/5-undo.png"
+# ルーラークリックでシーク: hit=1 で position（論理位置。locate は非同期なので playhead 実値は次のコールバック後）が
+# 表示中のグリッド線へスナップした値になる（ズームアウト時は拍・小節）。録音中は動かない
+run --pitch-editor 2 0 --pitch-action rulerclick:600 --pitch-snapshot "$SP/6-seek.png"
 pkill -x LaLa-dev
 ```
 
@@ -711,6 +714,7 @@ pkill -x LaLa-dev
 - Scale の右の鍵盤アイコンでスケール音の段のハイライトを ON/OFF（キー未設定なら推定キー）。Re-snap/Reset/Re-analyze の結果は上部バー右に数秒表示（「結果は同じ」等）
 - ズーム: ⌘←/→（ウィンドウ内ではタイムラインでなくエディタが拡大）・トラックパッドのピンチ・⌘＋ホイール（カーソル中心）。スクロール: 横スワイプ／ホイール
 - 補正が鳴っているクリップは `♪` バッジ（移調バッジの左）。Space・⌘Z・, . はエディタにフォーカスがあってもメインに効く
+- ルーラー帯（小節番号の行）のクリック＝シーク（メインのルーラーと同じ: 再生ヘッドと再生開始位置を揃える・表示中のグリッド線へスナップ）。ルーラーの右クリックはメニューを出さない
 - 人間確認が要るもの: 音質（補正の自然さ・ケロケロの「らしさ」）とデュアルモニターでの使用感、ドラッグの掴みやすさ
 
 ## リリース・アップデート（Sparkle）の確認

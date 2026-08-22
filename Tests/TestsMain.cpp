@@ -60,6 +60,7 @@ void operator delete[] (void* p, std::size_t) noexcept { std::free (p); }
 #include "ui/FxSlotLayout.h"
 #include "audio/ReferenceReportGenerator.h"
 #include "shared/ClipDomains.h"
+#include "shared/GridSnap.h"
 #include "shared/Project.h"
 #include "shared/SynthBank.h"
 #include "shared/UndoStack.h"
@@ -16151,6 +16152,30 @@ void testVocalNoteAudition()
     }
 }
 
+void testGridSnap()
+{
+    std::cout << "---- GridSnap (表示グリッドの刻みとクリックシークのスナップ)" << std::endl;
+    // 12px 以上取れる最細の分割。80px/小節 → 1/4（20px）。192px → 1/16
+    expect (GridSnap::divisionsPerBar (80.0) == 4, "80px/bar は拍");
+    expect (GridSnap::divisionsPerBar (192.0) == 16, "192px/bar は 1/16");
+    expect (GridSnap::divisionsPerBar (30.0) == 2, "30px/bar は 1/2");
+    expect (GridSnap::divisionsPerBar (10.0) == 1, "10px/bar は小節");
+    expect (GridSnap::stepSixteenths (80.0) == 4, "拍刻み = 4/16");
+    // 0 起点に切り下げ。負は 0
+    expect (GridSnap::floorToGrid (876000, 24000.0) == 864000, "拍への切り下げ");
+    expect (GridSnap::floorToGrid (876000, 6000.0) == 876000, "1/16 ちょうどはそのまま");
+    expect (GridSnap::floorToGrid (-5, 6000.0) == 0, "負は 0");
+    // 描画の開始インデックスは step の倍数（左端が index 7 でも線は 4,8,12… に引く）
+    expect (GridSnap::firstIndexAligned (7.5 * 6000.0, 6000.0, 4) == 4, "左端 7.5 → 4");
+    expect (GridSnap::firstIndexAligned (8.0 * 6000.0, 6000.0, 4) == 8, "左端 8 → 8");
+    expect (GridSnap::firstIndexAligned (3.0 * 6000.0, 6000.0, 16) == 0, "小節刻みは 0");
+    // 同じ px 密度なら両 view のスナップ先が一致する（ピッチ側は 1/16 長 × step で同じ格子）
+    const double bar = 96000.0, pxPerBar = 80.0;
+    const auto a = GridSnap::floorToGrid (900000, bar / GridSnap::divisionsPerBar (pxPerBar));
+    const auto b = GridSnap::floorToGrid (900000, (bar / 16.0) * GridSnap::stepSixteenths (pxPerBar));
+    expect (a == b && a == 888000, "タイムラインとエディタで同じ格子");
+}
+
 void testUndoAbandonLast()
 {
     beginTest ("UndoStack abandon (token-checked; redo and evicted entry restored)");
@@ -16327,6 +16352,7 @@ int main (int argc, char** argv)
     testBounceSongFade();
     testAudioImporter();
     testAudioFilePreview();
+    testGridSnap();
     testPreviewPolicy();
     testFileSortOrder();
     testBottomPanelHistory();

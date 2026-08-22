@@ -55,7 +55,7 @@ void MainComponent::wirePitchEditor()
     view.getSampleRate = [this] { return renderSampleRate(); };
     view.getBpm = [this] { return project->bpm; };
     view.getProjectKey = [this] { return project->key; };
-    view.getPlayheadSample = [this] { return transport.playheadSamplePos.load(); };
+    view.getPlayheadSample = [this] { return transport.uiPositionSample(); }; // 保留中のシークを含む論理位置（TimelineView と同じ。locate 直後から線が動く）
     view.isRendering = [this]
     {
         if (pitchPreviewActive())
@@ -66,6 +66,7 @@ void MainComponent::wirePitchEditor()
     view.getAnalysisProgress = [this] { return pitchWorker.progress(); };
     view.getBlockedMessage = [this] { return pitchBlockedMessage; };
     view.onKey = [this] (const juce::KeyPress& key) { return keyPressed (key); };
+    view.onSeek = [this] (juce::int64 samplePos) { seekFromUser (samplePos); };
 
     view.onBeginEdit = [this] { pitchBeginEdit(); };
     view.onEndEdit = [this] { pitchEndEdit(); };
@@ -799,6 +800,13 @@ void MainComponent::debugPitchAction (const juce::String& action)
     else if (action == "save") trySave();
     else if (action == "undo") performUndo();
     else if (action == "bounce") startBounceFlow();
+    else if (action.startsWith ("rulerclick:"))
+    {
+        const int x = action.fromFirstOccurrenceOf (":", false, false).getIntValue();
+        const bool hit = view.debugClickRuler (x);
+        Log::info ("debug.pitch_rulerclick", "x=" + juce::String (x) + " hit=" + juce::String ((int) hit)
+                                              + " position=" + juce::String (transport.uiPositionSample())); // locate は非同期（seekRequest）なので論理位置を読む
+    }
     else if (action == "kero")
     {
         pitchBeginEdit();

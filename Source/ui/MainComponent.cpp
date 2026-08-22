@@ -319,11 +319,7 @@ MainComponent::MainComponent (std::unique_ptr<Project> projectToOpen)
     };
 
     // ---- タイムライン・ヘッダの連携 ----
-    timeline.onSeek = [this] (juce::int64 samplePos)
-    {
-        if (! engine.isRecording())
-            locate (samplePos); // クリック＝「ここから聴きたい」なのでヘッドと開始位置を揃える
-    };
+    timeline.onSeek = [this] (juce::int64 samplePos) { seekFromUser (samplePos); };
     timeline.onTrackSelected = [this] (int index) { selectTrackFromUser (index); };
     timeline.onVerticalScroll = [this] (int y) { headers.setViewY (y); };
     timeline.onWillEditModel = [this] { undoStack.begin (*project); };
@@ -1001,6 +997,15 @@ void MainComponent::pollAudioAnomalies()
 
 // ヘッドと開始位置を同時に動かす。「ここから聴きたい」という意思表示（クリック・キーシーク）は
 // 必ずこちらを通す。片方だけ動かすと、マーカーの位置と実際に鳴る位置が食い違う
+void MainComponent::seekFromUser (juce::int64 samplePos, int pauseKeyCode)
+{
+    if (engine.isRecording())
+        return; // 録音はカウントイン分だけ手前へシーク済み。ここで動かすと1小節分が消える（transport-playhead.md）
+    if (pauseKeyCode != 0)
+        pauseForKeySeek (pauseKeyCode);
+    locate (samplePos); // 「ここから聴きたい」なのでヘッドと開始位置を揃える
+}
+
 void MainComponent::locate (juce::int64 samplePos)
 {
     transport.seekRequest.store (samplePos);
@@ -5134,11 +5139,6 @@ void MainComponent::pauseForKeySeek (int keyCode)
 
 void MainComponent::seekByStep (int direction, bool wholeBar, int keyCode)
 {
-    if (engine.isRecording())
-        return;
-
-    pauseForKeySeek (keyCode);
-
     const double stepLen = timeline.barLengthSamples() / (wholeBar ? 1.0 : 4.0);
     const auto pos = timeline.editPositionSample();
     auto step = (juce::int64) std::floor ((double) pos / stepLen);
@@ -5156,13 +5156,12 @@ void MainComponent::seekByStep (int direction, bool wholeBar, int keyCode)
         step = juce::jmax ((juce::int64) 0, step);
     }
 
-    const auto target = (juce::int64) std::llround ((double) step * stepLen);
-    locate (target);
+    seekFromUser ((juce::int64) std::llround ((double) step * stepLen), keyCode);
 }
 
 void MainComponent::seekToSection (int direction, int keyCode)
 {
-    if (engine.isRecording() || project->markers.empty())
+    if (project->markers.empty())
         return;
 
     // 前=厳密に前の境界、次=厳密に次の境界。境界ちょうどに居るときも1つ進む/戻る（1拍/1小節シークと同じ流儀）
@@ -5188,9 +5187,7 @@ void MainComponent::seekToSection (int direction, int keyCode)
     }
     if (target < 0)
         return; // 前/次のセクションがなければno-op
-
-    pauseForKeySeek (keyCode);
-    locate (target);
+    seekFromUser (target, keyCode);
 }
 
 void MainComponent::toggleCycle()

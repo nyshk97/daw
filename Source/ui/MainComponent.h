@@ -110,7 +110,7 @@ public:
     void debugStartBounce (const juce::File& target);
     void debugStartPlayback();
     // 検証用（ピッチ補正。MainComponentPitch.cpp）: --pitch-editor <track> <clip> でエディタを開き、
-    // --pitch-action <name> を解析完了後に実行（enable / bypass0 / move1 / kero / resnap / apply / cancel / close / save）、
+    // --pitch-action <name> を解析完了後に実行（アクション一覧は VERIFY.md「ボーカルのピッチ補正」）、
     // --pitch-snapshot <path> でエディタウィンドウの中身を PNG 保存（ログ debug.pitch_snapshot）
     void debugOpenPitchEditor (int trackIndex, int clipIndex);
     void debugPitchAction (const juce::String& action);
@@ -130,6 +130,7 @@ private:
     void startRecordingFlow();
     void finishRecording();
     // ---- 再生位置（ヘッド＝今いる場所・編集の基準 / 開始位置＝次に鳴る場所）----
+    void seekFromUser (juce::int64 samplePos, int pauseKeyCode = 0); // ユーザー起点のシークの唯一の入口（クリック・キー）。録音中は無視（カウントインのシークを上書きしない）。pauseKeyCode≠0 ならキーシーク扱い（再生中は一時停止→自動再開）
     void locate (juce::int64 samplePos);       // 両方を同時に動かす（クリックシーク・キーシーク・サイクル頭補正）
     void setPlayStart (juce::int64 samplePos); // 開始位置だけ動かす（録音まわり専用。ヘッドはエンジンが動かす）
     void seekByStep (int direction, bool wholeBar, int keyCode);  // ,/.キー: 1拍（Shiftで1小節）単位で再生ヘッドを移動

@@ -310,13 +310,16 @@ bool PitchEditorView::changingButtonsVisible() const
     return session != nullptr && session->mode() == PitchEditorSession::Mode::changePreview;
 }
 
+juce::Rectangle<int> PitchEditorView::rulerBounds() const
+{
+    return getLocalBounds().withTop (barHeight + (bannerVisible ? bannerHeight : 0)).removeFromTop (rulerHeight).withTrimmedLeft (keyboardWidth);
+}
+
 PitchEditorView::Geometry PitchEditorView::computeGeometry (const Clip& clip) const
 {
     Geometry g;
-    auto area = getLocalBounds().withTop (barHeight + (bannerVisible ? bannerHeight : 0));
-    area.removeFromTop (rulerHeight);
-    area.removeFromLeft (keyboardWidth);
-    g.canvas = area;
+    g.ruler = rulerBounds();
+    g.canvas = getLocalBounds().withTop (g.ruler.getBottom()).withTrimmedLeft (keyboardWidth);
     // エディタの working は常にクリップ自身の範囲で表現する（分割子は開いた時点で detach 済み）
     g.domainOffset = clip.offsetSamples;
     g.domainLength = clip.lengthSamples;
@@ -335,6 +338,9 @@ PitchEditorView::Geometry PitchEditorView::computeGeometry (const Clip& clip) co
     g.viewStart = clipStart + juce::jlimit ((juce::int64) 0, maxScroll, scrollRender);
     g.viewEnd = g.viewStart + visible;
     g.pxPerSample = (double) juce::jmax (1, g.canvas.getWidth()) / (double) visible;
+    const double bpm = getBpm ? getBpm() : 120.0;
+    g.sixteenthSamples = sr * 60.0 / juce::jmax (20.0, bpm) / 4.0; // タイムラインと同じ解像度上限 1/16
+    g.gridStepSixteenths = GridSnap::stepSixteenths (g.sixteenthSamples * 16.0 * g.pxPerSample); // メインのタイムラインと同じ規則
 
     // 音域: ノートの目標音（全部）と有声フレームの音程の 2〜98 パーセンタイル（オクターブ飛びの数フレームに
     // 引っ張られて段が潰れないように）から ±2 半音、最低 12 段
@@ -460,18 +466,14 @@ void PitchEditorView::drawGrid (juce::Graphics& g, const Geometry& geo, const Cl
         g.setColour (Theme::gridLineBeat);
         g.fillRect ((float) geo.canvas.getX(), geo.yForMidi (m), (float) geo.canvas.getWidth(), 1.0f);
     }
-    // ルーラーと拍グリッド（タイムラインと同じ解像度上限 1/16）
-    const double sr = getSampleRate ? getSampleRate() : 48000.0;
-    const double bpm = getBpm ? getBpm() : 120.0;
-    const double beat = sr * 60.0 / juce::jmax (20.0, bpm);
-    const double sixteenth = beat / 4.0;
+    // ルーラーと拍グリッド（刻みは Geometry で決める。シークのスナップも同じ刻み）
+    const double sixteenth = geo.sixteenthSamples;
     const juce::int64 timelineStart = geo.timelineForRender (geo.viewStart, clip.startSample); // 表示左端のタイムライン位置（スクロール込み）
-    auto ruler = juce::Rectangle<int> (geo.canvas.getX(), geo.canvas.getY() - rulerHeight, geo.canvas.getWidth(), rulerHeight);
+    const auto& ruler = geo.ruler;
     g.setColour (Theme::rulerBg);
     g.fillRect (ruler);
-    const double pxPerSixteenth = sixteenth * geo.pxPerSample;
-    const int step = pxPerSixteenth >= 6.0 ? 1 : pxPerSixteenth >= 1.5 ? 4 : 16; // 密なら拍・小節だけ
-    const auto firstIndex = (juce::int64) std::floor ((double) timelineStart / sixteenth);
+    const int step = geo.gridStepSixteenths;
+    const auto firstIndex = GridSnap::firstIndexAligned ((double) timelineStart, sixteenth, step); // 線とスナップ先を一致させる
     for (juce::int64 i = firstIndex; ; i += step)
     {
         const double t = (double) i * sixteenth;
@@ -746,7 +748,7 @@ void PitchEditorView::paint (juce::Graphics& g)
         if (render >= geo.viewStart && render <= geo.viewEnd)
         {
             g.setColour (Theme::playhead);
-            g.fillRect (geo.xForRender (render), (float) geo.canvas.getY() - rulerHeight, 1.5f, (float) geo.canvas.getHeight() + rulerHeight);
+            g.fillRect (geo.xForRender (render), (float) geo.ruler.getY(), 1.5f, (float) (geo.canvas.getBottom() - geo.ruler.getY()));
         }
     }
 }
@@ -901,12 +903,19 @@ void PitchEditorView::mouseDown (const juce::MouseEvent& e)
     const Clip* clip = getClip ? getClip() : nullptr;
     if (clip == nullptr || session == nullptr || ! session->isOpen())
         return;
+    const bool onRuler = rulerBounds().contains (e.getPosition()); // geometry（buildTimeMap）を計算する前に判定
     if (e.mods.isPopupMenu())
     {
-        showContextMenu (e.getPosition());
+        if (! onRuler) // ルーラーにノート用メニューは出さない（メインのルーラーと同じ）
+            showContextMenu (e.getPosition());
         return;
     }
     const auto geo = computeGeometry (*clip);
+    if (onRuler)
+    {
+        seekFromRuler (geo, *clip, e.x);
+        return;
+    }
     if (! geo.canvas.contains (e.getPosition()))
         return;
     const int idx = noteAt (geo, e.getPosition());
@@ -954,6 +963,24 @@ void PitchEditorView::mouseDown (const juce::MouseEvent& e)
     }
     drag = d;
     repaint();
+}
+
+// ルーラー帯のクリック＝シーク。メインのタイムライン（seekFromX）と同じく**表示中の**グリッド線へスナップする
+// （ズームアウトで拍・小節線しか描いていないときに、見えない 1/16 線へ吸着しないように）。録音中のガードは onSeek 側（MainComponent）が行う
+void PitchEditorView::seekFromRuler (const Geometry& geo, const Clip& clip, int x)
+{
+    if (onSeek)
+        onSeek (geo.snapToVisibleGrid (geo.timelineForRender (geo.renderForX ((float) x), clip.startSample)));
+}
+
+bool PitchEditorView::debugClickRuler (int x)
+{
+    // 実経路（mouseDown）と同じガードを通す
+    const Clip* clip = getClip ? getClip() : nullptr;
+    if (clip == nullptr || session == nullptr || ! session->isOpen() || ! rulerBounds().contains (rulerBounds().getCentre().withX (x)))
+        return false;
+    seekFromRuler (computeGeometry (*clip), *clip, x);
+    return true;
 }
 
 void PitchEditorView::mouseDrag (const juce::MouseEvent& e)
@@ -1008,9 +1035,7 @@ void PitchEditorView::mouseDrag (const juce::MouseEvent& e)
         juce::int64 wantDelta = (juce::int64) std::llround ((double) dx / geo.pxPerSample);
         if (d.snap)
         {
-            const double sr = getSampleRate ? getSampleRate() : 48000.0;
-            const double bpm = getBpm ? getBpm() : 120.0;
-            const double sixteenth = sr * 60.0 / juce::jmax (20.0, bpm) / 4.0;
+            const double sixteenth = geo.sixteenthSamples;
             const double timelinePos = (double) geo.timelineForRender (d.startAtStart + wantDelta, clip->startSample);
             const double snapped = std::round (timelinePos / sixteenth) * sixteenth;
             wantDelta = geo.renderForTimeline ((juce::int64) std::llround (snapped), clip->startSample) - d.startAtStart;
@@ -1077,8 +1102,8 @@ void PitchEditorView::mouseUp (const juce::MouseEvent& e)
 void PitchEditorView::mouseDoubleClick (const juce::MouseEvent& e)
 {
     const Clip* clip = getClip ? getClip() : nullptr;
-    if (clip == nullptr || session == nullptr || ! canEdit())
-        return;
+    if (clip == nullptr || session == nullptr || ! canEdit() || rulerBounds().contains (e.getPosition()))
+        return; // ルーラー帯はシーク専用（noteAt は y をほぼ見ないので、音域が上端に張り付いた箇所でバイパスに化けるのを防ぐ）
     const int idx = noteAt (computeGeometry (*clip), e.getPosition());
     if (idx < 0) return;
     if (onBeginEdit) onBeginEdit();

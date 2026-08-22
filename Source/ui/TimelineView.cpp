@@ -1,4 +1,5 @@
 #include "TimelineView.h"
+#include "../shared/GridSnap.h"
 
 #include <cmath>
 
@@ -1607,13 +1608,7 @@ double TimelineView::samplesPerPixel() const
 
 int TimelineView::gridDivisionsPerBar() const
 {
-    // 線の間隔が12px以上確保できる最も細かい分割を選ぶ。上限は1/16音符
-    // （Tier 1ではグリッドは表示とシークの目安のみなので、これ以上細かくしない）
-    int div = 1;
-    for (int candidate : { 2, 4, 8, 16 })
-        if (pxPerBar / candidate >= 12.0)
-            div = candidate;
-    return div;
+    return GridSnap::divisionsPerBar (pxPerBar); // ピッチ補正エディタと同じ規則（GridSnap.h）
 }
 
 void TimelineView::zoomBy (double factor)
@@ -2953,11 +2948,8 @@ void TimelineView::setPlayStartSample (juce::int64 samplePos)
 void TimelineView::seekFromX (int x)
 {
     // 表示中の最小グリッド単位にスナップ（ズームが深いほど細かく移動できる）
-    const double gridLen = barLengthSamples() / gridDivisionsPerBar();
-    const auto samplePos = juce::jmax ((juce::int64) 0, xToSample (x));
-    const auto gridIndex = (juce::int64) std::floor ((double) samplePos / gridLen);
     if (onSeek)
-        onSeek ((juce::int64) std::llround ((double) gridIndex * gridLen));
+        onSeek (GridSnap::floorToGrid (xToSample (x), barLengthSamples() / gridDivisionsPerBar()));
 }
 
 // ---- サイクル範囲（ルーラーの操作） -------------------------------------
