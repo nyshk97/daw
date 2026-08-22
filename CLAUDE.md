@@ -82,7 +82,7 @@
 - [mixer-fx.md](docs/design/mixer-fx.md) — Tier 2 ミキサー・FXの確定設計（画面構成・チャンネル構成・6スライス）
 - [fx-roadmap.md](docs/design/fx-roadmap.md) — EQ・Comp後の残りFX・メーター群の実装順（5バッチ格子・耳セッションの方針・削った候補）。**新しいFX/メーターに着手する前に読む**
 - [region-settings.md](docs/design/region-settings.md) — リージョン設定UIの割り当て方針
-- [drum-pattern.md](docs/design/drum-pattern.md) — ドラムパターンの好みの境界（はっきり鳴るハットは毎秒4打点まで・実時間で決まる）とドラムガチャの生成器への要件。**ドラムの打ち込み・ドラムガチャを触る前に読む**
+- [drum-pattern.md](docs/design/drum-pattern.md) — ドラムパターンの好みの境界（はっきり鳴るハットは毎秒4打点まで・実時間で決まる。キックは制約にしない）とドラムガチャの生成器への要件。**ドラムの打ち込み・ドラムガチャを触る前に読む**
 - [reference-beat.md](docs/design/reference-beat.md) — リファレンス駆動ビートメイク（長期・2本柱: ガチャで作る＋レポートでわかる）。何を借りて何を借りないか・Python外部パイプライン＋LaLa内ガチャUIの分業・分析レポートとライブラリ蓄積・フェーズ表。実験記録は `docs/labs/reference-beat.md`（追記専用）。**上モノ素材の好みの境界（明るさ・コードの動きの目標帯）を含むので、ループ選び・推薦・上モノガチャを触る前に読む**
 - [corpus-comparison.md](docs/design/corpus-comparison.md) — 2つの集団を比べる分析の作法（1次元化にラベルを使わない・相関した軸へのomnibus検定・交差ペアでhaloを潰す・非対称の事前監査・検出力の下限を書く）。**コーパス比較や対照分析を始める前に必ず読む**
 - [sampling-rights.md](docs/design/sampling-rights.md) — 実曲サンプリングの権利リスクの見立て（検出・特定・執行の3変数）と帯分け（国内曲は全面回避・海外有名曲はYouTube限定・本命は海外×古い×マイナー）・レコード発掘の方針。**サンプリング素材の調達・曲の公開/配信に関わる機能や判断の前に読む**

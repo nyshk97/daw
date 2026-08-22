@@ -14,49 +14,233 @@
     "material": "review/drum-listen/（否定例10曲）",
     "key": "review/drum-listen-key.json",
     "answers": [
-      {"video_id": "4sp4wSw0FqI", "name": "Chemistry", "score": -2, "comment": "ハイハットがうるさい"},
-      {"video_id": "bDvGff1JWXM", "name": "Breath", "score": 0, "comment": "好きって感じじゃない"},
-      {"video_id": "T3QnKfrapnw", "name": "loved", "score": -2, "comment": "動きが多い"},
-      {"video_id": "lu_5ElV2a88", "name": "REHAB", "score": 1, "comment": "他の否定例よりは好き"},
-      {"video_id": "ZvOgxeLgPgw", "name": "Chillhood Love", "score": null, "comment": "stem分離がうまく行ってないかも。スキップ"},
-      {"video_id": "NHstEi3ChTc", "name": "Love", "score": 0, "comment": ""},
-      {"video_id": "8U2nWfjoX8k", "name": "Missing You", "score": 2, "comment": "結構好き。ハイハットが等間隔な感じ良い"},
-      {"video_id": "yazE_osu8wc", "name": "play hooky", "score": 2, "comment": "好き。淡々としてる"},
-      {"video_id": "WAkVbfOloz8", "name": "OCEAN VIEWS", "score": -2, "comment": "ハットがうるさい"},
-      {"video_id": "0edvTSOy29k", "name": "TWISTED", "score": -2, "comment": "ハットがうるさい"}
+      {
+        "video_id": "4sp4wSw0FqI",
+        "name": "Chemistry",
+        "score": -2,
+        "comment": "ハイハットがうるさい"
+      },
+      {
+        "video_id": "bDvGff1JWXM",
+        "name": "Breath",
+        "score": 0,
+        "comment": "好きって感じじゃない"
+      },
+      {
+        "video_id": "T3QnKfrapnw",
+        "name": "loved",
+        "score": -2,
+        "comment": "動きが多い"
+      },
+      {
+        "video_id": "lu_5ElV2a88",
+        "name": "REHAB",
+        "score": 1,
+        "comment": "他の否定例よりは好き"
+      },
+      {
+        "video_id": "ZvOgxeLgPgw",
+        "name": "Chillhood Love",
+        "score": null,
+        "comment": "stem分離がうまく行ってないかも。スキップ"
+      },
+      {
+        "video_id": "NHstEi3ChTc",
+        "name": "Love",
+        "score": 0,
+        "comment": ""
+      },
+      {
+        "video_id": "8U2nWfjoX8k",
+        "name": "Missing You",
+        "score": 2,
+        "comment": "結構好き。ハイハットが等間隔な感じ良い"
+      },
+      {
+        "video_id": "yazE_osu8wc",
+        "name": "play hooky",
+        "score": 2,
+        "comment": "好き。淡々としてる"
+      },
+      {
+        "video_id": "WAkVbfOloz8",
+        "name": "OCEAN VIEWS",
+        "score": -2,
+        "comment": "ハットがうるさい"
+      },
+      {
+        "video_id": "0edvTSOy29k",
+        "name": "TWISTED",
+        "score": -2,
+        "comment": "ハットがうるさい"
+      }
     ]
   },
   "round2": {
     "material": "review/drum-listen-2/（正例23曲＋round1で判定済みの否定例3曲を伏せて混入）",
     "key": "review/drum-listen-2-key.json",
-    "mixed_in": ["0edvTSOy29k", "4sp4wSw0FqI", "8U2nWfjoX8k"],
+    "mixed_in": [
+      "0edvTSOy29k",
+      "4sp4wSw0FqI",
+      "8U2nWfjoX8k"
+    ],
     "answers": [
-      {"video_id": "79yRuKGMmKc", "name": "memory trigger", "score": 2, "comment": ""},
-      {"video_id": "R5396gKwIPg", "name": "シグナル", "score": 0, "comment": ""},
-      {"video_id": "6LbPC4ZWFok", "name": "One", "score": 1, "comment": ""},
-      {"video_id": "Oj2OqdZ7pXk", "name": "My Way", "score": 1, "comment": ""},
-      {"video_id": "AH7tY4nIcp0", "name": "YourSong", "score": 2, "comment": ""},
-      {"video_id": "rga7wNQoZ7w", "name": "Made my day", "score": 2, "comment": ""},
-      {"video_id": "8YqiaNYwoMY", "name": "0℃の日曜", "score": 2, "comment": ""},
-      {"video_id": "4TRM3cps2Jo", "name": "LOVE", "score": 2, "comment": ""},
-      {"video_id": "fc5VJYJaZUc", "name": "本当のこと", "score": 2, "comment": "序盤聞こえないけど、後半のちゃんと聞こえるところは好き（22秒くらいから）"},
-      {"video_id": "4sp4wSw0FqI", "name": "Chemistry", "score": -1, "comment": "ハイハットうるさい序盤は好きじゃない。ハットが消えてる後半は好き"},
-      {"video_id": "INOnzb8oTcU", "name": "August", "score": 1, "comment": ""},
-      {"video_id": "8U2nWfjoX8k", "name": "Missing You", "score": 1, "comment": ""},
-      {"video_id": "qFd_iWlYMZE", "name": "TOTSUKA", "score": 0, "comment": "悪くはない"},
-      {"video_id": "OaEEyxZEpfU", "name": "EXPLAIN", "score": 2, "comment": ""},
-      {"video_id": "O0L9rJdbFGE", "name": "Hug", "score": 1, "comment": ""},
-      {"video_id": "etXw2kp_QQI", "name": "LONELY NIGHTS", "score": 1, "comment": ""},
-      {"video_id": "Zl1zDf7AuLE", "name": "夏の魔法'18", "score": 0, "comment": ""},
-      {"video_id": "HIZzYz1xk18", "name": "Summer Situation", "score": 1, "comment": ""},
-      {"video_id": "0eCFLpkrqSw", "name": "タクシードライバー", "score": -1, "comment": "あんま好きじゃない"},
-      {"video_id": "nE1nzTE5ESA", "name": "ゆれる", "score": 1, "comment": ""},
-      {"video_id": "gLS_4iPoZ40", "name": "お嫁においで", "score": 0, "comment": ""},
-      {"video_id": "m-eW84v2I9w", "name": "kumonoue", "score": 0, "comment": ""},
-      {"video_id": "0edvTSOy29k", "name": "TWISTED", "score": 0, "comment": "ハイハットが多いところはうるさい"},
-      {"video_id": "MC6jsEPYzIE", "name": "salt water taffy", "score": 0, "comment": ""},
-      {"video_id": "CywjEnmGeNI", "name": "君はともだち？", "score": 1, "comment": ""},
-      {"video_id": "3umJ9yXFwho", "name": "FALL IN LOVE", "score": 1, "comment": ""}
+      {
+        "video_id": "79yRuKGMmKc",
+        "name": "memory trigger",
+        "score": 2,
+        "comment": ""
+      },
+      {
+        "video_id": "R5396gKwIPg",
+        "name": "シグナル",
+        "score": 0,
+        "comment": ""
+      },
+      {
+        "video_id": "6LbPC4ZWFok",
+        "name": "One",
+        "score": 1,
+        "comment": ""
+      },
+      {
+        "video_id": "Oj2OqdZ7pXk",
+        "name": "My Way",
+        "score": 1,
+        "comment": ""
+      },
+      {
+        "video_id": "AH7tY4nIcp0",
+        "name": "YourSong",
+        "score": 2,
+        "comment": ""
+      },
+      {
+        "video_id": "rga7wNQoZ7w",
+        "name": "Made my day",
+        "score": 2,
+        "comment": ""
+      },
+      {
+        "video_id": "8YqiaNYwoMY",
+        "name": "0℃の日曜",
+        "score": 2,
+        "comment": ""
+      },
+      {
+        "video_id": "4TRM3cps2Jo",
+        "name": "LOVE",
+        "score": 2,
+        "comment": ""
+      },
+      {
+        "video_id": "fc5VJYJaZUc",
+        "name": "本当のこと",
+        "score": 2,
+        "comment": "序盤聞こえないけど、後半のちゃんと聞こえるところは好き（22秒くらいから）"
+      },
+      {
+        "video_id": "4sp4wSw0FqI",
+        "name": "Chemistry",
+        "score": -1,
+        "comment": "ハイハットうるさい序盤は好きじゃない。ハットが消えてる後半は好き"
+      },
+      {
+        "video_id": "INOnzb8oTcU",
+        "name": "August",
+        "score": 1,
+        "comment": ""
+      },
+      {
+        "video_id": "8U2nWfjoX8k",
+        "name": "Missing You",
+        "score": 1,
+        "comment": ""
+      },
+      {
+        "video_id": "qFd_iWlYMZE",
+        "name": "TOTSUKA",
+        "score": 0,
+        "comment": "悪くはない"
+      },
+      {
+        "video_id": "OaEEyxZEpfU",
+        "name": "EXPLAIN",
+        "score": 2,
+        "comment": ""
+      },
+      {
+        "video_id": "O0L9rJdbFGE",
+        "name": "Hug",
+        "score": 1,
+        "comment": ""
+      },
+      {
+        "video_id": "etXw2kp_QQI",
+        "name": "LONELY NIGHTS",
+        "score": 1,
+        "comment": ""
+      },
+      {
+        "video_id": "Zl1zDf7AuLE",
+        "name": "夏の魔法'18",
+        "score": 0,
+        "comment": ""
+      },
+      {
+        "video_id": "HIZzYz1xk18",
+        "name": "Summer Situation",
+        "score": 1,
+        "comment": ""
+      },
+      {
+        "video_id": "0eCFLpkrqSw",
+        "name": "タクシードライバー",
+        "score": -1,
+        "comment": "あんま好きじゃない"
+      },
+      {
+        "video_id": "nE1nzTE5ESA",
+        "name": "ゆれる",
+        "score": 1,
+        "comment": ""
+      },
+      {
+        "video_id": "gLS_4iPoZ40",
+        "name": "お嫁においで",
+        "score": 0,
+        "comment": ""
+      },
+      {
+        "video_id": "m-eW84v2I9w",
+        "name": "kumonoue",
+        "score": 0,
+        "comment": ""
+      },
+      {
+        "video_id": "0edvTSOy29k",
+        "name": "TWISTED",
+        "score": 0,
+        "comment": "ハイハットが多いところはうるさい"
+      },
+      {
+        "video_id": "MC6jsEPYzIE",
+        "name": "salt water taffy",
+        "score": 0,
+        "comment": ""
+      },
+      {
+        "video_id": "CywjEnmGeNI",
+        "name": "君はともだち？",
+        "score": 1,
+        "comment": ""
+      },
+      {
+        "video_id": "3umJ9yXFwho",
+        "name": "FALL IN LOVE",
+        "score": 1,
+        "comment": ""
+      }
     ]
   },
   "round3": {
@@ -64,10 +248,37 @@
     "key": "review/drum-ab-key.json",
     "question": "うるさい順に並べ、どこまで許容できるかを答える",
     "answer": {
-      "order_quiet_to_loud": ["sparse_even", "dense_ghost", "dense_even", "all_16th"],
-      "acceptable": ["sparse_even", "dense_ghost"],
-      "borderline": ["dense_even"],
+      "order_quiet_to_loud": [
+        "sparse_even",
+        "dense_ghost",
+        "dense_even",
+        "all_16th"
+      ],
+      "acceptable": [
+        "sparse_even",
+        "dense_ghost"
+      ],
+      "borderline": [
+        "dense_even"
+      ],
       "comment": "PとSは許容、Qがギリ"
+    }
+  },
+  "round4": {
+    "material": "review/drum-ab-kick/（合成した検証用パターン4本。ハットとスネアは全て同一でキックだけが違う）",
+    "key": "review/drum-ab-kick-key.json",
+    "design": "キックの密度（疎0.77/秒・密2.30/秒）× キック+スネアの等間隔性（CV 0.00・0.5前後）の2×2",
+    "question": "好き順に並べる",
+    "answer": {
+      "ranking": [
+        "sparse_even",
+        [
+          "sparse_uneven",
+          "dense_uneven"
+        ],
+        "dense_even"
+      ],
+      "comment": "無理とか嫌いとかはどれもない"
     }
   }
 }
