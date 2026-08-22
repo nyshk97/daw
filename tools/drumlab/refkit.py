@@ -39,14 +39,25 @@ from kitcompare import (BARS, BASE, INVENTORY, SR, TEMPO_RANGE,  # noqa: E402
                         normalize, pick_kit, render, solve_gains)
 
 # レーンごとの切り出し設定: (長さ秒, ハイパスHz)
-CUT = {"kick": (0.35, 25.0), "snare": (0.28, 150.0), "hat": (0.16, 500.0)}
+# レーンごとの切り出し設定: (最大長さ秒, 最短長さ秒, ハイパスHz)。
+# 実際の長さは次の打点までで決まるが、**最短は割らない** — 近くに打点があると
+# トランジェントだけになり、スネアが「ハットが最大」と判定されて1つも選べなくなる。
+# ブリードは許容すると決めているので、短く切るより多少被らせるほうが正しい
+CUT = {"kick": (0.50, 0.22, 25.0), "snare": (0.35, 0.20, 150.0), "hat": (0.20, 0.10, 500.0)}
+MIN_GAP = 0.25      # 打点の後にこれだけ空いている候補を優先する（尾を確保するため）
+FADE_MAX = 0.080    # 末尾フェードの上限。まだ鳴っている尾を20msで切るとゲートに聞こえる
 QUIET_WIN = 0.060   # 打点の直前どれだけを「静かさ」の評価に使うか
-AVOID_TOL = 0.040   # 他レーンの打点がこの範囲にあったら選ばない
-# 「その打点で避けるべき他レーン」。**自分より低い＝エネルギーが大きい**レーンだけを避ける。
-# ハットの打点がキックと同時なら、切り出した「ハット」はほぼキックになる（実際に踏んだ）。
-# キックは何も避けない — キック自身が一番大きいうえ、スネア帯(200-2000Hz)の検出器は
-# キックの倍音でも発火するので、避けると「全打点がスネアと同時」になって1つも選べなくなる
-AVOID = {"kick": [], "snare": ["kick"], "hat": ["kick", "snare"]}
+LEVEL_TOL_DB = 12.0   # 一番大きい打点から何dB以内を「代表的な1発」とみなすか
+
+# 「他レーンの打点と重なる候補を避ける」は**やらない**（2026-08-22 に2回失敗して撤回）。
+# 帯域を切った打点検出は**そのレーン専用ではない**ためで、避けようとすると次が起きる:
+#   - スネア帯(200-2000Hz)の検出器はキックの倍音で発火する
+#     → キックに適用すると「全打点がスネアと同時」になり1つも選べない
+#   - キック帯(30-150Hz)の検出器はスネアのトランジェントで発火する
+#     → スネアに適用すると**本物のバックビートが全部除外され**、残るのは -48〜-61dB の
+#       小さい事象だけになる（実測）
+# 同時に鳴っている打点は、切り出した音の帯域判定（自分の帯域が最大か）で落ちる。
+# そちらが実際に効いている検査なので、そこに任せる。
 
 
 def _onsets(y: np.ndarray, sr: int, lane: str) -> np.ndarray:
@@ -57,15 +68,31 @@ def _onsets(y: np.ndarray, sr: int, lane: str) -> np.ndarray:
     return librosa.frames_to_time(fr, sr=sr, hop_length=256)
 
 
-def _cut(y: np.ndarray, sr: int, a: int, lane: str) -> np.ndarray:
-    dur, hp = CUT[lane]
-    seg = y[a:a + int(dur * sr)].copy()
+def _raw_cut(y: np.ndarray, sr: int, a: int, lane: str, end: int) -> np.ndarray:
+    """打点 a から end までをハイパスして切り出す（末尾フェードはまだ掛けない）。
+
+    **レーン判定はこの生の切り出しで行う。** 末尾フェードを掛けてから判定すると、
+    尾の長いレーンほど不利になって結果が変わる（スネアの尾は 200-2000Hz に長く残るので、
+    末尾80msを削るとスネア帯だけ 7dB 落ちてハット帯が最大になった）。
+    """
+    hp = CUT[lane][2]
     sos = signal.butter(4, hp, btype="high", fs=sr, output="sos")
-    seg = signal.sosfilt(sos, seg)
+    seg = signal.sosfilt(sos, y[a:end].copy())
     n = int(0.004 * sr)
     seg[:n] *= np.linspace(0, 1, n)
-    tail = int(0.02 * sr)
-    seg[-tail:] *= np.linspace(1, 0, tail)
+    return seg
+
+
+def _finish(seg: np.ndarray, sr: int) -> np.ndarray:
+    """末尾フェードと正規化。フェードは**まだ鳴っている尾**を想定して長めに取る。
+
+    実曲の打点は次の打点までに鳴り終わらない（キックは -8〜-13dB 残っていた実測がある）。
+    20ms の直線フェードで切るとゲートのように聞こえる。
+    """
+    seg = seg.copy()
+    fade = min(int(FADE_MAX * sr), len(seg) // 3)
+    if fade > 8:      # 余弦フェード（直線より段差が目立たない）
+        seg[-fade:] *= 0.5 * (1 + np.cos(np.linspace(0, np.pi, fade)))
     return seg / (np.max(np.abs(seg)) + 1e-12)
 
 
@@ -80,17 +107,26 @@ def cleanest_hit(y: np.ndarray, sr: int, lane: str) -> tuple[np.ndarray, float]:
     直前が最も静かなものを採る。返り値は (波形, 直前の静かさdB)。
     """
     times = _onsets(y, sr, lane)
-    others = np.concatenate([_onsets(y, sr, o) for o in AVOID[lane]]) if AVOID[lane] else np.array([])
-    dur, _ = CUT[lane]
-    best, checked = None, 0
+    # 尾を確保するため「次の打点までの空き」が要る。どのレーンの打点でも尾を汚すので全部見る
+    every = np.sort(np.concatenate([_onsets(y, sr, ln) for ln in LANES]))
+    dur, min_dur, _ = CUT[lane]
+    # 小さい事象（ゴースト・にじみ）を代表として選ばないよう、打点の大きさで足切りする
+    peaks = {float(t): float(np.max(np.abs(y[int(t * sr):int(t * sr) + int(0.03 * sr)])) or 0.0)
+             for t in times}
+    loudest = max(peaks.values()) if peaks else 0.0
+    cands, checked = [], 0
     for t in times:
         a = int(t * sr)
         q0 = a - int(QUIET_WIN * sr)
-        if q0 < 0 or a + int(dur * sr) > len(y):
+        if q0 < 0 or a + int(0.05 * sr) > len(y):
             continue
-        if len(others) and np.min(np.abs(others - t)) < AVOID_TOL:
+        if loudest > 0 and 20 * np.log10((peaks[float(t)] + 1e-12) / loudest) < -LEVEL_TOL_DB:
             continue
-        seg = _cut(y, sr, a, lane)
+        nxt = every[every > t + 0.02]
+        gap = float(nxt[0] - t) if len(nxt) else dur
+        end = min(a + int(dur * sr), len(y),
+                  a + int(max(gap - 0.010, min_dur) * sr))   # 最短は割らない
+        seg = _raw_cut(y, sr, a, lane, end)
         e = {ln: float(np.sqrt(np.mean(_bandpass(seg, sr, *v["detect"]) ** 2)))
              for ln, v in LANES.items()}
         checked += 1
@@ -98,13 +134,15 @@ def cleanest_hit(y: np.ndarray, sr: int, lane: str) -> tuple[np.ndarray, float]:
             continue
         pre = float(np.sqrt(np.mean(y[q0:a] ** 2))) + 1e-12
         pk = float(np.max(np.abs(y[a:a + int(0.03 * sr)]))) + 1e-12
-        score = 20 * np.log10(pre / pk)    # 低いほど「直前が静か」
-        if best is None or score < best[0]:
-            best = (score, seg)
-    if best is None:
+        cands.append((20 * np.log10(pre / pk), gap, seg))   # 低いほど「直前が静か」
+    if not cands:
         raise SystemExit(f"{lane}: 条件を満たす打点が無い"
-                         f"（候補 {checked} 件を検査したが、どれも自分の帯域が最大にならない）")
-    return best[1], best[0]
+                         f"（候補 {checked} 件を検査したが、どれも自分の帯域が最大にならない）。"
+                         f"この曲のこの区間には、他と重なっていない{lane}が無い")
+    # 尾が取れる候補を優先し、その中で直前が最も静かなものを採る
+    roomy = [c for c in cands if c[1] >= MIN_GAP] or cands
+    best = min(roomy, key=lambda c: c[0])
+    return _finish(best[2], sr), best[0]
 
 
 def main() -> None:
