@@ -80,13 +80,15 @@ public:
     static constexpr int barHeight = 36;
     static constexpr int bannerHeight = 26;
     static constexpr int keyboardWidth = 48;
+    static constexpr int unvoicedLaneHeight = 16; // 下端の無声レーン（息・子音の音量だけ。ピッチの行とは別の座標系なので地を分ける）
     static constexpr int rulerHeight = 26; // メインの TimelineView::rulerHeight と同じ（クリックでシークする帯なので掴みやすい高さに）
     juce::Rectangle<int> rulerBounds() const; // ルーラー帯（bounds とバナーだけで決まり time map に依存しない。mouseDown の早期判定用）
 
 private:
     struct Geometry
     {
-        juce::Rectangle<int> canvas;   // 鍵盤・ルーラーを除いたグリッド領域
+        juce::Rectangle<int> canvas;   // 鍵盤・ルーラー・無声レーンを除いたグリッド領域
+        juce::Rectangle<int> lane;     // 無声レーン（canvas の直下・同じ横幅）
         juce::Rectangle<int> ruler;    // 小節番号の帯（canvas の直上。描画とクリック判定で共有）
         double sixteenthSamples = 1.0; // 1/16 の長さ（サンプル）。グリッド描画・横ドラッグ・シークのスナップで共有
         int gridStepSixteenths = 1;    // 描画しているグリッド線の刻み（1/16 単位。GridSnap で決める）。グリッド描画とシークのスナップ専用で、
@@ -101,7 +103,9 @@ private:
         TimeMap timeMap;
         float xForRender (juce::int64 render) const { return (float) canvas.getX() + (float) (render - viewStart) * (float) pxPerSample; }
         float xForSource (juce::int64 source) const { return xForRender (timeMap.map (source)); }
-        float yForMidi (double midi) const { return (float) canvas.getY() + (float) (midiHi - midi) * rowHeight; }
+        // 半音 m は行の中心。行 midiHi−1 の上辺が canvas 上端・行 midiLo の下辺が canvas 下端に一致する（0.5 のずらしはそのため。
+        // これを忘れると最下段が半行はみ出して無声レーンを塗りつぶす）
+        float yForMidi (double midi) const { return (float) canvas.getY() + (float) (midiHi - 0.5 - midi) * rowHeight; }
         juce::int64 renderForX (float x) const { return viewStart + (juce::int64) std::llround ((x - (float) canvas.getX()) / pxPerSample); }
         // render 座標 ⇄ タイムライン位置（クリップの startSample 基準）
         juce::int64 timelineForRender (juce::int64 render, juce::int64 clipStartSample) const { return clipStartSample + (render - clipRenderStart); }

@@ -389,7 +389,9 @@ PitchEditorView::Geometry PitchEditorView::computeGeometry (const Clip& clip) co
 {
     Geometry g;
     g.ruler = rulerBounds();
-    g.canvas = getLocalBounds().withTop (g.ruler.getBottom()).withTrimmedLeft (keyboardWidth);
+    auto area = getLocalBounds().withTop (g.ruler.getBottom()).withTrimmedLeft (keyboardWidth);
+    g.lane = area.removeFromBottom (unvoicedLaneHeight);
+    g.canvas = area;
     // エディタの working は常にクリップ自身の範囲で表現する（分割子は開いた時点で detach 済み）
     g.domainOffset = clip.offsetSamples;
     g.domainLength = clip.lengthSamples;
@@ -500,6 +502,12 @@ void PitchEditorView::drawKeyboard (juce::Graphics& g, const Geometry& geo) cons
     auto keys = juce::Rectangle<int> (0, geo.canvas.getY(), keyboardWidth, geo.canvas.getHeight());
     g.setColour (Theme::headerBg);
     g.fillRect (keys);
+    // 無声レーンのラベル（鍵盤列の下端。レーンと同じ地にして「行ではない」と読ませる）
+    g.setColour (juce::Colour (0xff1c1c20));
+    g.fillRect (0, geo.lane.getY(), keyboardWidth, geo.lane.getHeight());
+    g.setColour (juce::Colours::white.withAlpha (0.45f));
+    g.setFont (Fonts::small().withHeight (10.0f));
+    g.drawText (jp (u8"息・子音"), 3, geo.lane.getY(), keyboardWidth - 4, geo.lane.getHeight(), juce::Justification::centredLeft);
     for (int m = geo.midiLo; m < geo.midiHi; ++m)
     {
         const bool black = m % 12 == 1 || m % 12 == 3 || m % 12 == 6 || m % 12 == 8 || m % 12 == 10;
@@ -528,6 +536,11 @@ void PitchEditorView::drawGrid (juce::Graphics& g, const Geometry& geo, const Cl
             if (const auto est = PitchNotes::estimateKey (session->detected()); est.valid)
                 scale = est.key;
     }
+    // 無声レーンの地（ピッチの行より一段暗く・上辺に薄い区切り線。Logic のピアノロール下のレーンの読み方）
+    g.setColour (juce::Colour (0xff141417));
+    g.fillRect (geo.lane);
+    g.setColour (juce::Colours::white.withAlpha (0.15f));
+    g.fillRect (geo.lane.getX(), geo.lane.getY(), geo.lane.getWidth(), 1);
     for (int m = geo.midiLo; m < geo.midiHi; ++m)
     {
         const bool inScale = ! scale.has_value() || PitchCorrections::snapToScale (m, scale) == m;
@@ -553,7 +566,7 @@ void PitchEditorView::drawGrid (juce::Graphics& g, const Geometry& geo, const Cl
         const float x = geo.xForRender (render);
         const bool bar = i % 16 == 0, beatLine = i % 4 == 0;
         g.setColour (bar ? Theme::gridLineBar.brighter (0.6f) : beatLine ? Theme::gridLineBar : Theme::gridLineSub);
-        g.fillRect (x, (float) geo.canvas.getY(), 1.0f, (float) geo.canvas.getHeight());
+        g.fillRect (x, (float) geo.canvas.getY(), 1.0f, (float) (geo.lane.getBottom() - geo.canvas.getY())); // 時間軸はレーンまで繋げる
         if (bar)
         {
             g.setColour (Theme::rulerLabel);
@@ -719,7 +732,7 @@ void PitchEditorView::drawBlobs (juce::Graphics& g, const Geometry& geo, const C
     // 無声フレーム（息・子音）: ピッチが無いので下端の細いレーンに音量だけを灰色で（在り処が分かる＝切る/バイパスの判断材料）
     {
         const int k0 = (int) (clip.offsetSamples / hop), k1 = (int) ((clip.offsetSamples + clip.lengthSamples) / hop);
-        const float laneBottom = (float) geo.canvas.getBottom() - 2.0f;
+        const float laneBottom = (float) geo.lane.getBottom() - 2.0f;
         g.setColour (juce::Colours::white.withAlpha (0.22f * alpha));
         for (int k = juce::jmax (0, k0); k < juce::jmin (curve.numFrames(), k1); ++k)
         {
@@ -851,7 +864,7 @@ void PitchEditorView::paint (juce::Graphics& g)
         if (render >= geo.viewStart && render <= geo.viewEnd)
         {
             g.setColour (Theme::playhead);
-            g.fillRect (geo.xForRender (render), (float) geo.ruler.getY(), 1.5f, (float) (geo.canvas.getBottom() - geo.ruler.getY()));
+            g.fillRect (geo.xForRender (render), (float) geo.ruler.getY(), 1.5f, (float) (geo.lane.getBottom() - geo.ruler.getY()));
         }
     }
 }
