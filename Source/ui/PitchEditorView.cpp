@@ -120,7 +120,7 @@ PitchEditorView::PitchEditorView()
         u8"全体は控えめ・ひどい所だけ手で、の分業ができます。\n"
         u8"Logic の Flex Pitch では「Pitch Correction」に相当。ケロケロ感の原因はこちらではなく Speed。\n"
         u8"目標の段は Scale で決まる。プロジェクトキー未設定だとクロマチック（12 音どれでも）で付くので、キーは先に設定する。\n"
-        u8"右クリックの「ノートの手直しを捨てて目標音を付け直す」を使っても、Strength / Speed は残る。");
+        u8"右クリックの「すべての手直しを取り消して目標音を付け直す」を使っても、Strength / Speed は残る。");
     speedHelpText = jp (
         u8"ノートの「中」の揺れ（ビブラート・しゃくり・語尾の落ち）を、目標へどれだけ速く引き寄せるか。\n"
         u8"Strength や手での移動では触れない層（ノート内の時間変化）を決めています。\n\n"
@@ -139,8 +139,8 @@ PitchEditorView::PitchEditorView()
         u8"    ・枠が狙いと違う段にある → 上下ドラッグで目標を置く（pinned になり、Strength に関係なく 100% で乗る）\n"
         u8"    ・しゃくり・下降・意図的な外しで、目標を付けること自体が不自然 → B でバイパス（原音のまま）\n"
         u8"    ・目標は合っているが声が不自然（ケロケロ・こもり）→ Speed を上げる（ノート単位では効かせられない）\n"
-        u8"    ・1 つだけ元に戻したい → ノートを右クリック「このノートを自動の目標に戻す」（pinned・バイパスも外れる）\n"
-        u8"5. 手直しを全部やり直したくなったら右クリック「ノートの手直しを捨てて目標音を付け直す」\n"
+        u8"    ・1 つだけ元に戻したい → ノートを右クリック「このノートの手直しを取り消す」（pinned・バイパスも外れる）\n"
+        u8"5. 手直しを全部やり直したくなったら右クリック「すべての手直しを取り消して目標音を付け直す」\n"
         u8"    （Apply / Cancel で確定・取消。Strength / Speed は残る）\n"
         u8"\n"
         u8"■ 画面の読み方\n"
@@ -969,7 +969,7 @@ bool PitchEditorView::resetNoteToAuto (int noteIndex)
     auto probe = w;
     if (! PitchCorrections::resetNoteToAuto (probe, noteIndex, *session->curve(), clip->offsetSamples, clip->lengthSamples, scale))
     {
-        showStatus (jp (u8"既に自動の目標です"));
+        showStatus (jp (u8"このノートに手直しはありません"));
         return false;
     }
     if (onBeginEdit) onBeginEdit();
@@ -997,13 +997,13 @@ void PitchEditorView::showContextMenu (juce::Point<int> at)
         bypassItem.isEnabled = canEdit();
         bypassItem.shortcutKeyDescription = Shortcuts::keyText (Shortcuts::ID::pitchBypass);
         menu.addItem (bypassItem);
-        menu.addItem (12, jp (u8"このノートを自動の目標に戻す"), canEdit()); // 手で置いた目標・pinned・bypass を外す（ノート版の付け直し）
+        menu.addItem (12, jp (u8"このノートの手直しを取り消す"), canEdit()); // 手で置いた目標・pinned・bypass を外す（ノート版の付け直し）
         menu.addSeparator();
     }
     // 「再解析」はメニューに置かない（2026-08-22）: 検出は決定的で、同じ検出器なら結果が変わらず、検出器が変わるのは
     // アプリ更新時だけ。既存の補正は自分の世代のサイドカーで整合し続けるので取り直しは不要。dev 検証フック
     // （--pitch-action reanalyze）と onReanalyze は検出器を変えたときの差分確認用に残す
-    menu.addItem (1, jp (u8"ノートの手直しを捨てて目標音を付け直す"), committed);
+    menu.addItem (1, jp (u8"すべての手直しを取り消して目標音を付け直す"), committed);
     if (getProjectKey && ! getProjectKey().has_value())
         if (const auto est = PitchNotes::estimateKey (session->detected()); est.valid)
             menu.addItem (3, jp (u8"推定キー ") + ProjectKeys::displayName (est.key) + jp (u8" をプロジェクトに設定"), session->editable());

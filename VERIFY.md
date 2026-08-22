@@ -680,7 +680,7 @@ sleep 8 && grep -E "project.open|render_failed" ~/Library/Logs/daw/"$(ls -t ~/Li
 #    --pitch-editor <track> <clip> でエディタを開き、--pitch-action を解析完了後に順に実行、
 #    --pitch-snapshot でウィンドウ中身を PNG（ログ debug.pitch_snapshot に mode/notes/preview/corrected/dirty/visible）
 #    action: enable / bypassN / moveN（+40ms）/ targetN:+M / kero / resnap / apply / cancel / reset / reanalyze / close / save / undo / bounce / rulerclick:<x>（ルーラー帯の x をクリック＝シーク。ログ debug.pitch_rulerclick に hit/position）
-#            autoN（ノート N を右クリック「このノートを自動の目標に戻す」＝目標を自動スナップの段へ・pinned/bypass 解除。ログ debug.pitch_note_reset に ok/target/pinned/bypass。変化なしなら ok=0 で undo を積まない）
+#            autoN（ノート N を右クリック「このノートの手直しを取り消す」＝目標を自動スナップの段へ・pinned/bypass 解除。ログ debug.pitch_note_reset に ok/target/pinned/bypass。変化なしなら ok=0 で undo を積まない）
 #            help:guide|strength|speed（「?」を押す＝吹き出し。guide はバー左端の「使い方」。CallOutBox は背景起動だと前面判定で 200ms 後に自動で閉じるので、スナップショットには中身のパネルだけを直接描いて合成する＝レイアウト・見切れの確認用）/ dblclick:strength|speed（スライダーのダブルクリック＝80% / 200ms に戻る。ログ debug.pitch_dblclick に strength/speedMs）
 SP=/tmp/pitch-check; rm -rf "$SP"; mkdir -p "$SP"; cp -R ~/Music/daw/2026-08-18-tundra "$SP/tundra"
 run() { pkill -x LaLa-dev; sleep 1; before=$(ls -t ~/Library/Logs/daw | head -1)
@@ -711,12 +711,12 @@ pkill -x LaLa-dev
 
 - GUI 側の操作: オーディオリージョン右クリック →「ピッチ補正…」（有効なら「有効」併記）。上部バーは左＝音の決め方
   （Scale・鍵盤アイコン（スケール表示）｜Strength〔off〜full〕・Speed〔hard〜natural。ケロケロ = Strength full × Speed hard〕。バー左端の「?」＝作業の流れ・画面の読み方・操作の一覧、各ラベル右の「?」＝そのつまみの説明（どちらもホバーでツールチップ・クリックで吹き出し）。スライダーのダブルクリックで 80% / 200ms）。Scale を選ぶ＝そのスケールで付け直すプレビュー（元の目標は点線ゴースト・右端 Apply/Cancel）／右端＝確定系（未確定中だけ Enable、変更プレビュー中だけ Apply/Cancel。確定後は何も出ない）。
-  Reset（「ノートの手直しを捨てて目標音を付け直す」。Strength / Speed は現在値のまま）・推定キーの設定はグリッドの右クリックメニュー。再解析はメニューに無い（検出は決定的・検出器が変わるのはアプリ更新時だけ。`--pitch-action reanalyze` の検証フックだけ残す。検出結果の指紋は CTest `PitchAnalyzer fingerprint` で固定＝変わったら落ちて algoId を上げる合図）。キー未設定時はバナーに推定キーと「Use Dm」ボタン（未設定の間のスナップはクロマチック。Scale 項目は `Chromatic (key unset · guess Dm)` と出る。段のハイライトだけ推定キーで塗る）
+  Reset（「すべての手直しを取り消して目標音を付け直す」。Strength / Speed は現在値のまま）・推定キーの設定はグリッドの右クリックメニュー。再解析はメニューに無い（検出は決定的・検出器が変わるのはアプリ更新時だけ。`--pitch-action reanalyze` の検証フックだけ残す。検出結果の指紋は CTest `PitchAnalyzer fingerprint` で固定＝変わったら落ちて algoId を上げる合図）。キー未設定時はバナーに推定キーと「Use Dm」ボタン（未設定の間のスナップはクロマチック。Scale 項目は `Chromatic (key unset · guess Dm)` と出る。段のハイライトだけ推定キーで塗る）
 - ブロブは帯型（太さ＝音量・中心＝補正後ピッチ・塗り＝移動量で青→暖色・目標の段は枠だけ・元ピッチは細線）。無声（息・子音）は下端の細いレーンに灰色で音量だけ
 - 上下ドラッグ中はその音が新しい目標音で鳴る（`VocalNoteAudition`: ドラッグ開始時にノート範囲だけ WORLD で分解・半音ごとに合成。メイン再生中は鳴らない。ログ `pitch.drag_audition_prepare`）
 - 手で目標音を動かしたノートは pinned（枠が実線で強め）。Strength に関係なく 100% で目標へ寄る（自動スナップ分だけが Strength に従う）
 - ブロブ: 上下ドラッグ＝目標音（半音）／横ドラッグ＝タイミング（隣接が吸収・1/16 スナップ・⌥で解除・吸収区間に斜線＋ゴースト）／
-  クリック＝単独試聴（メイン再生中は何もしない）／ダブルクリック or B＝バイパス／右クリック「このノートを自動の目標に戻す」＝手で置いた目標・pinned・bypass を外す（ノート版の付け直し。境界・タイミングは触らない）／⌘クリック＝分割（⌘を押してブロブに乗ると分割位置の点線が出る。右クリック「ここで分割」でも可）／隣接2つを Shift クリックで選んで M＝結合
+  クリック＝単独試聴（メイン再生中は何もしない）／ダブルクリック or B＝バイパス／右クリック「このノートの手直しを取り消す」＝手で置いた目標・pinned・bypass を外す（ノート版の付け直し。境界・タイミングは触らない）／⌘クリック＝分割（⌘を押してブロブに乗ると分割位置の点線が出る。右クリック「ここで分割」でも可）／隣接2つを Shift クリックで選んで M＝結合
 - Scale の右の鍵盤アイコンでスケール音の段のハイライトを ON/OFF（キー未設定なら推定キー）。Re-snap/Reset の結果は上部バー右に数秒表示（「結果は同じ」等）
 - ズーム: ⌘←/→（ウィンドウ内ではタイムラインでなくエディタが拡大）・トラックパッドのピンチ・⌘＋ホイール（カーソル中心）。スクロール: 横スワイプ／ホイール
 - 補正が鳴っているクリップは `♪` バッジ（移調バッジの左）。Space・⌘Z・, . はエディタにフォーカスがあってもメインに効く

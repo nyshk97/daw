@@ -150,7 +150,7 @@ void MainComponent::wirePitchEditor()
         proposal.speedMs = w.speedMs;
         if (proposal == w)
         {
-            pitchWindow.content().showStatus (jp (u8"Reset: 既に自動スナップの状態です"));
+            pitchWindow.content().showStatus (jp (u8"手直しはありません（既に自動の目標のまま）"));
             return;
         }
         Log::info ("pitch.reset_preview", "clip=" + juce::String (clip->id));

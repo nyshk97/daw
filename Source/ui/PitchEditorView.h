@@ -65,7 +65,7 @@ public:
     bool debugPressHelp (const juce::String& which);
     bool debugDoubleClickSlider (const juce::String& which);
     juce::Image debugSnapshotWithCallouts();
-    bool resetNoteToAuto (int noteIndex); // 右クリック「このノートを自動の目標に戻す」（debug: --pitch-action autoN）
+    bool resetNoteToAuto (int noteIndex); // 右クリック「このノートの手直しを取り消す」（debug: --pitch-action autoN）
     bool debugClickRuler (int x); // dev検証フック: ルーラー帯の x をクリックしたのと同じ経路でシーク（--pitch-action rulerclick:<x>）
     void mouseDown (const juce::MouseEvent& e) override;
     void mouseDrag (const juce::MouseEvent& e) override;
