@@ -82,6 +82,7 @@
 - [mixer-fx.md](docs/design/mixer-fx.md) — Tier 2 ミキサー・FXの確定設計（画面構成・チャンネル構成・6スライス）
 - [fx-roadmap.md](docs/design/fx-roadmap.md) — EQ・Comp後の残りFX・メーター群の実装順（5バッチ格子・耳セッションの方針・削った候補）。**新しいFX/メーターに着手する前に読む**
 - [region-settings.md](docs/design/region-settings.md) — リージョン設定UIの割り当て方針
+- [arrangement.md](docs/design/arrangement.md) — 少ない要素で作る方針と曲の尺・構成（90〜180秒・ボリュームゾーン120秒／verse-hook系の3構成／hookを先に作りverseは抜きで作る／常時鳴るのは5枠・足すならhookだけに1枠）。**ビートの編成や曲の構成を組む前に読む**
 - [drum-pattern.md](docs/design/drum-pattern.md) — ドラムパターンの好みの境界（はっきり鳴るハットは毎秒4打点まで・実時間で決まる。キックは制約にしない）と、ドラム制作の方向（ガチャ＝基準からの崩しを見せる道具・レーン＝サンプル1個でレーン別トラック・音色は「組んで比べる」で決める）。**ドラムの打ち込み・ドラムガチャ・ドラム音色を触る前に読む**
 - [reference-beat.md](docs/design/reference-beat.md) — リファレンス駆動ビートメイク（長期・2本柱: ガチャで作る＋レポートでわかる）。何を借りて何を借りないか・Python外部パイプライン＋LaLa内ガチャUIの分業・分析レポートとライブラリ蓄積・フェーズ表。実験記録は `docs/labs/reference-beat.md`（追記専用）。**上モノ素材の好みの境界（明るさ・コードの動きの目標帯）を含むので、ループ選び・推薦・上モノガチャを触る前に読む**
 - [corpus-comparison.md](docs/design/corpus-comparison.md) — 2つの集団を比べる分析の作法（1次元化にラベルを使わない・相関した軸へのomnibus検定・交差ペアでhaloを潰す・非対称の事前監査・検出力の下限を書く）。**コーパス比較や対照分析を始める前に必ず読む**
