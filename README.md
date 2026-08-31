@@ -1,7 +1,6 @@
 # LaLa
 
 Logic Pro の代替として自分用に作った DAW。JUCE + 自作 DSP、macOS 専用。
-機能過多の「全部入り」ではなく引き算が価値で、自分が使う機能だけをゼロから実装している。
 
 ![LaLa](docs/images/readme.png)
 
