@@ -1,95 +1,48 @@
 # LaLa
 
-自分が本当に使う機能だけに絞った個人用DAW（macOS専用・JUCE製）。
+Logic Pro の代替として自分用に作った DAW。JUCE + 自作 DSP、macOS 専用。
+機能過多の「全部入り」ではなく引き算が価値で、自分が使う機能だけをゼロから実装している。
+2026-07 に書き始めて、C++ 約4.6万行（うち回帰テスト1.6万行）。
 
-- 内部識別子は旧名 `daw` のまま（CMakeターゲット `daw`・bundle id `local.d0ne1s.daw`・プロジェクト置き場 `~/Music/daw/`・ログ `~/Library/Logs/daw/`）
-- プロジェクトの方針・スコープは [CLAUDE.md](CLAUDE.md)、実装の落とし穴は [GOTCHAS.md](GOTCHAS.md)、動作確認手順は [VERIFY.md](VERIFY.md) を参照
+![LaLa](docs/images/readme.png)
 
-## 必要なソフト
+マルチトラック録音（カウントイン・パンチイン）・ピアノロール・ミキサーとセンドバス・
+非破壊の移調/タイムストレッチ・ボーカルのピッチ補正・セクションマーカー・サンプラー・
+バウンス・アプリ内自動アップデートまで、ビートメイク〜録音〜ミックスを一通り通せる。
 
-### 実行時
+## Highlights
 
-| ソフト | 用途 | 必須度 |
-| --- | --- | --- |
-| macOS | CoreAudio・内蔵GM音源（DLSMusicDevice）をそのまま使う。クロスプラットフォーム対応はしない | 必須 |
-| `yt-dlp` | 「URLから読み込む…」（⌥⌘I）で音源をダウンロードする | URL取り込みを使うときのみ |
-| `ffmpeg` | yt-dlp が落とした音声をWAV(PCM)化する | 同上 |
+- **ボーカルのピッチ補正を自作。** YIN でピッチ検出し WORLD で再合成する非破壊エディタ
+  （自動スナップ＋ノート手直し・解析結果はサイドカーに世代保存）。合成方式は候補をラベルで伏せた
+  ブラインド試聴（正解表つき）で選定した
+- **FX は全部自作 DSP**（EQ・Comp・Saturation・Lo-fi・Reverb・Delay・Limiter）。
+  汎用プラグインホスティングは「作れないから無い」のではなく、検討した上で削った
+  （[docs/design/fx-roadmap.md](docs/design/fx-roadmap.md) に経緯）
+- **出音の回帰はビット一致で固定。** エンジン/バウンスの6経路を決定的レンダリングして
+  FNV-1a ハッシュで比較し、DSP を触った変更が既存プロジェクトの出音を変えていないことを
+  機械判定する（`scripts/check-render-hashes.sh`）
+- **スレッド境界 = ディレクトリ境界。** `Source/audio/` はリアルタイムスレッド専用で、
+  ロック・メモリ確保・`ui/` への参照を持たない。スレッド間の受け渡しは `shared/` の
+  lock-free 構造だけ。踏んだ罠は [GOTCHAS.md](GOTCHAS.md) に蓄積している
+- **リファレンス曲の分析パイプライン**（Python・`tools/`）。参照曲を onset / BPM / スペクトルで
+  分解してアプリ内レポートとドラム/ベースのガチャ生成に接続する。コーパス比較の統計の作法
+  （halo 効果対策・相関した軸への omnibus 検定）も [docs/design/](docs/design/) に文書化してある
 
-- yt-dlp は `.app` が launchd 起動でPATHを持たないため、`/opt/homebrew/bin/yt-dlp` → `/usr/local/bin/yt-dlp` の順に**絶対パスで探索**する（`Source/audio/UrlDownloader.cpp`）
-- ffmpeg は yt-dlp の親ディレクトリを `--ffmpeg-location` に渡している。**yt-dlp と同じ prefix**（＝両方Homebrew）に入っている必要がある
-- yt-dlp が古いとYouTube側の変更に追随できず失敗する。エラー時はまず `brew upgrade yt-dlp`
+## スタンス
 
-これ以外の実行時依存はない。GM音源はmacOS内蔵のDLSMusicDeviceをAUとしてホストするだけ（追加音源のインストール不要）、FX（Reverb / Delay / Limiter）は自作DSPでサードパーティ製プラグインを使わない。MP3・M4Aの読み込みはJUCE経由のCoreAudioで解決するため ffmpeg は不要。
+- **個人用**。販売・配布・サポートの予定はない
+- **Issue / Pull Request は受け付けない**。自分の好みで好き勝手に変えていく
+- リポジトリ名と内部識別子は旧名 `daw` のまま（意図的。経緯は [docs/operations.md](docs/operations.md)）
 
-### ビルド時
+> **Note (English):** Personal project. No support, no issues, no pull requests.
 
-| ソフト | 用途 |
-| --- | --- |
-| Xcode / Command Line Tools | clang・`codesign`・`security`・`ditto`。アイコン再生成には `swiftc`（`Assets/make_icon.swift`） |
-| CMake 3.22+ | ビルド |
-| git | JUCE 8.0.9 を FetchContent で取得 |
-| curl・tar（OS標準） | configure時に `scripts/fetch-sparkle.sh` が Sparkle 2.9.1 を `.sparkle/` へ自動取得する |
-| ネットワーク | 上記2つの初回取得のみ |
-| Apple Development 証明書 | 任意だが実質必須。無いと ad-hoc 署名にフォールバックし、**リビルドのたびにマイク許可（TCC）がリセットされる** |
-
-JUCE と Sparkle は自動取得なので手動インストール不要。Sparkle の取得に失敗すると configure が `FATAL_ERROR` で止まる。
-
-### リリース・配布時（`mise run release` → `scripts/release.sh` → `scripts/build.sh`）
-
-| ソフト・資格情報 | 用途 |
-| --- | --- |
-| `gh`（認証済み） | GitHub Release の作成・配信repo `nyshk97/daw-releases` の確認 |
-| `create-dmg` | DMGの作成・署名・notarize |
-| `python3` | CHANGELOG の書き換え・appcast.xml へのアイテム挿入 |
-| `claude` CLI | CHANGELOG `[Unreleased]` の自動生成（任意。無ければ手動編集にフォールバック） |
-| Developer ID Application 証明書 | 配布用の再署名（hardened runtime） |
-| notarytool の keychain profile `nyshk97-notary` | 公証。App Store Connect の API キーで登録する（`.p8` は Dropbox の `secrets/`）。画面ロック中だけ読めない（preflight で止まる）。Claude Code のセッションから叩いてよい |
-| Sparkle の EdDSA 秘密鍵（Keychain アカウント `daw`） | appcast の署名。バックアップは `~/Library/CloudStorage/Dropbox/secrets/sparkle-ed25519-daw-private.key` |
-| `mise`（任意） | `start` / `stop` / `release` タスクのランナー |
-
-Sparkle の `sign_update` は `scripts/fetch-sparkle.sh` が `.sparkle/bin/` に取得するので手動インストール不要。
-
-### インストール
-
-Homebrew 由来のもの（`yt-dlp` / `ffmpeg` / `cmake` / `gh` / `create-dmg`）はすべて Brewfile に記載済み。`brew install` を直接叩かず Brewfile 経由で入れる。
-
-```sh
-brew bundle --file=~/Library/CloudStorage/Dropbox/Brewfile
-```
-
-## ビルド・実行
+## ビルド
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Debug   # 初回はJUCE 8.0.9の取得で数分かかる
 cmake --build build
-open build/daw_artefacts/Debug/LaLa-dev.app   # または mise run start
+open build/daw_artefacts/Debug/LaLa-dev.app
 ```
 
-- **Debug = dev版**（`LaLa-dev.app`・bundle id `local.d0ne1s.daw.dev`・DEVリボン付きアイコン）。開発中の動作確認はこちら
-- **Release = 常用版**（`LaLa.app`）: `cmake -B build-release -DCMAKE_BUILD_TYPE=Release`
-- マルチ構成ジェネレータ（Xcode等）は非対応（configureで拒否する）
-- アイコンPNGを差し替えたら configure から実行し直す（`.icns` はconfigure時に生成されるため）
-
-## テスト
-
-```sh
-cmake --build build --target daw_tests && ctest --test-dir build --output-on-failure
-```
-
-通常の `ctest` はネットワーク不要（外部ツールも使わない）。URL取り込みの実走テストは環境変数を渡したときだけ走り、そのときだけ `yt-dlp` / `ffmpeg` とネット接続が要る。
-
-```sh
-LALA_VERIFY_URL='https://www.youtube.com/watch?v=jNQXAC9IVRw' build/daw_tests_artefacts/Debug/daw_tests
-```
-
-## リリース
-
-```sh
-mise run release           # 自動bump（minor）
-mise run release patch     # 刻み指定
-mise run release 1.2.3     # 明示指定
-```
-
-叩く前に `docs/CHANGELOG.md` の `[Unreleased]` を埋めて commit しておく（空なら止まる。Claude Code のセッションが `git log` を読んで書く）。Claude Code のセッションから叩いてよい（画面ロック中だけ preflight で止まる）。
-
-新規インストールは `brew install --cask nyshk97/tap/lala`（Salva は `nyshk97/tap/salva`。Brewfile に記載済み）。release.sh が末尾で cask の version / sha256 を更新する。日々の更新は Sparkle なので cask は `auto_updates true`（`brew upgrade` で上げたいときは `--greedy`）。
+依存ソフト・テスト・リリース手順は [docs/operations.md](docs/operations.md)、
+設計判断は [docs/design/](docs/design/)、動作確認手順は [VERIFY.md](VERIFY.md) を参照。
