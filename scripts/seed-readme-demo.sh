@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # READMEスクリーンショット用デモプロジェクトのseeder（冪等・再実行可）。
 #
-#   scripts/seed-readme-demo.sh          → ~/Music/daw/0-0-readme-demo を生成（既存なら上書き）
+#   scripts/seed-readme-demo.sh          → ~/Music/daw/midnight-drive を生成（既存なら上書き）
+#   （プロジェクト名はタイトルバーに写るため、デモとわからない曲名らしい名前にしている）
 #
 # 撮影手順（dev版の検証フックで背面・無音のまま撮れる）:
-#   open -g build/daw_artefacts/Debug/LaLa-dev.app --args --open ~/Music/daw/0-0-readme-demo
+#   open -g build/daw_artefacts/Debug/LaLa-dev.app --args --open ~/Music/daw/midnight-drive
 #   → AppleScriptで set size of window 1 to {1600, 1000} → screencapture -x -o -l <windowID>
 #
 # 見た目の狙い（README向けに「使い込まれたアレンジ」に見せる）:
@@ -20,7 +21,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-DEST="$HOME/Music/daw/0-0-readme-demo"
+DEST="$HOME/Music/daw/midnight-drive"
 mkdir -p "$DEST"
 
 python3 - "$DEST" <<'PYEOF'
@@ -296,6 +297,7 @@ project = {
     "nextId": 400,
     "bpm": BPM,
     "sampleRate": float(SR),
+    "key": {"root": 9, "mode": "minor"},  # A minor（LCDのKEY表示を埋める）
     "memo": "READMEスクリーンショット用（seeder: scripts/seed-readme-demo.sh）",
     "tracks": [
         track(1, "audio", "Drums", 0.82, 0.0, clips=[
