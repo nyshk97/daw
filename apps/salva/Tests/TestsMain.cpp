@@ -14,6 +14,7 @@
 #include "shared/RecordingCheck.h"
 #include "shared/ResampleStage.h"
 #include "shared/SalvaSettings.h"
+#include "shared/SeparationProgress.h"
 #include "shared/StemCache.h"
 #include "shared/StemMix.h"
 #include "shared/TakeName.h"
@@ -1097,6 +1098,40 @@ int main (int argc, char* argv[])
         expect (feq (out1.l[0], valueAt (50000)), "stem1は新位置（不整合の実証）");
         // ガードはこのブロックを検出する（masterだけの監視では取りこぼす順序）
         expect (guard.postBlock (version), "途中遷移ブロックをepochで検出＝SRに関係なく無音化");
+    }
+
+    {
+        beginTest ("SeparationProgress: 段階マーカーとtqdmの%から全体進捗を組み立てる");
+        // 行は separate.sh を8秒のWAVで実走して採取した stderr（\r区切り）そのもの
+        SeparationProgress p;
+        expect (p.stage == SeparationProgress::Stage::preparing && p.overall() == 0.0f, "初期は準備中・0");
+        expect (! p.consumeLine ("Warning: You are sending unauthenticated requests to the HF Hub."), "無関係な行は無視");
+        expect (! p.consumeLine (juce::String::fromUTF8 (" 50%|\xe2\x96\x88 | 5.85/11.7 [00:00<00:00, 10.47seconds/s]")), "準備中の%は使わない");
+        expect (p.consumeLine ("salva-stage: 4stems") && p.stage == SeparationProgress::Stage::stems4, "4 STEMS へ");
+        expect (! p.consumeLine ("  0%|                       | 0.0/11.7 [00:00<?, ?seconds/s]"), "段階頭の0%は変化なし（マーカーで既に0）");
+        expect (p.consumeLine (juce::String::fromUTF8 (" 50%|\xe2\x96\x88\xe2\x96\x88 | 5.85/11.7 [00:00<00:00, 10.47seconds/s]")), "50%");
+        expect (std::abs (p.overall() - 0.47f * 0.5f) < 1e-5f, "全体 = 0.47×0.5");
+        expect (p.consumeLine (juce::String::fromUTF8 ("100%|\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88| 11.7/11.7 [00:01<00:00, 11.44seconds/s]")), "100%");
+        expect (! p.consumeLine (juce::String::fromUTF8 ("100%|\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88| 11.7/11.7 [00:01<00:00, 11.28seconds/s]")), "最終行の再描画（同値）は変化なし");
+        expect (! p.consumeLine (juce::String::fromUTF8 (" 50%|\xe2\x96\x88 | 5.85/11.7 [00:00<00:00, 10.43seconds/s]")), "段階内で戻る%は無視（単調）");
+        expect (std::abs (p.overall() - 0.47f) < 1e-5f, "4 STEMS 完了 = 0.47");
+        expect (p.consumeLine ("salva-stage: 6stems") && p.stage == SeparationProgress::Stage::stems6 && p.local == 0.0f,
+                "6 STEMS へ（段階内進捗はリセット）");
+        expect (std::abs (p.overall() - 0.47f) < 1e-5f, "切り替わり直後も全体は戻らない");
+        expect (p.consumeLine (juce::String::fromUTF8 (" 50%|\xe2\x96\x88 | 5.85/11.7 [00:00<00:00, 10.43seconds/s]")), "6 STEMS 50%");
+        expect (std::abs (p.overall() - (0.47f + 0.47f * 0.5f)) < 1e-5f, "全体 = 0.47 + 0.47×0.5");
+        expect (! p.consumeLine ("salva-stage: unknown-future-stage"), "未知のマーカーは無視（段階は据え置き）");
+        expect (p.stage == SeparationProgress::Stage::stems6, "未知マーカー後も6 STEMSのまま");
+        expect (p.consumeLine ("salva-stage: export") && p.stage == SeparationProgress::Stage::exporting, "書き出しへ");
+        expect (std::abs (p.overall() - 0.94f) < 1e-5f, "書き出し中は段階頭の値で止まる");
+        expect (! p.consumeLine ("12%|x"), "書き出し中の%行は無視");
+        expect (! p.consumeLine ("published runs/abc"), "完了行は進捗に影響しない");
+
+        // 残り時間: 進捗が小さいうちは未知、以降は経過÷進捗の外挿
+        expect (SeparationProgress::estimateRemainingSeconds (5.0, 0.02f) < 0.0, "3%未満は未知");
+        expect (SeparationProgress::estimateRemainingSeconds (0.0, 0.5f) < 0.0, "経過0は未知");
+        expect (std::abs (SeparationProgress::estimateRemainingSeconds (30.0, 0.25f) - 90.0) < 1e-6, "30秒で25% → 残り90秒");
+        expect (SeparationProgress::estimateRemainingSeconds (100.0, 1.0f) == 0.0, "100%で残り0");
     }
 
     tempDir.deleteRecursively();

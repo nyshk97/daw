@@ -205,11 +205,6 @@ SalvaMainComponent::SalvaMainComponent()
     separateButton.getProperties().set ("fontSize", 12.5);
     separateButton.onClick = [this] { startSeparation(); };
 
-    addChildComponent (separateProgressLabel);
-    separateProgressLabel.setColour (juce::Label::textColourId, textDim);
-    separateProgressLabel.setFont (juce::FontOptions (11.0f));
-    separateProgressLabel.setText (jp (u8"分離中…"), juce::dontSendNotification);
-
     addAndMakeVisible (cacheSizeLabel);
     cacheSizeLabel.setColour (juce::Label::textColourId, textDim);
     cacheSizeLabel.setFont (juce::FontOptions (11.0f));
@@ -262,6 +257,11 @@ void SalvaMainComponent::openFile (const juce::File& file)
 {
     if (! AudioFileTypes::isSupported (file) || ! file.existsAsFile())
         return;
+    if (isSeparating())
+    {
+        showToast (jp (u8"ステム分離が終わるまでお待ちください")); // OSのopenイベント経由も含めて塞ぐ
+        return;
+    }
     // 同一ファイルの再オープンは無視する（macOSはargvのファイルパスをopenFileイベントでも
     // 届けるため、起動時に二重オープンになり再生・選択状態がリセットされる）
     if (engine.hasFile() && engine.fileInfo().file == file)
@@ -368,8 +368,7 @@ void SalvaMainComponent::startSeparation()
         showToast (jp (u8"別プロセスがこのファイルを分離中です"));
         return;
     }
-    separateButton.setEnabled (false);
-    separateProgressLabel.setVisible (true);
+    setSeparatingUi (true);
     Log::info ("separate.start", "path=" + request.input.getFullPathName()
                                      + " identity=" + request.identity.hash());
 }
@@ -752,14 +751,21 @@ void SalvaMainComponent::timerCallback()
     if (toastTicks > 0 && --toastTicks == 0)
         toastLabel.setVisible (false);
 
+    // 分離の進捗（案C: 波形上の走査線。tqdmの刻みは30Hzの呼び出し側で滑らかにする）
+    if (isSeparating())
+    {
+        const auto p = separator.progressSnapshot();
+        const double elapsed = (double) (juce::Time::currentTimeMillis() - separator.startedAtMs()) / 1000.0;
+        waveform.setSeparation (true, p, SeparationProgress::estimateRemainingSeconds (elapsed, p.overall()));
+    }
+
     // 分離ジョブの完了（identity一致時のみM/S行を点灯。実行中に別ファイルへ切り替えても誤接続しない）
     {
         StemCache::SourceIdentity identity;
         bool success = false;
         if (separator.consumeResult (identity, success))
         {
-            updateSeparateButtonState();
-            separateProgressLabel.setVisible (false);
+            setSeparatingUi (false);
             updateCacheSizeLabel();
             if (! success)
             {
@@ -786,7 +792,7 @@ void SalvaMainComponent::timerCallback()
         juce::File outFile;
         if (exportWorker.consumeResult (result, outFile))
         {
-            exportButton.setEnabled (true);
+            exportButton.setEnabled (! isSeparating());
             if (! result.ok)
             {
                 showToast (jp (u8"書き出しに失敗: ") + result.error);
@@ -863,6 +869,9 @@ void SalvaMainComponent::timerCallback()
 
 bool SalvaMainComponent::keyPressed (const juce::KeyPress& key)
 {
+    // 分離中は操作を受け付けない（案C: 完了までブロック）。⌘Wだけは通して「お待ちください」を出す
+    if (isSeparating() && key != juce::KeyPress ('w', juce::ModifierKeys::commandModifier, 0))
+        return true;
     if (key == juce::KeyPress::spaceKey)
     {
         if (! recordMode)
@@ -903,6 +912,8 @@ bool SalvaMainComponent::keyPressed (const juce::KeyPress& key)
 
 bool SalvaMainComponent::isInterestedInFileDrag (const juce::StringArray& files)
 {
+    if (isSeparating())
+        return false;
     for (const auto& f : files)
         if (AudioFileTypes::isSupported (f))
             return true;
@@ -1338,6 +1349,11 @@ void SalvaMainComponent::switchOutputForVerification (const juce::String& name)
 
 bool SalvaMainComponent::handleCloseRequest()
 {
+    if (isSeparating())
+    {
+        showToast (jp (u8"ステム分離が終わるまでお待ちください"));
+        return true; // 閉じてもジョブは走り続けるが、成果の点灯先を失うので待ってもらう
+    }
     if (recordMode)
     {
         if (engine.getRecorder().isRecording())
@@ -1381,6 +1397,21 @@ void SalvaMainComponent::updateSeparateButtonState()
                                && separator.status() != StemSeparator::Status::running);
 }
 
+void SalvaMainComponent::setSeparatingUi (bool on)
+{
+    if (on && engine.isPlaying())
+        togglePlay(); // 止める手段ごと塞ぐので、先に止めておく
+    // ブロック対象 = 再生・拍数・録音画面・戻る・出力切替・書き出し・キャッシュ削除メニュー
+    for (auto* c : { (juce::Component*) &playButton, (juce::Component*) &barsButton,
+                     (juce::Component*) &recordModeButton, (juce::Component*) &homeButton,
+                     (juce::Component*) &outputDeviceBox, (juce::Component*) &exportButton,
+                     (juce::Component*) &cacheSizeLabel })
+        c->setEnabled (! on);
+    updateSeparateButtonState();
+    if (! on)
+        waveform.setSeparation (false, {}, -1.0);
+}
+
 void SalvaMainComponent::openRecentAt (int index)
 {
     if (index >= 0 && index < shownRecentFiles.size())
@@ -1403,8 +1434,6 @@ void SalvaMainComponent::resized()
     cacheSizeLabel.setBounds (header.removeFromRight (130));
     header.removeFromRight (8);
     separateButton.setBounds (header.removeFromRight (90));
-    header.removeFromRight (8);
-    separateProgressLabel.setBounds (header.removeFromRight (60));
 
     auto bottom = fullBleed ? juce::Rectangle<int>()
                             : area.removeFromBottom (bottomHeight).reduced (10, 6);

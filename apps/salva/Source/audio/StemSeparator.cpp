@@ -15,6 +15,9 @@ bool StemSeparator::startSeparation (const Request& r)
         return false;
 
     request = r;
+    stageValue.store ((int) SeparationProgress::Stage::preparing);
+    localValue.store (0.0f);
+    startedAt.store (juce::Time::currentTimeMillis());
     currentStatus.store (Status::running);
     startThread();
     return true;
@@ -63,8 +66,23 @@ void StemSeparator::run()
                 if (tail.size() > tailLines)
                     tail.remove (0);
             };
+            // 進捗: 段階マーカーと tqdm の % は stderr（SeparationProgress.h の契約）。
+            // ワーカースレッドで解釈し、atomic 経由で UI の Timer に渡す
+            SeparationProgress progress;
+            const auto keepAndTrack = [&] (const juce::String& line)
+            {
+                keep (line);
+                if (progress.consumeLine (line))
+                {
+                    if ((int) progress.stage != stageValue.load())
+                        Log::info ("separate.stage", "stage=" + juce::String ((int) progress.stage)
+                                                         + " elapsedMs=" + juce::String (juce::Time::currentTimeMillis() - startedAt.load()));
+                    stageValue.store ((int) progress.stage);
+                    localValue.store (progress.local);
+                }
+            };
             const bool finished = process.readUntilFinished (
-                [this] { return threadShouldExit(); }, keep, keep);
+                [this] { return threadShouldExit(); }, keep, keepAndTrack);
             if (! finished && ! threadShouldExit())
                 Log::warn ("separate.read_interrupted");
             if (threadShouldExit())

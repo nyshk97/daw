@@ -34,11 +34,19 @@ rundir="$outdir/runs/$runid"
 work="$rundir/work"
 mkdir -p "$work"
 
+# 段階マーカー（アプリの進捗表示用・契約の一部）: 各段階の直前に stderr へ
+# "salva-stage: <4stems|6stems|export>" を出す。demucs の tqdm 進捗も stderr なので、
+# 同じストリームに流すことで到着順が崩れない（Source/shared/SeparationProgress.h が読む）
+stage() { echo "salva-stage: $1" >&2; }
+
 # 分離（--float32: 中間を16bitに落とさない。24bit化は正規化ステップで行う）
+stage 4stems
 "$python" -m demucs.separate -n htdemucs    --float32 -o "$work" "$input"
+stage 6stems
 "$python" -m demucs.separate -n htdemucs_6s --float32 -o "$work" "$input"
 
 # ③④ 正規化＋マニフェスト公開
+stage export
 "$python" - "$input" "$outdir" "$rundir" "$runid" "$sample_rate" "$length_samples" <<'PYEOF'
 import json
 import os

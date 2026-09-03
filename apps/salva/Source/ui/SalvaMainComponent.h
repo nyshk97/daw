@@ -92,6 +92,10 @@ private:
     void openFileChooser();          // 「ファイルを選択…」ボタン・⌘O
     void closeFileToStart();         // ファイルを閉じてスタート画面（空状態）へ
     void updateSeparateButtonState(); // ファイル有無・録音画面・分離中から算出
+    // 分離中（案C）: 完了まで操作をブロックし、進捗は波形上の走査で示す。
+    // on=true で再生停止＋各ボタン無効、false で復帰（waveformの分離表示も消す）
+    void setSeparatingUi (bool on);
+    bool isSeparating() const { return separator.status() == StemSeparator::Status::running; }
 
     // --- 空状態（Vinyl Warm・2026-08-15確定モック案B） ---
     // レイアウト計算を描画・ボタン配置・ヒットテストで共有する（座標ズレ防止）
@@ -155,7 +159,6 @@ private:
 
     // ステム分離（ヘッダー）
     juce::TextButton separateButton;
-    juce::Label separateProgressLabel;
     juce::Label cacheSizeLabel;
     StemPanel stemPanel;
     StemSeparator separator;

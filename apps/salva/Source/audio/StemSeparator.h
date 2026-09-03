@@ -5,6 +5,7 @@
 #include <juce_core/juce_core.h>
 
 #include "shared/SpawnedProcess.h"
+#include "shared/SeparationProgress.h"
 #include "shared/StemCache.h"
 
 // ステム分離ジョブの実行（GOTCHASのpull型ワーカー: juce::Thread + atomic status、
@@ -41,6 +42,17 @@ public:
 
     Status status() const { return currentStatus.load(); }
 
+    // 進捗（ワーカーが separate.sh の stderr 行から更新。UIのTimerが読む）。
+    // stage と local は別 atomic なので1tickだけ食い違いうるが表示用途なので許容
+    SeparationProgress progressSnapshot() const
+    {
+        SeparationProgress p;
+        p.stage = (SeparationProgress::Stage) stageValue.load();
+        p.local = localValue.load();
+        return p;
+    }
+    juce::int64 startedAtMs() const { return startedAt.load(); }
+
     // success/failedを1回だけ消費してidleへ戻す。trueを返したとき outIdentity/outSuccess が有効
     bool consumeResult (StemCache::SourceIdentity& outIdentity, bool& outSuccess);
 
@@ -49,6 +61,9 @@ private:
 
     Request request; // run()開始前に設定、実行中は変更しない
     std::atomic<Status> currentStatus { Status::idle };
+    std::atomic<int> stageValue { (int) SeparationProgress::Stage::preparing };
+    std::atomic<float> localValue { 0.0f };
+    std::atomic<juce::int64> startedAt { 0 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (StemSeparator)
 };

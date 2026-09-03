@@ -1,5 +1,7 @@
 #include "StemPanel.h"
 
+#include "ui/StemColours.h"
+
 #include "shared/StemMix.h"
 
 namespace
@@ -23,14 +25,6 @@ const juce::Colour msOffBg { 0xff34323a };
 const juce::Colour msOffText { 0xff97908a };
 
 // ステム別スウォッチ（Logicのトラック色の感覚。固定順）
-const juce::Colour swatches[] = {
-    juce::Colour (0xffd94a43), // drums = 赤
-    juce::Colour (0xff4a6ea9), // bass = 青
-    juce::Colour (0xffdfae4a), // vocals = 黄
-    juce::Colour (0xff7bc47b), // other = 緑
-    juce::Colour (0xffb06ac9), // guitar = 紫
-    juce::Colour (0xff5bb8c4), // piano = シアン
-};
 
 constexpr int pad = 10;      // カラム内余白
 constexpr int tabHeight = 24;
@@ -158,7 +152,7 @@ void StemPanel::paint (juce::Graphics& g)
 
         // rectはrebuildButtonsが組んだものを使う（描画とヒットテストの座標を揃える）
         auto row = rowRects[i].reduced (8, 5);
-        g.setColour (swatches[i % std::size (swatches)].withMultipliedAlpha (alpha));
+        g.setColour (StemColours::swatch (i).withMultipliedAlpha (alpha));
         g.fillRoundedRectangle (row.removeFromLeft (3).toFloat().withSizeKeepingCentre (3.0f, 14.0f), 2.0f);
         row.removeFromLeft (7);
         row.setRight (meterRects[i].getX() - 6); // 残りが名前欄

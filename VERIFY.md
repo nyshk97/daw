@@ -878,8 +878,15 @@ open -g build/apps/salva/salva_artefacts/Debug/Salva-dev.app \
 # ① アプリ経由の分離（無音20秒なら約10秒で完了）
 open -g build/apps/salva/salva_artefacts/Debug/Salva-dev.app \
   --args /tmp/salva-silent.wav --separate
-# ログに separate.start → separate.done identity=<hash> が並び、
+# ログに separate.start → separate.stage stage=1/2/3 → separate.done identity=<hash> が並び、
 # ~/Library/Application Support/salva/stems/<hash>/ に manifest.json と runs/<uuid>/ ができる
+
+# ①' 分離中の表示（走査線・段階ラベル・凡例・ボタンのブロック）は --snapshot-delay で途中を撮る。
+#     90秒のWAVで 4 STEMS ≈ 0〜9.5秒・6 STEMS ≈ 9.5〜19秒・書き出し ≈ 19〜20秒（M2 Air実測）。
+#     分離済みのファイルは再分離しないので、撮り直すたびに別名コピー（identityが変わる）を使い、
+#     終わったら stems/<hash>/ と settings.json の recentFiles を掃除する
+open -g build/apps/salva/salva_artefacts/Debug/Salva-dev.app \
+  --args /tmp/salva-90s.wav --separate --snapshot /tmp/sep-4stems.png --snapshot-delay 6000
 
 # ② 6ステム構成でループ再生（--stemgroup 0=4ステム, 1=6ステム）
 open -g build/apps/salva/salva_artefacts/Debug/Salva-dev.app \
