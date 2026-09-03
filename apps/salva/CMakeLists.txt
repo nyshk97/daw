@@ -5,7 +5,7 @@
 # Salva専用バージョン（LaLaの project VERSION と独立。Sparkleの新旧比較も
 # この値が CFBundleVersion に流れる。リリース時は scripts/release-salva.sh が
 # タグ salva-vX.Y.Z との整合を検査する — Phase 7で整備）
-set(SALVA_VERSION 0.3.0)
+set(SALVA_VERSION 0.4.0)
 
 # dev/常用版の切り替え（LaLaと同じ流儀: 名前・bundle id・アイコンを分離し、
 # Dock・⌘Tab・TCC 権限が独立する）
